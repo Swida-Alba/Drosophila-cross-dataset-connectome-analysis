@@ -407,15 +407,26 @@ def _is_unshown_context_mesh(trace):
     them, and a brain-only page would open with the brain pushed to one side
     of the frame. Hidden *neuron* traces size the box the same way, but they
     move the opening pivot only when they sit far from what the page draws;
-    an unchecked half is that case by construction, since the box then straddles
-    two groups of anatomy and its centre is neither.
+    an unchecked half is that case by construction, since the box then
+    straddles two groups of anatomy and its centre is neither.
+
+    The half ships **visible but fully transparent** (``opacity=0``): a
+    visibility toggle re-derives plotly's scene normalization
+    (``scene.dataScale``) from the visible traces' bounds, which re-zooms the
+    whole frozen render around every reveal -- an opacity toggle re-bakes
+    nothing, so the locked view holds to the pixel. The ``visible is False``
+    form is the legacy bake, still recognized so re-export paths classify old
+    pages identically.
     """
     rank = _trace_field(trace, 'legendrank')
     if not isinstance(rank, (int, float)) or isinstance(rank, bool):
         return False
     if rank < BRAIN_MESH_LEGEND_RANK:
         return False
-    return _trace_field(trace, 'visible') is False
+    if _trace_field(trace, 'visible') is False:
+        return True
+    return (_trace_field(trace, 'visible', True) is not False
+            and _trace_field(trace, 'opacity') == 0)
 
 
 def _unshown_context_mesh_indices(figure):
@@ -573,7 +584,14 @@ def classify_traces(traces, mesh_roi_names=()):
             continue
         if isinstance(rank, (int, float)) and not isinstance(rank, bool) \
                 and rank >= ROI_MESH_LEGEND_RANK_BASE:
-            roles.append(_make('mesh', 'mesh_rank_band'))
+            # An embedded-but-transparent context half is recorded as not
+            # drawn: the profile plan must keep excluding it (force-showing a
+            # background index would put an unrequested nerve cord into every
+            # exported PNG) and the manifest role stays truthful about what
+            # the page draws.
+            roles.append(_make('mesh', 'mesh_rank_band',
+                               visible=False if _is_unshown_context_mesh(trace)
+                               else _trace_field(trace, 'visible', True)))
             continue
         if group_name.startswith('synapses '):
             roles.append(_make('synapse', 'synapse_group'))
@@ -4625,8 +4643,12 @@ class VisualizeSkeleton:
     var seen = false;
     for (var i = 0; i < traces.length; i++) {
       var trace = traces[i];
+      // "Drawn" = visible and not fully transparent: the embedded context
+      // halves ship visible with opacity 0, and the pivot reads the anatomy
+      // that is actually on screen.
       if (!trace || trace.visible === false
-          || trace.visible === 'legendonly') { continue; }
+          || trace.visible === 'legendonly'
+          || Number(trace.opacity) === 0) { continue; }
       for (var a = 0; a < AXES.length; a++) {
         var name = AXES[a];
         var values = trace[name];
@@ -5061,10 +5083,23 @@ class VisualizeSkeleton:
       }
       Plotly.relayout(gd, update);
       if (CONFIG.meshTraces.length) {
-        Plotly.restyle(gd,
-          {color: CONFIG.meshColors[name].color,
-           opacity: CONFIG.meshColors[name].opacity},
-          CONFIG.meshTraces);
+        // An embedded-but-transparent context half keeps its opacity at 0 in
+        // both themes -- a theme switch repaints color, never visibility.
+        var shown = [], hidden = [];
+        CONFIG.meshTraces.forEach(function (i) {
+          var cur = Number(gd._fullData[i] && gd._fullData[i].opacity);
+          (cur === 0 ? hidden : shown).push(i);
+        });
+        if (shown.length) {
+          Plotly.restyle(gd,
+            {color: CONFIG.meshColors[name].color,
+             opacity: CONFIG.meshColors[name].opacity},
+            shown);
+        }
+        if (hidden.length) {
+          Plotly.restyle(gd,
+            {color: CONFIG.meshColors[name].color, opacity: 0}, hidden);
+        }
       }
     } catch (err) { /* the switch must never break the page */ }
   }
@@ -5354,12 +5389,25 @@ class VisualizeSkeleton:
         the native bar in Blink; on the engine it was measured in, two
         bars stacked.
         """
+        # The embedded-but-transparent context halves toggle opacity rather
+        # than visibility (a visibility restyle re-derives plotly's scene
+        # normalization from the visible bounds and re-zooms the frozen
+        # render): index -> the opacity a shown row restores to.
+        opacity_meshes = {}
+        figure_data = getattr(self, 'fig_3d', None)
+        figure_data = getattr(figure_data, 'data', None) if figure_data else None
+        for index, trace in enumerate(figure_data or []):
+            if _is_unshown_context_mesh(trace) \
+                    and _trace_field(trace, 'visible', True) is not False:
+                opacity_meshes[str(index)] = float(
+                    _trace_field(trace, 'opacity') or 0.0)
         baked = {
             'meshRankBase': ROI_MESH_LEGEND_RANK_BASE,
             'brainMeshRank': BRAIN_MESH_LEGEND_RANK,
             'vncMeshRank': VNC_MESH_LEGEND_RANK,
             'doubleClickMs': TREE_DOUBLE_CLICK_INTERVAL_MS,
             'expandRoots': bool(getattr(self, '_drocat_expand_roots', False)),
+            'opacityMeshes': opacity_meshes,
         }
         panel_html = '<div id="drocat-legend-tree" style="display:none"></div>'
         style_html = (
@@ -5433,6 +5481,35 @@ class VisualizeSkeleton:
       || document.querySelector('.plotly-graph-div');
   }
   function isVisible(tr) { return !tr || tr.visible !== false; }
+  /* The embedded context halves toggle opacity instead of visibility: a
+     visibility restyle re-derives plotly's scene normalization
+     (scene.dataScale) from the visible bounds, which re-zooms the frozen
+     render around every toggle. An opacity toggle re-bakes nothing, so the
+     locked view holds to the pixel. */
+  var opacityMeshes = CONFIG.opacityMeshes || {};
+  function isOpacityMesh(i) {
+    return Object.prototype.hasOwnProperty.call(opacityMeshes, String(i));
+  }
+  function isDrawn(i) {
+    var tr = gd.data[i];
+    if (isOpacityMesh(i)) {
+      return tr ? (Number(tr.opacity) || 0) > 0 : true;
+    }
+    return isVisible(tr);
+  }
+  function meshShowOpacity(i) {
+    return Number(opacityMeshes[String(i)]) || 0.04;
+  }
+  function setDrawn(indices, on) {
+    var vis = [], op = [];
+    indices.forEach(function (i) {
+      (isOpacityMesh(i) ? op : vis).push(i);
+    });
+    if (vis.length) { Plotly.restyle(gd, {visible: on}, vis); }
+    op.forEach(function (i) {
+      Plotly.restyle(gd, {opacity: on ? meshShowOpacity(i) : 0}, [i]);
+    });
+  }
   function traceColor(tr) {
     if (tr.marker && tr.marker.color) { return tr.marker.color; }
     if (tr.line && tr.line.color) { return tr.line.color; }
@@ -5629,7 +5706,7 @@ class VisualizeSkeleton:
     });
     if (masterEyeEl) {
       var anyOn = managedIndices().some(function(i) {
-        return isVisible(gd.data[i]);
+        return isDrawn(i);
       });
       masterEyeEl.textContent = anyOn ? '\\u25CF' : '\\u25CB';
     }
@@ -5648,7 +5725,7 @@ class VisualizeSkeleton:
     if (!gd || !gd.data || initialVisible) { return; }
     initialVisible = {};
     for (var i = 0; i < gd.data.length; i++) {
-      initialVisible[i] = isVisible(gd.data[i]);
+      initialVisible[i] = isDrawn(i);
     }
   }
 
@@ -5658,8 +5735,8 @@ class VisualizeSkeleton:
     var all = managedIndices();
     if (!all.length) { return; }
     var others = all.filter(function(i) { return indices.indexOf(i) < 0; });
-    if (others.length) { Plotly.restyle(gd, {visible: false}, others); }
-    Plotly.restyle(gd, {visible: true}, indices);
+    if (others.length) { setDrawn(others, false); }
+    setDrawn(indices, true);
     isolatedKey = rowKey(indices);
     sync();
   }
@@ -5675,8 +5752,8 @@ class VisualizeSkeleton:
       if (initialVisible && initialVisible[i] === false) { off.push(i); }
       else { on.push(i); }
     });
-    if (on.length) { Plotly.restyle(gd, {visible: true}, on); }
-    if (off.length) { Plotly.restyle(gd, {visible: false}, off); }
+    if (on.length) { setDrawn(on, true); }
+    if (off.length) { setDrawn(off, false); }
     sync();
   }
 
@@ -5694,7 +5771,7 @@ class VisualizeSkeleton:
     var all = managedIndices();
     if (!all.length) { return; }
     var on = all.every(function(i) { return isVisible(gd.data[i]); });
-    Plotly.restyle(gd, {visible: !on}, all);
+    setDrawn(all, !on);
     sync();
   }
 
@@ -5718,8 +5795,8 @@ class VisualizeSkeleton:
       e.stopPropagation();
       var gd = graphDiv();
       if (!gd) { return; }
-      var on = indices.every(function(i) { return isVisible(gd.data[i]); });
-      Plotly.restyle(gd, {visible: !on}, indices);
+      var on = indices.every(function(i) { return isDrawn(i); });
+      setDrawn(indices, !on);
       sync();
     });
     return {row: row, eye: eye};
@@ -5761,8 +5838,8 @@ class VisualizeSkeleton:
       e.stopPropagation();
       var gd = graphDiv();
       if (!gd) { return; }
-      var on = eyeIndices.every(function(i) { return isVisible(gd.data[i]); });
-      Plotly.restyle(gd, {visible: !on}, eyeIndices);
+      var on = eyeIndices.every(function(i) { return isDrawn(i); });
+      setDrawn(eyeIndices, !on);
       sync();
     });
     /* A second click on the same row within doubleClickMs isolates it (show
@@ -5799,8 +5876,8 @@ class VisualizeSkeleton:
       if (isDoubleClick(indices)) { isolate(indices); return; }
       var gd = graphDiv();
       if (!gd) { return; }
-      var on = indices.every(function(i) { return isVisible(gd.data[i]); });
-      Plotly.restyle(gd, {visible: !on}, indices);
+      var on = indices.every(function(i) { return isDrawn(i); });
+      setDrawn(indices, !on);
       sync();
     });
   }
@@ -18785,9 +18862,17 @@ class VisualizeSkeleton:
         one box, and a half the viewer can reveal has to be inside it, or the
         toggle would draw nothing and the framing would have to move to fix that.
 
-        ``visible=False`` rather than ``'legendonly'``: the legend tree reads
-        legendonly as shown, so its eye would switch the mesh *off* on the
-        first click.
+        The half ships **visible but fully transparent** rather than
+        ``visible=False`` (and rather than ``'legendonly'``, which the legend
+        tree reads as shown, so its eye would switch the mesh *off* on the
+        first click): plotly re-derives the scene's data normalization
+        (``scene.dataScale``) from the *visible* traces' bounds on every
+        visibility change and re-bakes every trace buffer at the new scale,
+        which re-zooms the whole frozen render around each reveal. An opacity
+        toggle changes no bounds, so the locked view holds to the pixel and
+        the revealed half draws inside the frozen box without moving
+        anything. The legend tree flips this opacity instead of visibility
+        for exactly these traces.
         """
         if volume is None or self.backend != 'plotly':
             return False
@@ -18804,8 +18889,13 @@ class VisualizeSkeleton:
                 trace.name = name
                 trace.hoverinfo = 'none'
                 trace.legendrank = rank
-                trace.visible = False
+                trace.visible = True
                 self._apply_plotly_trace_color(trace, color)
+                # Applied after the color (which sets its own alpha): the
+                # transparent bake is what keeps plotly's scene normalization
+                # stable across reveals.
+                trace.opacity = 0
+                self._apply_plotly_trace_opacity(trace, 0)
             self.fig_3d.add_traces(traces)
             self._vprint(f'   Embedded {name} hidden, for viewer toggling',
                          level='full')

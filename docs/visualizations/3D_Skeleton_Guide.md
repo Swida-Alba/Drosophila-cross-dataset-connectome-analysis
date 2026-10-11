@@ -796,7 +796,12 @@ The **brain mesh** and **VNC mesh** choices set what the page opens *showing*,
 not what it contains. On `male-cns` and `banc`, whose native template is one
 volume split at the neck, a run that asks for only one half still ships the
 other — hidden, decimated to `CONTEXT_MESH_EMBEDDED_TARGET_FACES` (20,000
-faces), and listed in the legend tree so a viewer can turn it on later. That is
+faces), and listed in the legend tree so a viewer can turn it on later. The
+half ships *visible but fully transparent* and its legend eye toggles that
+opacity: a visibility toggle would make plotly re-derive the scene's data
+normalization from the visible bounds and re-zoom the whole frozen render
+around each reveal, while an opacity toggle re-bakes nothing — the reveal
+draws the cord in place without moving the framing. That is
 the point of the split: an exported page is something you hand to a colleague,
 and "which envelope did you want?" is a question they answer better once they
 are looking at the neurons.

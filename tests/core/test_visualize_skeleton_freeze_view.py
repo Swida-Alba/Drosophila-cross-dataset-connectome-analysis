@@ -768,6 +768,34 @@ function update(u) {
         assert 'if (pinnedPivotMatchesCurrent()) { restoreCenter(); }' in script
         assert 'else { recenter(); }' in script
 
+    def _scale_pin_setup(self, *, vnc_visible=False, half_was=None):
+        """Stub page: two neuron traces + the hidden context half.
+
+        The half sits at trace index 2 and is baked into
+        ``CONFIG.hiddenContextIndices``; the camera center and the pin are
+        the boot values the enforcer holds.
+        """
+        vnc = 'true' if vnc_visible else 'false'
+        return (
+            "var gd = { handlers: [], redraws: 0,\n"
+            "  _fullData: [\n"
+            "    {x: [1, 3], y: [0, 2], z: [1, 3], visible: true},\n"
+            "    {x: [2, 4], y: [0, 2], z: [2, 4], visible: true},\n"
+            "    {x: [5, 9], y: [5, 9], z: [5, 9], visible: " + vnc + "}],\n"
+            "  _fullLayout: {scene: {camera: {center: {x: 0, y: 0, z: 0}}}} };\n"
+            "gd._fullLayout.scene._scene = {\n"
+            "  dataScale: [2.0e-6, 3.0e-6, 4.0e-6] };\n"
+            "gd._fullLayout.scene._scene.glplot = {\n"
+            "  redraw: function () { gd.redraws++; } };\n"
+            "GD = gd;\n"
+            "CONFIG.hiddenContextIndices = [2];\n"
+            "pinnedScale = [2.0e-6, 3.0e-6, 4.0e-6];\n"
+            "halfWas = " + ('true' if (half_was if half_was is not None
+                                      else vnc_visible) else 'false') + ";\n"
+        )
+
+
+
     def test_the_reset_hook_sits_beside_the_repin_not_inside_it(self):
         """``repaint`` still never moves the camera; the hook is its own path.
 

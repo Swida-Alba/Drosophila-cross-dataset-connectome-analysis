@@ -190,7 +190,11 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   `brain_mesh`.
   On `male-cns` and `banc` — whose native template is one volume
   split at the neck — whatever the two checkboxes leave unshown is still embedded,
-  hidden (`_embed_unshown_context_mesh` → `_embed_context_mesh`): a
+  hidden-but-transparent (`_embed_unshown_context_mesh` →
+  `_embed_context_mesh` ships it `visible=True, opacity=0` so plotly's
+  scene normalization never re-derives around a legend toggle — the
+  tree's eyes flip that opacity, and the frozen framing is
+  pixel-stable): a
   `brain_mesh='none'` run embeds both halves, a `none` + `vnc_mesh=True` run
   embeds the brain. Decimated to
   `CONTEXT_MESH_EMBEDDED_TARGET_FACES` (20,000 faces; measured halves: native

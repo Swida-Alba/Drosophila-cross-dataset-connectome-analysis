@@ -191,7 +191,11 @@ class TestEmbedContextMesh:
             role='vnc') is True
 
         trace = fake_plot3d[0][1]
-        assert trace.visible is False
+        # Visible-but-fully-transparent: a visibility toggle would make
+        # plotly re-derive scene.dataScale from the visible bounds and
+        # re-zoom the frozen render around every reveal.
+        assert trace.visible is True
+        assert trace.opacity == 0
         assert trace.name == 'JRCFIB2022M (VNC)'
         assert trace.legendrank == VNC_MESH_LEGEND_RANK
         assert trace.showlegend is True
@@ -426,7 +430,7 @@ class TestTreeRestoreBaseline:
     def test_snapshot_and_baseline_restore_are_emitted(self):
         js = self._tree_js()
         assert 'function snapshotInitialVisibility()' in js
-        assert 'initialVisible[i] = isVisible(gd.data[i]);' in js
+        assert 'initialVisible[i] = isDrawn(i);' in js
         # sync() is the boot hook: it runs before any row can be clicked.
         assert js.index('snapshotInitialVisibility();') > \
             js.index('function sync() {')
@@ -452,7 +456,7 @@ class TestTreeRestoreBaseline:
 
         toggle = js[js.index('function toggleAll() {'):
                     js.index('function addToggleRow')]
-        assert '{visible: !on}, all' in toggle
+        assert 'setDrawn(all, !on);' in toggle
         assert 'initialVisible' not in toggle
         show_all = js[js.index('function showAll() {'):
                       js.index('function isolate(')]

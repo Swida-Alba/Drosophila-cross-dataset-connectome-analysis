@@ -259,7 +259,14 @@
           left at the centre of the whole-scene box. The same re-aim answers
           every <b>View</b> dropdown entry (Front/Top/…): selecting a view
           keeps the orbit on the anatomy you can see instead of the middle of
-          the box. Plotly's second reset button is
+          the box. The render <b>scale</b> is locked by construction: the
+          embedded context halves ship visible-but-transparent and their eyes
+          toggle opacity rather than visibility, so plotly's scene
+          normalization never re-derives around a toggle and the frozen
+          framing holds to the pixel for every reveal and hide. (A visibility
+          toggle would make plotly re-zoom the whole picture — hiding the
+          brain mesh used to rescale the remaining neurons ~2×.) Plotly's
+          second reset button is
           removed from the toolbar: the two differ only by which snapshot they
           restore, and the kept one returns the page to the framing it opened
           with. The pin is injected page script
