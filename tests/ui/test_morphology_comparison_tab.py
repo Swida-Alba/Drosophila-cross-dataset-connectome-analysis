@@ -62,8 +62,12 @@ def test_aggregation_level_drops_bodyid_while_nblast_is_selected():
     assert aggregation.value == "type"
 
 
-def test_custom_group_board_follows_the_aggregation_level():
-    """The grouping board is shown only for the custom group level."""
+def test_custom_group_board_always_visible():
+    """The grouping board is ALWAYS visible: it is the only affordance for
+    custom grouping and label mapping, and it serves every mode (intra
+    'custom group' rows + the tier-0 label overlay on type/bodyid and
+    cross-dataset runs). Hiding it by default made the feature effectively
+    undiscoverable."""
     from nicegui import Client
     from nicegui.page import page
 
@@ -75,11 +79,12 @@ def test_custom_group_board_follows_the_aggregation_level():
         aggregation = _by_element_id(client, "select-aggregation")
         board = _by_element_id(client, "card-morph-custom-group")
 
-    assert board.visible is False
+    assert board.visible is True, (
+        "the Custom Groups (LabelMapper) card must be visible on tab open")
     aggregation.set_value("custom group")
     assert board.visible is True
     aggregation.set_value("bodyid")
-    assert board.visible is False
+    assert board.visible is True
 
 
 def test_intra_only_parameters_stay_hidden_for_two_datasets():

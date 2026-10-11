@@ -167,6 +167,33 @@
       changing analysis code.</li>
   </ul>
 
+  <h2>Display role: matrix axes and label views</h2>
+  <p>Beyond defining comparison rows, a loaded preset acts as the
+    <b>tier-0 identity overlay</b> on every comparison surface — a label IS
+    the identity and is never re-resolved through the auto type mapper:</p>
+  <ul>
+    <li><b>BodyId axes</b> (Connectivity Comparison, Morphology Comparison,
+      Cross-Dataset Morphology): a preset-resolved bodyId reads
+      <code>{bodyId}_{label}({native})</code> — e.g.
+      <code>13531_5th-LNv(5thsLNv_LNd6_L)</code> — with the legacy suffix,
+      side marker included, inside the parentheses. When the label already
+      IS the native name the parenthetical is dropped
+      (<code>{bodyId}_{label}</code>, or <code>{bodyId}_{label}_{L|R}</code>
+      when only the side differs). The bodyId stays the token before the
+      first <code>_</code> (axis parsers key on the head); unmapped members
+      keep the legacy form byte-identically.</li>
+    <li><b>Cross-dataset morphology</b> writes
+      <code>morph_labeltype_matrix.csv</code> beside the native
+      <code>morph_type_matrix.csv</code> (which stays native-keyed): one row
+      per standard label, multi-label native types expanded, unmapped
+      members keeping their native name. <code>overview.csv</code> gains a
+      <code>label</code> column ('/'-joined for double-claim types).</li>
+    <li><b>Morphology Comparison</b> <code>members.csv</code> gains a
+      <code>label</code> column beside the native <code>type</code> —
+      per-bodyId resolution, because a native type can settle to two labels
+      while a bodyId resolves to exactly one.</li>
+  </ul>
+
   <div class="callout tip">
     <b>Reproducibility</b>: each run records the mapping file it consumed
     (<code>label_map.json</code> / <code>parameters.json</code>), so a mapping

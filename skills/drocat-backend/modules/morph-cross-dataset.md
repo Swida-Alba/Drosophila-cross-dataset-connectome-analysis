@@ -71,7 +71,9 @@ Type/BodyId level tabs → Ward-clustered Plotly cards (square cells via
 explicit-width sizing for small matrices) with CSV + VisPath editor
 links; Plotly.js is embedded so it renders offline. The bodyId-level matrix
 carries the raw per-neuron scores under tree-legend axis labels
-(`{bodyId}_{instance}` / `{bodyId}_{type}_{L|R}`). vector_v2 renders on the
+(`{bodyId}_{instance}` / `{bodyId}_{type}_{L|R}`; with `label_mapping_file`,
+resolved ids read `{bodyId}_{label}({native})` — the parenthetical is
+dropped when the label already is the native name). vector_v2 renders on the
 diverging [-1, 1] scale (a whitened cosine can be negative).
 
 Semantics:

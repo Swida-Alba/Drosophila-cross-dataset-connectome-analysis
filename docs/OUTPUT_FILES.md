@@ -723,7 +723,11 @@ Example: `morphology_comparison_MCNS_aMe12_aMe10_20260901_120000/`
     read as `{bodyId}_{instance}` (NeuPrint-style datasets) or
     `{bodyId}_{type}_L/_R` (FAFB/BANC) — the same labels the 3D skeleton
     legend tree uses; `members.csv` maps every label back to its raw
-    bodyId.
+    bodyId. With a `label_mapping_file` preset, resolved bodyIds read
+    `{bodyId}_{label}({native})` — omitted when the label already is the
+    native name (`{bodyId}_{label}`, or `{bodyId}_{label}_{L|R}` when only
+    the side differs); unmapped keep the legacy form. `members.csv` gains
+    a `label` column beside the native `type`.
 *   **`user_warning_notes.txt`**: Written only when the query resolved
     through something worth disclosing: taxonomy-label expansions,
     instance-name matches, member/total caps, the NBLAST cost warning, or
@@ -787,7 +791,14 @@ Example: `morph_cross_MCNS_FAFB_aMe12_aMe26_l-LNv_20260916_023121/`
     scores. Rows are source members, columns target members; unscoreable
     pairs stay NaN. Axes read `{bodyId}_{instance}` (NeuPrint-style
     datasets) or `{bodyId}_{type}_{L|R}` (FAFB/BANC) — the tree-legend
-    labels — ordered by type then bodyId.
+    labels — ordered by type then bodyId; with `label_mapping_file`,
+    resolved ids read `{bodyId}_{label}({native})` (dropped when the label
+    already is the native name).
+*   **`results/morph_labeltype_matrix.csv`**: Written only when a
+    `label_mapping_file` preset was supplied — the LabelMapper view of the
+    type matrix, one row per standard label (multi-label native types
+    expand; unmapped members keep their native name). The native
+    `morph_type_matrix.csv` is always written unchanged beside it.
 *   **`results/morph_bodyid_scores.csv`**: The same scores in long form
     (one row per source × target pair) with the per-source `null_p95` and
     the `above_baseline` flag.

@@ -221,6 +221,7 @@ class MorphologyProfileComparer:
         method: str = "vector_v2",
         aggregation_level: str = _AGGREGATION_DEFAULT,
         custom_mapping_file: Optional[str] = None,
+        label_mapping_file: Optional[str] = None,
         max_members_per_type: int = 25,
         max_total_neurons: int = 200,
         fetch_online: bool = True,
@@ -240,6 +241,14 @@ class MorphologyProfileComparer:
         self.method = str(method).lower()
         self.aggregation_level = _normalize_aggregation_level(aggregation_level)
         self.custom_mapping_file = str(custom_mapping_file or "").strip()
+        self.label_mapping_file = str(label_mapping_file or "").strip()
+        # Tier-0 axis overlay: labels from the preset upgrade the bodyId
+        # axes to '{bodyId}_{label}({native})' (label_utils); members.csv
+        # gains a `label` column beside the native `type`.  Loaded lazily in
+        # _axis_label_of so __new__-style test instances keep working.
+        self._label_mapper = None
+        self._label_mapper_loaded = False
+        self._axis_label_of_cache = None
         self.max_members_per_type = max(1, int(max_members_per_type))
         self.max_total_neurons = max(2, int(max_total_neurons))
         self.fetch_online = bool(fetch_online)
@@ -1167,13 +1176,47 @@ class MorphologyProfileComparer:
 
     def _display_labels(self, body_ids: List[object]) -> List[str]:
         """Tree-legend display labels ('{bodyId}_{instance}' or
-        '{bodyId}_{type}_{L|R}') for the bodyId-level matrix axes."""
+        '{bodyId}_{type}_{L|R}') for the bodyId-level matrix axes.
+
+        With a ``label_mapping_file`` preset, resolved bodyIds upgrade to
+        ``{bodyId}_{label}({native})`` (label_utils.axis format); unmapped
+        members keep the legacy form unchanged."""
         canon_ids = [self._body_id(b) for b in body_ids]
         label_map = body_id_label_map(
             self.dataset, canon_ids, str(self.project_root),
             type_map=getattr(self, "_type_map", None),
-            instance_map=getattr(self, "_instance_map", None))
+            instance_map=getattr(self, "_instance_map", None),
+            label_of=self._axis_label_of())
         return [label_map.get(str(bid), str(bid)) for bid in canon_ids]
+
+    def _axis_label_of(self):
+        """``(dataset, body_id) -> standard label | None`` from the preset.
+
+        ``None`` when no preset was supplied or it failed to load — every
+        axis then keeps the legacy format (byte-identical runs)."""
+        if not self._label_mapper_loaded:
+            self._label_mapper_loaded = True
+            try:
+                from comparison.label_mapper import (
+                    axis_label_resolver, load_label_mapper)
+            except ImportError:  # pragma: no cover - direct src/ execution
+                try:
+                    from label_mapper import (
+                        axis_label_resolver, load_label_mapper)
+                except ImportError:
+                    return None
+            self._label_mapper = load_label_mapper(
+                self.label_mapping_file, log=self._note_or_log)
+            self._axis_label_of_cache = axis_label_resolver(self._label_mapper)
+        return self._axis_label_of_cache
+
+    def _note_or_log(self, message: str) -> None:
+        """Disclosure sink that works before/without the notes file."""
+        note = getattr(self, "_note", None)
+        if callable(note):
+            note(message)
+        else:
+            self._log(message)
 
     def _offline_render_filter(
             self, members: Dict[str, List[object]]
@@ -1458,6 +1501,7 @@ class MorphologyProfileComparer:
 
         type_map = getattr(self, "_type_map", {}) or {}
         instance_map = getattr(self, "_instance_map", {}) or {}
+        axis_label_of = self._axis_label_of()
         member_rows: List[Dict[str, object]] = []
         for row_label, ids in members.items():
             for bid in ids:
@@ -1466,9 +1510,14 @@ class MorphologyProfileComparer:
                     # `row` is the matrix row this neuron belongs to: a type
                     # name, this neuron's own display label, or a group label.
                     # `type` stays the real type at every level, so neither
-                    # column lies about the other.
+                    # column lies about the other.  `label` is the preset's
+                    # standard label for THIS bodyId ('' when unmapped) — the
+                    # axis vocabulary, kept beside the native `type` because a
+                    # native type can settle to two labels (double-claim).
                     "row": row_label,
                     "type": str(type_map.get(canon, "") or ""),
+                    "label": (str(axis_label_of(self.dataset, canon) or "")
+                              if axis_label_of else ""),
                     "bodyId": canon,
                     "instance": str(instance_map.get(canon, "") or ""),
                     "status": status_by_id.get(canon, "compared"),
@@ -1509,6 +1558,11 @@ class MorphologyProfileComparer:
         }
         if self.custom_mapping_file:
             params["custom_mapping_file"] = self.custom_mapping_file
+        if self.label_mapping_file:
+            params["label_mapping_file"] = self.label_mapping_file
+            params["label_axes"] = (
+                "{bodyId}_{label}({native}) on resolved bodyIds; unmapped "
+                "members keep the native form")
         report_params = dict(params)
         report_params["_member_rows"] = member_rows
         if plot3d_link:

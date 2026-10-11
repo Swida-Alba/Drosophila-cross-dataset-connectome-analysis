@@ -422,38 +422,45 @@ def create_morphology_tab():
                              "keeps. Neurons you queried by bodyId are never "
                              "dropped by this cap.",
                     )
+                # Custom grouping board (same inline/preset mechanism as the
+                # Connectivity Comparison sub-tab).  ALWAYS visible — it is
+                # the only affordance for custom grouping / label mapping,
+                # and it serves every mode: intra 'custom group' rows, and
+                # the tier-0 label overlay (LabelMapper axes) on intra
+                # type/bodyid runs AND cross-dataset runs.
+                custom_group_box = ui.card().classes(
+                    "w-full drocat-card").props('id=card-morph-custom-group')
+                with custom_group_box:
+                    section_header("Custom Groups (LabelMapper)", "group_work")
+                    _mapping_select, _grouper_card, resolve_grouping = (
+                        custom_grouping_block(
+                            label="Custom Grouping Preset",
+                            hint="Groups from the history menu or defined "
+                                 "inline for this query. Each source-side "
+                                 "group becomes one row of the comparison "
+                                 "matrix, resolved against the selected "
+                                 "dataset.",
+                            tab_key="morphology_comparison",
+                            datasets_provider=lambda: (
+                                list(comparison_datasets.value or [])),
+                            watch_elements=[comparison_datasets],
+                            query_inputs={
+                                "query": comparison_query_input},
+                        ))
+                    ui.label(
+                        "Groups are read from the grouping board's source "
+                        "mapping. Intra 'custom group': each label is one row "
+                        "(the neuron query above is disabled). Intra "
+                        "'type'/'bodyid' and cross-dataset runs: the labels "
+                        "act as user labels — bodyId axes read "
+                        "{bodyId}_{label}({native}) on resolved ids and the "
+                        "cross run gains a label-aligned type view beside the "
+                        "native one; label identities are never re-resolved."
+                    ).classes("text-caption drocat-muted")
+
                 # --- intra-dataset-only parameters (exactly one dataset) ---
                 with ui.column().classes("w-full gap-1").props(
                         'id=card-morph-comparison-intra') as intra_params_box:
-                    # Custom grouping board (same inline/preset mechanism as
-                    # the Connectivity Comparison sub-tab), shown only for the
-                    # 'custom group' level.
-                    custom_group_box = ui.card().classes(
-                        "w-full drocat-card").props('id=card-morph-custom-group')
-                    with custom_group_box:
-                        section_header("Custom Groups (LabelMapper)", "group_work")
-                        _mapping_select, _grouper_card, resolve_grouping = (
-                            custom_grouping_block(
-                                label="Custom Grouping Preset",
-                                hint="Groups from the history menu or defined "
-                                     "inline for this query. Each source-side "
-                                     "group becomes one row of the comparison "
-                                     "matrix, resolved against the selected "
-                                     "dataset.",
-                                tab_key="morphology_comparison",
-                                datasets_provider=lambda: (
-                                    list(comparison_datasets.value or [])[:1]),
-                                watch_elements=[comparison_datasets],
-                                query_inputs={
-                                    "query": comparison_query_input},
-                            ))
-                        ui.label(
-                            "Groups are read from the grouping board's source "
-                            "mapping: each custom label is one row, and its "
-                            "members for the selected dataset fill it. The "
-                            "neuron query above is disabled in this mode."
-                        ).classes("text-caption drocat-muted")
-                    custom_group_box.set_visibility(False)
 
                     with param_grid(2):
                         comparison_method = select_input(
@@ -609,10 +616,12 @@ def create_morphology_tab():
         def _sync_custom_group_visibility(_e=None):
             is_custom = (
                 str(comparison_aggregation.value or "") == "custom group")
-            custom_group_box.set_visibility(is_custom)
-            # Custom rows come from the grouping board; leaving the query box
-            # live would suggest its chips feed the matrix, and the board drops
-            # its "Add to Query" action for a disabled input.
+            # The card itself is always visible (it also feeds the tier-0
+            # label overlay on type/bodyid and cross runs); only the query
+            # input tracks the mode.  Custom rows come from the grouping
+            # board; leaving the query box live would suggest its chips feed
+            # the matrix, and the board drops its "Add to Query" action for
+            # a disabled input.
             comparison_query_input.set_input_enabled(not is_custom)
 
         def _sync_aggregation_options(_e=None):
@@ -859,18 +868,19 @@ def create_morphology_tab():
                 type="warning",
             )
 
-        # Custom-group rows need a mapping (preset or inline); resolve it
-        # before the running state so an invalid board aborts cleanly.
-        mapping_path = None
-        if aggregation == "custom group":
-            mapping_path, mapping_ok = resolve_grouping()
-            if not mapping_ok:
-                return
-            if not mapping_path:
-                ui.notify(
-                    "Define inline groups (or load them from the history menu) "
-                    "for the custom groups", type="warning")
-                return
+        # Resolve the mapping (preset or inline) in EVERY mode: intra
+        # 'custom group' rows come from it, and on intra type/bodyid runs
+        # and cross-dataset runs it acts as the tier-0 label overlay
+        # (LabelMapper axes / label-aligned type view).  An empty board
+        # resolves to (None, True), so the run simply proceeds without one.
+        mapping_path, mapping_ok = resolve_grouping()
+        if not mapping_ok:
+            return
+        if aggregation == "custom group" and not mapping_path:
+            ui.notify(
+                "Define inline groups (or load them from the history menu) "
+                "for the custom groups", type="warning")
+            return
 
         comparison_output.clear()
         comparison_output.set_running(True)
@@ -898,6 +908,8 @@ def create_morphology_tab():
                     "verbose": True,
                 }
                 tool = "morph_cross_dataset"
+                if mapping_path:
+                    constructor_params["label_mapping_file"] = mapping_path
             else:
                 visualization_values = (
                     comparison_visualization_settings.values())
@@ -925,7 +937,10 @@ def create_morphology_tab():
                         visualization_values if viz_on else {}),
                 }
                 if mapping_path:
-                    constructor_params["custom_mapping_file"] = mapping_path
+                    if aggregation == "custom group":
+                        constructor_params["custom_mapping_file"] = mapping_path
+                    else:
+                        constructor_params["label_mapping_file"] = mapping_path
                 tool = "morphology_comparison"
 
             result = await comparison_output.run(

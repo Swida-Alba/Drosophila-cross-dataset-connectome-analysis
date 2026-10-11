@@ -99,6 +99,10 @@ result: ComparisonResult = ProfileComparator.compare_profiles(...)
   are filed under `bodyid_level/results/bodyid_similarity_*`, `type_avg_bodyid_*`
   is folded from those same scores, and neither `type_level/` nor
   `profiles/aggregated/` is created because nothing was pooled.
+  With `custom_mapping_file`/`label_mapping_file`, bodyId-level axes read
+  `{bodyId}_{label}({native})` on preset-resolved ids — the parenthetical
+  is dropped when the label already is the native name; unmapped ids keep
+  the legacy form.
   `skip_bodyId_level` cannot skip the bodyId pass on a run left with one
   comparison row while that row stays inside the 1000-bodyId auto budget (the
   pair loop is quadratic, so past it the skip stands and the log says so).

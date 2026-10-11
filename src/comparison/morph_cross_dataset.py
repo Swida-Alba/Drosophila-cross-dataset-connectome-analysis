@@ -77,11 +77,15 @@ _MORPH_V2_STYLE = report_kit.MetricStyle(
 _LEVEL_DISPLAY = {'type': 'Type level', 'bodyid': 'BodyId level'}
 
 
-def _body_id_label(dataset: str, bid, fallback_type: str) -> str:
+def _body_id_label(dataset: str, bid, fallback_type: str,
+                   label_of=None) -> str:
     """Tree-legend display label ('{bodyId}_{instance}' / '{bodyId}_{type}_{L|R}').
 
     Uses the connectivity-profiler's dataset-backed label helper; degrades
     to '{bodyId}_{type}' when that import or its label maps are unavailable.
+    *label_of* (``(dataset, body_id) -> label | None``) upgrades resolved
+    bodyIds to ``{bodyId}_{label}({native})`` (the LabelMapper axis
+    format); without it the legacy form is returned unchanged.
     """
     try:
         from .profile_comparator import _body_id_display_label
@@ -89,8 +93,17 @@ def _body_id_label(dataset: str, bid, fallback_type: str) -> str:
         try:
             from profile_comparator import _body_id_display_label
         except ImportError:
-            return f'{bid}_{fallback_type}'
-    return _body_id_display_label(dataset, bid, fallback_type=fallback_type)
+            base = f'{bid}_{fallback_type}'
+            if label_of is not None:
+                try:
+                    resolved = str(label_of(dataset, bid) or "").strip()
+                    if resolved:
+                        return f'{bid}_{resolved}({fallback_type})'
+                except Exception:
+                    pass
+            return base
+    return _body_id_display_label(dataset, bid, fallback_type=fallback_type,
+                                  label_of=label_of)
 
 
 def _logline(log, message: str) -> None:
@@ -1573,6 +1586,7 @@ class CrossDatasetMorphComparer:
                  fetch_online: bool = True,
                  token: str = '',
                  use_auto_type_mapping: bool = True,
+                 label_mapping_file: Optional[str] = None,
                  use_cache: bool = True,
                  verbose: bool = True,
                  n_workers: int = 8,
@@ -1590,6 +1604,16 @@ class CrossDatasetMorphComparer:
         self.fetch_online = bool(fetch_online)
         self.token = token or ''
         self.use_auto_type_mapping = bool(use_auto_type_mapping)
+        # F1 fix: the LabelMapper entry point this comparer never had.  The
+        # preset rides ALONGSIDE the auto type mapper (different vocabularies:
+        # user standard labels vs the type-mapper results), upgrading bodyId
+        # axes to '{bodyId}_{label}({native})' and adding a label-aligned
+        # type view BESIDE the native-keyed morph_type_matrix.csv — the
+        # native outputs stay untouched (compatibility gate).
+        self.label_mapping_file = str(label_mapping_file or '').strip()
+        self._label_mapper = None
+        self._label_mapper_loaded = False
+        self._axis_label_of_cache = None
         self.use_cache = bool(use_cache)
         self.verbose = bool(verbose)
         self.n_workers = int(n_workers)
@@ -2055,11 +2079,67 @@ class CrossDatasetMorphComparer:
         pair_info['type_matrix'] = type_matrix
         pair_info['bodyid_matrix'] = self._member_matrix(
             pair_info['rows'], source, src_members, target, tgt_members)
+        pair_info['labeltype_matrix'] = self._label_type_matrix(
+            pair_info['rows'], source, target)
         self._log(f'[{source} -> {target}] scored {len(rows)} pair(s); '
                   f'baseline p95 range: '
                   f'{min((s["p95"] for s in stats.values()), default=float("nan")):.3f}'
                   f'..{max((s["p95"] for s in stats.values()), default=float("nan")):.3f}')
         return pair_info
+
+    def _axis_label_of(self):
+        """``(dataset, body_id) -> standard label | None`` from the preset.
+
+        ``None`` when no ``label_mapping_file`` was supplied or it failed
+        to load — every axis then keeps the native format unchanged
+        (byte-identity gate)."""
+        if not self._label_mapper_loaded:
+            self._label_mapper_loaded = True
+            try:
+                from .label_mapper import axis_label_resolver, load_label_mapper
+            except ImportError:  # pragma: no cover - direct src/ execution
+                try:
+                    from label_mapper import (
+                        axis_label_resolver, load_label_mapper)
+                except ImportError:
+                    return None
+            self._label_mapper = load_label_mapper(
+                self.label_mapping_file, log=self._log)
+            self._axis_label_of_cache = axis_label_resolver(self._label_mapper)
+        return self._axis_label_of_cache
+
+    def _label_type_matrix(self, rows: pd.DataFrame, source: str,
+                           target: str) -> pd.DataFrame:
+        """Label-aligned type view written BESIDE the native type matrix.
+
+        The native ``morph_type_matrix.csv`` folds member pairs by NATIVE
+        type name (dataset-scoped, F3); this view folds the SAME member
+        pairs by the preset's standard label — one row per label, so a
+        native type settling to two labels (the double-claim case)
+        EXPANDS to two rows and every cell keeps a single reading.  A
+        member the preset does not map keeps its native type name as the
+        axis key, so the label view stays complete.  Empty (no rows / no
+        mapper) — nothing is written and the native matrix is untouched.
+        """
+        label_of = self._axis_label_of()
+        if rows is None or rows.empty or label_of is None:
+            return pd.DataFrame()
+
+        src_keys = rows.apply(
+            lambda r: str(label_of(source, r['source_bodyId'])
+                          or r['source_type']), axis=1)
+        tgt_keys = rows.apply(
+            lambda r: str(label_of(target, r['target_bodyId'])
+                          or r['target_type']), axis=1)
+        grouped = pd.DataFrame({
+            'src': src_keys,
+            'tgt': tgt_keys,
+            'morph_v2': pd.to_numeric(rows['morph_v2'], errors='coerce'),
+        }).dropna(subset=['morph_v2'])
+        if grouped.empty:
+            return pd.DataFrame()
+        matrix = grouped.groupby(['src', 'tgt'])['morph_v2'].mean().unstack()
+        return matrix.round(4)
 
     def _member_matrix(self, rows: pd.DataFrame, source: str,
                        src_members: Dict[str, List[int]], target: str,
@@ -2070,10 +2150,13 @@ class CrossDatasetMorphComparer:
         members, columns the target members, values the raw vector_v2 score
         (NaN where a pair was unscoreable). Axes use the tree-legend labels
         ('{bodyId}_{instance}' or '{bodyId}_{type}_{L|R}'), ordered by type
-        then bodyId like the connectivity-profiler's bodyId matrices.
+        then bodyId like the connectivity-profiler's bodyId matrices; with a
+        ``label_mapping_file`` preset, resolved bodyIds upgrade to
+        ``{bodyId}_{label}({native})`` and unmapped ones keep the legacy form.
         """
         if rows is None or rows.empty:
             return pd.DataFrame()
+        label_of = self._axis_label_of()
 
         def axis(dataset: str, members: Dict[str, List[int]]
                  ) -> Tuple[List[int], List[str]]:
@@ -2083,7 +2166,8 @@ class CrossDatasetMorphComparer:
                 for bid in sorted(members[type_name]):
                     bid = int(bid)
                     bids.append(bid)
-                    labels.append(_body_id_label(dataset, bid, type_name))
+                    labels.append(_body_id_label(dataset, bid, type_name,
+                                                 label_of=label_of))
             return bids, labels
 
         src_bids, src_labels = axis(source, src_members)
@@ -2112,6 +2196,22 @@ class CrossDatasetMorphComparer:
         # type's name, plus the pair's baseline. A row mean over all target
         # types would dilute the signal with unrelated cells.
         overview = pd.DataFrame({'queried_type': queried_types})
+        # F3/F5: the native queried_type is a dataset-scoped homonym that can
+        # carry one, several, or no standard labels — the `label` column
+        # discloses exactly that ('/'-joined when a native type settles to
+        # multiple labels; '' when the preset says nothing about it).
+        label_of = self._axis_label_of()
+        if label_of is not None:
+            def _labels_for(queried: str) -> str:
+                resolved = {
+                    str(label_of(name, bid))
+                    for name in datasets
+                    for bid in ((members.get(name) or {}).get(queried) or [])
+                    if label_of(name, bid)
+                }
+                return '/'.join(sorted(resolved))
+            overview.insert(1, 'label',
+                            [_labels_for(t) for t in queried_types])
         for (a, b), info in pairs.items():
             col = (f'{self._abbrevs.get(a, _dataset_abbrev(a))}→'
                    f'{self._abbrevs.get(b, _dataset_abbrev(b))}')
@@ -2157,6 +2257,12 @@ class CrossDatasetMorphComparer:
             if matrix is not None and not matrix.empty:
                 csv = pair_dir / 'morph_type_matrix.csv'
                 matrix.to_csv(csv)
+            label_matrix = info.get('labeltype_matrix')
+            if label_matrix is not None and not label_matrix.empty:
+                # F1 fix: the LabelMapper-aligned view lives BESIDE the
+                # native matrix — morph_type_matrix.csv stays native-keyed.
+                csv = pair_dir / 'morph_labeltype_matrix.csv'
+                label_matrix.to_csv(csv)
             bodyid = info.get('bodyid_matrix')
             if bodyid is not None and not bodyid.empty:
                 csv = pair_dir / 'morph_bodyid_matrix.csv'
@@ -2201,6 +2307,15 @@ class CrossDatasetMorphComparer:
             'warnings': list(self.warnings),
             'resolution_notes': list(notes),
         }
+        if self.label_mapping_file:
+            parameters['label_mapping_file'] = self.label_mapping_file
+            parameters['label_axes'] = (
+                'morph_type_matrix.csv stays NATIVE-keyed (dataset-scoped '
+                'type names); the LabelMapper view is '
+                'morph_labeltype_matrix.csv (one row per standard label — '
+                'multi-label native types expand; unmapped members keep '
+                'their native name); bodyId axes read '
+                '{bodyId}_{label}({native}) on resolved ids')
         (run_path / 'parameters.json').write_text(
             json.dumps(parameters, indent=2), encoding='utf-8')
         files.append(run_path / 'parameters.json')
@@ -2238,6 +2353,16 @@ class CrossDatasetMorphComparer:
             '  members_summary.csv        compared member counts per type/dataset',
             '',
         ]
+        if self.label_mapping_file:
+            lines.extend([
+                '  LABELMAPPER AXES',
+                '  morph_type_matrix.csv stays NATIVE-keyed; the preset view is',
+                '  morph_labeltype_matrix.csv (one row per standard label,',
+                '  multi-label native types expand). BodyId axes read',
+                '  {bodyId}_{label}({native}) on preset-resolved ids; unmapped',
+                '  members keep the native form.',
+                '',
+            ])
         if self.warnings:
             lines.append('  WARNINGS')
             lines.extend(f'  - {w}' for w in self.warnings)

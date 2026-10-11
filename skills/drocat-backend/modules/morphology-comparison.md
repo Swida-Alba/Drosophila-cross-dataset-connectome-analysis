@@ -20,6 +20,7 @@ comparer = MorphologyProfileComparer(
     method="vector_v2",                  # "vector_v2" | "nblast"
     aggregation_level="type",            # "type" | "bodyid" | "custom group"
     custom_mapping_file=None,            # LabelMapper preset; forces "custom"
+    label_mapping_file=None,             # LabelMapper preset; axes overlay only
     max_members_per_type=25,
     max_total_neurons=200,               # truncation cap; nblast > 30 neurons warns and proceeds
     output_dir="/abs/output/morph_cmp",  # default local_data/morphology_comparison/
@@ -51,6 +52,11 @@ NeuPrint datasets missing a token).
   is what `aggregation_level` selects. Exact type names win over pattern
   interpretation; numeric tokens are bodyIds resolved through
   `_load_neuron_type_map`; patterns (`aMe.*`) full-match dataset type names.
+  With `label_mapping_file`, bodyId-level axes upgrade to
+  `{bodyId}_{label}({native})` (parenthetical dropped when the label
+  already is the native name) on preset-resolved bodyIds (unmapped
+  members keep the legacy form; no preset = byte-identical output), and
+  `members.csv` gains a `label` column beside the native `type`.
   At `type` a queried bodyId folds into its type; at `bodyid` each neuron is
   its own row (keyed by the tree-legend label from `_display_labels`, with a
   type suffix if two neurons would collide); at `custom` rows are the preset's
