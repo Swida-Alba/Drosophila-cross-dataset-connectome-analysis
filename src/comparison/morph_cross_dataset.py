@@ -1572,6 +1572,15 @@ class CrossDatasetMorphComparer:
     VisPath heatmaps; and a tabbed ``report.html`` built on the shared
     ``report_kit`` (pair tabs → Type/BodyId level tabs, Ward-clustered
     cards, embedded Plotly so it renders offline).
+
+    With ``label_mapping_file`` (a LabelMapper preset JSON), resolved
+    bodyIds read ``{bodyId}_{label}({native})`` on the bodyId axes
+    (dropped when the label already is the native name), a label-aligned
+    ``morph_labeltype_matrix.csv`` is written BESIDE the native-keyed
+    ``morph_type_matrix.csv`` (one row per standard label; multi-label
+    native types expand; unmapped members keep their native name), and
+    ``overview.csv`` gains a ``label`` column. The native outputs are
+    byte-identical to a run without the preset.
     """
 
     def __init__(self, datasets: Optional[List[str]] = None,

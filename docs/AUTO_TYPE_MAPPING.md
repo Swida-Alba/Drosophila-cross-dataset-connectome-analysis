@@ -689,6 +689,15 @@ never mix implicitly, and the explicit lane always wins:
    the raw `type` columns BEFORE results are cached (`LabelMapper.
    apply_to_dataframe`). Runs with an explicit mapper are compared under
    those labels; auto mapping does not second-guess them.
+
+   **Display role (2026-10-11)**: on the profiling/morphology comparison
+   family the preset also acts as the tier-0 axis overlay without touching
+   rows — bodyId axes read `{bodyId}_{label}({native})` on resolved ids
+   (dropped when the label already is the native name; side-only
+   difference keeps `{bodyId}_{label}_{L|R}`), labels are never
+   re-resolved through the auto mapper, and the cross-dataset morphology
+   gains a label-aligned type view beside the native one. See
+   `docs/core-features/LabelMapper_Guide.md` §"Display role".
 2. **Automatic mapper lane** — when no explicit mapper governs the run,
    `CrossDatasetTypeMapper` (male-cns v1.0 tables) resolves names through the
    shared validity resolver (`comparison/type_resolver.py`) at

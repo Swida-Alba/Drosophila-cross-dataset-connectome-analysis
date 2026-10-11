@@ -182,6 +182,10 @@ TIER-0 comparison identities, the same contract as the cross-dataset lanes:
 - label identities are never re-resolved through the auto type mapper —
   anchors, merge keys, and partner keys that carry a label pass
   canonicalization verbatim;
+- bodyId-level matrix axes read `{bodyId}_{label}({native})` on
+  preset-resolved bodyIds — dropped when the label already is the native
+  name (`{bodyId}_{label}`, or `{bodyId}_{label}_{L|R}` when only the side
+  differs); unmapped ids keep the legacy form;
 - the report header discloses the mapper state (`User labels N (tier 0)`
   chip) and, when partner grouping is on, a `Partner grouping ON` chip.
 

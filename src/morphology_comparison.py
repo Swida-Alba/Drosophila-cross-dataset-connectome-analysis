@@ -200,6 +200,15 @@ class MorphologyProfileComparer:
     - ``custom`` — rows are the source-side groups of a LabelMapper preset
       (``custom_mapping_file``); the query list is ignored.
 
+    ``label_mapping_file`` (a LabelMapper preset JSON) is the TIER-0
+    overlay that does NOT touch the rows: bodyId-level axes upgrade to
+    ``{bodyId}_{label}({native})`` on preset-resolved bodyIds (dropped
+    when the label already is the native name; unmapped members keep the
+    legacy form), ``members.csv`` gains a ``label`` column beside the
+    native ``type``, and the preset path + format are echoed in
+    ``parameters.json``. Labels are never re-resolved through the auto
+    type mapper.
+
     Each query token resolves in the same order the connectivity Comparison
     sub-tab uses: exact type name, bodyId, taxonomy label (a cell_type /
     class / subclass value such as FAFB's ``circadian_clock`` expands into
@@ -1627,8 +1636,14 @@ class MorphologyProfileComparer:
         agg_dir, agg_stem, _agg_heatmap = self._aggregate_name()
         layout = [
             "  parameters.json",
-            "  members.csv                    row / type / bodyId provenance",
+            "  members.csv                    row / type / label / bodyId "
+            "provenance",
         ]
+        if self.label_mapping_file:
+            layout.append(
+                "                                 (label = the preset's "
+                "standard label; bodyId axes read "
+                "{bodyId}_{label}({native}) on resolved ids)")
         if (output_path / "user_warning_notes.txt").exists():
             layout.append(
                 "  user_warning_notes.txt         how the query resolved "

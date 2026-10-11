@@ -203,3 +203,40 @@ The web UI builds custom mappings **inline on each tab** — no scripting needed
 The `Custom Mapping` preset can be overwritten by saving an updated board;
 runs always consume the exported file, so results are reproducible
 (`label_map.json` / `parameters.json` record the mapping used).
+
+## Display Role: Matrix Axes and Label Views (2026-10-11)
+
+Beyond defining comparison rows, a loaded preset acts as the **tier-0
+identity overlay** on every comparison surface — a label IS the identity
+and is never re-resolved through the auto type mapper:
+
+- **BodyId axes** (Connectivity ▸ Comparison, Morphology ▸ Comparison,
+  Cross-Dataset Morphology): a preset-resolved bodyId reads
+  `{bodyId}_{label}({native})` — e.g. `13531_5th-LNv(5thsLNv_LNd6_L)` —
+  with the legacy suffix, side marker included, inside the parentheses.
+  **Dedup rule**: when the label already IS the native name the
+  parenthetical is dropped (`{bodyId}_{label}`), and when only the side
+  marker differs the side is kept (`{bodyId}_{label}_{L|R}`, e.g.
+  `11999_l-LNv_L`). The bodyId stays the token before the first `_` (axis
+  parsers key on the head); unmapped members keep the legacy form
+  byte-identically, so a no-preset run is unchanged.
+- **Cross-Dataset Morphology** writes `morph_labeltype_matrix.csv` beside
+  the native `morph_type_matrix.csv` (which stays native-keyed): one row
+  per standard label, multi-label native types expanded, unmapped members
+  keeping their native name. `overview.csv` gains a `label` column
+  ('/'-joined for double-claim types).
+- **Morphology Comparison** `members.csv` gains a `label` column beside
+  the native `type` — per-bodyId resolution, because a native type can
+  settle to two labels while a bodyId resolves to exactly one.
+- **Connectivity ▸ Comparison** additionally accepts the preset as the
+  ROW definition (`custom_mapping_file`, forces the custom level) or as
+  the rows-unchanged tier-0 overlay (`label_mapping_file`), and can
+  collapse the partner/feature space through the groups
+  (`group_partners_by_mapping`). Report headers disclose the state
+  (`User labels N (tier 0)` / `Partner grouping ON`).
+
+Shared plumbing: `utils.label_utils.build_body_id_label(..., label_of=)`
+formats the axes; `comparison.label_mapper.axis_label_resolver(mapper)` /
+`load_label_mapper(file, log)` resolve a bodyId's standard label (the
+mapper's identity fallback is deliberately NOT a resolution — only
+bodyIds that genuinely carry a label upgrade).

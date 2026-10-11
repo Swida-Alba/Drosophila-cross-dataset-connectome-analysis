@@ -92,6 +92,15 @@ from comparison import LabelMapper
 res = resolve_valid_targets(mapper, 'MeVPLo2', 'male-cns:v1.0', 'flywire_FAFB_v783')
 
 labeler = LabelMapper()                # explicit per-dataset override (wins)
+
+# LabelMapper as tier-0 identity + axis overlay (profiling/morph family):
+# axis_label_resolver(mapper) -> (dataset, body_id) -> label | None (the
+# mapper's identity fallback is NOT a resolution); load_label_mapper(file,
+# log) contains load failures to None. label_utils.build_body_id_label(...,
+# label_of=) formats bodyId axes as {bodyId}_{label}({native}) — dropped
+# when the label already is the native name; side-only difference keeps
+# {bodyId}_{label}_{L|R}. Unmapped ids stay byte-identical to the legacy
+# form, so a no-preset run's exports are unchanged.
 ```
 
 `ComparisonParameters.for_run_folder(run_dir)` pins parameters to an

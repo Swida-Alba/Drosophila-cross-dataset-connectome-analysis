@@ -42,8 +42,11 @@
       names, or patterns (e.g. <code>aMe.*</code>) — or pick <b>custom
       group</b> as the Aggregation Level and define the groups on the
       grouping board instead.</li>
-    <li>Choose the <b>Aggregation Level</b> (type / bodyid / custom group) in
-      <b>Advanced Settings</b> to decide what one matrix row is.</li>
+    <li>Choose the <b>Aggregation Level</b> (type / bodyid / custom group) to
+      decide what one matrix row is. The <b>Custom Groups (LabelMapper)</b>
+      card is always visible — in <b>custom group</b> mode it fills the rows;
+      in <b>type</b>/<b>bodyid</b> mode a loaded preset acts as the tier-0
+      label overlay (see below).</li>
     <li>Click <b>Run Comparison</b>; open <code>report.html</code> in the
       output folder.</li>
   </ol>
@@ -91,11 +94,35 @@
       types.</li>
   </ul>
 
+  <h2>Custom Groups (LabelMapper) — the tier-0 label overlay</h2>
+  <p>The grouping card is visible in <b>every</b> mode, and a loaded preset
+    (saved history or inline board — the same board and preset format as
+    Connectivity ▸ Comparison) acts as the <b>tier-0 identity overlay</b>
+    beyond the custom-group rows:</p>
+  <ul>
+    <li>a query chip naming a label resolves to that label's members for the
+      dataset — the preset <i>is</i> the mapping;</li>
+    <li>label identities are <b>never re-resolved</b> through the auto type
+      mapper;</li>
+    <li>bodyId axes read <code>{bodyId}_{label}({native})</code> on resolved
+      ids (see above for the dedup rule);</li>
+    <li><code>members.csv</code> gains a <code>label</code> column and
+      <code>parameters.json</code> echoes the preset path.</li>
+  </ul>
+  <p>See the <a href="label_mapper.html">label-mapper guide</a> for the
+    preset format and the display role across the whole comparison
+    family.</p>
+
   <h2>How the comparison works</h2>
   <ul>
     <li>The <b>bodyId-level matrix</b> is always the scored primitive: every
       individual pair, labelled <code>{bodyId}_{instance}</code> (or
-      <code>{bodyId}_{type}_L/_R</code> on FAFB).</li>
+      <code>{bodyId}_{type}_L/_R</code> on FAFB). With a LabelMapper preset
+      loaded, resolved bodyIds read <code>{bodyId}_{label}({native})</code> —
+      the parenthetical is dropped when the label already is the native name
+      (<code>{bodyId}_{label}</code>, or <code>{bodyId}_{label}_{L|R}</code>
+      when only the side differs); unmapped members keep the legacy
+      form.</li>
     <li>The <b>aggregate matrix</b> (type or group level) is derived from it:
       each entry is the mean over the cross-member bodyId pairs, and the
       <b>diagonal is that row's intra-type/group cohesion</b> (mean pairwise
@@ -103,7 +130,10 @@
     <li>A neuron you queried <b>by bodyId is never dropped</b> by
       <i>Max Members per Type</i> or <i>Max Total Neurons</i>; those caps only
       remove other members. <code>members.csv</code> lists every compared
-      neuron with the <code>row</code> it fed and its real <code>type</code>.</li>
+      neuron with the <code>row</code> it fed, its real <code>type</code>,
+      and — when a preset is loaded — the <code>label</code> that bodyId
+      resolves to (a native type can settle to two labels; a bodyId resolves
+      to exactly one).</li>
   </ul>
 
   <h2>Methods</h2>

@@ -12991,6 +12991,11 @@ class ConnectivityProfileComparer:
             "- bodyId axes read '{bodyId}_{instance}' (NeuPrint datasets) or",
             "  '{bodyId}_{type}_{L|R}' (FAFB/BANC); the resolved comparison type",
             "  is the fallback when the neuron table has no metadata",
+            *(("- with a LabelMapper preset loaded, resolved bodyIds read",
+               "  '{bodyId}_{label}({native})' — dropped when the label already",
+               "  is the native name ({bodyId}_{label}, or {bodyId}_{label}_{L|R}",
+               "  when only the side differs); unmapped ids keep the legacy form")
+              if getattr(self, '_user_label_mapper', None) is not None else ()),
             "- at the custom group level those rows are the board's MEMBERS",
             f"  keyed by their group ('{{member}}_{{group}}'), so a member named",
             "  as a type contributes that type's pooled profile rather than one",
@@ -13911,6 +13916,10 @@ class ConnectivityProfileComparer:
             "  BodyId axes read '{bodyId}_{instance}' (NeuPrint datasets) or",
             "  '{bodyId}_{type}_{L|R}' (FAFB/BANC); the resolved comparison type",
             "  is the fallback when the neuron table has no metadata.",
+            *(("- with a LabelMapper preset loaded, resolved bodyIds read",
+               "  '{bodyId}_{label}({native})' — dropped when the label already",
+               "  is the native name; unmapped ids keep the legacy form.")
+              if getattr(self, '_user_label_mapper', None) is not None else ()),
             "profiles/{dataset}/individual/: individual bodyId connectivity profiles.",
             "profiles/{dataset}/aggregated/: mean-pooled type/group profiles.",
             "cross_dataset/all_types/: overview matrices with neurons as rows and",
