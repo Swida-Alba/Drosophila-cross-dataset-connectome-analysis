@@ -323,7 +323,7 @@ def create_connectivity_tab():
 
             with ui.card().classes("w-full drocat-card"):
                 section_header("Profile Construction", "build")
-                with param_grid(2):
+                with param_grid(3):
                     top_k_cmp = number_input(
                         "Top K Partners", get_user_default("top_k"), 5, 50,
                         hint="Number of top synaptic partners per direction to include in the profile.",
@@ -332,9 +332,22 @@ def create_connectivity_tab():
                         "Min Unique Types (M)", get_user_default("top_m"), 3, 20,
                         hint="Minimum unique partner types. If top_k yields fewer, K is expanded.",
                     )
+                    aggregation_level = select_input(
+                        "Aggregation Level", ["type", "bodyid", "custom group"], "type",
+                        hint="'type': each matched neuron type is one row — patterns like "
+                             "'aMe.*' or name-filter inputs expand into their independent "
+                             "types. 'bodyid': every individual neuron is one row, and the "
+                             "matrices are filed under bodyid_level/ (with the per-type "
+                             "average folded from them). "
+                             "'custom group': rows come from the custom grouping card below.",
+                    ).props('id=select-aggregation')
 
-                # Custom grouping via the inline LabelMapper-format board
-                # (only for the 'custom group' aggregation level)
+                # Custom grouping via the inline LabelMapper-format board:
+                # rows at the 'custom group' level, tier-0 user labels in
+                # type/bodyid modes.  The card is ALWAYS visible — it is the
+                # only affordance for custom grouping / label mapping, and
+                # hiding it until a mode/preset made the feature effectively
+                # undiscoverable.
                 custom_group_box = ui.card().classes("w-full drocat-card").props('id=card-custom-group')
                 with custom_group_box:
                     section_header("Custom Groups (LabelMapper)", "group_work")
@@ -349,11 +362,20 @@ def create_connectivity_tab():
                         query_inputs={"query": query_input},
                     )
                     ui.label(
-                        "Groups are read from the grouping board's source mapping: each custom label "
-                        "is one group, and its members for the selected datasets fill the rows. "
-                        "The neuron query above is disabled in this mode."
+                        "Groups are read from the grouping board's source mapping. "
+                        "'Custom group' makes each label one comparison row (the neuron "
+                        "query above is disabled). In 'type'/'bodyid' modes the labels act "
+                        "as user labels: query chips naming a label resolve to its members "
+                        "per dataset, and label identities are never re-resolved."
                     ).classes("text-caption drocat-muted")
-                custom_group_box.set_visibility(False)
+                    group_partners_cmp = checkbox_input(
+                        "Apply Groups to Partner Keys", False,
+                        hint="Collapse the partner side of every profile through these "
+                             "groups (weights summed per label) so the similarity is "
+                             "computed over the group feature space instead of raw type "
+                             "names. Type/bodyid rows only; bodyId-level matrices keep "
+                             "raw keys.",
+                    )
 
                 # --- Advanced Settings (kept at the bottom, in its own card) ---
                 with ui.card().classes("w-full drocat-card").props(
@@ -387,15 +409,6 @@ def create_connectivity_tab():
                                 hint="Cache profiles and connections locally for faster repeat comparisons "
                                      "(same setting as the Find Homolog panel above).",
                             )
-                            aggregation_level = select_input(
-                                "Aggregation Level", ["type", "bodyid", "custom group"], "type",
-                                hint="'type': each matched neuron type is one row — patterns like "
-                                     "'aMe.*' or name-filter inputs expand into their independent "
-                                     "types. 'bodyid': every individual neuron is one row, and the "
-                                     "matrices are filed under bodyid_level/ (with the per-type "
-                                     "average folded from them). "
-                                     "'custom group': rows come from the custom grouping board above.",
-                            ).props('id=select-aggregation')
                             skip_bodyid_level = select_input(
                                 "BodyId-Level Computation", ["auto", "skip", "compute"], "auto",
                                 hint="'auto': skip bodyId matrices only when >1000 bodyIds. "
@@ -421,11 +434,10 @@ def create_connectivity_tab():
                     is_custom = str(
                         (e.value if e is not None else aggregation_level.value)
                         or "") == "custom group"
-                    custom_group_box.set_visibility(is_custom)
                     # Custom rows come from the grouping board; leaving the
                     # query box live would suggest its chips feed the matrix,
                     # and the board drops its "Add to Query" action for a
-                    # disabled input.
+                    # disabled input.  The card itself is always visible.
                     query_input.set_input_enabled(not is_custom)
 
                 _sync_custom_group_state()
@@ -574,18 +586,18 @@ def create_connectivity_tab():
             "compute": False,
         }.get(skip_bodyid_level.value, "auto")
 
-        # Custom-group mode needs a mapping (preset or inline); resolve it
-        # before the running state so an invalid board aborts cleanly.
-        mapping_path = None
-        if is_custom_group:
-            mapping_path, mapping_ok = resolve_grouping()
-            if not mapping_ok:
-                return
-            if not mapping_path:
-                ui.notify(
-                    "Define inline groups (or load them from the history menu) for "
-                    "the custom groups", type="warning")
-                return
+        # Resolve the mapping (preset or inline) in EVERY aggregation mode:
+        # 'custom group' rows come from it, and in type/bodyid modes it acts
+        # as the tier-0 user-label mapper.  An empty board resolves to
+        # (None, True), so the run simply proceeds without a mapper.
+        mapping_path, mapping_ok = resolve_grouping()
+        if not mapping_ok:
+            return
+        if is_custom_group and not mapping_path:
+            ui.notify(
+                "Define inline groups (or load them from the history menu) for "
+                "the custom groups", type="warning")
+            return
 
         # Determine direction from checkboxes
         if analyze_upstream.value and analyze_downstream.value:
@@ -632,6 +644,10 @@ def create_connectivity_tab():
 
             if is_custom_group:
                 constructor_params["custom_mapping_file"] = mapping_path
+            elif mapping_path:
+                constructor_params["label_mapping_file"] = mapping_path
+            if mapping_path and group_partners_cmp.value:
+                constructor_params["group_partners_by_mapping"] = True
 
             result = await comparison_output.run(
                 comparison_runner,

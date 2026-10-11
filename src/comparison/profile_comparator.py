@@ -879,7 +879,8 @@ class ProfileComparator:
         direction: str,
         type_mapper: Optional[CrossDatasetTypeMapper] = None,
         prefix_2hop: bool = True,
-        top_n_for_2hop_check: int = 5
+        top_n_for_2hop_check: int = 5,
+        protected: Optional[set] = None
     ) -> Dict[str, float]:
         """
         Get expanded type profile with standardized (canonical) type names.
@@ -906,10 +907,19 @@ class ProfileComparator:
         expanded = ProfileComparator._get_expanded_types(
             profile, direction, prefix_2hop, top_n_for_2hop_check
         )
-        
+
         # If no mapper, return as-is
         if type_mapper is None:
             return expanded
+
+        # Tier-0: user-label partner keys are comparison identities and pass
+        # through verbatim; only the remaining keys are canonicalized.
+        if protected:
+            kept = {k: v for k, v in expanded.items() if k in protected}
+            rest = {k: v for k, v in expanded.items() if k not in protected}
+            rest = type_mapper.standardize_partner_types(rest, profile.dataset)
+            kept.update(rest)
+            return kept
 
         # Standardize to canonical names
         return type_mapper.standardize_partner_types(expanded, profile.dataset)
@@ -924,6 +934,7 @@ class ProfileComparator:
         decision_cache: Optional[Dict] = None,
         allow_evidence_only: bool = False,
         status_counts_out: Optional[Counter] = None,
+        protected: Optional[set] = None,
     ) -> Dict[str, float]:
         """Expanded type profile canonicalized with the panel's VALIDITY
         policy (shared resolver, ``comparison.type_resolver``).
@@ -942,6 +953,16 @@ class ProfileComparator:
             profile, direction, prefix_2hop, top_n_for_2hop_check)
         if type_mapper is None:
             return expanded
+        # Tier-0: user-label partner keys are comparison identities and pass
+        # through verbatim (their weights are not split across branches).
+        protected_keys: Dict[str, float] = {}
+        if protected:
+            protected_keys = {k: v for k, v in expanded.items()
+                              if k in protected}
+            expanded = {k: v for k, v in expanded.items()
+                        if k not in protected}
+            if not expanded:
+                return protected_keys
         from .type_resolver import expand_profile_types
         expansion = expand_profile_types(
             type_mapper, expanded, profile.dataset, None,
@@ -952,13 +973,18 @@ class ProfileComparator:
                 status_counts_out[status] += count
             if expansion.fallback_used:
                 status_counts_out['_fallback_profiles'] += 1
-        return expansion.canonical
+        canonical = expansion.canonical
+        if protected_keys:
+            protected_keys.update(canonical)
+            return protected_keys
+        return canonical
 
     @staticmethod
     def standardize_profile(
         profile: 'ConnectivityProfile',
         dataset: str,
         type_mapper: Optional['CrossDatasetTypeMapper'],
+        protected: Optional[set] = None,
     ) -> 'ConnectivityProfile':
         """Return a copy of ``profile`` whose partner dicts are canonical.
 
@@ -967,14 +993,25 @@ class ProfileComparator:
         the rank caches rebuilt, so any two standardized profiles from
         different datasets live in the same comparison namespace.  Used by
         the type-level pooling path and the mapping-aware vector prefilter.
+
+        Tier-0: keys in ``protected`` (user labels) pass through verbatim;
+        only the remaining keys are canonicalized.
         """
         if type_mapper is None:
             return profile
         from .connectivity_profiler import ConnectivityProfile, compute_ranks
-        up = type_mapper.standardize_partner_types(
-            dict(profile.upstream_partners), dataset)
-        down = type_mapper.standardize_partner_types(
-            dict(profile.downstream_partners), dataset)
+
+        def _canon(partners: Dict) -> Dict:
+            if protected:
+                kept = {k: v for k, v in partners.items() if k in protected}
+                rest = {k: v for k, v in partners.items() if k not in protected}
+                rest = type_mapper.standardize_partner_types(rest, dataset)
+                kept.update(rest)
+                return kept
+            return type_mapper.standardize_partner_types(dict(partners), dataset)
+
+        up = _canon(profile.upstream_partners)
+        down = _canon(profile.downstream_partners)
         return ConnectivityProfile(
             neuron_id=profile.neuron_id, dataset=profile.dataset,
             upstream_partners=up, downstream_partners=down,
@@ -10103,17 +10140,29 @@ def _load_body_id_label_maps(dataset: str) -> Tuple[dict, dict, dict]:
     return maps
 
 
-def _body_id_display_label(dataset: str, bid, fallback_type: str = None) -> str:
-    """Tree-legend display label for one bodyId (never fails)."""
+def _body_id_display_label(dataset: str, bid, fallback_type: str = None,
+                           label_of=None) -> str:
+    """Tree-legend display label for one bodyId (never fails).
+
+    *label_of* (``(dataset, body_id) -> label | None``) upgrades a resolved
+    bodyId to ``{bodyId}_{label}({native})``; without it (or for unmapped
+    ids) the legacy form is returned unchanged."""
     bid_text = str(bid).strip()
     if build_body_id_label is None:
         label = (f"{bid_text}_{fallback_type}" if fallback_type else bid_text)
+        if label_of is not None:
+            try:
+                resolved = str(label_of(dataset, bid) or "").strip()
+                if resolved and fallback_type:
+                    return f"{bid_text}_{resolved}({fallback_type})"
+            except Exception:
+                pass
         return label
     type_map, instance_map, side_map = _load_body_id_label_maps(dataset)
     try:
         return build_body_id_label(
             dataset, bid, type_map, instance_map, side_map,
-            fallback_type=fallback_type)
+            fallback_type=fallback_type, label_of=label_of)
     except Exception:
         return (f"{bid_text}_{fallback_type}" if fallback_type else bid_text)
 
@@ -10305,6 +10354,8 @@ class ConnectivityProfileComparer:
         use_cache: bool = True,
         group_map_csv: Optional[str] = None,
         custom_mapping_file: Optional[str] = None,
+        label_mapping_file: Optional[str] = None,
+        group_partners_by_mapping: bool = False,
         skip_bodyId_level: Union[bool, str] = 'auto',
         use_auto_type_mapping: bool = True,
         ensure_cache_complete: bool = False,
@@ -10365,6 +10416,21 @@ class ConnectivityProfileComparer:
                 JSON format: {"source_mapping": {
                     "custom_label": ["grp1", "grp2"],
                     "hemibrain:v1.2.1": [["aMe12", "aMe12_R"], ["aMe12_L"]]}}
+            label_mapping_file: Path to a LabelMapper preset JSON applied as a
+                TIER-0 USER-LABEL overlay WITHOUT changing the rows
+                (aggregation_level is NOT forced). A query token that names a
+                label expands to that label's members for the dataset (type
+                mode: one pooled row per label; bodyid mode: per-member
+                rows), label identities are never re-resolved through the
+                auto type mapper, and partner keys that carry a label pass
+                canonicalization verbatim. Same JSON format as
+                custom_mapping_file.
+            group_partners_by_mapping: Collapse the partner side of every
+                type-level profile through the label mapper (weights summed
+                per label, ranks rebuilt) so the compared feature space is
+                the custom groups rather than raw/canonical type names.
+                Requires a mapping (custom_mapping_file or
+                label_mapping_file); bodyId-level vectors stay raw.
             skip_bodyId_level: Whether to skip bodyId-level computations (Steps 3 & 4).
                 - False: Always compute bodyId-level matrices
                 - True: Always skip bodyId-level matrices  
@@ -10417,6 +10483,12 @@ class ConnectivityProfileComparer:
             'custom': 'custom', 'custom group': 'custom',
         }.get(str(aggregation_level).lower(), 'type')
         self.custom_mapping_file = custom_mapping_file
+        self.label_mapping_file = label_mapping_file
+        self.group_partners_by_mapping = bool(group_partners_by_mapping)
+        # Tier-0 user label mapper (built after query parsing below): labels
+        # are comparison identities and are never re-resolved.
+        self._user_label_mapper = None
+        self._user_labels_cache: Optional[frozenset] = None
         # Set early: the query/mapping parsing below logs via self._log
         self.verbose = verbose
         
@@ -10521,6 +10593,31 @@ class ConnectivityProfileComparer:
                 )
         
         self.dataset = self.datasets[0] if (self.is_cross_dataset or self.is_multi_dataset) else dataset
+
+        # Build the tier-0 user label mapper from either mapping input.  The
+        # custom-group file carries the same source_mapping side, so custom
+        # rows and label identity come from one preset.  A load failure must
+        # not kill the run: the mapper stays None and the analysis proceeds
+        # on raw names (the warning says so).
+        mapper_source = custom_mapping_file or label_mapping_file
+        if mapper_source:
+            try:
+                from .label_mapper import LabelMapper
+                self._user_label_mapper = LabelMapper(
+                    overall_mapping_json=mapper_source)
+                n_labels = len(self._user_label_governing_labels())
+                if n_labels:
+                    self._log(
+                        f"User label mapper loaded from {mapper_source}: "
+                        f"{n_labels} label(s) govern identity (tier 0)")
+            except Exception as e:
+                self._user_label_mapper = None
+                self._log(f"Warning: could not load the label mapper "
+                          f"({mapper_source}): {e}")
+        if self.group_partners_by_mapping and self._user_label_mapper is None:
+            self._log("group_partners_by_mapping ignored: no label mapper "
+                      "was provided (custom_mapping_file / label_mapping_file)")
+            self.group_partners_by_mapping = False
         self.top_k = top_k
         self.top_m = top_m
         self.min_synapse_threshold = min_synapse_threshold
@@ -10984,6 +11081,20 @@ class ConnectivityProfileComparer:
             STATUS_UNMAPPED, get_mapper_snapshot, expansion_targets,
             resolve_valid_targets,
         )
+        if self._user_label_governs(item_str):
+            # Tier 0: the token IS a user label — it anchors as itself in
+            # every dataset and is never resolved through the auto mapper;
+            # member expansion happens in _get_neurons_to_compare.
+            self.mapping_resolution_record.setdefault(dataset, {})[item_str] = {
+                'status': 'user_label', 'targets': [item_str],
+                'reason': 'user label (tier-0 identity)',
+            }
+            resolution_key = (str(dataset), str(item_str))
+            if resolution_key not in self._counted_query_resolutions:
+                self._counted_query_resolutions.add(resolution_key)
+                self.mapping_resolution_counts['user_label'] = (
+                    self.mapping_resolution_counts.get('user_label', 0) + 1)
+            return [item_str], 'user_label'
         if self._mapper_snapshot is None:
             self._mapper_snapshot = get_mapper_snapshot(self._type_mapper)
         if getattr(self, '_walk_caches', None) is None:
@@ -11046,6 +11157,170 @@ class ConnectivityProfileComparer:
                 self._map_query_item_multi(item_str, dataset)[0])
         return expanded_query
 
+    def _user_label_governing_labels(self) -> frozenset:
+        """All user labels across mapper roles (cached frozenset)."""
+        cached = getattr(self, '_user_labels_cache', None)
+        if cached is None:
+            names: set = set()
+            # getattr: instances built via __new__ (some tests) may predate
+            # the tier-0 attributes entirely.
+            mapper = getattr(self, '_user_label_mapper', None)
+            if mapper is not None:
+                for role in ('source', 'target', 'intermediate'):
+                    try:
+                        names.update(mapper.get_all_std_labels(role))
+                    except Exception:
+                        continue
+            cached = frozenset(names)
+            self._user_labels_cache = cached
+        return cached
+
+    def _user_label_governs(self, name: Any) -> bool:
+        """Tier-0 test: is this name already a comparison identity?
+
+        True when the name IS a label-mapper label (or its hemisphere-
+        suffixed base is one): user labels pass through every resolution
+        verbatim and are never re-resolved through the auto type mapper
+        (same contract as ``comparison_analyzer._user_label_governs``)."""
+        if getattr(self, '_user_label_mapper', None) is None:
+            return False
+        s = str(name)
+        labels = self._user_label_governing_labels()
+        if s in labels:
+            return True
+        try:
+            from ..utils.naming_utils import split_hemi_suffix
+        except ImportError:  # pragma: no cover - direct package imports
+            from utils.naming_utils import split_hemi_suffix
+        base, suffix = split_hemi_suffix(s)
+        return bool(suffix) and base in labels
+
+    def _label_mapper_chips(self) -> List[str]:
+        """Report meta chips disclosing the tier-0 mapper state."""
+        chips: List[str] = []
+        if getattr(self, '_user_label_mapper', None) is not None:
+            chips.append(
+                "<div class='meta-chip'><span>User labels</span>"
+                f"<strong>{len(self._user_label_governing_labels())} (tier 0)"
+                "</strong></div>")
+        if self.group_partners_by_mapping:
+            chips.append(
+                "<div class='meta-chip'><span>Partner grouping</span>"
+                "<strong>ON</strong></div>")
+        return chips
+
+    def _axis_label(self, dataset: str, bid, fallback_type: str = None) -> str:
+        """BodyId display label for matrix AXES (F2 fix).
+
+        With a user label mapper loaded, resolved bodyIds read
+        ``{bodyId}_{label}({native})``; without one this is byte-identical
+        to ``_body_id_display_label``.  Used by the bodyId-level row
+        construction AND the inter-dataset anchor matching, which must
+        agree on the label format."""
+        label_of = getattr(self, '_axis_label_of_cache', None)
+        if label_of is None:
+            from .label_mapper import axis_label_resolver
+            label_of = axis_label_resolver(
+                getattr(self, '_user_label_mapper', None))
+            self._axis_label_of_cache = label_of
+        return _body_id_display_label(
+            dataset, bid, fallback_type=fallback_type, label_of=label_of)
+
+    def _label_for_type_via_mapper(
+        self, type_name: str, dataset: str,
+        label_mapper, labels: frozenset,
+    ) -> Optional[str]:
+        """Bridge a partner TYPE name through a bodyId-keyed label mapper.
+
+        The type's bodyIds in ``dataset`` are mapped through the label
+        mapper; when every resolved member agrees on ONE label the type
+        folds into it (members the mapper does not know do not block — a
+        validated-subset label still owns its type's partner mass).  A type
+        whose members span SEVERAL labels stays raw: no arbitrary branch.
+        """
+        try:
+            bids = self.profiler.get_bodyids_for_type(
+                str(type_name), dataset) or []
+        except Exception:
+            return None
+        resolved: set = set()
+        for bid in bids:
+            target = label_mapper.get_label(dataset, bid)
+            if target in labels:
+                resolved.add(target)
+                if len(resolved) > 1:
+                    return None
+        return next(iter(resolved)) if resolved else None
+
+    def collapse_partners_by_label_mapper(
+        self, profiles: Dict[str, 'ConnectivityProfile'], dataset: str
+    ) -> Dict[str, 'ConnectivityProfile']:
+        """Fold partner keys through the tier-0 label mapper (feature space).
+
+        Two routes resolve a partner key to a label: the direct reverse
+        lookup (name-keyed maps — the partner name IS a member entry), and
+        the type bridge (bodyId-keyed maps — the partner type's bodyIds all
+        resolve to one label, ``_label_for_type_via_mapper``).  Keys that
+        already ARE labels or that resolve nowhere keep their (canonical)
+        key; weights fold with sums and ranks are rebuilt.  Type-level rows
+        only — bodyId-level vectors keep raw keys.
+        """
+        if getattr(self, '_user_label_mapper', None) is None or not profiles:
+            return profiles
+        from .connectivity_profiler import ConnectivityProfile, compute_ranks
+        lm = self._user_label_mapper
+        labels = self._user_label_governing_labels()
+        label_cache: Dict[Any, Optional[str]] = {}
+
+        def label_of(key: Any) -> Optional[str]:
+            if key in label_cache:
+                return label_cache[key]
+            target = lm.get_label(dataset, key)
+            result = target if (target in labels and target != key) else None
+            if result is None and str(key) not in labels:
+                # Type bridge for bodyId-keyed maps (cached via label_cache).
+                result = self._label_for_type_via_mapper(
+                    str(key), dataset, lm, labels)
+            label_cache[key] = result
+            return result
+
+        collapsed: Dict[str, 'ConnectivityProfile'] = {}
+        n_folded = 0
+        for row_label, profile in profiles.items():
+            def fold(partners: Dict) -> Dict:
+                out: Dict[str, float] = {}
+                for key, weight in partners.items():
+                    target = label_of(key)
+                    out_key = target if target else key
+                    out[out_key] = out.get(out_key, 0.0) + weight
+                return out
+            up = fold(profile.upstream_partners)
+            down = fold(profile.downstream_partners)
+            n_folded += (len(up) + len(down)
+                         - len(profile.upstream_partners)
+                         - len(profile.downstream_partners))
+            collapsed[row_label] = ConnectivityProfile(
+                neuron_id=profile.neuron_id, dataset=profile.dataset,
+                upstream_partners=up, downstream_partners=down,
+                upstream_ranks=compute_ranks(up),
+                downstream_ranks=compute_ranks(down),
+                upstream_top_k=len(up), downstream_top_k=len(down),
+                total_upstream_weight=profile.total_upstream_weight,
+                total_downstream_weight=profile.total_downstream_weight,
+                untyped_upstream_weight_fraction=(
+                    profile.untyped_upstream_weight_fraction),
+                untyped_downstream_weight_fraction=(
+                    profile.untyped_downstream_weight_fraction),
+                actual_upstream_count=len(up),
+                actual_downstream_count=len(down),
+                unique_types_upstream=len(up),
+                unique_types_downstream=len(down),
+            )
+        self._log(
+            f"Partner keys collapsed through the label mapper for {dataset}: "
+            f"{n_folded} partner entr(ies) folded into group labels")
+        return collapsed
+
     def _canonical_label(self, label: str, dataset: str) -> str:
         """Canonical merge key for a type label (shared resolver).
 
@@ -11054,6 +11329,10 @@ class ConnectivityProfileComparer:
         another dataset's same-named anchor; unmapped/unavailable keep the
         raw name.  Falls back to the raw name when the mapper is off.
         """
+        if self._user_label_governs(label):
+            # Tier 0: a user label IS the comparison identity — never
+            # re-resolve it.
+            return label
         if self._type_mapper is not None:
             try:
                 from .type_resolver import canonical_merge_key, get_mapper_snapshot
@@ -11151,7 +11430,60 @@ class ConnectivityProfileComparer:
                 except (ValueError, TypeError):
                     neurons[str(item)] = [str(item)]
             return neurons
-        
+
+        # Tier 0: a query token that IS a user label expands to that label's
+        # members for this dataset — the preset IS the per-dataset mapping,
+        # so the auto type mapper is never consulted for the label or its
+        # members.  Type mode pools the members into one row per label;
+        # bodyid mode rows the members individually.  Handled tokens are
+        # tracked so the generic resolution below cannot overwrite the
+        # label row with its raw literal.
+        handled_labels: set = set()
+        if getattr(self, '_user_label_mapper', None) is not None:
+            for item in query:
+                if isinstance(item, (int, float)):
+                    continue
+                item_str = str(item)
+                if item_str.isdigit() or not self._user_label_governs(item_str):
+                    continue
+                handled_labels.add(item_str)
+                members = self._user_label_mapper.get_neurons_for_label(
+                    item_str, dataset, role='source') or []
+                self.mapping_resolution_record.setdefault(
+                    dataset, {})[item_str] = {
+                    'status': 'user_label', 'targets': [item_str],
+                    'members': [str(m) for m in members],
+                    'reason': 'user label (tier-0 identity)',
+                }
+                resolution_key = (str(dataset), item_str)
+                if resolution_key not in self._counted_query_resolutions:
+                    self._counted_query_resolutions.add(resolution_key)
+                    self.mapping_resolution_counts['user_label'] = (
+                        self.mapping_resolution_counts.get('user_label', 0) + 1)
+                if not members:
+                    self._log(f"User label '{item_str}' has no members in "
+                              f"{dataset} — row skipped")
+                    continue
+                if effective_aggregation == 'bodyid':
+                    for member in members:
+                        bid = (int(member)
+                               if isinstance(member, str) and member.isdigit()
+                               else member)
+                        if isinstance(bid, int):
+                            ntype = (self.profiler.get_types_for_bodyids(
+                                [bid], dataset) or {}).get(bid)
+                            neurons[self._axis_label(
+                                dataset, bid, fallback_type=ntype)] = [bid]
+                        else:
+                            # Type-name member: its bodyIds row individually.
+                            for mbid in (self.profiler.get_bodyids_for_type(
+                                    str(member), dataset) or []):
+                                neurons[self._axis_label(
+                                    dataset, mbid,
+                                    fallback_type=str(member))] = [mbid]
+                else:
+                    neurons[item_str] = list(members)
+
         # Simple list format - original behavior
         # First, collect all numeric items (bodyIds) to do batch lookup
         bodyid_items = []
@@ -11176,7 +11508,7 @@ class ConnectivityProfileComparer:
             if effective_aggregation == 'bodyid':
                 # rows are individual neurons (tree-legend labels:
                 # '{bodyId}_{instance}' / '{bodyId}_{type}_{L|R}')
-                label = _body_id_display_label(dataset, bid, fallback_type=ntype)
+                label = self._axis_label(dataset, bid, fallback_type=ntype)
                 neurons[label] = [bid]
             elif ntype:
                 if ntype not in neurons:
@@ -11188,6 +11520,9 @@ class ConnectivityProfileComparer:
         
         # Process type names/patterns
         for item_str in type_items:
+            if item_str in handled_labels:
+                # Tier 0 already expanded this label into its row(s).
+                continue
             # 1) Coarse-taxonomy / fine-type expansion.  get_types_for_label
             #    groups matching rows by their real neuron type, so a cell
             #    class / cell type label (e.g. FAFB's 'circadian_clock') maps
@@ -11204,7 +11539,7 @@ class ConnectivityProfileComparer:
                 for real_type, ids in label_groups.items():
                     if effective_aggregation == 'bodyid':
                         for bid in ids:
-                            neurons[_body_id_display_label(
+                            neurons[self._axis_label(
                                 dataset, bid, fallback_type=real_type)] = [bid]
                     else:
                         if real_type not in neurons:
@@ -11226,7 +11561,7 @@ class ConnectivityProfileComparer:
                             continue
                         if effective_aggregation == 'bodyid':
                             for bid in tids:
-                                neurons[_body_id_display_label(
+                                neurons[self._axis_label(
                                     dataset, bid, fallback_type=tname)] = [bid]
                         else:
                             neurons[tname] = tids
@@ -11242,7 +11577,7 @@ class ConnectivityProfileComparer:
                 if effective_aggregation == 'bodyid':
                     # every bodyId of the type is its own row
                     for bid in body_ids:
-                        neurons[_body_id_display_label(
+                        neurons[self._axis_label(
                             dataset, bid, fallback_type=item_str)] = [bid]
                 else:
                     neurons[item_str] = body_ids
@@ -11466,7 +11801,7 @@ class ConnectivityProfileComparer:
                     if self.aggregation_level == 'bodyid':
                         # Must mirror the label the resolution step built for
                         # this bodyId (tree-legend display label).
-                        candidate_labels.insert(0, _body_id_display_label(
+                        candidate_labels.insert(0, self._axis_label(
                             ds, bid, fallback_type=ntype))
                     for label in candidate_labels:
                         if label in profiles:
@@ -11534,16 +11869,21 @@ class ConnectivityProfileComparer:
                         if mapper is not None:
                             # Validity-aware canonicalization (shared
                             # resolver): conflicts excluded, splits expanded,
-                            # statuses counted per run.
+                            # statuses counted per run. Tier-0 user labels
+                            # pass through verbatim.
+                            protected = (
+                                self._user_label_governing_labels() or None)
                             types_a = ProfileComparator._get_expanded_types_resolved(
                                 p1, direction, mapper,
                                 decision_cache=self._expansion_decision_cache,
                                 status_counts_out=self._expansion_status_counts,
+                                protected=protected,
                             )
                             types_b = ProfileComparator._get_expanded_types_resolved(
                                 p2, direction, mapper,
                                 decision_cache=self._expansion_decision_cache,
                                 status_counts_out=self._expansion_status_counts,
+                                protected=protected,
                             )
                             scores = self._compute_similarity_from_types(types_a, types_b)
                         else:
@@ -11743,7 +12083,7 @@ class ConnectivityProfileComparer:
                     resolved_type = str(
                         getattr(individual_profiles[0], 'neuron_type', '') or ''
                     ).strip()
-                    label = _body_id_display_label(
+                    label = self._axis_label(
                         dataset, body_ids[0], fallback_type=resolved_type)
                 
                 # Aggregate profiles for this type
@@ -12181,7 +12521,7 @@ class ConnectivityProfileComparer:
         seen_labels: Dict[str, Tuple[str, int]] = {}
         for key in keys:
             type_label, bid = key
-            label = _body_id_display_label(
+            label = self._axis_label(
                 bodyid_profiles[key].dataset, bid, fallback_type=type_label)
             if label in seen_labels and seen_labels[label] != key:
                 # Same display label under two type groups: keep the axes
@@ -12559,6 +12899,9 @@ class ConnectivityProfileComparer:
             'custom_group_names': self._custom_group_names,
             'group_map_csv': self.group_map_csv,
             'custom_mapping_file': self.custom_mapping_file,
+            'label_mapping_file': self.label_mapping_file,
+            'group_partners_by_mapping': self.group_partners_by_mapping,
+            'user_label_mapper_active': self._user_label_mapper is not None,
             'aggregation_level': self.aggregation_level,
             'row_kind': 'neuron' if bodyid_is_main else (
                 'group' if self.aggregation_level == 'custom' else 'type'),
@@ -12985,6 +13328,7 @@ class ConnectivityProfileComparer:
             f"<div class='meta-chip'><span>Dataset</span><strong>{escape(dataset_label)}</strong></div>",
             f"<div class='meta-chip'><span>Aggregation</span><strong>{escape(str(self.aggregation_level))}</strong></div>",
             f"<div class='meta-chip'><span>Query</span><strong>{escape(self._format_query_for_log(self.query))}</strong></div>",
+            *(self._label_mapper_chips()),
             '</div>',
             f"<p class='report-note'>Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · "
             "Overall means upstream + downstream; metric values remain available on hover.</p>",
@@ -13227,6 +13571,12 @@ class ConnectivityProfileComparer:
         self._progress(2, 4, "Extracting and aggregating connectivity profiles")
         self._log("Extracting type-aggregated and bodyId-level profiles...")
         type_profiles, bodyid_profiles = self._extract_all_profiles()
+        if self.group_partners_by_mapping and type_profiles:
+            # Feature space = the custom groups: fold partner keys through
+            # the label mapper BEFORE the matrices consume the profiles
+            # (bodyId-level vectors keep raw keys).
+            type_profiles = self.collapse_partners_by_label_mapper(
+                type_profiles, self.dataset)
         
         # The gate counts NEURONS, not comparison rows: one type with two
         # members is a legitimate run because its bodyId matrix answers "how
@@ -13521,6 +13871,9 @@ class ConnectivityProfileComparer:
             'custom_group_names': self._custom_group_names,
             'group_map_csv': self.group_map_csv,
             'custom_mapping_file': self.custom_mapping_file,
+            'label_mapping_file': self.label_mapping_file,
+            'group_partners_by_mapping': self.group_partners_by_mapping,
+            'user_label_mapper_active': self._user_label_mapper is not None,
             'aggregation_level': self.aggregation_level,
             'query_name': self.query_name,
             'datasets': self.datasets,
@@ -13621,6 +13974,7 @@ class ConnectivityProfileComparer:
             f"<div class='meta-chip'><span>Aggregation</span><strong>{escape(str(self.aggregation_level))}</strong></div>",
             f"<div class='meta-chip'><span>Query</span><strong>{escape(self._format_query_for_log(self.query))}</strong></div>",
             f"<div class='meta-chip'><span>Type mapping</span><strong>{'ON' if self._type_mapper is not None else 'OFF'}</strong></div>",
+            *(self._label_mapper_chips()),
             '</div>',
             f"<p class='report-note'>Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · "
             "Overall means upstream + downstream. Use CSV for exact matrix values and "
@@ -13911,6 +14265,12 @@ class ConnectivityProfileComparer:
                 )
             else:
                 type_profiles, bodyid_profiles = self._extract_profiles_for_dataset(ds)
+            if self.group_partners_by_mapping:
+                # Feature space = the custom groups: fold partner keys
+                # through the label mapper BEFORE any matrix (intra or
+                # inter) consumes the profiles.
+                type_profiles = self.collapse_partners_by_label_mapper(
+                    type_profiles, ds)
             profiles_by_dataset[ds] = type_profiles
             bodyid_profiles_by_dataset[ds] = bodyid_profiles
 

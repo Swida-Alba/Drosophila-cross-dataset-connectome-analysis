@@ -927,8 +927,16 @@ Example: `profiling_MCNS_aMe_20260815_143922/` (query `aMe.*` over male-cns:v1.0
 
 #### Overview
 *   **`report.html`**: Overall HTML report linking every metric and heatmap
-*   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed). A one-dataset run also records `row_kind` (`type` / `neuron` / `group`) and `levels_computed`, so the artifact set is self-describing
+*   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed). A one-dataset run also records `row_kind` (`type` / `neuron` / `group`) and `levels_computed`, so the artifact set is self-describing. Label-mapper runs add `label_mapping_file` / `custom_mapping_file` (whichever was supplied), `group_partners_by_mapping`, and `user_label_mapper_active`; `mapping_resolution_counts`/`mapping_resolution_record` gain the `user_label` status for query chips that named a preset label (tier-0 identity — the auto type mapper is never consulted for them)
 *   **`README.txt`**: Human-readable summary listing **only the folders this run wrote** (a bodyId-level run lists no `type_level/`)
+
+The report header carries disclosure chips when a label mapper is active:
+`User labels N (tier 0)` and — when the partner/feature space was collapsed
+through the groups — `Partner grouping ON` (see
+`docs/CONNECTIVITY_PROFILING.md` §"Tier-0 user label mapper"). With partner
+grouping on, `profiles/aggregated/*_profile.json` partner keys are in the
+group-label namespace (member types folded in with summed weights); a
+partner type whose members span several labels stays raw.
 
 #### Single-Dataset Results (`type_level/` · `group_level/`, `bodyid_level/`)
 Written when exactly one dataset is selected. A level gets a folder **only if
@@ -947,7 +955,7 @@ custom groups (same rule the morphology comparison applies).
 
 #### Intra-Dataset Results (`intra_dataset/{dataset_folder}/`)
 *   **`results/similarity_{direction}_{metric}.csv`**: Type-level N×N similarity matrices
-*   **`results/bodyid_similarity_{metric}_{direction}.csv`**: BodyId-to-bodyId comparisons — rows/columns read as `{bodyId}_{instance}` (NeuPrint-style datasets) or `{bodyId}_{type}_{L|R}` (FAFB/BANC); the resolved comparison type is the fallback when the neuron table has no metadata
+*   **`results/bodyid_similarity_{metric}_{direction}.csv`**: BodyId-to-bodyId comparisons — rows/columns read as `{bodyId}_{instance}` (NeuPrint-style datasets) or `{bodyId}_{type}_{L|R}` (FAFB/BANC); the resolved comparison type is the fallback when the neuron table has no metadata. With a `custom_mapping_file`/`label_mapping_file` preset, resolved bodyIds read `{bodyId}_{label}({native})` (omitted when the label already is the native name; unmapped keep the legacy form)
 *   **`results/type_avg_bodyid_similarity_{metric}_{direction}.csv`**: Type similarities averaged from bodyId pairs
 *   **`visualization/heatmap_intra_{direction}_{metric}.html`**, **`visualization/heatmap_intra_type_avg_{direction}_{metric}.html`** and **`visualization/heatmap_intra_bodyid_{direction}_{metric}.html`**: Interactive heatmaps
 *   Metrics: `jaccard`, `weighted_jaccard`, `cosine`, `rank_corr`, `rank_corr_union`; directions: `upstream`, `downstream`, `overall` (both directions)

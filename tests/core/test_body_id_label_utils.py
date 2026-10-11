@@ -124,3 +124,136 @@ def test_body_id_label_map_loads_missing_maps(monkeypatch):
     labels = body_id_label_map(MALE_CNS, [5])
     assert labels == {"5": "5_aMe5_L"}
     assert captured["dataset"] == MALE_CNS
+
+
+# ---------------------------------------- LabelMapper axis format (F2/F3)
+def test_label_format_wraps_native_in_parentheses():
+    """A resolved bodyId reads {bodyId}_{label}({native}) — the legacy
+    suffix, side marker included, moves into the parentheses."""
+    label = build_body_id_label(
+        FAFB, "7205759406", type_map={"7205759406": "aMe4"},
+        instance_map={"7205759406": "AA042_L"}, side_map={"7205759406": "left"},
+        label_of=lambda ds, bid: "5th-LNv")
+    assert label == "7205759406_5th-LNv(aMe4_L)"
+
+
+def test_label_format_keeps_instance_suffix_in_parentheses():
+    # instance-based suffix (no side appended): the instance rides unchanged
+    label = build_body_id_label(
+        MALE_CNS, 11309, type_map={11309: "aMe12"},
+        instance_map={11309: "aMe4_L"}, label_of=lambda ds, bid: "aMe12_std")
+    assert label == "11309_aMe12_std(aMe4_L)"
+
+
+def test_label_format_bodyid_stays_head_token():
+    # axis parsers split on '_' and take the head — the bodyId must remain
+    # the token before the first underscore even when the label carries '_'
+    label = build_body_id_label(
+        FAFB, "7205759406", type_map={"7205759406": "aMe4"},
+        side_map={"7205759406": "left"},
+        label_of=lambda ds, bid: "LNd_CRY+_ITP+")
+    assert label.split("_", 1)[0] == "7205759406"
+    assert label == "7205759406_LNd_CRY+_ITP+(aMe4_L)"
+
+
+def test_unmapped_bodyid_keeps_legacy_form_byte_identical():
+    legacy = build_body_id_label(
+        FAFB, "7205759406", type_map={"7205759406": "aMe4"},
+        instance_map={"7205759406": "AA042_L"}, side_map={"7205759406": "left"})
+    # resolver returns None for this id -> byte-identical to no resolver
+    assert build_body_id_label(
+        FAFB, "7205759406", type_map={"7205759406": "aMe4"},
+        instance_map={"7205759406": "AA042_L"},
+        side_map={"7205759406": "left"},
+        label_of=lambda ds, bid: None) == legacy
+    assert legacy == "7205759406_aMe4_L"
+
+
+def test_no_resolver_is_byte_identical():
+    kwargs = dict(type_map={"7": "aMe4"}, side_map={"7": "left"})
+    assert (build_body_id_label(FAFB, "7", **kwargs)
+            == build_body_id_label(FAFB, "7", label_of=None, **kwargs))
+
+
+def test_resolver_exception_degrades_to_legacy():
+    def bad(_ds, _bid):
+        raise RuntimeError("boom")
+    label = build_body_id_label(
+        FAFB, "7", type_map={"7": "aMe4"}, label_of=bad)
+    assert label == "7_aMe4"
+
+
+def test_label_without_any_native_suffix():
+    # bare bodyId fallback (no maps at all): the label still names the row
+    assert build_body_id_label(
+        FAFB, "7", label_of=lambda ds, bid: "5th-LNv") == "7_5th-LNv"
+
+
+def test_body_id_label_map_passes_label_through():
+    labels = body_id_label_map(
+        FAFB, ["9"], type_map={"9": "aMe4"}, instance_map={"9": "AA_L"},
+        side_map={"9": "left"}, label_of=lambda ds, bid: "std-aMe4")
+    assert labels["9"] == "9_std-aMe4(aMe4_L)"
+
+
+def test_body_id_label_map_without_label_is_legacy():
+    labels = body_id_label_map(
+        FAFB, ["9"], type_map={"9": "aMe4"}, instance_map={"9": "AA_L"},
+        side_map={"9": "left"})
+    assert labels["9"] == "9_aMe4_L"
+
+
+# ------------------------------------------------- label == native dedup
+def test_label_equal_native_drops_the_parenthetical():
+    # label == native type (no side): nothing to add -> plain {bodyId}_{label}
+    label = build_body_id_label(
+        FAFB, "7", type_map={"7": "l-LNv"}, label_of=lambda ds, bid: "l-LNv")
+    assert label == "7_l-LNv"
+
+
+def test_label_equal_native_keeps_only_the_side():
+    # label == native type but a side marker exists: keep the side, drop the
+    # repeated name (house '{bodyId}_{type}_{L|R}' shape, label substituted)
+    label = build_body_id_label(
+        FAFB, "7", type_map={"7": "l-LNv"}, side_map={"7": "left"},
+        label_of=lambda ds, bid: "l-LNv")
+    assert label == "7_l-LNv_L"
+
+
+def test_label_equal_instance_drops_the_parenthetical():
+    # NeuPrint-style: the instance is the native suffix
+    label = build_body_id_label(
+        MALE_CNS, 11309, instance_map={11309: "aMe4_L"},
+        label_of=lambda ds, bid: "aMe4_L")
+    assert label == "11309_aMe4_L"
+
+
+def test_label_equal_with_fallback_type_also_dedups():
+    # the fallback type is the native suffix of last resort — same rule
+    label = build_body_id_label(
+        FAFB, "7", fallback_type="DN1a", label_of=lambda ds, bid: "DN1a")
+    assert label == "7_DN1a"
+
+
+def test_differing_label_still_wraps_native():
+    # near-miss must NOT dedup (side-only difference is handled above)
+    label = build_body_id_label(
+        FAFB, "7", type_map={"7": "l-LNv"}, side_map={"7": "left"},
+        label_of=lambda ds, bid: "l-LNv_std")
+    assert label == "7_l-LNv_std(l-LNv_L)"
+
+
+def test_label_equal_instance_modulo_side_keeps_only_side():
+    # NeuPrint-style: the native suffix is the INSTANCE spelling the side
+    # out ('l-LNv_L'); a label differing only by that marker dedups too
+    label = build_body_id_label(
+        MALE_CNS, 11309, instance_map={11309: "l-LNv_L"},
+        label_of=lambda ds, bid: "l-LNv")
+    assert label == "11309_l-LNv_L"
+
+
+def test_type_and_side_map_dedup_still_fires():
+    label = build_body_id_label(
+        FAFB, "7", type_map={"7": "DN1a"}, side_map={"7": "right"},
+        label_of=lambda ds, bid: "DN1a")
+    assert label == "7_DN1a_R"

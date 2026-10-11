@@ -157,6 +157,9 @@ comparer = ConnectivityProfileComparer(
 | `aggregation_level` | `'bodyid'`, `'type'`, or `'custom'` (`'custom group'` also accepted) | `'type'` |
 | `skip_bodyId_level` | `'auto'` (skip over 1000 bodyIds), `True`, or `False` | `'auto'` |
 | `direction`         | `'upstream'`, `'downstream'`, or `'both'` | `'both'` |
+| `custom_mapping_file` | LabelMapper preset JSON; groups become the comparison rows and `aggregation_level='custom'` is forced | `None` |
+| `label_mapping_file` | LabelMapper preset JSON applied as a TIER-0 USER-LABEL overlay without changing the rows (never forces `aggregation_level`) | `None` |
+| `group_partners_by_mapping` | Collapse the partner side of every type-level profile through the label mapper (weights summed per label, ranks rebuilt) | `False` |
 
 At `'bodyid'` the compared rows are individual neurons, so their matrices are
 filed under `bodyid_level/` and no pooled level is written. `skip_bodyId_level`
@@ -165,6 +168,29 @@ itself pooled against itself (1.0 on every metric), so the bodyId pass is kept �
 unless the population passes the same 1000-bodyId budget the `'auto'` rule
 enforces, because the pair loop is quadratic. Past it the skip stands and the
 log names the fix.
+
+### Tier-0 user label mapper (all aggregation modes)
+
+A LabelMapper preset can ride along in EVERY mode — `'custom group'` via
+`custom_mapping_file` (rows = groups) or `'type'`/`'bodyid'` via
+`label_mapping_file` (rows unchanged). The preset's source-side labels are
+TIER-0 comparison identities, the same contract as the cross-dataset lanes:
+
+- a query chip that names a label expands to that label's members for the
+  dataset (type mode: one pooled row per label; bodyid mode: per-member rows)
+  and is recorded as a `user_label` resolution in `parameters.json`;
+- label identities are never re-resolved through the auto type mapper —
+  anchors, merge keys, and partner keys that carry a label pass
+  canonicalization verbatim;
+- the report header discloses the mapper state (`User labels N (tier 0)`
+  chip) and, when partner grouping is on, a `Partner grouping ON` chip.
+
+`group_partners_by_mapping` additionally moves the FEATURE SPACE to the
+groups: each partner type that resolves to a label folds into that label
+with summed weights (direct route for name-keyed presets; a type bridge
+for bodyId-keyed presets — a partner type folds only when every
+mapper-resolved bodyId of the type agrees on one label; a type spanning
+several labels stays raw). BodyId-level vectors keep raw keys.
 
 **Note:** ALL similarity metrics are computed automatically:
 - `jaccard`: Set-based overlap (0-1)

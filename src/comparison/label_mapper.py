@@ -8,7 +8,7 @@ across different datasets with varying naming conventions.
 import os
 import json
 import pandas as pd
-from typing import Dict, List, Union, Optional, Any, Tuple
+from typing import Dict, List, Union, Optional, Any, Tuple, Callable
 from collections import defaultdict
 
 try:
@@ -1317,3 +1317,64 @@ class LabelMapper:
                 'warnings': [],
                 'summary': {}
             }
+
+
+def axis_label_resolver(label_mapper: Optional['LabelMapper']
+                        ) -> Optional[Callable[[str, Any], Optional[str]]]:
+    """Standard-label resolver for matrix axes: ``(dataset, body_id) -> label``.
+
+    Returns ``None`` when *label_mapper* is absent or carries no labels, so
+    callers fall through to the legacy axis format unchanged (the
+    compatibility gate: no mapper, no change).  The identity fallback of
+    :meth:`LabelMapper.get_label` is deliberately NOT counted as a
+    resolution — only bodyIds that genuinely carry a standard label
+    upgrade to the ``{bodyId}_{label}({native})`` axis format.
+    """
+    if label_mapper is None:
+        return None
+    labels: set = set()
+    for role in ('source', 'target', 'intermediate'):
+        try:
+            labels.update(label_mapper.get_all_std_labels(role))
+        except Exception:
+            continue
+    if not labels:
+        return None
+
+    def label_of(dataset: str, body_id: Any) -> Optional[str]:
+        try:
+            target = label_mapper.get_label(dataset, body_id)
+        except Exception:
+            return None
+        return target if target in labels else None
+
+    return label_of
+
+
+def load_label_mapper(mapping_file: Optional[str], log=None) -> Optional['LabelMapper']:
+    """Load a LabelMapper preset JSON for axis/identity overlays.
+
+    Returns ``None`` when *mapping_file* is empty. A load failure is
+    contained: the warning goes to *log* (when given) and the result is
+    ``None``, so a broken preset degrades a run to native-key output
+    instead of killing it.
+    """
+    path = str(mapping_file or "").strip()
+    if not path:
+        return None
+    try:
+        mapper = LabelMapper(overall_mapping_json=path)
+        if log is not None:
+            n = 0
+            for role in ('source', 'target', 'intermediate'):
+                try:
+                    n += len(mapper.get_all_std_labels(role))
+                except Exception:
+                    continue
+            log(f"LabelMapper loaded from {path}: {n} label(s) govern "
+                "axis/identity overlays")
+        return mapper
+    except Exception as e:
+        if log is not None:
+            log(f"Warning: could not load the label mapper ({path}): {e}")
+        return None

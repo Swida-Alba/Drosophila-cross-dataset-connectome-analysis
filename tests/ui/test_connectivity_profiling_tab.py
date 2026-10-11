@@ -65,7 +65,10 @@ def _descendants(element):
 def test_custom_group_mode_disables_the_query_input():
     """Parity with the morphology Comparison sub-tab: the query the custom
     group level does not use is disabled rather than left live-but-ignored,
-    and it comes back when switching away."""
+    and it comes back when switching away.  The grouping card itself is
+    ALWAYS visible — it is the only affordance for custom grouping and
+    label mapping, and hiding it by default made the feature effectively
+    undiscoverable."""
     from nicegui import Client
     from nicegui.page import page
 
@@ -83,11 +86,64 @@ def test_custom_group_mode_disables_the_query_input():
         return [e for e in _descendants(query_field)
                 if getattr(e, "_props", {}).get("disable")]
 
-    assert board.visible is False
+    assert board.visible is True, (
+        "the Custom Groups (LabelMapper) card must be visible on tab open")
     assert disabled() == []
     aggregation.set_value("custom group")
     assert board.visible is True
     assert disabled(), "the query walker found no interactive child to disable"
     aggregation.set_value("bodyid")
-    assert board.visible is False
+    assert board.visible is True
     assert disabled() == []
+
+
+def test_aggregation_select_lives_outside_advanced_expansion():
+    """UX reveal: the Aggregation Level selector moved out of the Advanced
+    Settings expansion into the Profile Construction card — it must not be
+    reachable only through the expansion."""
+    from nicegui import Client
+    from nicegui.page import page
+
+    from ui.tabs.connectivity import create_connectivity_tab
+
+    client = Client(page("/connectivity-aggregation-placement"))
+    with client:
+        create_connectivity_tab()
+        aggregation = _by_element_id(client, "select-aggregation")
+        advanced = _by_element_id(client, "card-connectivity-advanced")
+
+    assert aggregation not in _descendants(advanced), (
+        "the aggregation select is still buried in the Advanced expansion")
+
+
+def test_custom_card_visible_in_type_mode_with_no_mapping():
+    """The user-facing gap: opening the tab in the default 'type' mode with
+    NO mapping loaded still shows the Custom Groups (LabelMapper) card —
+    the grouping button, the tier-0 caption, and the partner-grouping
+    toggle must be discoverable without touching Aggregation Level."""
+    from nicegui import Client
+    from nicegui.page import page
+
+    from ui.tabs.connectivity import create_connectivity_tab
+
+    client = Client(page("/connectivity-card-visible-by-default"))
+    with client:
+        create_connectivity_tab()
+        aggregation = _by_element_id(client, "select-aggregation")
+        query_field = _by_element_id(
+            client, "field-connectivity-comparison-query")
+        board = _by_element_id(client, "card-custom-group")
+
+    # default mode ('type'), empty board: the card is up and interactive
+    assert board.visible is True
+    assert aggregation.value == "type"
+    assert not [e for e in _descendants(query_field)
+                if getattr(e, "_props", {}).get("disable")], (
+        "type mode keeps the query box live")
+
+    # the card hosts the grouping affordance (button label carries the
+    # preset name) — the tier-0 caption renders beside it
+    assert any(
+        "Custom Grouping Preset" in str(getattr(e, "text", ""))
+        for e in _descendants(board)), (
+        "the grouping preset button is not inside the always-visible card")

@@ -140,7 +140,8 @@ def _map_get(mapping, body_id):
 
 def build_body_id_label(dataset, body_id,
                         type_map=None, instance_map=None,
-                        side_map=None, fallback_type=None) -> str:
+                        side_map=None, fallback_type=None,
+                        label_of=None) -> str:
     """Display label for one bodyId, suffixed per the tree-legend rule.
 
     Local FAFB/BANC releases: ``'{bodyId}_{type}_{L|R}'`` (hemisphere from
@@ -149,6 +150,22 @@ def build_body_id_label(dataset, body_id,
     is unavailable the type is used instead (with the hemisphere appended);
     *fallback_type* (e.g. the comparison's resolved type label) is the last
     named resort and the bare bodyId is final, so the label is never empty.
+
+    *label_of* (callable ``(dataset, body_id) -> standard label or None``)
+    upgrades a RESOLVED bodyId to the LabelMapper axis format::
+
+        {bodyId}_{label}({native})      e.g. 13531_5th-LNv(5thsLNv_LNd6_L)
+
+    where ``{native}`` is exactly the legacy suffix above, side marker
+    included, so no information is lost.  When the label already IS the
+    native name the parenthetical is dropped (nothing would it add):
+
+        {bodyId}_{label}                label == native suffix
+        {bodyId}_{label}_{L|R}          label == native name, side kept
+
+    The bodyId stays the token before the first ``_`` (axis parsers keep
+    splitting on the head), and an unmapped bodyId — or *label_of* absent
+    — produces byte-identical output to the legacy form.
     """
     bid = str(body_id).strip()
     ntype = str(_map_get(type_map, body_id) or "").strip()
@@ -164,6 +181,39 @@ def build_body_id_label(dataset, body_id,
     if not suffix:
         suffix = str(fallback_type or "").strip()
         type_based = bool(suffix)
+
+    resolved = ""
+    if label_of is not None:
+        try:
+            resolved = str(label_of(dataset, body_id) or "").strip()
+        except Exception:
+            resolved = ""
+    if resolved:
+        # Side marker rides inside the parentheses exactly as it would have
+        # ridden on the type suffix (instance-based suffixes carry their own).
+        inner = suffix
+        if type_based and side in ("L", "R"):
+            inner = f"{inner}_{side}"
+        if resolved == inner:
+            # The label IS the native name — the parenthetical would repeat
+            # it verbatim.
+            return f"{bid}_{resolved}"
+        # Label == native modulo a trailing side marker (type-based suffixes
+        # carry the side from side_map; instances spell it out): keep only
+        # the side, drop the repeated name.
+        base = suffix
+        trailing = None
+        if base.endswith("_L"):
+            base, trailing = base[:-2], "L"
+        elif base.endswith("_R"):
+            base, trailing = base[:-2], "R"
+        if resolved == base:
+            side_out = side if side in ("L", "R") else trailing
+            if side_out in ("L", "R"):
+                return f"{bid}_{resolved}_{side_out}"
+            return f"{bid}_{resolved}"
+        return f"{bid}_{resolved}({inner})" if inner else f"{bid}_{resolved}"
+
     if not suffix:
         return bid
     label = f"{bid}_{suffix}"
@@ -176,14 +226,17 @@ def build_body_id_label(dataset, body_id,
 
 def body_id_label_map(dataset, body_ids, project_root=None,
                       type_map=None, instance_map=None,
-                      side_map=None) -> dict:
+                      side_map=None, label_of=None) -> dict:
     """``{str(canonical bodyId): display label}`` for *body_ids*.
 
     Uses the dataset's type/instance/side maps (neuron table, then neuron
     index — the same sources the vector cache merges) and formats every id
     with :func:`build_body_id_label`. Preloaded maps may be passed to avoid
     re-reading; unprovided maps are loaded once. Ids that cannot be
-    canonicalized keep their raw spelling as the key.
+    canonicalized keep their raw spelling as the key.  *label_of*
+    (``(dataset, body_id) -> label | None``) upgrades resolved bodyIds to
+    the ``{bodyId}_{label}({native})`` axis format; without it (or for
+    unmapped ids) the legacy form is returned unchanged.
     """
     try:
         from morphology import (
@@ -220,5 +273,6 @@ def body_id_label_map(dataset, body_ids, project_root=None,
         except Exception:
             canon = bid
         labels[str(canon)] = build_body_id_label(
-            dataset, canon, type_map, instance_map, side_map)
+            dataset, canon, type_map, instance_map, side_map,
+            label_of=label_of)
     return labels

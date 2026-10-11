@@ -473,3 +473,221 @@ def test_get_types_for_bodyids_neuprint_nan_type_also_none(monkeypatch):
     got = prof.get_types_for_bodyids([7, 8], "hemibrain:v1.2.1")
     assert got[7] is None  # NaN type -> None, never the string 'nan'
     assert got[8] == "Mi1"
+
+
+# ---------------------------------------------------------------------------
+# Tier-0 user label mapper (label_mapping_file) — type/bodyid modes
+# ---------------------------------------------------------------------------
+
+def _make_profile(up=None, down=None):
+    from comparison.connectivity_profiler import (
+        ConnectivityProfile, compute_ranks)
+    up, down = dict(up or {}), dict(down or {})
+    return ConnectivityProfile(
+        neuron_id=1, dataset=DATASET,
+        upstream_partners=up, downstream_partners=down,
+        upstream_ranks=compute_ranks(up), downstream_ranks=compute_ranks(down),
+        upstream_top_k=len(up), downstream_top_k=len(down),
+        total_upstream_weight=sum(up.values()),
+        total_downstream_weight=sum(down.values()),
+        actual_upstream_count=len(up), actual_downstream_count=len(down),
+        unique_types_upstream=len(up), unique_types_downstream=len(down))
+
+
+def test_label_mapping_file_does_not_force_custom_aggregation(tmp_path):
+    """U1: the tier-0 mapper overlay never changes the rows — only
+    custom_mapping_file forces aggregation_level='custom'."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(query=["grp1", "Mi1"],
+                              label_mapping_file=mapping_path)
+    assert comparer.aggregation_level == "type"
+    assert comparer._custom_group_names is None
+    assert comparer._user_label_mapper is not None
+    assert "grp1" in comparer._user_label_governing_labels()
+
+
+def test_type_mode_user_label_token_expands_to_pooled_row(tmp_path):
+    """U2: a query chip naming a user label pools that label's members for
+    the dataset into one row, recorded as a tier-0 resolution."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(query=["grp1", "Mi1"],
+                              label_mapping_file=mapping_path)
+    neurons = comparer._get_neurons_to_compare()
+    assert neurons["grp1"] == ["aMe12", "aMe12_R"]
+    assert neurons["Mi1"] == [1]
+    assert comparer.mapping_resolution_counts.get("user_label", 0) >= 1
+    record = comparer.mapping_resolution_record[DATASET]["grp1"]
+    assert record["status"] == "user_label"
+    assert record["targets"] == ["grp1"]
+
+
+def test_type_mode_label_row_survives_generic_resolution(tmp_path):
+    """The generic union lookup must not overwrite the tier-0 row with the
+    raw literal when the label matches no type."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(query=["grp3", "Mi1"],
+                              label_mapping_file=mapping_path)
+    # grp3 has no members for this dataset in the preset — but grp1 does;
+    # use a label whose members resolve while its name matches no type.
+    comparer = _make_comparer(query=["grp1"], label_mapping_file=mapping_path)
+    neurons = comparer._get_neurons_to_compare()
+    assert neurons == {"grp1": ["aMe12", "aMe12_R"]}
+
+
+def test_bodyid_mode_user_label_token_rows_per_member(tmp_path):
+    """U3: bodyid mode rows a label's members individually; type-name
+    members expand to their bodyIds."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(query=["grp1"], aggregation_level="bodyid",
+                              label_mapping_file=mapping_path)
+    comparer.profiler.get_types_for_bodyids = lambda bids, ds: {}
+    comparer.profiler.get_bodyids_for_type = (
+        lambda t, ds: {"aMe12": [1], "aMe12_R": [2]}.get(t, []))
+    neurons = comparer._get_neurons_to_compare()
+    assert neurons == {"1_aMe12": [1], "2_aMe12_R": [2]}
+
+
+def test_canonical_label_tier0_verbatim(tmp_path):
+    """U4: a user label keys verbatim even when a type mapper is present
+    (the fake mapper would crash the branch if tier-0 were bypassed)."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(label_mapping_file=mapping_path)
+    comparer._type_mapper = object()  # would explode if consulted
+    assert comparer._canonical_label("grp1", DATASET) == "grp1"
+    # mapper off + non-label keeps the raw name
+    comparer2 = _make_comparer(label_mapping_file=mapping_path)
+    comparer2._type_mapper = None
+    assert comparer2._canonical_label("Mi1", DATASET) == "Mi1"
+
+
+def test_licensed_anchor_label_returns_user_label(tmp_path):
+    """U5: a user label anchors as itself in every dataset."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(label_mapping_file=mapping_path)
+    comparer._type_mapper = object()  # would explode if consulted
+    assert comparer._licensed_anchor_label("grp1", DATASET) == "grp1"
+
+
+def test_standardize_profile_protects_user_label_keys(tmp_path):
+    """U6: tier-0 partner keys pass canonicalization verbatim while the
+    remaining keys are standardized."""
+    from comparison.profile_comparator import ProfileComparator
+
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(label_mapping_file=mapping_path)
+
+    class FakeMapper:
+        @staticmethod
+        def standardize_partner_types(partners, ds):
+            return {f"canon_{k}": v for k, v in partners.items()}
+
+    profile = _make_profile(up={"grp1": 5.0, "Tm3": 3.0})
+    out = ProfileComparator.standardize_profile(
+        profile, DATASET, FakeMapper(),
+        protected=comparer._user_label_governing_labels())
+    assert out.upstream_partners["grp1"] == 5.0
+    assert out.upstream_partners["canon_Tm3"] == 3.0
+    assert "Tm3" not in out.upstream_partners
+    # without protection the old behavior applies (everything canonicalized)
+    plain = ProfileComparator.standardize_profile(profile, DATASET, FakeMapper())
+    assert plain.upstream_partners == {"canon_grp1": 5.0, "canon_Tm3": 3.0}
+
+
+def test_collapse_partners_sums_member_weights(tmp_path):
+    """U7: partner-side grouping folds member types into their label with
+    summed weights; unmapped keys and true labels keep their keys."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(label_mapping_file=mapping_path)
+    profile = _make_profile(up={"aMe12": 2.0, "aMe12_R": 3.0, "Tm3": 1.0})
+    collapsed = comparer.collapse_partners_by_label_mapper({"grp2": profile},
+                                                           DATASET)
+    out = collapsed["grp2"]
+    assert out.upstream_partners == {"grp1": 5.0, "Tm3": 1.0}
+    assert out.total_upstream_weight == 6.0
+    # ranks rebuilt from the collapsed weights
+    assert out.upstream_ranks == {"grp1": 1, "Tm3": 2}
+
+
+def test_collapse_without_mapper_is_identity():
+    """U9-lite: no mapper -> the profiles pass through untouched."""
+    comparer = _make_comparer()
+    assert comparer._user_label_mapper is None
+    sentinel = {"row": object()}
+    assert comparer.collapse_partners_by_label_mapper(
+        sentinel, DATASET) is sentinel
+
+
+def test_group_partners_requires_a_mapper():
+    """The toggle is silently dropped (with a log) when no mapping was
+    provided — a run must not claim grouping it cannot apply."""
+    comparer = _make_comparer(group_partners_by_mapping=True)
+    assert comparer.group_partners_by_mapping is False
+
+
+def test_anchor_profiles_align_by_user_label(tmp_path):
+    """U11: type-mode user labels anchor across datasets by the label
+    itself (each dataset's profile row IS the label)."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(query=["grp1"], datasets=[DATASET, "banc_v626"],
+                              label_mapping_file=mapping_path)
+    profiles_by_dataset = {
+        DATASET: {"grp1": _make_profile(up={"aMe12": 4.0})},
+        "banc_v626": {"grp1": _make_profile(up={"R1": 9.0})},
+    }
+    anchors = comparer._build_anchor_profiles(profiles_by_dataset)
+    assert set(anchors) == {"grp1"}
+    assert set(anchors["grp1"]) == {DATASET, "banc_v626"}
+
+
+def test_collapse_bodyid_keyed_map_type_bridge(tmp_path):
+    """U7b: bodyId-keyed maps bridge partner TYPE names through the type's
+    bodyIds — all resolved members must agree on one label."""
+    import json as _json
+    bodyid_map = tmp_path / "bodyid_map.json"
+    bodyid_map.write_text(_json.dumps({
+        "source_mapping": {
+            "custom_label": ["grpA", "grpB"],
+            DATASET: [["10", "11"], ["20"]],
+        }
+    }), encoding="utf-8")
+    comparer = _make_comparer(label_mapping_file=str(bodyid_map))
+    comparer.profiler.get_bodyids_for_type = (
+        lambda t, ds: {"Tm3": [10, 11], "Mi1": [20], "Split": [10, 20]}.get(t, []))
+    profile = _make_profile(up={"Tm3": 4.0, "Mi1": 2.0, "Split": 3.0})
+    collapsed = comparer.collapse_partners_by_label_mapper({"row": profile},
+                                                           DATASET)
+    out = collapsed["row"].upstream_partners
+    assert out["grpA"] == 4.0          # Tm3's bodyIds {10,11} -> all grpA
+    assert out["grpB"] == 2.0          # Mi1's bodyId 20 -> grpB
+    assert out["Split"] == 3.0         # spans grpA+grpB -> stays raw
+    assert "Tm3" not in out and "Mi1" not in out
+
+
+def test_collapse_label_keyed_partner_keeps_its_own_key(tmp_path):
+    """A partner key that IS a label never folds into another label."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(label_mapping_file=mapping_path)
+    profile = _make_profile(up={"grp1": 5.0})
+    collapsed = comparer.collapse_partners_by_label_mapper({"grp2": profile},
+                                                           DATASET)
+    assert collapsed["grp2"].upstream_partners == {"grp1": 5.0}
+
+
+def test_bodyid_axes_carry_standard_labels_with_preset(tmp_path):
+    """F2 fix: with a preset loaded, bodyId-level axes upgrade to
+    {bodyId}_{label}({native}); without one they stay legacy."""
+    import json as _json
+    preset = tmp_path / "axis_map.json"
+    preset.write_text(_json.dumps({
+        "source_mapping": {
+            "custom_label": ["grpM"],
+            DATASET: [["1"]],
+        }
+    }), encoding="utf-8")
+    labeled = _make_comparer(query=["Mi1"], aggregation_level="bodyid",
+                             label_mapping_file=str(preset))
+    neurons = labeled._get_neurons_to_compare()
+    assert neurons == {"1_grpM(Mi1)": [1]}
+    # without the preset the legacy axis is unchanged (compatibility gate)
+    legacy = _make_comparer(query=["Mi1"], aggregation_level="bodyid")
+    assert legacy._get_neurons_to_compare() == {"1_Mi1": [1]}

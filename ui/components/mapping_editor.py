@@ -392,6 +392,9 @@ def custom_grouping_block(
         history_store.mark_custom(group_history.valid_labels())
         return path, True
 
+    # Live state predicate for host tabs: the grouping card must stay
+    # visible while a mapping is active (the button label alone is text).
+    open_button.has_groups = lambda: _group_count() > 0
     return open_button, dialog, resolve_mapping_path
 
 
