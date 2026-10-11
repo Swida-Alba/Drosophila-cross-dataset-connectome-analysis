@@ -62,8 +62,12 @@ One dataset writes a level folder **only for the levels that ran**:
   `visualization/heatmap_bodyid_*.html`, `heatmap_type_avg_*.html`.
 - `profiles/individual/*_profile.json`, and `profiles/aggregated/` at the
   pooled levels.
-- `report.html`, `parameters.json` (with `row_kind` and `levels_computed`),
-  `README.txt` listing only the folders written.
+- `report.html` — multi-dataset runs: HUB report (inter-dataset section +
+  link cards); single-dataset runs: the full tabbed report. Multi-dataset
+  runs also write `report_{dataset}.html` per dataset (that dataset's full
+  level×direction×metric heatmap set) sharing the folder's `plotly.min.js`.
+- `parameters.json` (with `row_kind` and `levels_computed`), `README.txt`
+  listing only the folders written.
 
 At `aggregation_level="bodyid"` the compared rows ARE individual neurons, so
 the main matrices land in `bodyid_level/` and there is no `type_level/` and no

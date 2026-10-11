@@ -1008,7 +1008,9 @@ Example: `profiling_MCNS_aMe_20260815_143922/` (query `aMe.*` over male-cns:v1.0
 ### Key Output Files
 
 #### Overview
-*   **`report.html`**: Overall HTML report linking every metric and heatmap
+*   **`report.html`**: Hub report for MULTI-dataset runs — hero/meta chips, link cards to the per-dataset reports, and the inter-dataset section (direction tabs × metric heatmap cards with CSV + VisPath links, plus the resolved-names table). SINGLE-dataset runs write the full tabbed report here instead (inlined Plotly, renders offline)
+*   **`report_{dataset}.html`**: One full heatmap report per dataset (three matrix levels × directions × five metrics, Ward-clustered, per-card CSV + VisPath editor links). Written for MULTI-dataset runs so no single file carries every dataset's BodyId-level matrices
+*   **`plotly.min.js`**: Shared chart library written once per run folder; every report file references it via a relative `src`, so the reports render offline as a folder (a report copied out alone needs its library)
 *   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed). A one-dataset run also records `row_kind` (`type` / `neuron` / `group`) and `levels_computed`, so the artifact set is self-describing. Label-mapper runs add `label_mapping_file` / `custom_mapping_file` (whichever was supplied), `group_partners_by_mapping`, and `user_label_mapper_active`; `mapping_resolution_counts`/`mapping_resolution_record` gain the `user_label` status for query chips that named a preset label (tier-0 identity — the auto type mapper is never consulted for them)
 *   **`README.txt`**: Human-readable summary listing **only the folders this run wrote** (a bodyId-level run lists no `type_level/`)
 

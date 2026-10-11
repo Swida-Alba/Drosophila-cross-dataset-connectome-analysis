@@ -13863,7 +13863,13 @@ class ConnectivityProfileComparer:
             "  dataset pairs as columns (one heatmap per direction/metric).",
             "cross_dataset/mapping_summary.csv: resolved name of each anchor per dataset",
             "  plus a numeric same-name flag (1 = same non-empty name everywhere).",
-            "report.html: Plotly heatmaps with local VisPath editor links.",
+            "report.html: hub report — inter-dataset overview (neurons as rows,",
+            "  dataset pairs as columns) plus link cards to the per-dataset",
+            "  reports; keep plotly.min.js beside it (every report file",
+            "  references that shared chart library).",
+            "report_<dataset>.html: that dataset's full heatmap set — type,",
+            "  bodyId, and type-averaged levels × directions × metrics — with",
+            "  per-card CSV and VisPath editor links.",
             "",
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         ]
@@ -13881,8 +13887,213 @@ class ConnectivityProfileComparer:
             inter_type_matrices=inter_type_matrices,
         )
         saved['report_path'] = str(report_path)
-        
+        saved['report_paths'] = [
+            str(path) for path in sorted(output_path.glob('report*.html'))
+        ]
+
         return saved
+
+    def _report_level_specs(self) -> List[Tuple[str, str, str, str]]:
+        """(level key, display label, CSV filename prefix, VisPath prefix)."""
+        return [
+            ('type',
+             'Group level' if self.aggregation_level == 'custom'
+             else 'Type level',
+             'similarity', 'intra'),
+            ('bodyid', 'BodyId level', 'bodyid_similarity', 'intra_bodyid'),
+            (
+                'type_avg_bodyid',
+                'Type average of bodyIds',
+                'type_avg_bodyid_similarity',
+                'intra_type_avg',
+            ),
+        ]
+
+    def _render_dataset_report_body(
+        self,
+        lines: List[str],
+        ds: str,
+        panel_id: str,
+        raw_matrices: Dict[str, Dict[str, Dict[str, pd.DataFrame]]],
+        directions: List[str],
+        output_path: Path,
+        plotly_state: Dict[str, bool],
+    ) -> None:
+        """Append one dataset's level -> direction -> metric tab nest to ``lines``.
+
+        Shared by the per-dataset report files; the former single-file report
+        rendered the same nest under a dataset tab.
+        """
+        from html import escape
+
+        safe_ds = self._safe_folder_name(ds)
+        raw_matrices = raw_matrices or {}
+        if any(direction in raw_matrices for direction in directions):
+            # Accept the old flat shape when rendering a report from
+            # an in-memory caller created before the level split.
+            level_matrices = {'type': raw_matrices}
+        else:
+            level_matrices = raw_matrices
+
+        level_specs = self._report_level_specs()
+
+        def render_level(level: str, level_panel_id: str) -> None:
+            matrices = level_matrices.get(level) or {}
+            level_label = next(
+                spec[1] for spec in level_specs if spec[0] == level
+            )
+            filename_prefix = next(
+                spec[2] for spec in level_specs if spec[0] == level
+            )
+            heatmap_prefix = next(
+                spec[3] for spec in level_specs if spec[0] == level
+            )
+
+            def render_direction(
+                direction: str, _direction_panel_id: str
+            ) -> None:
+                direction_label = self._direction_display_name(direction)
+                metric_matrices = matrices.get(direction, {})
+                if not metric_matrices:
+                    lines.append(
+                        "<div class='heatmap-empty'>This profile level "
+                        "was not computed for this run.</div>"
+                    )
+                    return
+                if level == 'type':
+                    csv_paths = {
+                        metric: (
+                            f'intra_dataset/{safe_ds}/results/'
+                            f'similarity_{direction}_{metric}.csv'
+                        )
+                        for metric in self._REPORT_METRICS
+                    }
+                else:
+                    csv_paths = {
+                        metric: (
+                            f'intra_dataset/{safe_ds}/results/'
+                            f'{filename_prefix}_{metric}_{direction}.csv'
+                        )
+                        for metric in self._REPORT_METRICS
+                    }
+                vispath_paths = {
+                    metric: (
+                        f'intra_dataset/{safe_ds}/visualization/'
+                        f'heatmap_{heatmap_prefix}_{direction}_{metric}.html'
+                    )
+                    for metric in self._REPORT_METRICS
+                }
+                lines.append(
+                    f"<div class='direction-intro'><h3 class='direction-title'>{escape(direction_label)}</h3>"
+                    f"<div class='direction-note'>{escape(self._direction_note(direction))}</div></div>"
+                )
+                self._append_report_metric_grid(
+                    lines,
+                    output_path,
+                    metric_matrices,
+                    f'{ds} · {level_label} · {direction_label}',
+                    csv_paths,
+                    vispath_paths,
+                    'Neuron / type',
+                    'Neuron / type',
+                    plotly_state,
+                    square_cells=True,
+                )
+
+            self._append_report_tab_group(
+                lines,
+                f'{level_panel_id}-directions',
+                [
+                    (direction, self._direction_display_name(direction))
+                    for direction in directions
+                ],
+                render_direction,
+                panel_class='tab-panel direction-panel',
+            )
+
+        self._append_report_tab_group(
+            lines,
+            f'{panel_id}-levels',
+            [(key, label) for key, label, _, _ in level_specs],
+            render_level,
+        )
+
+    def _render_inter_report_body(
+        self,
+        lines: List[str],
+        panel_id: str,
+        inter_type_matrices: Optional[Dict[str, Dict[str, pd.DataFrame]]],
+        anchor_profiles: Dict[str, Dict[str, Tuple[str, ConnectivityProfile]]],
+        ds_list: List[str],
+        directions: List[str],
+        output_path: Path,
+        plotly_state: Dict[str, bool],
+    ) -> None:
+        """Append the inter-dataset direction tabs and resolved-names table.
+
+        Renders inside a section-card opened by the caller.
+        """
+        from html import escape
+
+        def render_direction(direction: str, _direction_panel_id: str) -> None:
+            direction_label = self._direction_display_name(direction)
+            metric_matrices = (inter_type_matrices or {}).get(direction, {})
+            csv_paths = {
+                metric: (
+                    f'cross_dataset/all_types/results/'
+                    f'similarity_{direction}_{metric}.csv'
+                )
+                for metric in self._REPORT_METRICS
+            }
+            vispath_paths = {
+                metric: (
+                    'cross_dataset/all_types/visualization/'
+                    f'heatmap_inter_all_types_{direction}_{metric}.html'
+                )
+                for metric in self._REPORT_METRICS
+            }
+            lines.append(
+                f"<div class='direction-intro'><h3 class='direction-title'>{escape(direction_label)}</h3>"
+                f"<div class='direction-note'>{escape(self._direction_note(direction))} · "
+                "rows = neurons/types · columns = dataset pairs</div></div>"
+            )
+            self._append_report_metric_grid(
+                lines, output_path, metric_matrices,
+                f'Inter-dataset · {direction_label}',
+                csv_paths, vispath_paths,
+                'Dataset pair', 'Neuron / type', plotly_state,
+                square_cells=False,
+            )
+
+        self._append_report_tab_group(
+            lines,
+            f'{panel_id}-directions',
+            [(direction, self._direction_display_name(direction)) for direction in directions],
+            render_direction,
+            panel_class='tab-panel direction-panel',
+        )
+
+        if anchor_profiles:
+            lines.append(
+                '<details class="detail-block"><summary>Resolved names across datasets</summary>'
+                '<div style="overflow-x:auto"><table class="mapping-table"><thead><tr>'
+                '<th>Anchor</th>'
+                + ''.join(f'<th>{escape(str(ds))}</th>' for ds in ds_list)
+                + '<th>same name</th>'
+                + '</tr></thead><tbody>'
+            )
+            for anchor, per_ds in anchor_profiles.items():
+                same_name = self._same_name_flag(per_ds, ds_list)
+                lines.append(
+                    f"<tr><td>{escape(str(anchor))}</td>"
+                    + ''.join(
+                        f"<td>{escape(str(per_ds[ds][0])) if ds in per_ds else '—'}</td>"
+                        for ds in ds_list
+                    )
+                    + f'<td>{same_name}</td>'
+                    + '</tr>'
+                )
+            lines.append('</tbody></table></div></details>')
 
     def _generate_overall_report(
         self,
@@ -13894,7 +14105,14 @@ class ConnectivityProfileComparer:
         anchor_profiles: Dict[str, Dict[str, Tuple[str, ConnectivityProfile]]],
         inter_type_matrices: Optional[Dict[str, Dict[str, pd.DataFrame]]] = None,
     ) -> Path:
-        """Build the multi-dataset report with top-level and nested tabs."""
+        """Build the multi-dataset report set: a ``report.html`` hub (hero,
+        per-dataset link cards, and the inter-dataset section) plus one full
+        heatmap report per dataset beside it (``report_<dataset>.html``).
+
+        The split keeps every file browser-sized: the BodyId-level matrices
+        that dominate the payload belong to exactly one dataset each, while
+        the tiny inter-dataset overview stays one click from the entry point.
+        """
         from html import escape
 
         ds_list = list(self.datasets)
@@ -13903,18 +14121,103 @@ class ConnectivityProfileComparer:
             inter_type_matrices = self._aggregate_inter_dataset_matrices(
                 inter_matrices, anchor_profiles)
 
-        lines = [
-            '<!DOCTYPE html>',
-            "<html><head><meta charset='utf-8'>",
-            f"<title>Connectivity Profiling Report — {escape(str(self.query_name))}</title>",
-            self._report_css(),
-            '</head><body><main class="report-shell">',
+        # One shared plotly.min.js per run folder: every report file
+        # references it instead of inlining its own 4.8 MB copy. When the
+        # library file cannot be written (plotly missing), each file falls
+        # back to inlining it on the first card.
+        lib_rel = report_kit.ensure_plotly_lib(output_path)
+        lib_head = (
+            f"<script src='{escape(lib_rel, quote=True)}'></script>"
+            if lib_rel else ''
+        )
+        report_names = {
+            ds: f"report_{self._safe_folder_name(ds)}.html" for ds in ds_list
+        }
+        report_files: List[Path] = []
+        generated = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        def write_report(name: str, title: str, body_lines: List[str]) -> Path:
+            page = [
+                '<!DOCTYPE html>',
+                "<html><head><meta charset='utf-8'>",
+                f"<title>{escape(title)}</title>",
+                self._report_css(),
+                lib_head,
+                '</head><body><main class="report-shell">',
+                *body_lines,
+                '</main>', self._report_script(), '</body></html>',
+            ]
+            path = output_path / name
+            path.write_text('\n'.join(page), encoding='utf-8')
+            report_files.append(path)
+            return path
+
+        def nav_links_html(current: Optional[str]) -> str:
+            entries = []
+            overview = "<a href='report.html'>Overview &amp; inter-dataset</a>"
+            if current is None:
+                overview = '<strong>Overview &amp; inter-dataset</strong>'
+            entries.append(overview)
+            for nav_ds in ds_list:
+                if nav_ds == current:
+                    entries.append(f'<strong>{escape(str(nav_ds))}</strong>')
+                else:
+                    entries.append(
+                        f"<a href='{escape(report_names[nav_ds], quote=True)}'>"
+                        f'{escape(str(nav_ds))}</a>'
+                    )
+            return ' <span aria-hidden="true">·</span> '.join(entries)
+
+        # --- per-dataset reports ----------------------------------------
+        for ds in ds_list:
+            plotly_state = {'include_plotlyjs': lib_rel is None}
+            body = [
+                '<header class="report-hero">',
+                '<div class="report-kicker">DROCAT · Connectivity profiling</div>',
+                f'<h1 class="report-title">{escape(str(ds))}</h1>',
+                '<p class="report-subtitle">Per-dataset similarity heatmaps. Every '
+                'card uses the Ward-clustered order used by VisPath and keeps exact '
+                'values in hover tooltips.</p>',
+                '<div class="report-meta">',
+                f"<div class='meta-chip'><span>Query</span><strong>{escape(self._format_query_for_log(self.query))}</strong></div>",
+                f"<div class='meta-chip'><span>Aggregation</span><strong>{escape(str(self.aggregation_level))}</strong></div>",
+                f"<div class='meta-chip'><span>Type mapping</span><strong>{'ON' if self._type_mapper is not None else 'OFF'}</strong></div>",
+                *(self._label_mapper_chips()),
+                '</div>',
+                f"<p class='report-note'>Reports: {nav_links_html(ds)} · Generated {generated} · "
+                "Use CSV for exact matrix values and the VisPath editor for interactive "
+                'clustering controls.</p>',
+                '</header>',
+                '<div class="section-card"><h2 class="section-heading">Similarity heatmaps</h2>'
+                '<p class="section-summary">Direction sub-tabs keep the overall, upstream, '
+                'and downstream views comparable within each matrix level.</p>',
+            ]
+            self._render_dataset_report_body(
+                body,
+                ds,
+                f"ds-{self._safe_folder_name(ds)}",
+                matrices_by_dataset.get(ds),
+                directions,
+                output_path,
+                plotly_state,
+            )
+            body.append('</div>')
+            write_report(
+                report_names[ds],
+                f'Connectivity Profiling Report — {ds} — {self.query_name}',
+                body,
+            )
+
+        # --- hub report: hero + link cards + inter-dataset section ------
+        plotly_state = {'include_plotlyjs': lib_rel is None}
+        hub = [
             '<header class="report-hero">',
             '<div class="report-kicker">DROCAT · Connectivity profiling</div>',
             '<h1 class="report-title">Connectivity profile report</h1>',
-            '<p class="report-subtitle">Browse each dataset independently, then switch '
-            'to the inter-dataset overview. Every card uses the Ward-clustered order '
-            'used by VisPath and keeps exact values in hover tooltips.</p>',
+            '<p class="report-subtitle">Browse the inter-dataset overview here, then '
+            'open each dataset\'s full heatmap report. Every card uses the '
+            'Ward-clustered order used by VisPath and keeps exact values in hover '
+            'tooltips.</p>',
             '<div class="report-meta">',
             f"<div class='meta-chip'><span>Datasets</span><strong>{escape(' · '.join(ds_list))}</strong></div>",
             f"<div class='meta-chip'><span>Aggregation</span><strong>{escape(str(self.aggregation_level))}</strong></div>",
@@ -13922,219 +14225,51 @@ class ConnectivityProfileComparer:
             f"<div class='meta-chip'><span>Type mapping</span><strong>{'ON' if self._type_mapper is not None else 'OFF'}</strong></div>",
             *(self._label_mapper_chips()),
             '</div>',
-            f"<p class='report-note'>Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · "
+            f"<p class='report-note'>Reports: {nav_links_html(None)} · Generated {generated} · "
             "Overall means upstream + downstream. Use CSV for exact matrix values and "
-            "the VisPath editor for interactive clustering controls.</p>",
+            'the VisPath editor for interactive clustering controls.</p>',
             '</header>',
+            '<div class="section-card"><h2 class="section-heading">Per-dataset reports</h2>'
+            '<p class="section-summary">Each dataset\'s full heatmap set (three matrix '
+            'levels × directions × five metrics) lives in its own file.</p>',
+            "<div class='report-link-cards'>",
         ]
-        plotly_state = {'include_plotlyjs': True}
-
-        def render_intra(_key: str, panel_id: str) -> None:
-            lines.append(
-                '<div class="section-card"><h2 class="section-heading">Intra-dataset</h2>'
-                '<p class="section-summary">Each dataset has its own tab. Direction '
-                'sub-tabs keep the overall, upstream, and downstream views comparable.</p>'
+        for ds in ds_list:
+            hub.append(
+                f"<a class='report-link-card' href='{escape(report_names[ds], quote=True)}'>"
+                f'<strong>{escape(str(ds))}</strong>'
+                '<span>Similarity heatmaps at the type, BodyId, and type-average '
+                'levels, each card linking its CSV and the VisPath editor</span></a>'
             )
-
-            def render_dataset(ds: str, dataset_panel_id: str) -> None:
-                safe_ds = self._safe_folder_name(ds)
-                raw_matrices = matrices_by_dataset.get(ds) or {}
-                if any(direction in raw_matrices for direction in directions):
-                    # Accept the old flat shape when rendering a report from
-                    # an in-memory caller created before the level split.
-                    level_matrices = {'type': raw_matrices}
-                else:
-                    level_matrices = raw_matrices
-
-                level_specs = (
-                    ('type',
-                     'Group level' if self.aggregation_level == 'custom'
-                     else 'Type level',
-                     'similarity', 'intra'),
-                    ('bodyid', 'BodyId level', 'bodyid_similarity', 'intra_bodyid'),
-                    (
-                        'type_avg_bodyid',
-                        'Type average of bodyIds',
-                        'type_avg_bodyid_similarity',
-                        'intra_type_avg',
-                    ),
-                )
-
-                def render_level(level: str, level_panel_id: str) -> None:
-                    matrices = level_matrices.get(level) or {}
-                    level_label = next(
-                        spec[1] for spec in level_specs if spec[0] == level
-                    )
-                    filename_prefix = next(
-                        spec[2] for spec in level_specs if spec[0] == level
-                    )
-                    heatmap_prefix = next(
-                        spec[3] for spec in level_specs if spec[0] == level
-                    )
-
-                    def render_direction(
-                        direction: str, _direction_panel_id: str
-                    ) -> None:
-                        direction_label = self._direction_display_name(direction)
-                        metric_matrices = matrices.get(direction, {})
-                        if not metric_matrices:
-                            lines.append(
-                                "<div class='heatmap-empty'>This profile level "
-                                "was not computed for this run.</div>"
-                            )
-                            return
-                        if level == 'type':
-                            csv_paths = {
-                                metric: (
-                                    f'intra_dataset/{safe_ds}/results/'
-                                    f'similarity_{direction}_{metric}.csv'
-                                )
-                                for metric in self._REPORT_METRICS
-                            }
-                        else:
-                            csv_paths = {
-                                metric: (
-                                    f'intra_dataset/{safe_ds}/results/'
-                                    f'{filename_prefix}_{metric}_{direction}.csv'
-                                )
-                                for metric in self._REPORT_METRICS
-                            }
-                        vispath_paths = {
-                            metric: (
-                                f'intra_dataset/{safe_ds}/visualization/'
-                                f'heatmap_{heatmap_prefix}_{direction}_{metric}.html'
-                            )
-                            for metric in self._REPORT_METRICS
-                        }
-                        lines.append(
-                            f"<div class='direction-intro'><h3 class='direction-title'>{escape(direction_label)}</h3>"
-                            f"<div class='direction-note'>{escape(self._direction_note(direction))}</div></div>"
-                        )
-                        self._append_report_metric_grid(
-                            lines,
-                            output_path,
-                            metric_matrices,
-                            f'Intra-dataset · {ds} · {level_label} · {direction_label}',
-                            csv_paths,
-                            vispath_paths,
-                            'Neuron / type',
-                            'Neuron / type',
-                            plotly_state,
-                            square_cells=True,
-                        )
-
-                    self._append_report_tab_group(
-                        lines,
-                        f'{level_panel_id}-directions',
-                        [
-                            (direction, self._direction_display_name(direction))
-                            for direction in directions
-                        ],
-                        render_direction,
-                        panel_class='tab-panel direction-panel',
-                    )
-
-                self._append_report_tab_group(
-                    lines,
-                    f'{dataset_panel_id}-levels',
-                    [(key, label) for key, label, _, _ in level_specs],
-                    render_level,
-                )
-
-            self._append_report_tab_group(
-                lines,
-                f'{panel_id}-datasets',
-                [(ds, ds) for ds in ds_list],
-                render_dataset,
-            )
-            lines.append('</div>')
-
-        def render_inter(_key: str, panel_id: str) -> None:
-            lines.append(
+        hub.extend(['</div>', '</div>'])
+        if inter_matrices or inter_type_matrices:
+            hub.append(
                 '<div class="section-card"><h2 class="section-heading">Inter-dataset</h2>'
                 '<p class="section-summary">Rows are queried neurons or types and '
                 'columns are dataset pairs.</p>'
             )
-
-            def render_direction(direction: str, _direction_panel_id: str) -> None:
-                direction_label = self._direction_display_name(direction)
-                metric_matrices = (inter_type_matrices or {}).get(direction, {})
-                csv_paths = {
-                    metric: (
-                        f'cross_dataset/all_types/results/'
-                        f'similarity_{direction}_{metric}.csv'
-                    )
-                    for metric in self._REPORT_METRICS
-                }
-                vispath_paths = {
-                    metric: (
-                        'cross_dataset/all_types/visualization/'
-                        f'heatmap_inter_all_types_{direction}_{metric}.html'
-                    )
-                    for metric in self._REPORT_METRICS
-                }
-                lines.append(
-                    f"<div class='direction-intro'><h3 class='direction-title'>{escape(direction_label)}</h3>"
-                    f"<div class='direction-note'>{escape(self._direction_note(direction))} · "
-                    "rows = neurons/types · columns = dataset pairs</div></div>"
-                )
-                self._append_report_metric_grid(
-                    lines, output_path, metric_matrices,
-                    f'Inter-dataset · {direction_label}',
-                    csv_paths, vispath_paths,
-                    'Dataset pair', 'Neuron / type', plotly_state,
-                    square_cells=False,
-                )
-
-            self._append_report_tab_group(
-                lines,
-                f'{panel_id}-directions',
-                [(direction, self._direction_display_name(direction)) for direction in directions],
-                render_direction,
-                panel_class='tab-panel direction-panel',
+            self._render_inter_report_body(
+                hub,
+                'inter',
+                inter_type_matrices,
+                anchor_profiles,
+                ds_list,
+                directions,
+                output_path,
+                plotly_state,
             )
-
-            if anchor_profiles:
-                lines.append(
-                    '<details class="detail-block"><summary>Resolved names across datasets</summary>'
-                    '<div style="overflow-x:auto"><table class="mapping-table"><thead><tr>'
-                    '<th>Anchor</th>'
-                    + ''.join(f'<th>{escape(str(ds))}</th>' for ds in ds_list)
-                    + '<th>same name</th>'
-                    + '</tr></thead><tbody>'
-                )
-                for anchor, per_ds in anchor_profiles.items():
-                    same_name = self._same_name_flag(per_ds, ds_list)
-                    lines.append(
-                        f"<tr><td>{escape(str(anchor))}</td>"
-                        + ''.join(
-                            f"<td>{escape(str(per_ds[ds][0])) if ds in per_ds else '—'}</td>"
-                            for ds in ds_list
-                        )
-                        + f'<td>{same_name}</td>'
-                        + '</tr>'
-                    )
-                lines.append('</tbody></table></div></details>')
-
-            lines.append('</div>')
-
-        top_tabs = [('intra', 'Intra-dataset')]
-        if inter_matrices or inter_type_matrices:
-            top_tabs.append(('inter', 'Inter-dataset'))
-        self._append_report_tab_group(
-            lines,
-            'report-sections',
-            top_tabs,
-            render_intra if len(top_tabs) == 1 else lambda key, panel_id: (
-                render_intra(key, panel_id) if key == 'intra' else render_inter(key, panel_id)
-            ),
+            hub.append('</div>')
+        write_report(
+            'report.html',
+            f'Connectivity Profiling Report — {self.query_name}',
+            hub,
         )
-        lines.extend(['</main>', self._report_script(), '</body></html>'])
 
-        report_path = output_path / 'report.html'
-        report_path.write_text('\n'.join(lines), encoding='utf-8')
-        self._log(f'Overall report (tabbed clustered heatmaps): {report_path}')
-        return report_path
+        self._log(
+            f"Overall report set ({len(report_files)} files): "
+            + ', '.join(path.name for path in report_files)
+        )
+        return output_path / 'report.html'
 
     def _run_multi_dataset(self) -> Dict[str, Any]:
         """

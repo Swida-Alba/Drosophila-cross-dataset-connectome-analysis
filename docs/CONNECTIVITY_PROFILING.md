@@ -253,7 +253,8 @@ nothing, so it has no `type_level/` and no `profiles/aggregated/`):
 {output_dir}/profiling_{dataset}_{query_name}_{timestamp}/
 ├── parameters.json                  # incl. row_kind + levels_computed
 ├── README.txt                       # lists only the folders this run wrote
-├── report.html                      # tabbed report over every metric matrix
+├── report.html                      # hub: inter-dataset section + link cards
+│                                    #   (single-dataset runs: full tabbed report)
 ├── type_level/                      # 'type' level
 │   ├── results/type_similarity_{metric}_{direction}.csv
 │   └── visualization/heatmap_type_{direction}_{metric}.html
@@ -293,7 +294,7 @@ For connectivity profiling, heatmaps default to **clustered ordering** (`init_cl
 
 **Note:** Each metric gets its own separate heatmap file, making it easy to compare different similarity measures side-by-side.
 
-The generated `report.html` redraws those matrices with Plotly instead of embedding the VisPath pages. The report uses separate **Intra-dataset** and **Inter-dataset** tabs, dataset tabs, and Overall/Upstream/Downstream sub-tabs. Each direction shows six metric cards in a three-column grid (two rows); cell labels are hidden and exact values are available on hover. The report follows VisPath's Ward/Euclidean clustered ordering and includes a local **Open VisPath heatmap for editing** link. For multi-dataset runs, the overview files under `cross_dataset/all_types/` have one row per queried neuron/type and one column per dataset pair. The `cross_dataset/mapping_summary.csv` file also includes a numeric `same name` column (`1` when every dataset has the same non-empty resolved name, otherwise `0`).
+The generated reports redraw those matrices with Plotly instead of embedding the VisPath pages. A multi-dataset run writes one `report_<dataset>.html` per dataset — each carries that dataset's full heatmap set as level tabs (Type/Group, BodyId, Type-average) with Overall/Upstream/Downstream sub-tabs — plus a `report.html` hub holding the inter-dataset section and link cards to the dataset reports; the shared `plotly.min.js` beside them is referenced by every report file, so the folder renders offline as a whole. Single-dataset runs write the whole tabbed report directly as `report.html` (Plotly inlined). Each direction shows five metric cards in a two-column grid; cell labels are hidden and exact values are available on hover. The reports follow VisPath's Ward/Euclidean clustered ordering and include a local **Open VisPath heatmap for editing** link. For multi-dataset runs, the overview files under `cross_dataset/all_types/` have one row per queried neuron/type and one column per dataset pair. The `cross_dataset/mapping_summary.csv` file also includes a numeric `same name` column (`1` when every dataset has the same non-empty resolved name, otherwise `0`).
 
 ## Intra-Type vs Inter-Type Analysis
 

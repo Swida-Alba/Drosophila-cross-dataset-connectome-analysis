@@ -12,7 +12,7 @@ Compare connectivity profiles of neuron types (or bodyIds / custom groups) using
 
 1. Enter one or more neurons (e.g. <code>aMe12</code>, <code>aMe10</code>, <code>aMe9</code>). The gate counts <b>neurons in scope, not matrix rows</b>: a single type is a legitimate run because its bodyId matrices compare its own neurons.
 2. Pick one or more datasets (one dataset with multiple thresholds is also supported; two or more datasets enable the cross-dataset mode).
-3. Click <b>Run Comparison</b>; open <b>report.html</b> in the output folder for the overall summary of all heatmaps.
+3. Click <b>Run Comparison</b>; open <b>report.html</b> in the output folder — the hub with the inter-dataset overview and link cards. Multi-dataset runs also write one <code>report_&lt;dataset&gt;.html</code> per dataset carrying that dataset's full heatmap set.
 
 
 ## Inputs &amp; examples
@@ -76,7 +76,9 @@ Diagonal (self) entries are 1.0 for every metric. Rank metrics return <code>NaN<
 The folder name uses the first dataset's abbreviation (<code>MCNS</code> = male-cns, <code>FAFB</code> = flywire FAFB, ...) and a sanitized query name (e.g. <code>aMe.*</code> → <code>aMe</code>):
 
 <pre><code>{output_dir}/profiling_MCNS_aMe_20260815_143922/
-report.html                        # overall summary with ALL heatmaps
+report.html                        # hub: inter-dataset section + link cards
+report_<dataset>.html              # full heatmap report per dataset (2+ datasets)
+plotly.min.js                      # shared chart library — keep beside the reports
 parameters.json, README.txt        # README lists only the folders written
 # ---- ONE dataset: level folders appear only for levels that ran ----
 type_level/                        # type level only (custom groups write

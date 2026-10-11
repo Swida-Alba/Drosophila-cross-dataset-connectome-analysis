@@ -1913,9 +1913,22 @@ TOOL_GUIDE_SPECS = {
                    "within and across datasets.",
         "files": [
             {"pattern": "report.html",
-             "description": "Overall HTML report linking every metric and "
-                            "heatmap.",
+             "description": "MULTI-DATASET runs: hub report — the inter-dataset "
+                            "overview (neurons as rows, dataset pairs as "
+                            "columns) plus link cards to the per-dataset "
+                            "reports; references the shared plotly.min.js "
+                            "beside it. SINGLE-dataset runs: the full tabbed "
+                            "report (inlined Plotly, works offline).",
              "columns": _PROFILING_METRIC_COLUMNS},
+            {"pattern": "report_<dataset>.html",
+             "description": "MULTI-DATASET runs: one full heatmap report per "
+                            "dataset — type, BodyId, and type-average levels "
+                            "× directions × metrics, Ward-clustered, each "
+                            "card linking its CSV and the VisPath editor."},
+            {"pattern": "plotly.min.js",
+             "description": "Shared chart library referenced by every report "
+                            "file in the run folder (keep beside the reports; "
+                            "the folder renders offline as a whole)."},
             {"pattern": "parameters.json",
              "description": "All analysis parameters (query, datasets, "
                             "top_k/top_m, thresholds, metrics)."},

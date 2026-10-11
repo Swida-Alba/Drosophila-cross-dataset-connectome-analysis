@@ -712,19 +712,43 @@ def test_run_multi_dataset_output_structure(tmp_path, monkeypatch):
     assert "same name" in mapping.columns
     assert mapping.loc[mapping["anchor"] == "aMe12", "same name"].iloc[0] == 1
 
-    # the report indexes every matrix in separate tabbed sections
+    # hub report: inter-dataset section + link cards to the per-dataset files
     report = (out / "report.html").read_text(encoding="utf-8")
-    assert "Intra-dataset" in report
     assert "Inter-dataset" in report
+    assert "Per-dataset reports" in report
+    assert f"report_{safe_a}.html" in report
     assert "data-tab-button" in report
-    assert "data-tab-group='report-sections'" in report
+    assert "data-tab-group='inter-directions'" in report
     assert "Overall" in report
     assert "cross_dataset/all_types/results/similarity_overall_jaccard.csv" in report
     assert "Dataset pair" in report
     assert "<iframe" not in report
-    assert "similarity_overall_jaccard.csv" in report
     assert "mapping_summary" not in report  # summary is a CSV, not embedded
     assert "Detailed per-neuron" not in report
+    # the intra heatmap nests moved out of the hub into the dataset files
+    assert "Intra-dataset" not in report
+    assert "intra_dataset/" not in report
+
+    # per-dataset report: the full intra heatmap nest for that dataset only
+    ds_report_name = f"report_{safe_a}.html"
+    assert (out / ds_report_name).exists()
+    assert (out / f"report_{safe_b}.html").exists()
+    ds_report = (out / ds_report_name).read_text(encoding="utf-8")
+    assert "Similarity heatmaps" in ds_report
+    assert "Overall" in ds_report
+    assert (
+        f"intra_dataset/{safe_a}/results/similarity_overall_jaccard.csv"
+        in ds_report
+    )
+    # sibling dataset reports are linked, and the hub is one click away
+    assert f"href='report_{safe_b}.html'" in ds_report
+    assert "href='report.html'" in ds_report
+    assert "cross_dataset/all_types/" not in ds_report
+
+    # one shared plotly library written once, referenced by every report
+    assert (out / "plotly.min.js").exists()
+    assert "src='plotly.min.js'" in report
+    assert "src='plotly.min.js'" in ds_report
     params = json.loads((out / "parameters.json").read_text(encoding="utf-8"))
     assert params["datasets"] == [DS_A, DS_B]
     assert params["aggregation_level"] == "type"
@@ -799,8 +823,8 @@ def test_multi_dataset_saves_bodyid_and_type_average_intra_levels(tmp_path, monk
         intra_results / "type_avg_bodyid_similarity_weighted_jaccard_overall.csv"
     ).exists()
 
-    report = (out / "report.html").read_text(encoding="utf-8")
-    assert "BodyId level" in report
-    assert "Type average of bodyIds" in report
-    assert "bodyid_similarity_weighted_jaccard_overall.csv" in report
-    assert "type_avg_bodyid_similarity_weighted_jaccard_overall.csv" in report
+    ds_report = (out / f"report_{safe_a}.html").read_text(encoding="utf-8")
+    assert "BodyId level" in ds_report
+    assert "Type average of bodyIds" in ds_report
+    assert "bodyid_similarity_weighted_jaccard_overall.csv" in ds_report
+    assert "type_avg_bodyid_similarity_weighted_jaccard_overall.csv" in ds_report
