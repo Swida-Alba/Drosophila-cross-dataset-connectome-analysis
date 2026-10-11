@@ -17,6 +17,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import visualize_skeleton  # noqa: E402
 from visualize_skeleton import (  # noqa: E402
+    _orbit_frame_camera,
+    _rotation_camera,
     dataset_native_space,
     dataset_render_space,
     VisualizeSkeleton,
@@ -85,7 +87,10 @@ class TestViewCameras:
         assert cams['Front']['eye'] == dict(x=0, y=-2.5, z=0)
         assert cams['Front']['up'] == dict(x=0, y=0, z=1)
         assert cams['Top']['eye'] == dict(x=0, y=0, z=2.5)
-        assert cams['Top']['up'] == dict(x=0, y=-1, z=0)
+        # Posterior (+Y) renders upward, so the top view reads anterior
+        # downward like every other family (BANC's anterior is -Y).
+        assert cams['Top']['up'] == dict(x=0, y=1, z=0)
+        assert cams['Bottom']['up'] == dict(x=0, y=-1, z=0)
         assert cams['Left']['eye'] == dict(x=2.5, y=0, z=0)
         assert cams['Right']['eye'] == dict(x=-2.5, y=0, z=0)
 
@@ -114,6 +119,171 @@ class TestViewCameras:
             == dict(x=0, y=2.5, z=0))
         assert (dataset_view_cameras('male-cns:v1.0')['Front']['eye']
                 == dict(x=0, y=0, z=-2.5))
+
+    def test_every_family_tops_anterior_downward(self):
+        """One orientation rule across all tables: Top reads posterior-up.
+
+        The Front eye sits on the anterior side, so Top's up must point
+        away from it (anterior downward) and Bottom's must point along it
+        (the flip you get looking from the ventral side). BANC, MANC and
+        native-template hemibrain each historically pointed Top's up along
+        the anterior axis and read upside down next to the default family.
+        """
+        from visualize_skeleton import dataset_view_cameras
+
+        cases = [
+            ('hemibrain:v1.2.1', None),          # default table
+            ('flywire_FAFB_v783', None),
+            ('flywire_FAFB_v783', 'FAFB'),       # default-table selection
+            ('banc_v888', None),
+            ('banc_v888', 'BANC'),
+            ('manc:v1.2.1', None),
+            ('hemibrain:v1.2.1', 'native'),
+            ('male-cns:v1.0', None),
+        ]
+        for dataset, brain_mesh in cases:
+            cams = dataset_view_cameras(dataset, brain_mesh)
+            front_eye = cams['Front']['eye']
+            top_up = cams['Top']['up']
+            bottom_up = cams['Bottom']['up']
+            top_dot = sum(top_up[k] * front_eye[k] for k in 'xyz')
+            bottom_dot = sum(bottom_up[k] * front_eye[k] for k in 'xyz')
+            assert top_dot < 0, (dataset, brain_mesh, 'Top not anterior-down')
+            assert bottom_dot > 0, (dataset, brain_mesh,
+                                    'Bottom not anterior-up')
+            assert all(top_up[k] == -bottom_up[k] for k in 'xyz'), \
+                (dataset, brain_mesh, 'Top/Bottom up vectors not opposed')
+
+
+class TestVideoOrbitCameras:
+    """Video turntables derive every frame from the family's Front camera.
+
+    The historical orbits hardcoded the default family's XZ plane with
+    up (0,-1,0) and a MANC-only handedness flip, so BANC and native-template
+    hemibrain videos rolled around the anterior-posterior axis from the
+    wrong side.
+    """
+
+    def test_default_family_frames_match_the_historical_orbit(self):
+        from visualize_skeleton import _orbit_frame_camera
+
+        d = 2.5
+        off = d * 0.01
+        front_eye = {'x': 0, 'y': 0, 'z': -d}
+        front_up = {'x': 0, 'y': -1, 'z': 0}
+        for deg, c, s in ((0, 1.0, 0.0), (90, 0.0, 1.0), (180, -1.0, 0.0)):
+            eye, up = _orbit_frame_camera(front_eye, front_up, 'xz', deg, d)
+            assert eye == pytest.approx({'x': d * s, 'y': off, 'z': -d * c})
+            assert up == pytest.approx({'x': 0, 'y': -1, 'z': 0})
+            eye, up = _orbit_frame_camera(front_eye, front_up, 'yz', deg, d)
+            assert eye == pytest.approx({'x': off, 'y': d * s, 'z': -d * c})
+            assert up == pytest.approx({'x': 0, 'y': -c, 'z': -s})
+            eye, up = _orbit_frame_camera(front_eye, front_up, 'xy', deg, d)
+            assert eye == pytest.approx({'x': d * s, 'y': d * c, 'z': off})
+            assert up == pytest.approx({'x': 0, 'y': 0, 'z': 1})
+
+    def test_orbits_start_on_each_family_front_and_keep_its_up(self):
+        from visualize_skeleton import _orbit_frame_camera, dataset_view_cameras
+
+        d = 2.5
+        for dataset, brain_mesh in (('banc_v888', None), ('manc:v1.2.1', None),
+                                    ('hemibrain:v1.2.1', 'native'),
+                                    ('male-cns:v1.0', None)):
+            front = dataset_view_cameras(dataset, brain_mesh)['Front']
+            eye, up = _orbit_frame_camera(front['eye'], front['up'],
+                                          'xz', 0, d)
+            # The 1% gimbal guard rides the up axis away from the front.
+            assert all(abs(eye[k] - front['eye'][k]) <= d * 0.011
+                       for k in 'xyz'), (dataset, eye)
+            assert up == front['up'], dataset
+            bottom = dataset_view_cameras(dataset, brain_mesh)['Bottom']
+            eye, up = _orbit_frame_camera(front['eye'], front['up'],
+                                          'yz', 90, d)
+            # The vertical flip's 90-degree frame is the family's own bottom
+            # view (the 1% gimbal guard rides the lateral axis).
+            assert all(abs(eye[k] - bottom['eye'][k]) <= d * 0.011
+                       for k in 'xyz'), (dataset, eye)
+            assert up == pytest.approx(bottom['up']), (dataset, up)
+
+    def test_rotation_camera_shim_defaults_to_the_default_family(self):
+        from visualize_skeleton import _rotation_camera
+
+        d = 2.5
+        eye, up = _rotation_camera(0, 'xz', d)
+        assert eye == {'x': 0, 'y': d * 0.01, 'z': -d}
+        assert up == {'x': 0, 'y': -1, 'z': 0}
+
+
+class TestSelectionCameraConsistency:
+    """The camera gate and the scene render target share one predicate.
+
+    Both used to decide "will this brain-mesh selection move the scene?"
+    independently -- the scene against the live transform registry, the
+    cameras against a hardcoded dataset-substring list -- so a registry
+    change could leave the scene native while the cameras served the
+    selection family: sideways views on every export of that run.
+    """
+
+    def test_cameras_follow_the_scene_fallback_when_the_bridge_is_gone(
+            self, monkeypatch):
+        import visualize_skeleton as vs
+
+        monkeypatch.setattr(vs, '_selection_bridge_state',
+                            lambda s, t: (False, 'mocked: bridge gone'))
+        from visualize_skeleton import dataset_view_cameras
+        cams = dataset_view_cameras('banc_v888', 'FAFB')
+        native = dataset_view_cameras('banc_v888')
+        assert cams['Front'] == native['Front']
+        assert cams['Top'] == native['Top']
+
+    def test_cameras_follow_a_reachable_selection(self, monkeypatch):
+        import visualize_skeleton as vs
+
+        monkeypatch.setattr(vs, '_selection_bridge_state',
+                            lambda s, t: (True, ''))
+        from visualize_skeleton import dataset_view_cameras
+        cams = dataset_view_cameras('banc_v888', 'FAFB')
+        default = dataset_view_cameras('flywire_FAFB_v783')
+        assert cams['Front'] == default['Front']
+        assert cams['Top'] == default['Top']
+
+    def test_same_space_selection_never_queries_the_registry(
+            self, monkeypatch):
+        import visualize_skeleton as vs
+
+        def boom(source, target):
+            raise AssertionError('registry queried for a same-space selection')
+
+        monkeypatch.setattr(vs, '_selection_bridge_state', boom)
+        from visualize_skeleton import dataset_view_cameras
+        cams = dataset_view_cameras('flywire_FAFB_v783', 'FAFB')
+        assert cams['Front']['eye'] == {'x': 0, 'y': 0, 'z': -2.5}
+
+    def test_unknown_native_space_keeps_the_substring_gate(self, monkeypatch):
+        import visualize_skeleton as vs
+
+        def raise_value_error(dataset):
+            raise ValueError(f'no known native space for {dataset}')
+
+        monkeypatch.setattr(vs, 'dataset_native_space', raise_value_error)
+        from visualize_skeleton import dataset_view_cameras
+        cams = dataset_view_cameras('fafb_curious:v1', 'FAFB')
+        default = dataset_view_cameras('flywire_FAFB_v783')
+        assert cams['Front'] == default['Front']
+
+    def test_scene_render_target_shares_the_predicate(self, monkeypatch):
+        import visualize_skeleton as vs
+
+        monkeypatch.setattr(vs, '_selection_bridge_state',
+                            lambda s, t: (False, 'mocked: bridge gone'))
+        vis = object.__new__(VisualizeSkeleton)
+        vis.brain_mesh = 'FAFB'
+        vis._vprint = lambda *a, **k: None
+        # The scene falls back to native, and the cameras follow it there.
+        assert vis._scene_render_target('BANC', 'BANC') == 'BANC'
+        from visualize_skeleton import dataset_view_cameras
+        cams = dataset_view_cameras('banc_v888', 'FAFB')
+        assert cams['Front'] == dataset_view_cameras('banc_v888')['Front']
 
 
 class TestTemplateInfo:

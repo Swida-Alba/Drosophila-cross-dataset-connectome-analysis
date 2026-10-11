@@ -430,7 +430,7 @@ def test_video_reexport_engine_is_the_export_method_switch():
     assert "timeout" in params and "background_color" in params
     assert callable(getattr(viz, "_render_video_frames_via_session"))
     assert callable(getattr(viz, "_rotation_camera"))
-    assert callable(getattr(viz, "_page_z_sign"))
+    assert callable(getattr(viz, "_orbit_frame_camera"))
     for rel in PROSE_FILES:
         assert _mentions(rel, "export_method"), rel
     assert _mentions(GUIDE, "_render_video_frames_via_session"), GUIDE

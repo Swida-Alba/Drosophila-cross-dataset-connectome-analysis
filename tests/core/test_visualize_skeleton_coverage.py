@@ -5970,8 +5970,6 @@ class TestWebDriverExportSessionLifecycle:
             script, _ = driver.script_calls[-1]
             assert '"y": 2.5' in script
 
-            session.set_camera_for_rotation(1.0, 0.0, -2.5)
-
             png_out = tmp_path / 'shot.png'
             session.screenshot(str(png_out))
             assert png_out.exists()

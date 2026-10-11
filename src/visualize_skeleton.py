@@ -860,10 +860,12 @@ def export_individuals_from_html(
     Takes a page or a whole run folder, reads the figure payload back, groups
     the traces at the requested ``granularity``, and renders the PNG grid with
     the same WebDriver session the live pipeline uses -- no skeleton fetching,
-    no original script. Cameras come from the run manifest when it exists and
-    from the page's own dataset otherwise. ``views`` accepts one name or a
-    list, and ``background_color=None`` composites on the background the run
-    recorded.
+    no original script. Cameras come from the run manifest when it exists;
+    pages that predate the manifest get the camera family their own frontal
+    view was rendered under (matched against the shared table), falling back
+    to the default family only when the page carries no recognizable camera.
+    ``views`` accepts one name or a list, and ``background_color=None``
+    composites on the background the run recorded.
 
     A page that holds no neuron traces (a pure ROI/mesh scene) is a valid run,
     not an error: it reports the reason and returns an empty result, leaving any
@@ -895,6 +897,7 @@ def export_individuals_from_html(
         print(f'⚠️  {len(unlabeled)} trace(s) carry no identity and were '
               f'skipped; this page predates the drocatTrace stamp.')
     dataset = manifest.get('dataset') or 'hemibrain:v1.2.1'
+    brain_mesh = manifest.get('brain_mesh')
     cameras = {}
     for name, camera in (manifest.get('views') or {}).items():
         cameras[str(name).lower()] = camera
@@ -902,8 +905,19 @@ def export_individuals_from_html(
         # lowercase=True because export_individuals_webdriver() looks a view up
         # by its filename-style key; the 'Front'-style keys silently resolve to
         # no camera and every view then re-renders the page's own framing.
-        cameras = dataset_view_cameras(
-            dataset, manifest.get('brain_mesh'), lowercase=True)
+        # Legacy pages predate the manifest, so the camera family comes from
+        # the page's own frontal view instead of assuming hemibrain -- a
+        # legacy BANC page re-exported through the default family's cameras
+        # came out looking down its dorsal axis.
+        family = _camera_family_for_page(
+            (_layout or {}).get('scene', {}).get('camera'))
+        if family:
+            dataset, brain_mesh = family
+            if verbose:
+                suffix = f' (brain_mesh={brain_mesh})' if brain_mesh else ''
+                print(f'ℹ️  No manifest; camera family inferred from the '
+                      f'page\'s own frontal view: {dataset}{suffix}')
+        cameras = dataset_view_cameras(dataset, brain_mesh, lowercase=True)
     views = normalize_profile_views(views, cameras)
     unknown = [v for v in views if v not in cameras]
     if unknown:
@@ -1622,22 +1636,6 @@ class WebDriverExportSession:
         # Wait for rendering using calibrated time
         time.sleep(self._render_wait)
     
-    def set_camera_for_rotation(self, eye_x, eye_y, eye_z, up_x=0, up_y=-1, up_z=0):
-        """
-        Set camera for rotation animation (convenience method).
-        
-        Parameters
-        ----------
-        eye_x, eye_y, eye_z : float
-            Camera eye position
-        up_x, up_y, up_z : float
-            Camera up vector
-        """
-        self.set_camera(
-            eye={'x': eye_x, 'y': eye_y, 'z': eye_z},
-            up={'x': up_x, 'y': up_y, 'z': up_z}
-        )
-    
     def screenshot(self, output_path, convert_to_jpeg=False, jpeg_quality=100,
                    auto_crop=False, margin=20, background_color=(255, 255, 255),
                    use_webgl_export=True, fast_mode=True, auto_fast_mode=True):
@@ -2209,6 +2207,50 @@ except ImportError:
 # (#1f77b4), with alpha=0.2.
 QUERY_OVERLAY_COLOR = 'rgba(31, 119, 180, 0.2)'
 
+# Registry space each explicit brain-mesh selection moves the scene into.
+# Single authority for the question "will this selection actually move the
+# scene": _scene_render_target applies it to the geometry, and
+# dataset_view_cameras asks the same predicate for the camera family, so the
+# two can never drift apart again (a silent registry change used to be able
+# to leave the scene native while the cameras served the selection family).
+_BRAIN_MESH_SCENE_TARGET = {
+    'BANC': 'BANC',
+    'FAFB': 'FLYWIRE',
+    'male-cns': 'JRCFIB2022M',
+}
+
+# Datasets whose name admits them to the selection camera gate when their
+# native space is unknown (so unverifiable against the registry). Every
+# named keyword maps to a known native space, which makes this list moot for
+# real datasets; it only guards exotic future names.
+_BRIDGEABLE = ('flywire', 'fafb', 'banc', 'male-cns', 'malecns', 'optic')
+
+
+def _selection_bridge_state(source_space, target_space):
+    """``(reachable, detail)`` for bridging one registry space to another.
+
+    The shared predicate behind both camera-family selection and the scene
+    render target: reachable means the registry's shortest path stays within
+    the scene's three-node limit (longer chains route through elastix
+    registrations too lossy for a full scene). ``detail`` carries why a
+    bridge failed -- the too-indirect count, or the import/registry error
+    (an environment without flybrains cannot transform, and both callers
+    then keep native spaces, which is the consistent answer).
+    """
+    try:
+        import flybrains
+        flybrains.register_transforms()
+        from navis.transforms import registry as _registry
+        path, _seq = _registry.shortest_bridging_seq(
+            source_space, target_space)
+        if len(path) > 3:
+            return False, f'{len(path) - 1} transforms needed — too indirect'
+        return True, ''
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:
+        return False, str(exc)
+
 
 def dataset_native_space(dataset: str) -> str:
     """Native coordinate space of a connectome dataset.
@@ -2296,9 +2338,22 @@ def dataset_view_cameras(dataset: str, brain_mesh=None, distance: float = 2.5,
     - hemibrain (brain_mesh='native'): rotated into its Y-front frame.
 
     An explicit brain-mesh selection ('BANC'/'FAFB'/'male-cns') moves the
-    whole scene into that template's space, so the camera family follows
-    the SELECTION, not the dataset: e.g. a BANC scene with
-    brain_mesh='FAFB' renders in FLYWIRE axes (default table).
+    whole scene into that template's space, so the camera family follows the
+    SELECTION, not the dataset: e.g. a BANC scene with
+    brain_mesh='FAFB' renders in FLYWIRE axes (default table). Whether the
+    scene actually moves is decided by the transform registry -- the same
+    ``_selection_bridge_state`` predicate ``_scene_render_target`` applies to
+    the geometry -- so an unreachable selection keeps the dataset's native
+    family and the cameras can never serve a space the scene did not move
+    to. Datasets with no known native space keep the historical
+    dataset-name gate.
+
+    Orientation invariant, shared by every table: the Front eye sits on the
+    anterior side, Top renders posterior-up (anterior downward), and Bottom
+    renders anterior-up (the flip you get looking from the ventral side).
+    Two tables historically pointed Top's up along the anterior axis
+    instead, which turned the BANC/MANC/hemibrain top views upside down
+    relative to the default family.
 
     ``distance`` scales the eye position (the video export varies it);
     ``lowercase`` yields the 'front'-style keys used by the PNG exports.
@@ -2315,22 +2370,33 @@ def dataset_view_cameras(dataset: str, brain_mesh=None, distance: float = 2.5,
 
     # An explicit brain-mesh selection moves the whole scene into the
     # selected template's space, so the camera family follows the
-    # SELECTION, not the dataset (e.g. a BANC scene with brain_mesh='FAFB'
-    # renders in FLYWIRE axes and uses the default table). The override is
-    # restricted to the mutually-bridgable families (FAFB/BANC/male-CNS);
-    # elsewhere (_scene_render_target) unreachable selections fall back to
-    # the native scene, and the cameras must follow that fallback.
-    _BRIDGEABLE = ('flywire', 'fafb', 'banc', 'male-cns', 'malecns', 'optic')
+    # SELECTION -- but only when the scene will actually move: the registry
+    # path from the dataset's native space to the selection must stay within
+    # the scene's three-node limit, the exact question _scene_render_target
+    # answers for the geometry through the same shared predicate. When the
+    # bridge is missing, too indirect, or unverifiable (no flybrains), the
+    # scene keeps its native space and the cameras keep the native family.
+    # Datasets with no known native space cannot render at all; they keep
+    # the historical substring gate.
+    selection_target = _BRAIN_MESH_SCENE_TARGET.get(brain_mesh)
     selection_space = {'BANC': 'banc', 'FAFB': 'default',
                        'male-cns': 'default'}.get(brain_mesh)
-    selection_applies = (selection_space is not None
-                         and any(k in d for k in _BRIDGEABLE))
+    selection_applies = False
+    if selection_target is not None:
+        try:
+            native_space = dataset_native_space(dataset)
+        except ValueError:
+            selection_applies = any(k in d for k in _BRIDGEABLE)
+        else:
+            selection_applies = (
+                selection_target == native_space
+                or _selection_bridge_state(native_space, selection_target)[0])
 
     if selection_applies and selection_space == 'banc':
         table = {
             'Front': _cam((0, -1, 0), (0, 0, 1)),
             'Back': _cam((0, 1, 0), (0, 0, 1)),
-            'Top': _cam((0, 0, 1), (0, -1, 0)),
+            'Top': _cam((0, 0, 1), (0, 1, 0)),
             'Bottom': _cam((0, 0, -1), (0, -1, 0)),
             'Left': _cam((1, 0, 0), (0, 0, 1)),
             'Right': _cam((-1, 0, 0), (0, 0, 1)),
@@ -2349,7 +2415,7 @@ def dataset_view_cameras(dataset: str, brain_mesh=None, distance: float = 2.5,
         table = {
             'Front': _cam((0, -1, 0), (0, 0, 1)),
             'Back': _cam((0, 1, 0), (0, 0, 1)),
-            'Top': _cam((0, 0, 1), (0, -1, 0)),
+            'Top': _cam((0, 0, 1), (0, 1, 0)),
             'Bottom': _cam((0, 0, -1), (0, -1, 0)),
             'Left': _cam((1, 0, 0), (0, 0, 1)),
             'Right': _cam((-1, 0, 0), (0, 0, 1)),
@@ -2358,7 +2424,7 @@ def dataset_view_cameras(dataset: str, brain_mesh=None, distance: float = 2.5,
         table = {
             'Front': _cam((0, 0, 1), (0, -1, 0)),
             'Back': _cam((0, 0, -1), (0, -1, 0)),
-            'Top': _cam((0, -1, 0), (0, 0, 1)),
+            'Top': _cam((0, -1, 0), (0, 0, -1)),
             'Bottom': _cam((0, 1, 0), (0, 0, 1)),
             'Left': _cam((-1, 0, 0), (0, -1, 0)),
             'Right': _cam((1, 0, 0), (0, -1, 0)),
@@ -2370,7 +2436,7 @@ def dataset_view_cameras(dataset: str, brain_mesh=None, distance: float = 2.5,
         table = {
             'Front': _cam((0, 1, 0), (0, 0, -1)),
             'Back': _cam((0, -1, 0), (0, 0, -1)),
-            'Top': _cam((0, 0, -1), (0, 1, 0)),
+            'Top': _cam((0, 0, -1), (0, -1, 0)),
             'Bottom': _cam((0, 0, 1), (0, 1, 0)),
             'Left': _cam((-1, 0, 0), (0, 0, -1)),
             'Right': _cam((1, 0, 0), (0, 0, -1)),
@@ -4372,11 +4438,18 @@ class VisualizeSkeleton:
         long mesh rescales the other two axes and the brain changes shape. The
         script therefore also pins ``aspectmode='manual'`` with the ratio those
         ranges already imply -- the same picture, now trace-invariant. Plotly's
-        reset gestures (the modebar's "reset camera to last save", the only
-        reset the page keeps, and a double-click) restore the layout snapshot
-        taken before this script ran and silently drop that pin, so any relayout
-        or restyle that drifted away from the freeze re-applies it; camera-only
-        changes never drift, so orbiting and zooming stay untouched.
+        reset gesture (the modebar's "reset camera to last save", the only
+        reset a 3D scene keeps) restores the layout snapshot taken before this
+        script ran and silently drops that pin, so any relayout or restyle
+        that drifted away from the freeze re-applies it; camera-only
+        changes never drift, so orbiting and zooming stay untouched. The one
+        camera write the script does answer is a view preset or the modebar's
+        reset handing the pivot back to the box default: a preset click and
+        the reset both land the camera on a known frontal orientation (the
+        reset restores the page's opening camera), and that pivot is re-aimed
+        on the currently visible traces -- the same rule the page opens with
+        under ``hidden_half``. Ordinary orbit drags end on an eye no preset
+        owns, so they are never "corrected".
 
         The page has exactly one box, and ``_scene_data_ranges`` already sized
         it around a brain/VNC envelope the run embedded without showing. That
@@ -4396,8 +4469,10 @@ class VisualizeSkeleton:
         normalized against the *pinned* box, so handing the framing back to
         Fit clears it -- an autoscaled box is already centred on the visible
         traces, and carrying the old number over would leave the anatomy
-        hanging off the pivot. Re-freezing restores it, unless the user has
-        panned in the meantime, which wins.
+        hanging off the pivot. Re-freezing restores it while the visible
+        traces are still the ones it was computed from; after a reveal or a
+        hide it is recomputed on what is visible now. A pan always wins --
+        its moved centre is left exactly where the user left it.
         That same control is what the page opens on whenever ``hidden_half``
         says the run embedded an envelope the page does not show. A box is
         built around its content's midpoint, and here the content is the union
@@ -4418,6 +4493,14 @@ class VisualizeSkeleton:
         shots must keep fitting the frame.
         """
         baked = {'ranges': ranges, 'hiddenHalf': bool(hidden_half)}
+        # The frontal orientations this page's View presets restore, so the
+        # reset watcher can tell a preset (or the modebar reset, which lands
+        # on the opening Front camera) from an ordinary orbit drag.
+        baked['viewCameras'] = [
+            {'eye': cam['eye'], 'up': cam['up']}
+            for cam in dataset_view_cameras(
+                self.dataset, self.brain_mesh).values()
+        ]
         button_html = (
             '<button id="drocat-freeze-toggle" type="button"'
             ' aria-label="Freeze or fit the 3D view"'
@@ -4594,6 +4677,11 @@ class VisualizeSkeleton:
     if (!frozen) { return; }
     var updateObj = centerUpdate();
     if (!updateObj) { return; }
+    // Always issued, even when the visible midpoint IS the box centre and the
+    // values read ~0: a dotted centre write is also what syncs plotly's
+    // internal orbit camera, and skipping it lets the next view click re-sync
+    // the layout back from the stale internal pivot. The write's own echo
+    // carries dotted keys, so the view-reset hook never reads it as a reset.
     if (!update(updateObj)) { return; }
     // Remember the pivot the user asked for: fitUpdate() clears the centre on
     // the way out, and without this a Fit/Freeze round trip would silently
@@ -4637,6 +4725,37 @@ class VisualizeSkeleton:
     }
     return false;
   }
+  function sameVector(a, b) {
+    for (var i = 0; i < AXES.length; i++) {
+      if (Math.abs((Number(a[AXES[i]]) || 0) - (Number(b[AXES[i]]) || 0)) > 1e-6) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function cameraMatchesViewPreset(cam) {
+    // Pages without a baked table treat every default-pivot write as a view
+    // change, which is what the watcher did before presets were baked.
+    var presets = CONFIG.viewCameras;
+    if (!presets || !presets.length) { return true; }
+    for (var i = 0; i < presets.length; i++) {
+      if (sameVector(cam.eye, presets[i].eye)
+          && sameVector(cam.up, presets[i].up)) { return true; }
+    }
+    return false;
+  }
+  function pinnedPivotMatchesCurrent() {
+    // True while the remembered pivot is still the pivot the CURRENT visible
+    // traces want; a reveal or a hide since it was computed makes this false.
+    if (!pinnedCenter) { return false; }
+    var updateObj = centerUpdate();
+    if (!updateObj) { return false; }
+    for (var a = 0; a < AXES.length; a++) {
+      if (Math.abs(updateObj['scene.camera.center.' + AXES[a]]
+                   - pinnedCenter[AXES[a]]) > 1e-6) { return false; }
+    }
+    return true;
+  }
   function decorate() {
     if (button) {
       button.style.display = 'flex';
@@ -4662,7 +4781,14 @@ class VisualizeSkeleton:
     var applied = update(next ? pinUpdate() : fitUpdate());
     if (!applied) { return; }
     frozen = next;
-    if (frozen) { restoreCenter(); }
+    if (frozen) {
+      // A pivot remembered from earlier only applies while the visible
+      // traces are the ones it was computed from; after a reveal or a hide
+      // it is recomputed on what is visible now. A pan always wins -- its
+      // moved centre skips both branches.
+      if (pinnedPivotMatchesCurrent()) { restoreCenter(); }
+      else { recenter(); }
+    }
     decorate();
   }
   function toggle() { setFrozen(!frozen); }
@@ -4707,8 +4833,8 @@ class VisualizeSkeleton:
       reposition();
       window.addEventListener('resize', reposition);
       window.addEventListener('load', reposition);
-      // Plotly's reset gestures -- the modebar's "reset camera to last save"
-      // and a double-click -- restore the layout snapshot taken
+      // Plotly's reset gesture -- the modebar's "reset camera to last save"
+      // -- restores the layout snapshot taken
       // before this script ran, which drops aspectmode='manual' and lets the
       // box re-scale to whatever is visible. Re-pin on any relayout that
       // drifted; camera drags never touch these keys, so orbiting is untouched.
@@ -4730,6 +4856,33 @@ class VisualizeSkeleton:
         // a restyle.
         gd.on('plotly_relayout', repaint);
         gd.on('plotly_restyle', repaint);
+      } catch (err) { /* older plotly builds expose no such hook */ }
+      try {
+        // The View presets and Plotly's reset gesture are the only camera
+        // writes that may move the pivot: both land the camera on a known
+        // frontal orientation with the box-centred pivot, throwing away the
+        // visible-traces pivot the page opened with -- and the box's centre
+        // is the gap between brain and nerve cord whenever one half ships
+        // hidden. A preset click arrives as the whole 'scene.camera' object;
+        // the modebar's "reset camera to last save" arrives as dotted
+        // scene.camera.eye/up/center keys. Both are answered by re-aiming
+        // the pivot on whatever is visible NOW (a half shown through the
+        // tree counts). An orbit or zoom drag also ends with a default
+        // pivot on pages that never re-centred, but its eye belongs to no
+        // preset, so it is left alone; where the visible midpoint IS the
+        // box centre, recenter()'s write is just the internal-camera sync.
+        gd.on('plotly_relayout', function(event) {
+          if (!event) { return; }
+          var cameraMoved = ('scene.camera' in event)
+            || ('scene.camera.eye' in event) || ('scene.camera.up' in event);
+          if (!cameraMoved) { return; }
+          if (!centerIsDefault()) { return; }
+          var gdNow = graphDiv();
+          var scene = gdNow && gdNow._fullLayout && gdNow._fullLayout.scene;
+          var cam = scene && scene.camera;
+          if (!cam || !cameraMatchesViewPreset(cam)) { return; }
+          recenter();
+        });
       } catch (err) { /* older plotly builds expose no such hook */ }
       return;
     }
@@ -18448,12 +18601,8 @@ class VisualizeSkeleton:
     
     # Explicit brain-mesh selections target the selected template's space:
     # the whole scene (neurons, synapses, ROIs, and the outline) renders
-    # there, not just the outline.
-    _BRAIN_MESH_SCENE_TARGET = {
-        'BANC': 'BANC',
-        'FAFB': 'FLYWIRE',
-        'male-cns': 'JRCFIB2022M',
-    }
+    # there, not just the outline. The space map itself is the module-level
+    # _BRAIN_MESH_SCENE_TARGET, shared with the camera-family gate.
 
     def _scene_render_target(self, source, native_target):
         """Effective scene target for the current brain-mesh selection.
@@ -18463,25 +18612,18 @@ class VisualizeSkeleton:
         the dataset's native space within two bridging hops — longer chains
         route through elastix registrations too lossy for a full scene.
         Unreachable or too-indirect selections warn and fall back to the
-        dataset's native render target.
+        dataset's native render target. The same shared predicate decides
+        the camera family in ``dataset_view_cameras``, so the cameras can
+        never serve a family the scene did not move to.
         """
-        selection = self._BRAIN_MESH_SCENE_TARGET.get(self.brain_mesh)
+        selection = _BRAIN_MESH_SCENE_TARGET.get(self.brain_mesh)
         if selection is None or selection == native_target:
             return native_target
-        try:
-            import flybrains
-            flybrains.register_transforms()
-            from navis.transforms import registry as _registry
-            path, _seq = _registry.shortest_bridging_seq(source, selection)
-            if len(path) > 3:
-                raise ValueError(
-                    f'{len(path) - 1} transforms needed — too indirect')
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except BaseException as exc:
+        reachable, detail = _selection_bridge_state(source, selection)
+        if not reachable:
             self._vprint(
                 f'  ⚠️  brain_mesh="{self.brain_mesh}" is not reachable '
-                f'from {source} ({exc}); keeping the native '
+                f'from {source} ({detail}); keeping the native '
                 f'{native_target} scene instead.', level='simple')
             return native_target
         return selection
@@ -21428,15 +21570,17 @@ class VisualizeSkeleton:
             - 2.0 → 180 frames for full rotation (6 sec video at 30 fps)
             - 0.5 → 720 frames for full rotation (24 sec video at 30 fps)
         rotate : str, default 'horizontal'
-            Rotation direction:
-            - 'horizontal': Rotate around Y-axis (turntable motion)
-            - 'vertical': Rotate around X-axis (tumbling motion)
+            Rotation direction (orbit axes follow the dataset's own camera
+            table, so every family turntables around its dorsal-ventral
+            axis from its front):
+            - 'horizontal': Turntable motion around the dorsal-ventral axis
+            - 'vertical': Tumbling motion over the lateral axis
         rotate_plane : str, optional (deprecated)
             Legacy parameter. Use 'rotate' instead.
             Plane to rotate: 'xy', 'xz', or 'yz'.
-        view_direction : tuple, optional, default (1, -1)
-            Camera direction multipliers for sin/cos components.
-            Options: (1, 1), (1, -1), (-1, 1), or (-1, -1).
+        view_direction : tuple, optional
+            Accepted for call compatibility; the orbit is derived from the
+            dataset's frontal camera and this multiplier is no longer used.
         view_distance : float, optional, default 2.2
             Relative camera distance from center (1.0 = close, 3.0 = far).
         synapse_size : int, default 1
@@ -21526,9 +21670,9 @@ class VisualizeSkeleton:
         '''
         # Handle rotate parameter - overrides rotate_plane
         if rotate == 'horizontal':
-            rotate_plane = 'xz'  # Rotate around vertical (Y) axis
+            rotate_plane = 'xz'  # Turntable around the dorsal-ventral axis
         elif rotate == 'vertical':
-            rotate_plane = 'yz'  # Rotate around horizontal (X) axis
+            rotate_plane = 'yz'  # Flip over the lateral axis
         elif rotate_plane is None:
             # Default to horizontal rotation if neither specified
             rotate_plane = 'xz'
@@ -21536,12 +21680,9 @@ class VisualizeSkeleton:
         
         # Determine which export method to use
         actual_export_method = export_method if export_method else self.export_method
-        
-        if view_direction is None:
-            if 'manc' in self.dataset.lower():
-                view_direction = (1, 1)  # MANC: +Z is front
-            else:
-                view_direction = (1, -1)
+
+        # view_direction is accepted for call compatibility only; the orbit
+        # derives from the shared camera table's frontal camera.
         if view_distance is None:
             view_distance = 2.2
         
@@ -21856,47 +21997,18 @@ class VisualizeSkeleton:
                                     continue
                                 
                                 rad_i = np.deg2rad(deg)
-                                sin_val = np.sin(rad_i)
-                                cos_val = np.cos(rad_i)
-                                
-                                # Small offset to avoid gimbal lock
-                                offset = cam_distance * 0.01
-                                
-                                # Rotation logic - independent from kaleido
-                                # Rotate camera around the object based on rotation plane
-                                # Note: Initial camera is eye={0,0,-z}, up={0,-1,0}
-                                if rotate_plane == 'xy':
-                                    # Horizontal rotation around Z axis
-                                    eye = {
-                                        'x': cam_distance * sin_val,
-                                        'y': cam_distance * cos_val,
-                                        'z': offset
-                                    }
-                                    up = {'x': 0, 'y': 0, 'z': 1}
-                                    
-                                elif rotate_plane == 'yz':
-                                    # Vertical rotation around X axis (front→bottom→back→top)
-                                    eye = {
-                                        'x': offset,
-                                        'y': cam_distance * sin_val,
-                                        'z': -cam_distance * cos_val
-                                    }
-                                    up = {
-                                        'x': 0,
-                                        'y': -cos_val,
-                                        'z': -sin_val
-                                    }
-                                    
-                                elif rotate_plane == 'xz':
-                                    # Horizontal rotation around Y axis
-                                    z_sign = 1 if 'manc' in self.dataset.lower() else -1
-                                    eye = {
-                                        'x': cam_distance * sin_val,
-                                        'y': offset,
-                                        'z': z_sign * cam_distance * cos_val
-                                    }
-                                    up = {'x': 0, 'y': -1, 'z': 0}
-                                
+
+                                # Orbit the family's own frontal camera: the
+                                # shared table encodes each dataset's axis
+                                # conventions, so a BANC turntable spins
+                                # around its dorsal axis from its front
+                                # instead of rolling around the default
+                                # family's Z.
+                                eye, up = _rotation_camera(
+                                    deg, rotate_plane, cam_distance,
+                                    front_eye=front_camera['eye'],
+                                    front_up=front_camera['up'])
+
                                 # Rotate camera via JavaScript
                                 session.set_camera(eye=eye, up=up)
                                 
@@ -22091,21 +22203,17 @@ class VisualizeSkeleton:
                     for i, deg in enumerate(steps_to_write):
                         if frame_export_failed:
                             break
-                            
-                        rad_i = np.deg2rad(deg)
-                        x = view_distance * np.sin(rad_i) * view_direction[0]
-                        z = view_distance * np.cos(rad_i) * view_direction[1]
-                        
-                        # Add small offset to avoid gimbal lock at axis-aligned positions
-                        # This prevents camera flipping at 90, 180, 270 degrees
-                        y_offset = view_distance * 0.01  # 1% offset
-                        
-                        if rotate_plane == 'xy':
-                            fig_new.update_layout(scene_camera=dict(eye=dict(x=x, y=z, z=y_offset)))
-                        elif rotate_plane == 'yz':
-                            fig_new.update_layout(scene_camera=dict(eye=dict(x=y_offset, y=x, z=z)))
-                        elif rotate_plane == 'xz':
-                            fig_new.update_layout(scene_camera=dict(eye=dict(x=x, y=y_offset, z=z)))
+
+                        # Orbit the family's own frontal camera (same frames
+                        # the webdriver engine renders), carrying up along on
+                        # the vertical plane so no frame rolls degenerately.
+                        frame_eye, frame_up = _rotation_camera(
+                            deg, rotate_plane, view_distance,
+                            front_eye=front_camera['eye'],
+                            front_up=front_camera['up'])
+
+                        fig_new.update_layout(scene_camera=dict(
+                            eye=frame_eye, up=frame_up))
                         
                         fig_path = os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg')
                         
@@ -22442,44 +22550,149 @@ def _apply_consistent_crop_standalone(pic_folder, margin=20, background_color=(2
     return (final_width, final_height)
 
 
-def _page_z_sign(html_path):
-    """Horizontal-rotation handedness of the page's own dataset.
+_CAMERA_FAMILY_REPRESENTATIVES = (
+    # (dataset, brain_mesh) standing in for each camera family. The tables
+    # are what gets matched, so one representative covers every dataset that
+    # shares the family (flywire/male-cns/hemibrain-bridged all use the
+    # default table).
+    ('hemibrain:v1.2.1', None),
+    ('manc:v1.2.1', None),
+    ('banc_v888', None),
+    ('hemibrain:v1.2.1', 'native'),
+)
 
-    ``export_video`` flips the sign of the orbit's z component for the
-    male-central-complex datasets; the re-exporter has no dataset argument, so
-    it inherits the handedness from the run manifest written next to the page.
-    A legacy page with no manifest keeps the historical ``-1``.
+
+def _camera_family_for_page(layout_camera):
+    """``(dataset, brain_mesh)`` whose camera family baked this frontal view.
+
+    Pages older than the run manifest carry no dataset record, so the only
+    trace of the axis conventions they were rendered under is the frontal
+    camera the page itself opens on. Matching it against the shared table's
+    families keeps a legacy BANC or MANC page from being re-exported through
+    the default family's cameras. Returns None when nothing matches -- a page
+    with no baked camera (plotly's diagonal default) or an exotic one -- and
+    the caller keeps its own fallback.
     """
-    dataset = str(read_visualization_manifest(html_path).get('dataset') or '')
-    return 1 if 'manc' in dataset.lower() else -1
+    if not layout_camera:
+        return None
+    eye = layout_camera.get('eye') or {}
+    up = layout_camera.get('up') or {}
+    for dataset, brain_mesh in _CAMERA_FAMILY_REPRESENTATIVES:
+        front = (dataset_view_cameras(dataset, brain_mesh).get('Front')
+                 or {})
+        t_eye = front.get('eye') or {}
+        t_up = front.get('up') or {}
+        if all(abs(float(eye.get(k) or 0) - float(t_eye.get(k) or 0)) <= 1e-6
+               for k in 'xyz') \
+                and all(abs(float(up.get(k) or 0)
+                            - float(t_up.get(k) or 0)) <= 1e-6 for k in 'xyz'):
+            return dataset, brain_mesh
+    return None
 
 
-def _rotation_camera(deg, rotate_plane, distance, z_sign=-1):
+def _page_front_camera(layout_camera):
+    """The page's own frontal ``(eye, up)`` as direction-only unit dicts.
+
+    ``layout_camera`` is the ``scene.camera`` a viewer page baked (or None).
+    Every video orbit is derived from this pair so a re-export turns the page
+    around the same axes the page itself opens on, whatever family wrote it.
+    Falls back to the default family's frontal direction for pages that never
+    baked a camera (plotly's diagonal default carries no convention).
+    """
+    eye = (layout_camera or {}).get('eye') or {}
+    up = (layout_camera or {}).get('up') or {}
+    front_eye = {k: float(eye.get(k) or 0) for k in 'xyz'}
+    front_up = {k: float(up.get(k) or 0) for k in 'xyz'}
+    if not any(front_eye.values()):
+        front_eye = {'x': 0.0, 'y': 0.0, 'z': -1.0}
+    if not any(front_up.values()):
+        front_up = {'x': 0.0, 'y': -1.0, 'z': 0.0}
+    return front_eye, front_up
+
+
+def _orbit_frame_camera(front_eye, front_up, rotate_plane, deg, distance):
+    """``(eye, up)`` for one frame of a turntable rotation.
+
+    Every orbit derives from the family's own Front camera instead of
+    hardcoding the default family's axes: rotating ``front_eye`` around
+    ``front_up`` (the dorsal-ventral axis) is the horizontal turntable, around
+    the front×up lateral axis is the vertical flip (carrying ``up`` along so
+    the roll stays anatomical), and around the viewing axis itself is the
+    barrel-roll plane. This is what keeps BANC and native-template hemibrain
+    videos upright -- the historical hardcoded XZ orbit with ``up (0,-1,0)``
+    rolled them around the anterior-posterior axis from the wrong side -- and
+    it reproduces the historical default-family frames exactly. The 1% offset
+    along the orbit axis keeps plotly off gimbal lock at the axis-aligned
+    degrees; the direction of travel may differ per family (a full turntable
+    either way).
+    """
+    def _unit(d):
+        length = math.sqrt(sum(d[k] * d[k] for k in 'xyz')) or 1.0
+        return {k: d[k] / length for k in 'xyz'}
+
+    def _scaled(v, length):
+        return {k: v[k] * length for k in 'xyz'}
+
+    def _cross(a, b):
+        return {'x': a['y'] * b['z'] - a['z'] * b['y'],
+                'y': a['z'] * b['x'] - a['x'] * b['z'],
+                'z': a['x'] * b['y'] - a['y'] * b['x']}
+
+    def _combine(base, turned):
+        return {k: base[k] * c + turned[k] * s for k in 'xyz'}
+
+    def _nudged_along(eye, direction):
+        # The 1% step off the exact orbit axis keeps plotly off gimbal lock at
+        # the axis-aligned degrees.
+        return {k: eye[k] + direction[k] * off for k in 'xyz'}
+
+    e = _unit(front_eye)
+    u = _unit(front_up)
+    rad = math.radians(deg)
+    c, s = math.cos(rad), math.sin(rad)
+    off = distance * 0.01
+
+    if rotate_plane == 'xy':
+        # Barrel roll around the viewing (anterior-posterior) axis: the eye
+        # circles from the anti-up side while up stays opposite the axis.
+        anti_up = _scaled({k: -u[k] for k in 'xyz'}, distance)
+        eye = _nudged_along(_combine(anti_up, _cross(e, anti_up)),
+                            {k: -e[k] for k in 'xyz'})
+        return eye, {k: -e[k] for k in 'xyz'}
+
+    if rotate_plane == 'yz':
+        # Vertical flip over the lateral axis (front -> bottom -> back -> top).
+        axis = _unit(_cross(u, e))
+        eye0 = _scaled(e, distance)
+        eye = _nudged_along(_combine(eye0, _cross(axis, eye0)), axis)
+        return eye, _combine(u, _cross(axis, u))
+
+    # 'xz' -- the horizontal turntable around the dorsal-ventral axis.
+    eye0 = _scaled(e, distance)
+    eye = _nudged_along(_combine(eye0, _cross(u, eye0)), {k: -u[k] for k in 'xyz'})
+    return eye, dict(u)
+
+
+def _rotation_camera(deg, rotate_plane, distance, front_eye=None,
+                     front_up=None):
     """``(eye, up)`` camera for one frame of a turntable rotation.
 
-    Mirrors ``VisualizeSkeleton.export_video``'s WebDriver branch so both
-    entrances orbit identically: the 1% off-axis offset keeps Plotly from
-    hitting gimbal lock on the axis-aligned frames, and the vertical plane has
-    to carry its ``up`` vector along with the eye.
+    Mirrors ``VisualizeSkeleton.export_video``'s orbit so both entrances spin
+    identically. The frames derive from the family's frontal camera --
+    ``dataset_view_cameras(...)['Front']`` for a live run, the page's own
+    baked camera for a re-export -- falling back to the default family for
+    callers that predate per-dataset cameras.
     """
-    rad = np.deg2rad(deg)
-    sin_val = distance * np.sin(rad)
-    cos_val = distance * np.cos(rad)
-    offset = distance * 0.01
-    if rotate_plane == 'xy':
-        return ({'x': sin_val, 'y': cos_val, 'z': offset},
-                {'x': 0, 'y': 0, 'z': 1})
-    if rotate_plane == 'yz':
-        return ({'x': offset, 'y': sin_val, 'z': -cos_val},
-                {'x': 0, 'y': -np.cos(rad), 'z': -np.sin(rad)})
-    return ({'x': sin_val, 'y': offset, 'z': z_sign * cos_val},
-            {'x': 0, 'y': -1, 'z': 0})
+    if front_eye is None or front_up is None:
+        front_eye, front_up = _page_front_camera(None)
+    return _orbit_frame_camera(front_eye, front_up, rotate_plane, deg,
+                               distance)
 
 
 def _render_video_frames_via_session(figure, pic_folder, degrees, *,
                                      rotate_plane, view_distance, width,
                                      height, scale, timeout, background_color,
-                                     z_sign=-1):
+                                     front_eye=None, front_up=None):
     """Capture rotating frames through one long-lived Chrome session.
 
     The page loads once and the camera then rotates in JavaScript, so a full
@@ -22511,7 +22724,8 @@ def _render_video_frames_via_session(figure, pic_folder, degrees, *,
             for i, deg in enumerate(degrees):
                 frame_path = os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg')
                 cam_eye, cam_up = _rotation_camera(
-                    deg, rotate_plane, distance, z_sign)
+                    deg, rotate_plane, distance,
+                    front_eye=front_eye, front_up=front_up)
                 session.set_camera(eye=cam_eye, up=cam_up)
                 session.screenshot(frame_path, convert_to_jpeg=True,
                                    jpeg_quality=95, auto_crop=False,
@@ -22569,7 +22783,10 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
         - 1.0 → 360 frames for full rotation (12 sec video at 30 fps)
         - 2.0 → 180 frames for full rotation (6 sec video at 30 fps)
     rotate : str, default 'horizontal'
-        Rotation direction: 'horizontal' or 'vertical'.
+        Rotation direction: 'horizontal' (turntable around the family's
+        dorsal-ventral axis) or 'vertical' (the flip over its lateral axis).
+        Both orbit the frontal camera the page itself opens on, so a stored
+        BANC page turntables in BANC axes.
     output_dir : str, optional
         Directory to save video output. If None, uses the directory containing html_file.
     use_existing_images : bool, default True
@@ -22648,6 +22865,9 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
     saveas = os.path.splitext(os.path.basename(html_file))[0]
     
     # Handle rotate parameter
+    # Both planes orbit the page's own frontal camera (see _orbit_frame_camera):
+    # 'horizontal' is the turntable around the family's dorsal-ventral axis,
+    # 'vertical' the flip over its lateral axis.
     if rotate == 'horizontal':
         rotate_plane = 'xz'
     elif rotate == 'vertical':
@@ -22656,6 +22876,8 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
         rotate_plane = 'xz'
     
     # Set defaults
+    # view_direction remains accepted for call compatibility; the orbit now
+    # derives every frame from the page's own frontal camera instead.
     view_direction = kwargs.pop('view_direction', (1, -1))
     view_distance = kwargs.pop('view_distance', 2.2)
     synapse_size = kwargs.pop('synapse_size', 1)
@@ -22664,11 +22886,10 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
         kwargs['scale'] = 2
     
     print(f'📂 Loading figure from: {html_file}')
+    manifest = read_visualization_manifest(html_file)
     if background_color is None:
         # A re-export should composite on the background the run itself used.
-        background_color = (
-            read_visualization_manifest(html_file).get('background_color')
-            or 'white')
+        background_color = manifest.get('background_color') or 'white'
     try:
         fig_loaded = figure_from_plotly_html(html_file)
         fig_traces = fig_loaded.data
@@ -22681,10 +22902,31 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
         trace.showlegend = False
         if hasattr(trace, 'marker'):
             trace.marker.size = synapse_size
-    
+
     fig_layout = go.Layout(margin=dict(l=1, r=1, b=1, t=1, pad=0))
     fig_new = go.Figure(data=fig_traces, layout=fig_layout)
-    
+
+    # The orbit derives from the page's own frontal camera, so a re-export
+    # turns the scene around the axes the page itself opens on -- a BANC page
+    # turntables around its dorsal axis from its front, not the default
+    # family's Z. Pages that never baked a camera fall back to the family the
+    # run manifest names, then to the default family's frontal direction.
+    try:
+        baked_camera = fig_loaded.layout.scene.camera
+        page_camera = {
+            'eye': {k: float(getattr(baked_camera.eye, k) or 0) for k in 'xyz'},
+            'up': {k: float(getattr(baked_camera.up, k) or 0) for k in 'xyz'},
+        }
+    except (AttributeError, TypeError, ValueError):
+        page_camera = None
+    if page_camera and any(page_camera['eye'].values()):
+        front_eye, front_up = _page_front_camera(page_camera)
+    else:
+        front = dataset_view_cameras(
+            str(manifest.get('dataset') or 'hemibrain:v1.2.1'),
+            manifest.get('brain_mesh'))['Front']
+        front_eye, front_up = dict(front['eye']), dict(front['up'])
+
     fig_new.update_layout(
         sliders=[],
         scene=dict(
@@ -22694,8 +22936,8 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
             zaxis={'visible': False},
         ),
         scene_camera=dict(
-            up=dict(x=0, y=-1, z=0),
-            eye=dict(x=0, y=0, z=-view_distance),
+            up=dict(front_up),
+            eye={k: front_eye[k] * view_distance for k in 'xyz'},
         ),
     )
     
@@ -22742,7 +22984,7 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
                     scale=kwargs.get('scale') or 2,
                     timeout=timeout,
                     background_color=background_color,
-                    z_sign=_page_z_sign(html_file),
+                    front_eye=front_eye, front_up=front_up,
                 )
                 frames_rendered = True
             except Exception as e:
@@ -22752,18 +22994,13 @@ def export_video_from_html(html_file, fps=30, degree_per_frame=1.0, rotate='hori
         if not frames_rendered:
             print(f'🎬 Rendering {len(steps_to_write)} frames at {fps} fps...')
             t0 = time.time()
-            
+
             for i, deg in enumerate(steps_to_write):
-                rad_i = np.deg2rad(deg)
-                x = view_distance * np.sin(rad_i) * view_direction[0]
-                y = view_distance * np.cos(rad_i) * view_direction[1]
-                
-                if rotate_plane == 'xy':
-                    fig_new.update_layout(scene_camera=dict(eye=dict(x=x, y=y, z=0)))
-                elif rotate_plane == 'yz':
-                    fig_new.update_layout(scene_camera=dict(eye=dict(x=0, y=x, z=y)))
-                elif rotate_plane == 'xz':
-                    fig_new.update_layout(scene_camera=dict(eye=dict(x=x, y=0, z=y)))
+                frame_eye, frame_up = _rotation_camera(
+                    deg, rotate_plane, view_distance,
+                    front_eye=front_eye, front_up=front_up)
+                fig_new.update_layout(scene_camera=dict(
+                    eye=frame_eye, up=frame_up))
                 
                 fig_path = os.path.join(pic_folder, f'deg_{deg:.1f}.jpeg')
                 

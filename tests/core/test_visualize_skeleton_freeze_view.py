@@ -76,18 +76,23 @@ def scene_figure():
     return fig
 
 
-def run_page_js(expression, ranges, *, gd='null', preamble=''):
+def run_page_js(expression, ranges, *, gd='null', preamble='',
+                update_body=None):
     """Execute the emitted freeze helpers under node against plain stubs.
 
     The slice starts at ``ratio()`` and stops at ``decorate()``, which is
     everything in the script that reads no DOM: the pin/fit builders and the
     pivot helpers. ``frozen`` and ``pinnedCenter`` live outside that window in
     the real IIFE, so the program declares them itself and a test can seed
-    ``preamble`` to set state.
+    ``preamble`` to set state. ``update_body`` replaces the default
+    record-and-return ``update()`` stub -- the view-reset hook test needs one
+    that also lands the write in ``_fullLayout``, the way plotly would.
     """
     script = make_vis()._freeze_view_html(ranges)
     start = script.index('function ratio() {')
     end = script.index('function decorate() {')
+    update_js = (update_body
+                 or 'function update(u) { APPLIED.push(u); return true; }')
     program = (
         f'var CONFIG = {json.dumps({"ranges": ranges})};\n'
         "var AXES = ['x', 'y', 'z'];\n"
@@ -96,7 +101,7 @@ def run_page_js(expression, ranges, *, gd='null', preamble=''):
         'var pinnedCenter = null;\n'
         'var APPLIED = [];\n'
         'function graphDiv() { return GD; }\n'
-        'function update(u) { APPLIED.push(u); return true; }\n'
+        f'{update_js}\n'
         f'{script[start:end]}\n'
         f'{preamble}\n'
         f'console.log(JSON.stringify({expression}));'
@@ -189,7 +194,10 @@ class TestFreezeViewHtml:
     def test_script_pins_the_baked_ranges(self):
         script = make_vis()._freeze_view_html(RANGES)
         assert 'drocat-freeze-toggle' in script
-        assert json.dumps({'ranges': RANGES, 'hiddenHalf': False}) in script
+        baked = json.loads(script.split('var CONFIG = ')[1].split('};')[0]
+                           + '}')
+        assert baked['ranges'] == RANGES
+        assert baked['hiddenHalf'] is False
         assert "'scene.xaxis.range': r.x" in script
         assert "'scene.xaxis.autorange': false" in script
 
@@ -205,9 +213,11 @@ class TestFreezeViewHtml:
         and moving it would be a framing change no one asked for.
         """
         hidden = make_vis()._freeze_view_html(RANGES, hidden_half=True)
-        assert json.dumps({'ranges': RANGES, 'hiddenHalf': True}) in hidden
+        assert json.loads(hidden.split('var CONFIG = ')[1].split('};')[0]
+                          + '}')['hiddenHalf'] is True
         shown = make_vis()._freeze_view_html(RANGES)
-        assert json.dumps({'ranges': RANGES, 'hiddenHalf': False}) in shown
+        assert json.loads(shown.split('var CONFIG = ')[1].split('};')[0]
+                          + '}')['hiddenHalf'] is False
         for script in (hidden, shown):
             start = script.index('setFrozen(true);')
             # decorate() guards on `if (button)` too, so end the slice at the
@@ -335,7 +345,9 @@ class TestFrozenAspectRatio:
         baked = script.split('var CONFIG = ')[1].split('};')[0] + '}'
         # One box, plus the note that says whether the box spans more than the
         # page draws -- which is a pivot question, not a second box.
-        assert list(json.loads(baked)) == ['ranges', 'hiddenHalf']
+        # viewCameras (the frontal orientations the reset watcher matches
+        # against) rides along with the framing pair.
+        assert {'ranges', 'hiddenHalf'} <= set(json.loads(baked))
 
     def test_the_range_padding_keeps_the_raw_axis_ratios(self):
         """A proportional pad, so freezing cannot change the anatomy's shape.
@@ -371,9 +383,10 @@ class TestRecenterAndRepin:
         if shutil.which('node') is None:
             pytest.skip('node is not installed')
 
-    def _run(self, expression, gd='null', preamble=''):
+    def _run(self, expression, gd='null', preamble='', update_body=None):
         """Run *expression* under node against the page's own helper functions."""
-        return run_page_js(expression, self.RANGES, gd=gd, preamble=preamble)
+        return run_page_js(expression, self.RANGES, gd=gd, preamble=preamble,
+                           update_body=update_body)
 
     def test_the_pivot_follows_the_visible_traces(self):
         """Hidden content must not pull the pivot, and neither do placeholders.
@@ -518,6 +531,255 @@ class TestRecenterAndRepin:
         """One re-pin path, not two racing each other over the same gesture."""
         script = make_vis()._freeze_view_html(self.RANGES)
         assert 'plotly_doubleclick' not in script
+
+    def test_recenter_writes_even_when_the_pivot_is_the_box_centre(self):
+        """The write is also the internal-orbit-camera sync, so no skip.
+
+        With a half revealed the visible midpoint can equal the box centre,
+        and a view click has then already set the pivot to that same point --
+        but plotly's gl scene keeps its own orbit camera, and only a dotted
+        centre write syncs it. Skipping the "redundant" write let the next
+        view click re-sync the layout back from the stale internal pivot.
+        The write's own echo carries dotted keys, so this cannot loop.
+        """
+        gd = json.dumps({
+            '_fullData': [{'x': [1, 3], 'y': [0, 2], 'z': [3, 5],
+                           'visible': True}],
+            '_fullLayout': {'scene': {'camera': {'center': {
+                'x': 0, 'y': 0, 'z': 0}}}},
+        })
+        seen = self._run('(recenter(), {writes: APPLIED.length, '
+                         'pinned: pinnedCenter})', gd)
+        assert seen['writes'] == 1
+        assert seen['pinned'] == {'x': 0.0, 'y': 0.0, 'z': 0.0}
+
+    def test_a_view_preset_reset_is_reaimed_on_the_visible_traces(self):
+        """The View presets rewrite the whole camera with the box pivot.
+
+        The emitted hook answers a relayout carrying ``scene.camera`` whose
+        pivot is back at the default AND whose eye/up belong to one of the
+        page's presets: a hidden VNC must not win the pivot back just because
+        the viewer asked for the top view. A moved pivot (an orbit drag) and
+        events without a camera are ignored, and the write's own echo is inert
+        because it carries dotted keys the watcher does not answer.
+        """
+        script = make_vis()._freeze_view_html(self.RANGES)
+        head = "gd.on('plotly_relayout', function(event) {"
+        start = script.index(head)
+        end = script.index('});', start) + len('});')
+        hook = script[start:end]
+        assert 'centerIsDefault()' in hook and 'recenter()' in hook
+        assert 'cameraMatchesViewPreset' in hook
+
+        gd_stub = (
+            "var gd = { handlers: [],\n"
+            "  _fullData: [{x: [1, 3], y: [0, 2], z: [1, 3], visible: true}],\n"
+            "  _fullLayout: {scene: {camera: "
+            "{eye: {x: 0, y: 0, z: -2.5}, up: {x: 0, y: -1, z: 0}, "
+            "center: {x: 0, y: 0, z: 0}}}} };\n"
+            "gd.on = function (ev, fn) { this.handlers.push([ev, fn]); };\n"
+            "GD = gd;\n"
+            "CONFIG.viewCameras = [{eye: {x: 0, y: 0, z: -2.5}, "
+            "up: {x: 0, y: -1, z: 0}}];\n"
+            + hook + "\n"
+        )
+        update_body = """
+function update(u) {
+  APPLIED.push(u);
+  for (var k in u) {
+    var m = /^(scene\\.camera\\.(center|eye|up))\\.([xyz])$/.exec(k);
+    if (m && u[k] !== null) {
+      GD._fullLayout.scene.camera[m[2]][m[3]] = u[k];
+    }
+  }
+  return true;
+}
+"""
+        expression = """
+(function(){
+  var fn = null;
+  for (var i = 0; i < gd.handlers.length; i++) {
+    if (gd.handlers[i][0] === 'plotly_relayout') { fn = gd.handlers[i][1]; }
+  }
+  if (!fn) { return {error: 'hook not registered'}; }
+  // Plotly applies a relayout to the layout BEFORE notifying handlers, so
+  // the hook reads the incoming camera off the layout, not off the event.
+  // fire() models that; without the merge the stub would misread an orbit
+  // drag (moved eye) as a preset.
+  function fire(event) {
+    var cam = event && event['scene.camera'];
+    if (cam) {
+      var c = GD._fullLayout.scene.camera;
+      AXES.forEach(function(a){
+        if (cam.center && cam.center[a] !== undefined) { c.center[a] = cam.center[a]; }
+        if (cam.eye && cam.eye[a] !== undefined) { c.eye[a] = cam.eye[a]; }
+        if (cam.up && cam.up[a] !== undefined) { c.up[a] = cam.up[a]; }
+      });
+    }
+    for (var k in event) {
+      var m = /^(scene\\.camera\\.(center|eye|up))\\.([xyz])$/.exec(k);
+      if (m) { GD._fullLayout.scene.camera[m[2]][m[3]] = event[k]; }
+    }
+    fn(event);
+  }
+  fire({});                                                 // not a camera write
+  var plain = APPLIED.length;
+  fire({'scene.camera': {eye: {x: 0.7, y: 0.7, z: 0.7},
+        up: {x: 0, y: -1, z: 0}, center: {x: 0, y: 0, z: 0}}});  // an orbit drag
+  var orbit = APPLIED.length - plain;
+  fire({'scene.camera': {eye: {x: 0, y: 0, z: -2.5},
+        up: {x: 0, y: -1, z: 0}, center: {x: 0, y: 0, z: 0}}});  // a view preset
+  var preset = APPLIED.length - orbit - plain;
+  fire({'scene.camera.center.x': 0, 'scene.camera.center.y': 0,
+        'scene.camera.center.z': -0.25});                     // our own echo
+  var echo = APPLIED.length - preset - orbit - plain;
+  return {plain: plain, orbit: orbit, preset: preset, echo: echo,
+          pivot: GD._fullLayout.scene.camera.center,
+          pinned: pinnedCenter};
+})()
+"""
+        seen = self._run(expression, preamble=gd_stub,
+                         update_body=update_body)
+        assert seen == {'plain': 0, 'orbit': 0, 'preset': 1, 'echo': 0,
+                        'pivot': {'x': 0.0, 'y': 0.0, 'z': -0.25},
+                        'pinned': {'x': 0.0, 'y': 0.0, 'z': -0.25}}
+
+    def test_the_modebar_reset_dotted_event_reaims_the_pivot(self):
+        """The modebar's reset emits dotted scene.camera.* keys -- not the
+        whole-object form a preset click uses -- and restores the page's
+        opening camera. The watcher must answer it too, or the frozen page's
+        pivot dies on the modebar's home button.
+        """
+        script = make_vis()._freeze_view_html(self.RANGES)
+        head = "gd.on('plotly_relayout', function(event) {"
+        start = script.index(head)
+        end = script.index('});', start) + len('});')
+        hook = script[start:end]
+
+        gd_stub = (
+            "var gd = { handlers: [],\n"
+            "  _fullData: [{x: [1, 3], y: [0, 2], z: [1, 3], visible: true}],\n"
+            "  _fullLayout: {scene: {camera: "
+            "{eye: {x: 0, y: 0, z: -2.5}, up: {x: 0, y: -1, z: 0}, "
+            "center: {x: 0, y: 0, z: 0}}}} };\n"
+            "gd.on = function (ev, fn) { this.handlers.push([ev, fn]); };\n"
+            "GD = gd;\n"
+            "CONFIG.viewCameras = [{eye: {x: 0, y: 0, z: -2.5}, "
+            "up: {x: 0, y: -1, z: 0}}];\n"
+            + hook + "\n"
+        )
+        update_body = """
+function update(u) {
+  APPLIED.push(u);
+  for (var k in u) {
+    var m = /^(scene\\.camera\\.(center|eye|up))\\.([xyz])$/.exec(k);
+    if (m && u[k] !== null) {
+      GD._fullLayout.scene.camera[m[2]][m[3]] = u[k];
+    }
+  }
+  return true;
+}
+"""
+        expression = """
+(function(){
+  var fn = null;
+  for (var i = 0; i < gd.handlers.length; i++) {
+    if (gd.handlers[i][0] === 'plotly_relayout') { fn = gd.handlers[i][1]; }
+  }
+  // The reset already applied itself to the layout (dotted keys), as the
+  // update stub models; the event then reaches the watcher.
+  fn({'scene.camera.eye': {x: 0, y: 0, z: -2.5},
+      'scene.camera.up': {x: 0, y: -1, z: 0},
+      'scene.camera.center': {x: 0, y: 0, z: 0}});
+  return {writes: APPLIED.length,
+          pivot: GD._fullLayout.scene.camera.center};
+})()
+"""
+        seen = self._run(expression, preamble=gd_stub,
+                         update_body=update_body)
+        assert seen == {'writes': 1, 'pivot': {'x': 0.0, 'y': 0.0, 'z': -0.25}}
+
+    def test_an_orbit_drag_ending_on_the_default_pivot_is_left_alone(self):
+        """Orbiting never moves the centre, so on a page that never
+        re-centred every drag ends with the default pivot -- and must not be
+        'corrected' into a frame jump just because the eye belongs to no
+        preset.
+        """
+        script = make_vis()._freeze_view_html(self.RANGES)
+        head = "gd.on('plotly_relayout', function(event) {"
+        start = script.index(head)
+        end = script.index('});', start) + len('});')
+        hook = script[start:end]
+
+        gd_stub = (
+            "var gd = { handlers: [],\n"
+            "  _fullData: [{x: [0.5, 1.5], y: [0.5, 1.5], z: [3, 5],"
+            " visible: true}],\n"   # visible midpoint off the box centre
+            "  _fullLayout: {scene: {camera: "
+            "{eye: {x: 0.7, y: 0.7, z: 0.7}, up: {x: 0, y: -1, z: 0}, "
+            "center: {x: 0, y: 0, z: 0}}}} };\n"
+            "gd.on = function (ev, fn) { this.handlers.push([ev, fn]); };\n"
+            "GD = gd;\n"
+            "CONFIG.viewCameras = [{eye: {x: 0, y: 0, z: -2.5}, "
+            "up: {x: 0, y: -1, z: 0}}];\n"
+            + hook + "\n"
+        )
+        expression = """
+(function(){
+  var fn = null;
+  for (var i = 0; i < gd.handlers.length; i++) {
+    if (gd.handlers[i][0] === 'plotly_relayout') { fn = gd.handlers[i][1]; }
+  }
+  fn({'scene.camera': {eye: {x: 1.1, y: 0.6, z: 0.9},
+       up: {x: 0, y: -1, z: 0}, center: {x: 0, y: 0, z: 0}}});
+  return {writes: APPLIED.length,
+          centerStillDefault: centerIsDefault()};
+})()
+"""
+        seen = self._run(expression, preamble=gd_stub)
+        assert seen == {'writes': 0, 'centerStillDefault': True}
+
+    def test_pinned_pivot_matches_current_tracks_the_visible_set(self):
+        """``pinnedPivotMatchesCurrent`` is what makes re-freezing honest."""
+        old = json.dumps({
+            '_fullData': [{'x': [1, 3], 'y': [0, 2], 'z': [1, 3],
+                           'visible': True}],
+            '_fullLayout': {'scene': {'camera': {'center': {
+                'x': 0, 'y': 0, 'z': 0}}}},
+        })
+        new = json.dumps({
+            '_fullData': [{'x': [1, 3], 'y': [0, 2], 'z': [1, 7],
+                           'visible': True}],
+            '_fullLayout': {'scene': {'camera': {'center': {
+                'x': 0, 'y': 0, 'z': 0}}}},
+        })
+        preamble = 'pinnedCenter = {x: 0, y: 0, z: -0.25};'
+        assert self._run('pinnedPivotMatchesCurrent()', old,
+                         preamble=preamble) is True
+        assert self._run('pinnedPivotMatchesCurrent()', new,
+                         preamble=preamble) is False
+
+    def test_refreeze_recomputes_when_the_pivot_went_stale(self):
+        """Re-freezing after the visible set changed must recompute the
+        pivot, not restore the remembered one: the brain-only pivot would
+        swing the revealed union off-pivot on every orbit.
+        """
+        script = make_vis()._freeze_view_html(self.RANGES)
+        assert 'if (pinnedPivotMatchesCurrent()) { restoreCenter(); }' in script
+        assert 'else { recenter(); }' in script
+
+    def test_the_reset_hook_sits_beside_the_repin_not_inside_it(self):
+        """``repaint`` still never moves the camera; the hook is its own path.
+
+        The reveal contract (a restyle may only restore the box) is what the
+        older listener is for; the pivot re-aim must not leak into it.
+        """
+        script = make_vis()._freeze_view_html(self.RANGES)
+        assert "gd.on('plotly_relayout', repaint);" in script
+        repaint = script[script.index('function repaint() {'):
+                         script.index("gd.on('plotly_relayout'")]
+        assert 'recenter()' not in repaint
+        assert "gd.on('plotly_relayout', function(event) {" in script
 
 
 class TestInjection:

@@ -122,7 +122,8 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   rotating mp4/gif from a stored page. `export_method='webdriver'` renders every
   frame through a single `WebDriverExportSession`
   (`_render_video_frames_via_session`, one page load plus `_rotation_camera`
-  per frame, orbit handedness from `_page_z_sign`) and falls back to kaleido
+  per frame, orbiting the frontal camera the page itself baked) and falls
+  back to kaleido
   when no browser can be started; `background_color=None` takes the value the
   run recorded. Writes `pics_{fps}fps_{plane}/`,
   `{stem}_video_{h|v}_{forward|backward}.mp4` and the matching GIFs.

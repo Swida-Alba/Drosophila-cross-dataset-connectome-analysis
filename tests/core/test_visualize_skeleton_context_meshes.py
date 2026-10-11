@@ -506,7 +506,9 @@ class TestOneBoxBaking:
         script = make_vis()._freeze_view_html(
             VisualizeSkeleton._scene_data_ranges(self._figure([900, 901])))
         baked = script.split('var CONFIG = ')[1].split('};')[0] + '}'
-        assert list(json.loads(baked)) == ['ranges', 'hiddenHalf']
+        # viewCameras (the frontal orientations the reset watcher matches
+        # against) rides along; it is not box machinery.
+        assert {'ranges', 'hiddenHalf'} <= set(json.loads(baked))
         for gone in ('syncBox', 'contextIsShown', 'activeRanges',
                      'CONFIG.reveal', '"reveal"'):
             assert gone not in script

@@ -44,7 +44,7 @@ def bare(**attrs):
     return vis
 
 
-def scene(tmp_path, saveas='scene'):
+def scene(tmp_path, saveas='scene', scene_camera=None):
     """Write a small viewer page (no plotly.js bundle) and return its path."""
     vis = bare()
     fig = go.Figure()
@@ -60,6 +60,8 @@ def scene(tmp_path, saveas='scene'):
                      k=[2], name='Brain mesh', legendgroup='KC1a')
     mesh.legendrank = 2e8
     fig.add_trace(mesh)
+    if scene_camera:
+        fig.update_layout(scene=dict(camera=scene_camera))
     path = tmp_path / f'{saveas}.html'
     vis._write_plotly_html(fig, str(path), include_plotlyjs=False)
     return path
@@ -378,6 +380,33 @@ class TestExportFromHtml:
         assert seen['args'] == ('hemibrain:v1.2.1', None)
         assert seen['kwargs'] == {'lowercase': True}
         assert 'front' in self.calls[0]['view_cameras']
+
+    def test_legacy_banc_page_infers_its_camera_family(self, tmp_path):
+        """A pre-manifest BANC page must not be re-exported through the
+        default family's cameras: the frontal view the page itself opens on
+        names its family, so its front profile looks at the fly's face
+        instead of down its dorsal axis.
+        """
+        page = scene(tmp_path, saveas='legacy_banc', scene_camera={
+            'eye': {'x': 0, 'y': -2.5, 'z': 0},
+            'up': {'x': 0, 'y': 0, 'z': 1},
+            'center': {'x': 0, 'y': 0, 'z': 0},
+        })
+        export_individuals_from_html(str(page), views=['front'])
+        cameras = self.calls[0]['view_cameras']
+        assert cameras['front']['eye'] == {'x': 0, 'y': -2.5, 'z': 0}
+        assert cameras['front']['up'] == {'x': 0, 'y': 0, 'z': 1}
+
+    def test_legacy_page_with_an_unknown_camera_keeps_the_fallback(
+            self, tmp_path):
+        page = scene(tmp_path, saveas='legacy_odd', scene_camera={
+            'eye': {'x': 1.25, 'y': 1.25, 'z': 1.25},
+            'up': {'x': 0, 'y': 0, 'z': 1},
+        })
+        export_individuals_from_html(str(page), views=['front'])
+        cameras = self.calls[0]['view_cameras']
+        assert cameras['front']['eye'] == {'x': 0, 'y': 0, 'z': -2.5}
+        assert cameras['front']['up'] == {'x': 0, 'y': -1, 'z': 0}
 
     def test_a_page_of_only_background_profiles_nothing_but_does_not_fail(
             self, tmp_path):

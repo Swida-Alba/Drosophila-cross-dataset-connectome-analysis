@@ -234,8 +234,10 @@
           traces — and pressing <b>Fit clears that pivot</b>, because the offset
           is normalized against the pinned box and fit mode shrinks the box onto
           what you can see, so a leftover number would leave the anatomy hanging
-          off the rotation centre. Freezing again restores the pivot you chose,
-          unless you panned in the meantime. A page that opens with a context
+          off the rotation centre. Freezing again restores the pivot you chose
+          while the visible traces are still the ones it was computed from;
+          reveal or hide a row in between and the pivot is recomputed on what
+          is visible now. A page that opens with a context
           half embedded but hidden <b>runs this control itself at setup</b>, so
           its orbit starts on the anatomy you can see rather than on the middle
           of the gap between the two halves — measured on a male-cns brain-only
@@ -249,9 +251,15 @@
           drawn by the page's own stylesheet rather than a
           native tooltip, which costs a second to appear. The freeze also
           re-applies itself after the page's single
-          <i>reset camera</i> button and a double-click, which restore a layout
+          <i>reset camera</i> button, which restores a layout
           snapshot taken before the freeze existed and would otherwise hand the
-          scaling back to the visible traces. Plotly's second reset button is
+          scaling back to the visible traces; the same click also lands the
+          camera back on the view the page opened with, so the
+          <b>rotation pivot is re-aimed on the visible traces</b> rather than
+          left at the centre of the whole-scene box. The same re-aim answers
+          every <b>View</b> dropdown entry (Front/Top/…): selecting a view
+          keeps the orbit on the anatomy you can see instead of the middle of
+          the box. Plotly's second reset button is
           removed from the toolbar: the two differ only by which snapshot they
           restore, and the kept one returns the page to the framing it opened
           with. The pin is injected page script
@@ -446,7 +454,11 @@
     Re-export Output panel beside it.
     It reads the figure back out of the page's own <code>Plotly.newPlot(...)</code>
     payload and, when the run wrote one, takes its cameras and background from
-    <code>visualization_manifest.json</code>. Pick a page from <b>Stored 3D
+    <code>visualization_manifest.json</code>. Pages that predate the manifest
+    get the camera family their own frontal view was rendered under (matched
+    against the shared per-dataset table), so a stored BANC page re-exports
+    through BANC axes rather than the default family's. Pick a page from
+    <b>Stored 3D
     Skeleton Page</b> (the viewer HTML of every <code>plot-3d_*</code> run folder
     under the configured output directories and your recent runs, newest first;
     the degraded <code>_simplified.html</code> copies are never offered), set

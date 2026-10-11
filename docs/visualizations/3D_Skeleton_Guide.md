@@ -199,8 +199,8 @@ reexport_output_dir('.../scene.html')      # '.../scene_reexport'
 With `export_method='webdriver'` the frames are rendered by
 `_render_video_frames_via_session`, which loads the page once into a single
 `WebDriverExportSession` and then only moves the camera (`_rotation_camera`,
-using the orbit radius the page itself baked and the handedness its manifest
-recorded, `+1` for MANC scenes via `_page_z_sign`), so a scene too large for
+orbiting the frontal camera the page itself baked, so the turntable follows
+the run's own axis conventions), so a scene too large for
 kaleido can be re-exported at all; if no browser can be started it prints a
 warning and falls back to kaleido, rendering one frame per `write_image()` call.
 `background_color=None` composites the frames on the
