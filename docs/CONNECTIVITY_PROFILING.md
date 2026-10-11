@@ -10,7 +10,6 @@ The `ConnectivityProfiling.py` script compares connectivity profiles within one 
 
 - **Flexible Query Input**: Simple list, nested list with custom names, or CSV file
 - **Nested List Format**: `[['GroupName', [id1, id2]], ['Group2', [id3, 'type']]]`
-- **CSV File Support**: `group_map_csv` parameter (like VisualizeSkeleton's `layer_map_csv`)
 - **Aggregation Levels**: Compare at bodyId-level or type-level (mean pooling)
 - **ALL Metrics Output**: Automatically computes jaccard, cosine, rank_corr, rank_corr_union
 - **Separate Heatmaps**: One heatmap file per metric (not combined)
@@ -91,31 +90,7 @@ comparer = ConnectivityProfileComparer(
 
 Each group is `['GroupName', [list_of_ids_or_types]]`. The group names become the profile labels.
 
-### Option 3: CSV File for Group Mapping
-
-Use a CSV file to define groups (like VisualizeSkeleton's `layer_map_csv`):
-
-```python
-comparer = ConnectivityProfileComparer(
-    query=[],  # Will be overridden by CSV
-    dataset='male-cns:v0.9',
-    group_map_csv='my_groups.csv',  # CSV file path
-)
-```
-
-**CSV Format:**
-```csv
-group,id_type_instance
-Clock,DN1pA
-Clock,DN1pB
-Clock,DN2
-Visual,Mi1
-Visual,Tm3
-Motor,MN1
-Motor,MN2
-```
-
-### Option 4: BodyIds Directly
+### Option 3: BodyIds Directly
 
 Compare individual neuron profiles:
 
@@ -139,8 +114,7 @@ comparer = ConnectivityProfileComparer(
 
 | Parameter       | Description                                                          | Default  |
 | --------------- | -------------------------------------------------------------------- | -------- |
-| `query`         | List of types/bodyIds, nested list with names, or empty if using CSV | Required |
-| `group_map_csv` | Path to CSV file for group mapping                                   | `None`   |
+| `query`         | List of types/bodyIds, nested list with names, or empty if using a `custom_mapping_file` preset | Required |
 
 ### Profile Construction
 
@@ -381,29 +355,7 @@ comparer = ConnectivityProfileComparer(
 results = comparer.run()
 ```
 
-### Workflow 3: From CSV File
-
-Create `neuron_groups.csv`:
-```csv
-group,id_type_instance
-Lamina,L1
-Lamina,L2
-Lamina,L3
-Medulla,Mi1
-Medulla,Tm1
-Medulla,Tm3
-```
-
-```python
-comparer = ConnectivityProfileComparer(
-    query=[],
-    dataset='male-cns:v0.9',
-    group_map_csv='neuron_groups.csv',
-)
-results = comparer.run()
-```
-
-### Workflow 4: Analyze Homolog Candidates
+### Workflow 3: Analyze Homolog Candidates
 
 ```python
 # Compare specific bodyIds that may be homologs
@@ -434,7 +386,6 @@ reporting a completed run with no files). Check that:
 
 1. Neuron types exist in the dataset
 2. BodyIds are valid for the dataset
-3. group_map_csv file path is correct and has required columns
 
 One type whose query resolves to a single row is still a valid run: its
 `bodyid_level/` matrices compare that type's own neurons.

@@ -105,6 +105,24 @@ expected outputs, and a runnable launcher command.
 | 3D Skeleton + Net-Viz | [visualization.md](tabs/visualization.md) | `plot3d_skeleton` → `VisualizeSkeleton.plot_neurons`; `plot_path` → `VisualizePath.visualize` |
 | Settings / Datasets & Cache | [settings.md](tabs/settings.md) | dataset_service, `SkeletonPuller`, cache builders |
 
+## Custom grouping and label mapping (cross-cutting)
+
+Three comparison backends accept a **LabelMapper preset JSON** (the format
+the grouping board exports — see the in-app guide
+`docs/ui_guides/label_mapper.html`): Connectivity ▸ Comparison
+(`custom_mapping_file` defines the comparison rows; `label_mapping_file`
+applies the same labels as a tier-0 overlay without touching rows, and
+`group_partners_by_mapping` collapses the partner/feature space through
+the groups), Morphology ▸ Comparison (`custom_mapping_file` for custom
+rows; `label_mapping_file` for the overlay), and the cross-dataset
+morphology run (`label_mapping_file`). A loaded preset is the **tier-0
+identity**: labels are never re-resolved through the auto type mapper,
+bodyId axes read `{bodyId}_{label}({native})` (dropped when the label
+already is the native name), and the cross run writes a label-aligned
+`morph_labeltype_matrix.csv` beside the native one. The legacy
+`group_map_csv` CSV input on the profiling comparer is retired (raises
+with migration guidance).
+
 ## Standard agent workflow
 
 1. **Clarify the analysis**: dataset (NeuPrint vs FAFB/BANC local), source/target

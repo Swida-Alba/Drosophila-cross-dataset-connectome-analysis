@@ -2535,28 +2535,14 @@ def test_comparer_query_helpers(tmp_path):
     assert comp._canonical_label('Mi1', DS_A) == 'Mi1'
 
 
-def test_comparer_parse_group_map_csv(tmp_path):
-    comp = _comparer(['T1'], tmp_path)
-
-    with pytest.raises(FileNotFoundError):
-        comp._parse_group_map_csv(str(tmp_path / 'nope.csv'))
-
-    bad = tmp_path / 'bad.csv'
-    bad.write_text('a,b\n1,2\n', encoding='utf-8')
-    with pytest.raises(ValueError):
-        comp._parse_group_map_csv(str(bad))
-
-    good = tmp_path / 'groups.csv'
-    good.write_text(
-        'group,id_type_instance\n'
-        'G1,Mi1\nG1,12345\nG2,Tm3\n', encoding='utf-8')
-    normalized, names = comp._parse_group_map_csv(str(good))
-    assert names == ['G1', 'G2']
-    assert normalized == [['Mi1', 12345], ['Tm3']]
-
-    # group_map_csv at init overrides the query
-    comp2 = _comparer(['ignored'], tmp_path, group_map_csv=str(good))
-    assert comp2._custom_group_names == ['G1', 'G2']
+def test_comparer_group_map_csv_retired():
+    """group_map_csv was retired (custom_mapping_file / label_mapping_file
+    are the two surviving conventions) — the kwarg exists only as a
+    tombstone that raises with migration guidance, before any work."""
+    with pytest.raises(ValueError, match="group_map_csv was retired"):
+        ConnectivityProfileComparer(
+            query=['T1'], dataset='male-cns:v1.0', verbose=False,
+            group_map_csv='groups.csv')
 
 
 def test_comparer_load_custom_groups_from_mapping(tmp_path):
@@ -3113,13 +3099,6 @@ def test_comparer_verbose_log_and_progress(tmp_path):
 
 
 def test_comparer_multi_init_with_mappings(tmp_path):
-    csv = tmp_path / 'groups.csv'
-    csv.write_text('group,id_type_instance\nG1,Mi1\nG2,Tm3\n', encoding='utf-8')
-    comp = ConnectivityProfileComparer(
-        ['ignored'], datasets=[DS_A, DS_B], group_map_csv=str(csv),
-        verbose=False, use_auto_type_mapping=False)
-    assert comp._custom_group_names == ['G1', 'G2']
-
     preset = tmp_path / 'preset.json'
     preset.write_text(json.dumps({'source_mapping': {
         'custom_label': ['g1'], DS_A: [['T1']]}

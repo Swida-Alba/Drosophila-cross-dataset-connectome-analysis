@@ -6,7 +6,7 @@ Its ``aggregation_level`` must now be functional:
   types, each an independent row
 - 'bodyid': every individual neuron is its own row ({bodyId}_{type})
 - 'custom': rows are user-defined custom groups from a LabelMapper preset
-  (custom_mapping_file), a nested-list query or group_map_csv
+  (custom_mapping_file) or a nested-list query
 """
 
 import json
