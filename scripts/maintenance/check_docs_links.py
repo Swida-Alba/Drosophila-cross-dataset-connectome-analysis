@@ -86,6 +86,11 @@ def main() -> int:
             parts = set(f.parts)
             if 'archive' in parts or 'audits' in parts or 'checked' in parts:
                 continue
+            if 'ui_guides' in parts and 'src' in parts:
+                # Guide build sources: their relative links resolve from the
+                # RENDERED page's location (docs/ui_guides/<name>.html), not
+                # from src/ — the committed rendered page is what ships.
+                continue
             targets.append(f)
     broken = []
     for target in targets:

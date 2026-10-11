@@ -38,6 +38,10 @@ jobs:
           fi
       - name: Documentation references resolve
         run: python scripts/maintenance/check_docs_links.py
+      - name: UI guide pages are built from their sources
+        # docs/ui_guides/src/*.md is the source of truth; a stale committed
+        # page means someone edited the rendered HTML (or forgot the build).
+        run: python scripts/build_ui_guides.py --check
       - name: Dependency pins agree across packaging files
         run: python scripts/maintenance/check_pin_consistency.py
 

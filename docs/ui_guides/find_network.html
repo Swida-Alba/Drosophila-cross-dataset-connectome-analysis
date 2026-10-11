@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Find Network - DROCAT Instructions</title>
+  <title>Network - DROCAT Instructions</title>
   <link rel="stylesheet" href="guide.css">
   <script src="guide-theme.js"></script>
 </head>
@@ -14,92 +14,86 @@
     <span class="tag">Connectome</span>
   </header>
   <h1>Network</h1>
-  <p class="lede">
-    Build the mutual direct-connection network among the queried neurons —
-    equivalent to Direct Connections with source == target == the query set.
-    Runs on the FindAllPath backend (enrichment, hemisphere-aware analysis,
-    network + heatmap visualizations without Sankey).
-  </p>
+<p class="lede">Build the mutual direct-connection network among the queried neurons —
+equivalent to Direct Connections with source == target == the query set.
+Runs on the FindAllPath backend (enrichment, hemisphere-aware analysis,
+network + heatmap visualizations without Sankey).</p>
+<div class="callout warn">
+  <b>Limited scope:</b> the network contains only direct connections whose
+  BOTH endpoints are in the queried set — intermediate neurons are never
+  involved. For a more complete network that also involves intermediate
+  neurons, use the <b>Complete Paths</b> tab with <b>Find Reciprocal
+  Connections</b> enabled.
+</div>
 
-  <div class="callout warn">
-    <b>Limited scope:</b> the network contains only direct connections whose
-    BOTH endpoints are in the queried set — intermediate neurons are never
-    involved. For a more complete network that also involves intermediate
-    neurons, use the <b>Complete Paths</b> tab with <b>Find Reciprocal
-    Connections</b> enabled.
-  </div>
+<h2>Quick start</h2>
+<ol>
+<li>Pick the <strong>dataset</strong> and, if needed, an <strong>Output Directory</strong>
+   (it inherits your saved default otherwise).</li>
+<li>Add the <strong>Query Neurons</strong> (e.g. <code>aMe12</code>, <code>PPL101</code>, or an uploaded list).</li>
+<li>Pick the <strong>Threshold Basis</strong> (Synapse count or Connection ratio)
+   and set the threshold — ratio mode reads <strong>Min Connection Ratio
+   (%)</strong>; <strong>Combine Thresholds</strong> (Any one / Both AND) decides
+   whether both gates apply.</li>
+<li>Optionally define <strong>Custom Groups</strong>
+   (label-mapper panel) or set a <strong>Custom Group Name</strong> / <strong>Custom
+   Target Name</strong> / <strong>Save Folder
+   Name</strong> for the run.</li>
+<li>Click <strong>Find Network</strong>.</li>
+</ol>
+<h2>Parameters</h2>
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td>Threshold Basis</td><td>Synapse count</td><td>Which weight basis thresholds the network: raw synapse counts or the connection ratio (weight ÷ all-post incoming weight of the post neuron — comparable across datasets)</td></tr>
+  <tr><td>Min Synapse Count</td><td>3</td><td>Minimum edge weight. Ratio 'or' mode: the backend floors this to 1 — the ratio threshold prunes</td></tr>
+  <tr><td>Min Connection Ratio (%)</td><td>1.0</td><td>Ratio-mode threshold in percent (0.01 raw = 1%): keep edges carrying at least this share of the post neuron's total input. Visible in ratio mode or AND mode</td></tr>
+  <tr><td>Combine Thresholds</td><td>Any one</td><td>'or': one threshold governs (synapse mode → synapse count, ratio mode → ratio). Both (AND): an edge must clear BOTH thresholds, each on its own scale</td></tr>
+  <tr><td>Visualization Edge Limit</td><td>500</td><td>Drawing-only cap on rendered edges; never changes which connections are fetched or exported</td></tr>
+  <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
+  <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving neuron names (Advanced Settings)</td></tr>
+  <tr><td>Use Cache / Cache Only / Drop Untyped Neurons</td><td>on / off / checked</td><td>Advanced Settings: reuse cached connections, force offline, and drop edges touching untyped neurons (same shared predicate as the path tabs)</td></tr>
+  <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
+  <tr><td>Skip BodyId in Output</td><td>on</td><td>Skip the bodyId-level connection table</td></tr>
+  <tr><td>Hemisphere options</td><td>off</td><td><b>Hemisphere-aware</b>, the <b>Hemisphere</b> filter (both/left/right; neurons without a hemisphere side are always included), <b>Symmetry Analysis</b> and <b>Keep Only Hemisphere-Conserved Edges</b> — the last three are auto-unchecked and greyed out unless Hemisphere-aware is on. Same semantics as Complete Paths — see
+    <a href="find_path.html#hemisphere-analysis">Hemisphere analysis</a></td></tr>
+</table>
 
-  <h2>Quick start</h2>
-  <ol>
-    <li>Pick the <b>dataset</b> and, if needed, an <b>Output Directory</b>
-      (it inherits your saved default otherwise).</li>
-    <li>Add the <b>Query Neurons</b> (e.g. <code>aMe12</code>,
-      <code>PPL101</code>, or an uploaded list).</li>
-    <li>Pick the <b>Threshold Basis</b> (Synapse count or Connection ratio)
-      and set the threshold — ratio mode reads <b>Min Connection Ratio
-      (%)</b>; <b>Combine Thresholds</b> (Any one / Both AND) decides
-      whether both gates apply.</li>
-    <li>Optionally define <b>Custom Groups</b>
-      (label-mapper panel) or set a <b>Custom Group Name</b> / <b>Custom
-      Target Name</b> / <b>Save Folder
-      Name</b> for the run.</li>
-    <li>Click <b>Find Network</b>.</li>
-  </ol>
+<h2>Score formulas</h2>
+<p>Connection scores are computed on the <strong>thresholded graph</strong>: on the
+Synapse basis, edges with <code>weight ≥ Min Synapse Count</code>; on
+the Connection-ratio basis, edges with <code>ratio ≥ Min Connection
+Ratio</code> (the synapse count floors to 1 — the ratio is the
+threshold). Ratios use the
+global total incoming weight, so the denominator reflects the whole
+dataset:</p>
+<table>
+  <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
+  <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj over D_t (edge weight ÷ total input to the post neuron)</td><td>0–1</td></tr>
+  <tr><td><code>traversal_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+  <tr><td><code>block_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+</table>
 
-  <h2>Parameters</h2>
-  <table>
-    <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Threshold Basis</td><td>Synapse count</td><td>Which weight basis thresholds the network: raw synapse counts or the connection ratio (weight ÷ all-post incoming weight of the post neuron — comparable across datasets)</td></tr>
-    <tr><td>Min Synapse Count</td><td>3</td><td>Minimum edge weight. Ratio 'or' mode: the backend floors this to 1 — the ratio threshold prunes</td></tr>
-    <tr><td>Min Connection Ratio (%)</td><td>1.0</td><td>Ratio-mode threshold in percent (0.01 raw = 1%): keep edges carrying at least this share of the post neuron's total input. Visible in ratio mode or AND mode</td></tr>
-    <tr><td>Combine Thresholds</td><td>Any one</td><td>'or': one threshold governs (synapse mode → synapse count, ratio mode → ratio). Both (AND): an edge must clear BOTH thresholds, each on its own scale</td></tr>
-    <tr><td>Visualization Edge Limit</td><td>500</td><td>Drawing-only cap on rendered edges; never changes which connections are fetched or exported</td></tr>
-    <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
-    <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving neuron names (Advanced Settings)</td></tr>
-    <tr><td>Use Cache / Cache Only / Drop Untyped Neurons</td><td>on / off / checked</td><td>Advanced Settings: reuse cached connections, force offline, and drop edges touching untyped neurons (same shared predicate as the path tabs)</td></tr>
-    <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
-    <tr><td>Skip BodyId in Output</td><td>on</td><td>Skip the bodyId-level connection table</td></tr>
-    <tr><td>Hemisphere options</td><td>off</td><td><b>Hemisphere-aware</b>, the <b>Hemisphere</b> filter (both/left/right; neurons without a hemisphere side are always included), <b>Symmetry Analysis</b> and <b>Keep Only Hemisphere-Conserved Edges</b> — the last three are auto-unchecked and greyed out unless Hemisphere-aware is on. Same semantics as Complete Paths — see
-      <a href="find_path.html#hemisphere-analysis">Hemisphere analysis</a></td></tr>
-  </table>
-
-  <h2>Score formulas</h2>
-  <p>Connection scores are computed on the <b>thresholded graph</b>: on the
-    Synapse basis, edges with <code>weight ≥ Min Synapse Count</code>; on
-    the Connection-ratio basis, edges with <code>ratio ≥ Min Connection
-    Ratio</code> (the synapse count floors to 1 — the ratio is the
-    threshold). Ratios use the
-    global total incoming weight, so the denominator reflects the whole
-    dataset:</p>
-  <table>
-    <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
-    <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj over D_t (edge weight ÷ total input to the post neuron)</td><td>0–1</td></tr>
-    <tr><td><code>traversal_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
-    <tr><td><code>block_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
-  </table>
-  <p>Full derivations live in
-    <a href="../core-features/ScoreCalculation_Guide.md">Score Calculation Guide</a>.</p>
-
-  <h2>Pair report and type-level refill</h2>
-  <p>Every network run also produces the per-pair explorer report the
-    pathfinding tools generate: the run writes a 1-hop path-compatible
-    table (<code>*_allpaths_type.csv</code>), and the same post-run hook
-    builds <code>path_report.html</code> +
-    <code>paths_pair_breakdown/</code> from it — per-pair breakdown with
-    coverage hovers and a Refill tab.</p>
-  <p>The <b>type-level refill is always produced</b>: every network run
-    writes the full-scope refill records (the <code>type_level_refill/</code>
-    mirror) — every emitted chain re-valued at the synapse &ge; 1 full
-    connection scope. Ratio-basis runs additionally get the
-    complete-at-asked records; synapse-basis runs get refill-asked records
-    when a budget bit, which a network never has — so for networks the
-    refill is full-scope only.</p>
-
-  <h2>Output</h2>
-  <p>The folder name uses the dataset abbreviation (<code>MCNS</code> =
-    male-cns, <code>FAFB</code> = flywire FAFB, ...) and a sanitized query
-    name (e.g. <code>aMe.*</code> → <code>aMe</code>):</p>
-  <pre><code>{output_dir}/find-network_MCNS_aMe_w3r0p0_20260815_142745/
+<p>Full derivations live in
+<a href="../core-features/ScoreCalculation_Guide.md">Score Calculation Guide</a>.</p>
+<h2>Pair report and type-level refill</h2>
+<p>Every network run also produces the per-pair explorer report the
+pathfinding tools generate: the run writes a 1-hop path-compatible
+table (<code>*_allpaths_type.csv</code>), and the same post-run hook
+builds <code>path_report.html</code> +
+<code>paths_pair_breakdown/</code> from it — per-pair breakdown with
+coverage hovers and a Refill tab.</p>
+<p>The <strong>type-level refill is always produced</strong>: every network run
+writes the full-scope refill records (the <code>type_level_refill/</code>
+mirror) — every emitted chain re-valued at the synapse &ge; 1 full
+connection scope. Ratio-basis runs additionally get the
+complete-at-asked records; synapse-basis runs get refill-asked records
+when a budget bit, which a network never has — so for networks the
+refill is full-scope only.</p>
+<h2>Output</h2>
+<p>The folder name uses the dataset abbreviation (<code>MCNS</code> =
+male-cns, <code>FAFB</code> = flywire FAFB, ...) and a sanitized query
+name (e.g. <code>aMe.*</code> → <code>aMe</code>):</p>
+<pre><code>{output_dir}/find-network_MCNS_aMe_w3r0p0_20260815_142745/
   parameters.txt, all_attributes.json
   *_allpaths_type.csv              # 1-hop path table (pair-report input)
   source_neurons.csv, target_neurons.csv   # enrollment (refill reader)
@@ -117,23 +111,23 @@
     visualization_data/             # *_data_connections.csv,
                                     # *_data_original_paths.csv,
                                     # network_edges_input.csv
-  user_warning_notes.txt            # (when any output-affecting option applied)</code></pre>
+  user_warning_notes.txt            # (when any output-affecting option applied)
+</code></pre>
+<h2>Find Network vs Complete Paths + Find Reciprocal</h2>
+<table>
+  <tr><th></th><th>Find Network</th><th>Complete Paths + Find Reciprocal</th></tr>
+  <tr><td>Node set</td><td>exactly the queried neurons</td><td>queried neurons + all discovered intermediates</td></tr>
+  <tr><td>Edges</td><td>direct connections within the query set</td><td>path edges, plus ALL direct connections among path-graph nodes</td></tr>
+  <tr><td>Depth</td><td>1 hop only</td><td>up to Max Layers</td></tr>
+</table>
 
-  <h2>Find Network vs Complete Paths + Find Reciprocal</h2>
-  <table>
-    <tr><th></th><th>Find Network</th><th>Complete Paths + Find Reciprocal</th></tr>
-    <tr><td>Node set</td><td>exactly the queried neurons</td><td>queried neurons + all discovered intermediates</td></tr>
-    <tr><td>Edges</td><td>direct connections within the query set</td><td>path edges, plus ALL direct connections among path-graph nodes</td></tr>
-    <tr><td>Depth</td><td>1 hop only</td><td>up to Max Layers</td></tr>
-  </table>
-
-  <div class="callout info">
-    <b>Exported run guide:</b> every successful run also writes
-    <code>_UserGuide_please_read_me.html</code> into the run folder — a
-    self-contained explanation of every output file, every table column, and
-    any warnings recorded for the run. Format (html / txt / markdown /
-    disabled) is set in Settings → Default Settings → Run Guide Format.
-  </div>
+<div class="callout info">
+  <b>Exported run guide:</b> every successful run also writes
+  <code>_UserGuide_please_read_me.html</code> into the run folder — a
+  self-contained explanation of every output file, every table column, and
+  any warnings recorded for the run. Format (html / txt / markdown /
+  disabled) is set in Settings → Default Settings → Run Guide Format.
+</div>
 </main>
 </body>
 </html>
