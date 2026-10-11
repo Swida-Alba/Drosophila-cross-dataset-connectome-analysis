@@ -54,7 +54,7 @@ _TEMPLATE = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title} - DROCAT Instructions</title>
+  <title>{page_title} - DROCAT Instructions</title>
   <link rel="stylesheet" href="guide.css">
   <script src="guide-theme.js"></script>
 </head>
@@ -62,9 +62,9 @@ _TEMPLATE = """<!doctype html>
 <main class="guide">
   <header class="guide-top">
     <a class="back" href="README.html">&larr; Back to guides</a>
-    <span class="tag">{tag}</span>
+    <span class="tag{tag_class}">{tag}</span>
   </header>
-  <h1>{title}</h1>
+  <h1>{title}{subtag}</h1>
 {body}
 </main>
 </body>
@@ -108,6 +108,15 @@ def render_page(meta: dict, body: str) -> str:
     if not title or not tag:
         raise ValueError(
             "front-matter must define 'title:' and 'tag:'")
+    # Optional chrome variants the hand pages use: a sub-tag inside the h1
+    # (the tab a sub-tab guide belongs to) and a header-tag class variant.
+    subtag = str(meta.get("subtag", "")).strip()
+    subtag_html = f' <span class="tag">{subtag}</span>' if subtag else ""
+    # page_title: the fuller head <title> some hand pages used (the h1
+    # carries the short title + subtag); falls back to title.
+    page_title = str(meta.get("page_title", "")).strip() or title
+    tag_class = str(meta.get("tag_class", "")).strip()
+    tag_class_html = f" {tag_class}" if tag_class else ""
     # The first paragraph of the body is the lede: split the SOURCE (not
     # the output) at the first blank line, render the two halves
     # separately, and wrap the lede in the class — regexing rendered HTML
@@ -121,7 +130,9 @@ def render_page(meta: dict, body: str) -> str:
     body_html = f"{lede}\n"
     if rest_src.strip():
         body_html += markdown.markdown(rest_src, extensions=_EXTENSIONS)
-    return _TEMPLATE.format(title=title, tag=tag, body=body_html)
+    return _TEMPLATE.format(title=title, page_title=page_title, tag=tag,
+                            tag_class=tag_class_html,
+                            subtag=subtag_html, body=body_html)
 
 
 def _targets(root: Path):

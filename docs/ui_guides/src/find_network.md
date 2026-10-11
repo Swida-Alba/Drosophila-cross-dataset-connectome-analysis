@@ -1,5 +1,6 @@
 ---
 title: Network
+page_title: Find Network
 tag: Connectome
 ---
 
