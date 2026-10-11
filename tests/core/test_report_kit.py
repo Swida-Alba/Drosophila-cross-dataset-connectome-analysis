@@ -159,18 +159,30 @@ def test_plotly_heatmap_fragment_draws_dendrograms_when_clustered():
         matrix, 't', style, 'x', 'y')
     assert clustered is True
     assert fragment is not None
-    # Column tree on y2 (shared x), row tree on x2 (shared y)
-    assert '"yaxis":"y2"' in fragment
-    assert '"xaxis":"x2"' in fragment
+    # Column tree as a path shape on (x, y2), row tree on (x2, y): the
+    # shared leaf-slot dims ride the heatmap's categorical axes, the merge
+    # heights keep their hidden numeric axes.
+    assert '"yref":"y2"' in fragment
+    assert '"xref":"x2"' in fragment
     assert '"yaxis2"' in fragment and '"xaxis2"' in fragment
-    # Heatmap moved to numeric ticks with the labels as ticktext
+    assert fragment.count('"type":"path"') == 2
+    # Heatmap axes stay categorical; ticks thin via ticktext.
     assert '"ticktext"' in fragment and '"tickvals"' in fragment
-    # Orientation: the right tree's y values are leaf slots (0..n-1; internal
-    # nodes sit at child midpoints); its x values are merge heights. A swapped
-    # pair would clip the tree at xaxis2's height range and truncate it.
-    match = re.search(r'"xaxis":"x2","y":\[([^\]]*)\]', fragment)
-    assert match, "right dendrogram trace not found"
-    slots = [float(v) for v in match.group(1).split(',') if v != 'null']
+    # No per-cell hover text matrix — hover resolves the categorical axes.
+    assert '"text":[' not in fragment
+    assert '%{y}' in fragment and '%{x}' in fragment
+    # Orientation: the right tree's path y values are leaf slots (0..n-1;
+    # internal nodes sit at child midpoints); its x values are merge
+    # heights. A swapped pair would clip the tree at xaxis2's height range
+    # and truncate it.
+    right_path = None
+    for match in re.finditer(r'"path":"([^"]*)"', fragment):
+        window = fragment[match.start():fragment.find('}', match.end())]
+        if '"xref":"x2"' in window:
+            right_path = match.group(1)
+            break
+    assert right_path, "right dendrogram shape not found"
+    slots = [float(v) for v in re.findall(r'[ML][^,]*,([0-9.]+)', right_path)]
     assert min(slots) == 0.0 and max(slots) == 4.0  # first/last leaf stems
 
 
@@ -200,8 +212,8 @@ def test_plotly_heatmap_fragment_single_row_has_column_tree_only():
     fragment, clustered = report_kit.plotly_heatmap_fragment(
         matrix, 't', style, 'x', 'y')
     assert clustered is True
-    assert '"yaxis":"y2"' in fragment
-    assert '"xaxis":"x2"' not in fragment
+    assert '"yref":"y2"' in fragment
+    assert '"xref":"x2"' not in fragment
 
 
 def test_plotly_heatmap_fragment_degenerate_matrix_stays_flat():
@@ -373,3 +385,40 @@ def test_dendrogram_ticks_thin_on_large_matrices():
     fragment, _ = report_kit.plotly_heatmap_fragment(
         small, 't', style, 'x', 'y')
     assert '"tickvals":[0,1,2,3,4]' in fragment
+
+
+def test_fragment_hover_and_z_stay_compact_at_scale():
+    """The BodyId-level matrices dominate report size: the fragment must
+    keep hover on the categorical axes (no per-cell text matrix), round z
+    to stored precision, and emit indented JS collapsed — a 120x120 card
+    stays two orders of magnitude under the retired text-matrix payload."""
+    pytest.importorskip("plotly")
+    import re
+
+    rng = np.random.default_rng(26)
+    n = 120
+    labels = [f"7205759406{i:06d}_DN{i % 7}_R" for i in range(n)]
+    values = (rng.random((n, n)) + rng.random((n, n)).T) / 2
+    np.fill_diagonal(values, 1.0)
+    values[3, 7] = 0.123456789
+    matrix = pd.DataFrame(values, index=labels, columns=labels)
+    style = report_kit.metric_style('jaccard')
+    fragment, _ = report_kit.plotly_heatmap_fragment(
+        matrix, 't', style, 'x', 'y', include_plotlyjs=False)
+    assert len(fragment) < 300_000
+    assert '"text":[' not in fragment
+    assert '0.1235' in fragment and '0.123456' not in fragment
+    for script in re.findall(r'<script[^>]*>(.*?)</script>', fragment, re.S):
+        assert not re.search(r'\n\s', script), 'script indentation survived'
+
+
+def test_ensure_plotly_lib_writes_shared_library_once(tmp_path):
+    pytest.importorskip("plotly")
+    first = report_kit.ensure_plotly_lib(tmp_path)
+    assert first == 'plotly.min.js'
+    lib_path = tmp_path / 'plotly.min.js'
+    assert lib_path.exists() and lib_path.stat().st_size > 1_000_000
+    stamp = lib_path.stat().st_mtime_ns
+    second = report_kit.ensure_plotly_lib(tmp_path)
+    assert second == 'plotly.min.js'
+    assert lib_path.stat().st_mtime_ns == stamp  # idempotent

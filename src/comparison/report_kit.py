@@ -13,6 +13,7 @@ module.
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from html import escape
@@ -176,6 +177,65 @@ def _dendrogram_line_points(linkage_matrix: np.ndarray) -> Tuple[Optional[list],
     return positions, distances
 
 
+def _dendrogram_path_shape(
+    positions: Optional[list], distances: Optional[list]
+) -> str:
+    """SVG path string for one dendrogram band, in the band's data coords.
+
+    The band renders as a single ``type: 'path'`` layout shape: one attribute
+    carrying each merge polyline once, instead of a scatter trace whose per-
+    vertex arrays (or worse, per-cell hover text) dominate the file. ``None``
+    entries — the merge-segment separators from ``_dendrogram_line_points`` —
+    break the path into subpaths.
+    """
+    if not positions or not distances:
+        return ''
+    parts: List[str] = []
+    pen_down = False
+    for pos, dist in zip(positions, distances):
+        if pos is None or dist is None:
+            pen_down = False
+            continue
+        parts.append(('M' if not pen_down else 'L') + f'{pos:.4g},{dist:.6g}')
+        pen_down = True
+    return ''.join(parts)
+
+
+_SCRIPT_BLOCK_RE = re.compile(r'(<script[^>]*>)(.*?)(</script>)', re.S)
+
+
+def _compact_script_blocks(fragment: str) -> str:
+    """Collapse leading indentation inside ``<script>`` blocks.
+
+    ``fig.to_html`` pretty-prints the ``Plotly.newPlot`` JSON arguments; the
+    indentation is pure bytes (JSON string literals escape their newlines, so
+    every raw newline in the block is structural and safe to trim after).
+    """
+    def _compact(match: "re.Match[str]") -> str:
+        body = re.sub(r'\n\s+', '\n', match.group(2))
+        return match.group(1) + body + match.group(3)
+
+    return _SCRIPT_BLOCK_RE.sub(_compact, fragment)
+
+
+def ensure_plotly_lib(output_path: Path, filename: str = 'plotly.min.js') -> Optional[str]:
+    """Write the bundled plotly.js beside the report files exactly once.
+
+    Report files then reference it with ``<script src='plotly.min.js'>`` so
+    every file in the run folder shares one 4.8 MB library instead of inlining
+    its own copy. Returns the filename for the ``src`` attribute, or ``None``
+    when plotly is unavailable (callers fall back to the inline embed).
+    """
+    try:
+        import plotly.offline
+    except ImportError:
+        return None
+    lib_path = output_path / filename
+    if not lib_path.exists():
+        lib_path.write_text(plotly.offline.get_plotlyjs(), encoding='utf-8')
+    return filename
+
+
 def _thinned_ticks(labels: List[str], max_ticks: int = 45) -> Tuple[List[int], List[str]]:
     """(tickvals, ticktext) for the dendrogram's shared leaf-slot axis.
 
@@ -228,8 +288,11 @@ def plotly_heatmap_fragment(
         return None, False
 
     ordered, clustered, row_linkage, col_linkage = cluster_heatmap_matrix_with_linkage(matrix)
+    # 4-decimal storage: the hover shows %{z:.3f} and every profiling metric
+    # lives in [-1, 1], so the dropped digits are invisible — but a
+    # full-precision repr nearly quadruples the payload of a 240x240 matrix.
     z = [
-        [None if pd.isna(value) else float(value) for value in row]
+        [None if pd.isna(value) else round(float(value), 4) for value in row]
         for row in ordered.itertuples(index=False, name=None)
     ]
     x_labels = [str(value) for value in ordered.columns]
@@ -270,20 +333,6 @@ def plotly_heatmap_fragment(
             '<extra></extra>'
         ),
     }
-    if use_dendrogram:
-        # Numeric axes so the dendrogram scatters share the heatmap's tick
-        # space; labels move to ticktext and the hover text carries both ends.
-        heatmap_kwargs['x'] = list(range(len(x_labels)))
-        heatmap_kwargs['y'] = list(range(len(y_labels)))
-        heatmap_kwargs['text'] = [
-            [f'{row_label} · {col_label}' for col_label in x_labels]
-            for row_label in y_labels
-        ]
-        heatmap_kwargs['hovertemplate'] = (
-            '<b>%{text}</b><br>'
-            f'{style.display_name}: %{{z:.3f}}'
-            '<extra></extra>'
-        )
 
     fig = go.Figure(data=[go.Heatmap(**heatmap_kwargs)])
     max_label_length = max((len(label) for label in y_labels), default=12)
@@ -342,10 +391,9 @@ def plotly_heatmap_fragment(
         'showline': False,
     }
     if use_dendrogram:
-        # Numeric axes so the dendrogram scatters share the heatmap's tick
-        # space; labels move to ticktext. Large matrices thin the ticks —
-        # an explicit per-leaf list would draw ~3px-pitch labels as an
-        # overlapping mass.
+        # Categorical axes shared with the heatmap; labels thin via
+        # ticktext. Large matrices thin the ticks — an explicit per-leaf
+        # list would draw ~3px-pitch labels as an overlapping mass.
         xaxis['tickvals'], xaxis['ticktext'] = _thinned_ticks(x_labels)
         yaxis['tickvals'], yaxis['ticktext'] = _thinned_ticks(y_labels)
     if square_cells:
@@ -397,30 +445,46 @@ def plotly_heatmap_fragment(
         yaxis=yaxis,
     )
     if use_dendrogram:
+        # Each band is ONE type:'path' layout shape in the shared leaf-slot
+        # coordinate space. Scatter traces would phantom-register their
+        # numeric leaf slots as extra categories on a categorical axis
+        # (verified against plotly.js 3.2.0), while shapes coerce numeric
+        # coords as axis positions — pixel-exact against the constrained
+        # heatmap cells. The merge-height dimension keeps its own hidden
+        # numeric axis (y2 / x2) exactly as before.
         dendro_line = {'color': '#8a8f98', 'width': 1}
+        dendro_shapes = []
         if top_points[0] is not None:
-            fig.add_trace(go.Scatter(
-                x=top_points[0], y=top_points[1], mode='lines',
-                line=dendro_line, hoverinfo='skip', showlegend=False,
-                xaxis='x', yaxis='y2'))
             fig.update_layout(yaxis2={
                 'domain': [1.0 - top_frac, 1.0],
                 'range': [0.0, top_max * 1.05],
                 'visible': False, 'fixedrange': True,
             })
+            top_path = _dendrogram_path_shape(top_points[0], top_points[1])
+            if top_path:
+                dendro_shapes.append({
+                    'type': 'path', 'path': top_path,
+                    'xref': 'x', 'yref': 'y2', 'line': dendro_line,
+                    'layer': 'above',
+                })
         if right_points[0] is not None:
             # Right band: x = merge heights (the band's depth axis), y = leaf
             # slots on the shared heatmap y axis. _dendrogram_line_points
             # returns (positions, distances), so the axes are swapped here.
-            fig.add_trace(go.Scatter(
-                x=right_points[1], y=right_points[0], mode='lines',
-                line=dendro_line, hoverinfo='skip', showlegend=False,
-                xaxis='x2', yaxis='y'))
             fig.update_layout(xaxis2={
                 'domain': [1.0 - right_frac, 1.0],
                 'range': [0.0, right_max * 1.05],
                 'visible': False, 'fixedrange': True,
             })
+            right_path = _dendrogram_path_shape(right_points[1], right_points[0])
+            if right_path:
+                dendro_shapes.append({
+                    'type': 'path', 'path': right_path,
+                    'xref': 'x2', 'yref': 'y', 'line': dendro_line,
+                    'layer': 'above',
+                })
+        if dendro_shapes:
+            fig.update_layout(shapes=dendro_shapes)
 
     fragment = fig.to_html(
         full_html=False,
@@ -439,7 +503,7 @@ def plotly_heatmap_fragment(
         fragment = (f'<div class="heatmap-square-fit" '
                     f'style="max-width:{fig_width_px}px;margin:0 auto">'
                     f'{fragment}</div>')
-    return fragment, clustered
+    return _compact_script_blocks(fragment), clustered
 
 
 def report_css() -> str:
@@ -499,6 +563,20 @@ a:hover { text-decoration: underline; }
   color: var(--muted); font-size: 12px; margin: 18px 0 0;
   padding-top: 15px; border-top: 1px solid var(--line);
 }
+.report-link-cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px; margin-top: 14px;
+}
+.report-link-card {
+  display: block; background: var(--surface-soft);
+  border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+}
+.report-link-card:hover {
+  border-color: var(--accent); background: var(--accent-soft);
+  text-decoration: none;
+}
+.report-link-card strong { display: block; font-size: 14px; margin-bottom: 3px; }
+.report-link-card span { color: var(--muted); font-size: 12px; }
 .tab-list {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   margin: 0 0 18px; padding: 5px;
@@ -614,7 +692,7 @@ def report_script() -> str:
   // edge is computed from the LIVE _fullLayout domain: map the
   // band-adjacent cell edge's data coordinate (-0.5 for the reversed y
   // top row, nX-0.5 for the right column) through the live domain. The
-  // tree traces share the heatmap axes, so leaf positions stay put; only
+  // tree shapes share the heatmap axes, so leaf positions stay put; only
   // the band domains move, and the outer edge keeps its full depth.
   function alignDendrogramBands(plot) {
     if (!window.Plotly || !plot || !plot._fullLayout) return;
