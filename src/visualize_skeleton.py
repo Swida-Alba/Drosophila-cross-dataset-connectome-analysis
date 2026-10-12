@@ -5389,16 +5389,19 @@ class VisualizeSkeleton:
         the native bar in Blink; on the engine it was measured in, two
         bars stacked.
         """
-        # The embedded-but-transparent context halves toggle opacity rather
-        # than visibility (a visibility restyle re-derives plotly's scene
-        # normalization from the visible bounds and re-zooms the frozen
-        # render): index -> the opacity a shown row restores to.
+        # Every context mesh (brain + VNC envelope ranks) toggles opacity
+        # rather than visibility: a visibility restyle re-derives plotly's
+        # scene normalization from the visible bounds and re-zooms the frozen
+        # render around each toggle. index -> the opacity a shown row
+        # restores to (0 for the embedded-but-transparent halves).
         opacity_meshes = {}
         figure_data = getattr(self, 'fig_3d', None)
         figure_data = getattr(figure_data, 'data', None) if figure_data else None
         for index, trace in enumerate(figure_data or []):
-            if _is_unshown_context_mesh(trace) \
-                    and _trace_field(trace, 'visible', True) is not False:
+            rank = _trace_field(trace, 'legendrank')
+            if isinstance(rank, (int, float)) \
+                    and not isinstance(rank, bool) \
+                    and rank >= BRAIN_MESH_LEGEND_RANK:
                 opacity_meshes[str(index)] = float(
                     _trace_field(trace, 'opacity') or 0.0)
         baked = {
@@ -5488,10 +5491,16 @@ class VisualizeSkeleton:
      locked view holds to the pixel. */
   var opacityMeshes = CONFIG.opacityMeshes || {};
   function isOpacityMesh(i) {
-    return Object.prototype.hasOwnProperty.call(opacityMeshes, String(i));
+    if (Object.prototype.hasOwnProperty.call(opacityMeshes, String(i))) {
+      return true;
+    }
+    var tr = gd && gd.data ? gd.data[i] : null;
+    return !!tr && typeof tr.legendrank === 'number'
+      && tr.legendrank >= CONFIG.brainMeshRank;
   }
   function isDrawn(i) {
-    var tr = gd.data[i];
+    var gd = graphDiv();
+    var tr = gd && gd.data ? gd.data[i] : null;
     if (isOpacityMesh(i)) {
       return tr ? (Number(tr.opacity) || 0) > 0 : true;
     }
@@ -5501,6 +5510,8 @@ class VisualizeSkeleton:
     return Number(opacityMeshes[String(i)]) || 0.04;
   }
   function setDrawn(indices, on) {
+    var gd = graphDiv();
+    if (!gd) { return; }
     var vis = [], op = [];
     indices.forEach(function (i) {
       (isOpacityMesh(i) ? op : vis).push(i);
