@@ -6,10 +6,15 @@ legend used by static exports) and additionally tags traces with
 collapsible type -> neuron legend panel built client-side.
 """
 
+from collections import namedtuple
 from pathlib import Path
+import json
+import shutil
+import subprocess
 import sys
 
 import plotly.graph_objects as go
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -19,10 +24,12 @@ import visualize_skeleton  # noqa: E402
 from visualize_skeleton import LEGEND_MODES, VisualizeSkeleton  # noqa: E402
 
 
-def _make_visualizer(legend_mode='tree'):
+def _make_visualizer(legend_mode='tree', fig=None):
     visualizer = object.__new__(VisualizeSkeleton)
     visualizer.background_color = 'white'
     visualizer.legend_mode = legend_mode
+    # _legend_tree_html bakes the opacity-mesh table off the live figure.
+    visualizer.fig_3d = fig
     return visualizer
 
 
@@ -238,6 +245,13 @@ def test_legend_tree_html_contains_panel_and_markers():
     assert 'function updateHScrollbars()' in html
     assert 'mountHScrollbar(panel);' in html
     assert 'updateHScrollbars();' in html
+    # a boot that cannot build the panel puts the native legend back and
+    # names the script version, so a legend-less page stays diagnosable
+    assert '"treeScriptVersion": "%s"' % (
+        visualize_skeleton.LEGEND_TREE_SCRIPT_VERSION) in html
+    assert 'tries < CONFIG.bootMaxPolls' in html
+    assert "id = 'drocat-legend-fallback'" in html
+    assert "display:block !important" in html
 
 
 def test_write_plotly_html_embeds_tree_only_when_requested(tmp_path):
@@ -306,3 +320,509 @@ def test_tree_sort_only_when_sortkey_present():
     assert 'if (lg.sortKey) {' in html
     assert 'if (!tt.sortKeys || !Object.keys(tt.sortKeys).length) { return; }' \
         in html
+
+
+# ---------------------------------------------------------------------------
+# Boot behaviour, executed: the EMITTED tree script run under node against a
+# stub DOM.
+#
+# The panel is built client-side, and the injected stylesheet hides the native
+# plotly legend on these pages *unconditionally*. So a boot that throws
+# anywhere before ``panel.style.display = 'block'`` leaves the page with no
+# legend of any kind -- which is exactly how the 2026-10-12 12:30 export
+# shipped. String assertions cannot see that class of failure, so these tests
+# execute the emitted script verbatim (never a hand-written copy) against just
+# enough DOM for the panel to build itself.
+# ---------------------------------------------------------------------------
+
+_NODE_STUB = r"""
+'use strict';
+function El(tag) {
+  this.tagName = String(tag).toUpperCase();
+  this.id = '';
+  this.children = [];
+  this.parentNode = null;
+  this._classes = [];
+  this._text = '';
+  this.style = {};
+  this.attributes = {};
+  this.handlers = {};
+  this.title = '';
+  this.scrollTop = 0;
+  this.scrollLeft = 0;
+  this.scrollWidth = 0;
+  this.clientWidth = 0;
+  this.scrollHeight = 0;
+  this.clientHeight = 0;
+  var self = this;
+  this.classList = {
+    add: function (c) { if (self._classes.indexOf(c) < 0) { self._classes.push(c); } },
+    remove: function (c) {
+      var k = self._classes.indexOf(c);
+      if (k >= 0) { self._classes.splice(k, 1); }
+    },
+    contains: function (c) { return self._classes.indexOf(c) >= 0; },
+    toggle: function (c, force) {
+      var want = (force === undefined) ? !self.classList.contains(c) : !!force;
+      if (want) { self.classList.add(c); } else { self.classList.remove(c); }
+      return want;
+    }
+  };
+}
+Object.defineProperty(El.prototype, 'className', {
+  get: function () { return this._classes.join(' '); },
+  set: function (v) {
+    this._classes = String(v).split(/\s+/).filter(function (c) { return c; });
+  }
+});
+Object.defineProperty(El.prototype, 'textContent', {
+  get: function () {
+    if (!this.children.length) { return this._text; }
+    return this.children.map(function (c) { return c.textContent; }).join('');
+  },
+  set: function (v) { this._text = String(v); this.children = []; }
+});
+Object.defineProperty(El.prototype, 'innerHTML', {
+  get: function () { return ''; },
+  set: function () { this._text = ''; this.children = []; }
+});
+El.prototype.appendChild = function (child) {
+  child.parentNode = this;
+  this.children.push(child);
+  return child;
+};
+El.prototype.removeChild = function (child) {
+  var k = this.children.indexOf(child);
+  if (k >= 0) { this.children.splice(k, 1); }
+  child.parentNode = null;
+  return child;
+};
+El.prototype.setAttribute = function (k, v) {
+  this.attributes[k] = String(v);
+  if (k === 'id') { this.id = String(v); }
+};
+El.prototype.getAttribute = function (k) {
+  return Object.prototype.hasOwnProperty.call(this.attributes, k)
+    ? this.attributes[k] : null;
+};
+El.prototype.addEventListener = function (type, fn) {
+  (this.handlers[type] = this.handlers[type] || []).push(fn);
+};
+El.prototype.removeEventListener = function () {};
+El.prototype.getBoundingClientRect = function () {
+  return {top: 0, left: 0, right: 100, bottom: 0, width: 100, height: 10};
+};
+El.prototype._descendants = function (out) {
+  out = out || [];
+  this.children.forEach(function (c) { out.push(c); c._descendants(out); });
+  return out;
+};
+El.prototype.querySelectorAll = function (selector) {
+  var want = String(selector).split('.').filter(function (c) { return c; });
+  return this._descendants().filter(function (el) {
+    return want.every(function (c) { return el.classList.contains(c); });
+  });
+};
+El.prototype.querySelector = function (selector) {
+  var hits = this.querySelectorAll(selector);
+  return hits.length ? hits[0] : null;
+};
+function findByClass(root, cls) {
+  return root._descendants().filter(function (el) {
+    return el.classList.contains(cls);
+  });
+}
+function fire(el, type, evt) {
+  var handlers = (el.handlers[type] || []).slice();
+  if (!handlers.length) { throw new Error('no handler: ' + type); }
+  handlers.forEach(function (fn) {
+    fn(evt || {stopPropagation: function () {}});
+  });
+  return handlers.length;
+}
+function rows() { return findByClass(panel, 'drocat-lt-row'); }
+function rowLabel(row) {
+  var l = findByClass(row, 'drocat-lt-label')[0];
+  return l ? l.textContent : '';
+}
+function rowGlyph(row) {
+  var e = findByClass(row, 'drocat-lt-eye')[0];
+  return e ? e.textContent : '';
+}
+function rowOff(row) { return row.classList.contains('drocat-lt-off'); }
+function rowState() {
+  return rows().map(function (r) {
+    return {label: rowLabel(r), glyph: rowGlyph(r), off: rowOff(r)};
+  });
+}
+function eyes() { return findByClass(panel, 'drocat-lt-eye'); }
+function rowByLabel(label) {
+  var hits = rows().filter(function (r) { return rowLabel(r) === label; });
+  return hits.length ? hits[0] : null;
+}
+function rowEye(row) { return findByClass(row, 'drocat-lt-eye')[0]; }
+function meshRowState() {
+  return rows().filter(function (r) {
+    return r.classList.contains('drocat-lt-mesh-row');
+  }).map(function (r) {
+    return {label: rowLabel(r), glyph: rowGlyph(r), off: rowOff(r)};
+  });
+}
+function toggle(label) {
+  var row = rowByLabel(label);
+  if (!row) { throw new Error('no row labelled ' + label); }
+  fire(rowEye(row), 'click');
+  return {label: label, glyph: rowGlyph(row), off: rowOff(row)};
+}
+function toggleHeader() {
+  fire(eyes()[0], 'click');
+  return true;
+}
+
+var panel = new El('div');
+panel.id = 'drocat-legend-tree';
+panel.style.display = 'none';
+var DOCUMENT_ELEMENT = new El('html');
+var HEAD = new El('head');
+DOCUMENT_ELEMENT.appendChild(HEAD);
+var ROOTS = [panel, DOCUMENT_ELEMENT];
+var TIMERS = [];
+var LOGS = [];
+var RESTYLE_CALLS = [];
+var GD = null;
+function flushTimers(limit) {
+  var rounds = 0;
+  while (TIMERS.length && rounds < (limit || 500)) {
+    var queued = TIMERS;
+    TIMERS = [];
+    queued.forEach(function (fn) { fn(); });
+    rounds++;
+  }
+  return rounds;
+}
+var document = {
+  head: HEAD,
+  documentElement: DOCUMENT_ELEMENT,
+  createElement: function (tag) { return new El(tag); },
+  getElementById: function (id) {
+    for (var i = 0; i < ROOTS.length; i++) {
+      var walk = ROOTS[i]._descendants();
+      walk.unshift(ROOTS[i]);
+      for (var j = 0; j < walk.length; j++) {
+        if (walk[j].id === id) { return walk[j]; }
+      }
+    }
+    return null;
+  },
+  querySelector: function (selector) {
+    if (selector === '.js-plotly-plot' || selector === '.plotly-graph-div') {
+      return GD;
+    }
+    for (var i = 0; i < ROOTS.length; i++) {
+      var hits = ROOTS[i].querySelectorAll(selector);
+      if (hits.length) { return hits[0]; }
+    }
+    return null;
+  }
+};
+var navigator = {webdriver: false};
+var window = {
+  Plotly: {
+    /* Real plotly writes the update into the listed traces and then emits
+       plotly_restyle, which is what re-syncs the panel glyphs. */
+    restyle: function (gd, update, indices) {
+      RESTYLE_CALLS.push({update: update, indices: (indices || []).slice()});
+      (indices || []).forEach(function (i) {
+        var tr = gd.data[i];
+        if (!tr) { return; }
+        Object.keys(update).forEach(function (k) { tr[k] = update[k]; });
+      });
+      (gd._listeners || []).forEach(function (fn) { fn(); });
+      return Promise.resolve(gd);
+    }
+  },
+  addEventListener: function () {},
+  removeEventListener: function () {}
+};
+/* plotly's UMD build publishes window.Plotly as a bare global too, which is
+   how the tree's own calls reach it. */
+var Plotly = window.Plotly;
+function setTimeout(fn) { TIMERS.push(fn); return TIMERS.length; }
+function clearTimeout() {}
+var console = {
+  log: function (s) { process.stdout.write(String(s) + '\n'); },
+  info: function () { LOGS.push('info ' + Array.prototype.join.call(arguments, ' ')); },
+  warn: function () { LOGS.push('warn ' + Array.prototype.join.call(arguments, ' ')); },
+  error: function () { LOGS.push('error ' + Array.prototype.join.call(arguments, ' ')); }
+};
+GD = {
+  data: __TRACES__,
+  _fullLayout: {scene: {camera: {eye: {x: 1, y: 1, z: 1},
+                                  center: {x: 0, y: 0, z: 0},
+                                  up: {x: 0, y: 0, z: 1}}}},
+  _listeners: [],
+  on: function (evt, fn) { GD._listeners.push(fn); }
+};
+"""
+
+TreeRun = namedtuple('TreeRun', 'value logs restyle code stderr')
+
+
+def _page_traces(fig):
+    """The trace objects a browser holds in ``gd.data`` for this figure."""
+    return json.loads(json.dumps(fig.to_plotly_json()['data']))
+
+
+def _emitted_tree_script(fig):
+    return _emitted_tree_html_part(_make_visualizer(fig=fig), '<script>',
+                                   '</script>')
+
+
+def _emitted_tree_html_part(visualizer, start_tag, end_tag):
+    html = visualizer._legend_tree_html()
+    start = html.index(start_tag) + len(start_tag)
+    return html[start:html.index(end_tag, start)]
+
+
+def run_tree_js(expression, fig=None, *, script=None, prelude=''):
+    """Evaluate ``expression`` in node after the emitted tree script boots.
+
+    ``script`` overrides the emitted body so a test can break the page the way
+    the field broke it; ``prelude`` runs *before* the script, for globals the
+    break needs (a countdown, a missing API).
+    """
+    if shutil.which('node') is None:
+        pytest.skip('node is not installed')
+    fig = _tagged_figure() if fig is None else fig
+    body = (_emitted_tree_script(fig) if script is None else script)
+    program = (
+        '(function(){\n'
+        + _NODE_STUB.replace('__TRACES__', json.dumps(_page_traces(fig)))
+        + '\n' + prelude
+        + '\n' + body
+        + '\nconsole.log(JSON.stringify({value: (' + expression + '), '
+        'logs: LOGS, restyle: RESTYLE_CALLS}));\n'
+        '})();'
+    )
+    out = subprocess.run(['node', '-e', program], capture_output=True,
+                         text=True, timeout=120)
+    if out.returncode != 0:
+        # An escaped throw is a finding in itself; hand the stack to the test.
+        return TreeRun(None, [], [], out.returncode, out.stderr)
+    payload = json.loads(out.stdout)
+    return TreeRun(payload['value'], payload['logs'], payload['restyle'],
+                   out.returncode, out.stderr)
+
+
+def _isDrawn_scope_stripped(script):
+    """Re-create the 12:30 defect: a helper that reads ``gd`` without binding
+    it, which is what a mid-edit bake produced on the user's page."""
+    broken = script.replace(
+        '  function isDrawn(i) {\n    var gd = graphDiv();\n',
+        '  function isDrawn(i) {\n',
+        1,
+    )
+    assert broken != script, (
+        'the boot breaker did not bite: isDrawn no longer binds graphDiv(), '
+        'so update _isDrawn_scope_stripped() to break the current script'
+    )
+    return broken
+
+
+def _graph_div_flaky(script, fails_first):
+    """Make the first ``fails_first`` polls see no plotly div at all."""
+    healed = script.replace(
+        '  function graphDiv() {\n    return document.querySelector('
+        "'.js-plotly-plot')",
+        '  function graphDiv() {\n    if (FLAKY-- > 0) { return null; }\n'
+        '    return document.querySelector(\'.js-plotly-plot\')',
+        1,
+    )
+    assert healed != script, (
+        'the flaky-graphDiv breaker did not bite: update '
+        '_graph_div_flaky() to match the current script'
+    )
+    return healed
+
+
+def _render_oneshot_broken(script):
+    """Throw exactly once inside ``render()``, so the next poll can succeed."""
+    broken = script.replace(
+        '  function makeEl(tag, className, text) {\n'
+        '    var el = document.createElement(tag);\n',
+        '  function makeEl(tag, className, text) {\n'
+        '    if (ONESHOT-- > 0) { throw new Error(\'stubbed render failure\'); }\n'
+        '    var el = document.createElement(tag);\n',
+        1,
+    )
+    assert broken != script, (
+        'the one-shot render breaker did not bite: update '
+        '_render_oneshot_broken() to match the current script'
+    )
+    return broken
+
+
+def _envelope_figure():
+    """A BANC-shaped page: one neuron plus both context envelopes.
+
+    The VNC half is embedded but shipped transparent (``visible: true`` with
+    ``opacity: 0``) -- that is how a frozen view hides an envelope without
+    letting the scene renormalise around it. The row glyph for that half is
+    what ``sync()`` must read off the opacity, not off ``visible``.
+    """
+    fig = go.Figure()
+    neuron = go.Scatter3d(
+        x=[0, 1], y=[0, 1], z=[0, 1], mode='lines',
+        line=dict(color='#1f77b4', width=4),
+        name='l-LNv', legendgroup='l-LNv', showlegend=True,
+    )
+    neuron.legendrank = 0
+    neuron.meta = {'drocatLegend': {
+        'kind': 'neuron', 'group': 'l-LNv', 'item': 'l-LNv',
+        'color': '#1f77b4',
+    }}
+    fig.add_trace(neuron)
+    for rank, name, opacity in (
+        (visualize_skeleton.BRAIN_MESH_LEGEND_RANK, 'BANC (brain)', 0.04),
+        (visualize_skeleton.VNC_MESH_LEGEND_RANK, 'BANC (VNC)', 0.0),
+    ):
+        mesh = go.Mesh3d(
+            x=[0, 1, 0], y=[0, 0, 1], z=[0, 0, 0], i=[0], j=[1], k=[2],
+            color='#c8e6f0', opacity=opacity, name=name, showlegend=True,
+        )
+        mesh.legendrank = rank
+        fig.add_trace(mesh)
+    return fig
+
+
+class TestTreeBoot:
+    def test_boot_builds_the_panel_and_shows_it(self):
+        run = run_tree_js('({display: panel.style.display, '
+                          'rows: rowState().length})')
+        assert run.code == 0, run.stderr
+        assert run.value['display'] == 'block'
+        assert run.value['rows'] > 0
+
+    def test_boot_without_plotly_never_arriving_still_leaves_a_legend(self):
+        """The poll gives up after ~60 s; giving up silently is the same
+        total-legend-loss failure as throwing."""
+        script = _graph_div_flaky(_emitted_tree_script(_tagged_figure()), 1000)
+        run = run_tree_js(
+            '(function(){ flushTimers(1000); return {'
+            'display: panel.style.display, '
+            'fallback: !!document.getElementById("drocat-legend-fallback"), '
+            'error: window.__drocatLegendTreeError || null}; })()',
+            fig=_tagged_figure(), script=script, prelude='var FLAKY = 1000;')
+        assert run.code == 0, run.stderr
+        assert run.value['fallback'] is True
+        assert run.value['error']
+
+    def test_broken_boot_restores_the_native_legend(self):
+        fig = _tagged_figure()
+        broken = _isDrawn_scope_stripped(_emitted_tree_script(fig))
+        run = run_tree_js(
+            '({display: panel.style.display, '
+            'fallback: !!document.getElementById("drocat-legend-fallback"), '
+            'fallbackRule: (document.getElementById("drocat-legend-fallback")'
+            ' || {textContent: ""}).textContent, '
+            'error: window.__drocatLegendTreeError || null})',
+            fig=fig, script=broken)
+        assert run.code == 0, (
+            'the boot throw escaped the page: ' + run.stderr)
+        assert run.value['display'] == 'none', 'a broken panel stays hidden'
+        assert run.value['fallback'] is True, (
+            'nothing re-enabled the native legend')
+        assert '.js-plotly-plot .legend{display:block !important' \
+            in run.value['fallbackRule']
+        assert run.value['error']
+        assert any('[drocat]' in line and 'error' in line for line in run.logs)
+
+    def test_boot_that_recovers_on_a_later_poll_clears_the_fallback(self):
+        """A one-shot render failure must not keep the page in fallback."""
+        fig = _tagged_figure()
+        broken = _render_oneshot_broken(_emitted_tree_script(fig))
+        run = run_tree_js(
+            '(function(){ flushTimers(10); return {'
+            'display: panel.style.display, '
+            'rows: rowState().length, '
+            'fallback: !!document.getElementById("drocat-legend-fallback")};'
+            ' })()',
+            fig=fig, script=broken, prelude='var ONESHOT = 1;')
+        assert run.code == 0, run.stderr
+        assert run.value['display'] == 'block'
+        assert run.value['rows'] > 0
+        assert run.value['fallback'] is False
+        assert any('[drocat]' in line for line in run.logs)
+
+
+class TestTreeRowGlyphs:
+    """The eye glyph must report what the scene actually draws.
+
+    Context envelopes hide through ``opacity: 0`` while keeping
+    ``visible: true``, so a row that reads ``visible`` stays solid over a mesh
+    the page is not drawing -- the state a user can only discover by clicking.
+    """
+
+    def test_boot_marks_the_shipped_transparent_half_hidden(self):
+        run = run_tree_js('meshRowState()', fig=_envelope_figure())
+        assert run.code == 0, run.stderr
+        assert run.value == [
+            {'label': 'BANC (brain)', 'glyph': '●', 'off': False},
+            {'label': 'BANC (VNC)', 'glyph': '○', 'off': True},
+        ]
+
+    def test_hiding_a_mesh_empties_its_own_row(self):
+        run = run_tree_js(
+            '(function(){'
+            ' var brain = toggle("BANC (brain)");'
+            ' return {brain: brain, vnc: rowGlyph(rowByLabel("BANC (VNC)")),'
+            ' opacity: GD.data[1].opacity,'
+            ' visible: (GD.data[1].visible === undefined)'
+            ' ? "absent" : GD.data[1].visible};'
+            ' })()',
+            fig=_envelope_figure())
+        assert run.code == 0, run.stderr
+        assert run.value['brain'] == {'label': 'BANC (brain)',
+                                      'glyph': '○', 'off': True}
+        assert run.value['opacity'] == 0
+        # toggling an envelope never touches `visible`: the frozen view holds
+        # its box only when the trace stays in the scene normalization.
+        assert run.value['visible'] == 'absent'
+        assert run.restyle[-1] == {'update': {'opacity': 0}, 'indices': [1]}
+        assert run.value['vnc'] == '○'
+
+    def test_showing_the_transparent_half_lights_its_row(self):
+        run = run_tree_js(
+            '(function(){ var vnc = toggle("BANC (VNC)");'
+            ' return {vnc: vnc, opacity: GD.data[2].opacity}; })()',
+            fig=_envelope_figure())
+        assert run.code == 0, run.stderr
+        assert run.value['vnc']['glyph'] == '●'
+        assert run.value['vnc']['off'] is False
+        # the row's own baked show-opacity is restored, not a hardcoded 1.0
+        assert run.value['opacity'] == pytest.approx(0.04)
+
+    def test_header_eye_covers_the_transparent_half_too(self):
+        run = run_tree_js(
+            '(function(){'
+            ' toggleHeader();'
+            ' var off = {rows: meshRowState(), neuron: GD.data[0].visible,'
+            ' brainOpacity: GD.data[1].opacity,'
+            ' vncOpacity: GD.data[2].opacity};'
+            ' toggleHeader();'
+            ' return {off: off, on: meshRowState(),'
+            ' onBrain: GD.data[1].opacity, onVnc: GD.data[2].opacity};'
+            ' })()',
+            fig=_envelope_figure())
+        assert run.code == 0, run.stderr
+        assert [row['glyph'] for row in run.value['off']['rows']] == ['○', '○']
+        assert all(row['off'] for row in run.value['off']['rows'])
+        assert run.value['off']['neuron'] is False
+        assert run.value['off']['brainOpacity'] == 0
+        assert run.value['off']['vncOpacity'] == 0
+        # the header eye means *every row*, including the half the page opens
+        # without, so a second click brings both envelopes up.
+        assert [row['glyph'] for row in run.value['on']] == ['●', '●']
+        assert run.value['onBrain'] == pytest.approx(0.04)
+        assert run.value['onVnc'] == pytest.approx(0.04)
+

@@ -330,6 +330,15 @@ SIMPLIFIED_HTML_SUFFIX = '_simplified'
 # tree panel owns its row events, so keep its manual detector in sync with
 # Plotly rather than using a more permissive, platform-specific window.
 TREE_DOUBLE_CLICK_INTERVAL_MS = 300
+# The tree panel builds itself client-side, polling for the plotly div. The
+# page also hides the native legend by stylesheet, so the poll must have a
+# bound: when the panel cannot come up, the boot re-enables the native legend
+# instead of shipping a page with no legend at all (see breakGlass).
+TREE_BOOT_POLL_INTERVAL_MS = 200
+TREE_BOOT_MAX_POLLS = 300
+# Baked into every emitted tree so a broken page is identifiable from its
+# console alone: 'no legend' plus this version pins which script was shipped.
+LEGEND_TREE_SCRIPT_VERSION = '2026-10-12.1'
 # Plotly gives a 3D scene two home-shaped reset buttons that differ only in
 # which snapshot they restore. The viewer keeps "reset camera to last save" --
 # the framing the page opened with -- and drops "reset camera to default".
@@ -5376,9 +5385,12 @@ class VisualizeSkeleton:
         The native Plotly legend is hidden on
         these pages; static exports
         never receive this injection and keep the native type-level
-        legend. Type toggles cover the type's skeleton plus its pre/post
-        site traces; synapse-group and mesh traces get their own rows,
-        with meshes pinned last. A custom always-visible horizontal
+        legend. Because that hide is unconditional, a boot that cannot build
+        the panel appends ``#drocat-legend-fallback``, which puts the native
+        legend back: a page whose tree script throws would otherwise carry no
+        legend of any kind. Type toggles cover the type's skeleton plus its
+        pre/post site traces; synapse-group and mesh traces get their own
+        rows, with meshes pinned last. A custom always-visible horizontal
         scrollbar is mounted on the panel and the capped leaf lists,
         because modern macOS browsers keep native bars overlay-only and
         a mouse can never reach them. That custom bar is the only bar a
@@ -5409,6 +5421,9 @@ class VisualizeSkeleton:
             'brainMeshRank': BRAIN_MESH_LEGEND_RANK,
             'vncMeshRank': VNC_MESH_LEGEND_RANK,
             'doubleClickMs': TREE_DOUBLE_CLICK_INTERVAL_MS,
+            'bootPollMs': TREE_BOOT_POLL_INTERVAL_MS,
+            'bootMaxPolls': TREE_BOOT_MAX_POLLS,
+            'treeScriptVersion': LEGEND_TREE_SCRIPT_VERSION,
             'expandRoots': bool(getattr(self, '_drocat_expand_roots', False)),
             'opacityMeshes': opacity_meshes,
         }
@@ -5706,13 +5721,17 @@ class VisualizeSkeleton:
     if (!gd) { return; }
     snapshotInitialVisibility();
     records.forEach(function(rec) {
-      var on = rec.indices.every(function(i) { return isVisible(gd.data[i]); });
+      /* Read the rows through isDrawn, not visible: a context mesh the page
+         ships transparent keeps visible:true and hides entirely through
+         opacity:0, so a visibility read would call a hidden envelope shown
+         and keep its row solid. */
+      var on = rec.indices.every(function(i) { return isDrawn(i); });
       rec.eye.textContent = on ? '\u25CF' : '\u25CB';
       /* Refinement: a GROUP row goes grey only when ALL of its leaves are
          hidden; any visible leaf keeps the row solid.  Flat rows (mesh,
          leaf) keep the exact every() semantics. */
       var off = rec.group ? !rec.indices.some(function(i) {
-        return isVisible(gd.data[i]);
+        return isDrawn(i);
       }) : !on;
       rec.row.classList.toggle('drocat-lt-off', off);
     });
@@ -5782,7 +5801,12 @@ class VisualizeSkeleton:
     if (!gd) { return; }
     var all = managedIndices();
     if (!all.length) { return; }
-    var on = all.every(function(i) { return isVisible(gd.data[i]); });
+    /* The header eye shows a filled dot while ANY row is drawn (see sync), so
+       the click has to read the same way: anything drawn means hide
+       everything, nothing drawn means show everything -- including the
+       envelope a frozen page opens without. Reading this with every() would
+       make the first click on such a page reveal that envelope instead. */
+    var on = all.some(function(i) { return isDrawn(i); });
     setDrawn(all, !on);
     sync();
   }
@@ -6163,25 +6187,71 @@ class VisualizeSkeleton:
     panel.style.top = top + 'px';
   }
 
+  /* Break-glass boot: the injected stylesheet hides the native legend on
+     these pages, and the panel only reveals itself once render() has
+     survived, so an exception anywhere in the boot leaves the page with no
+     legend at all. That is not theoretical -- the 2026-10-12 12:30 export
+     shipped exactly that from a scope bug baked into isDrawn. A failed boot
+     therefore puts the native legend back and keeps polling; if a later poll
+     succeeds the fallback comes off and the panel is the legend again. */
+  function fallbackStyleEl() {
+    return document.getElementById('drocat-legend-fallback');
+  }
+  function showLegendFallback() {
+    if (fallbackStyleEl()) { return; }
+    var host = document.head || document.documentElement;
+    if (!host) { return; }
+    var st = document.createElement('style');
+    st.id = 'drocat-legend-fallback';
+    st.textContent = '.js-plotly-plot .legend{display:block !important;}'
+      + '#drocat-legend-tree{display:none !important;}';
+    host.appendChild(st);
+  }
+  function clearLegendFallback() {
+    var st = fallbackStyleEl();
+    if (st && st.parentNode) { st.parentNode.removeChild(st); }
+    window.__drocatLegendTreeError = undefined;
+  }
+  var bootFailureReported = false;
+  function breakGlass(reason) {
+    window.__drocatLegendTreeError = CONFIG.treeScriptVersion + ': ' + reason;
+    showLegendFallback();
+    if (bootFailureReported) { return; }
+    bootFailureReported = true;
+    console.error('[drocat] legend tree failed to boot ('
+      + CONFIG.treeScriptVersion + '): ' + reason);
+  }
+
+  console.info('[drocat] legend tree ' + CONFIG.treeScriptVersion);
   var tries = 0;
   (function whenPlotly() {
     var gd = graphDiv();
-    if (gd && window.Plotly && gd._fullLayout) {
-      var model = buildModel(gd.data || []);
-      render(model, gd.data || []);
-      panel.style.display = 'block';
-      positionPanel();
-      sync();
-      try { gd.on('plotly_restyle', function() { sync(); }); } catch (err) {}
-      panel.addEventListener('scroll', updateHScrollbars, true);
-      window.addEventListener('resize', function() {
+    var ready = !!(gd && window.Plotly && gd._fullLayout);
+    if (ready) {
+      try {
+        var model = buildModel(gd.data || []);
+        render(model, gd.data || []);
+        panel.style.display = 'block';
         positionPanel();
-        updateHScrollbars();
-      });
-      window.addEventListener('load', positionPanel);
-      return;
+        sync();
+        try { gd.on('plotly_restyle', function() { sync(); }); } catch (err) {}
+        panel.addEventListener('scroll', updateHScrollbars, true);
+        window.addEventListener('resize', function() {
+          positionPanel();
+          updateHScrollbars();
+        });
+        window.addEventListener('load', positionPanel);
+        clearLegendFallback();
+        return;
+      } catch (err) {
+        breakGlass(err && err.message ? err.message : String(err));
+      }
     }
-    if (++tries < 300) { setTimeout(whenPlotly, 200); }
+    if (++tries < CONFIG.bootMaxPolls) {
+      setTimeout(whenPlotly, CONFIG.bootPollMs);
+    } else if (!ready) {
+      breakGlass('plotly never became ready');
+    }
   })();
 })();
 </script>
