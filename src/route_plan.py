@@ -829,14 +829,17 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                   (getattr(fnc, "dataset", "") if fnc is not None else "")
                   or "").strip()
 
-    query_prefix = False
+    query_prefix_src = query_prefix_tgt = False
     if source_types is not None:
         src_tokens = list(source_types)
     else:
-        query_prefix, src_tokens = _parse_query_tokens(
+        query_prefix_src, src_tokens = _parse_query_tokens(
             kv.get("source neurons"))
-    tgt_tokens = list(target_types) if target_types is not None else \
-        _parse_query_tokens(kv.get("target neurons"))[1]
+    if target_types is not None:
+        tgt_tokens = list(target_types)
+    else:
+        query_prefix_tgt, tgt_tokens = _parse_query_tokens(
+            kv.get("target neurons"))
     if not src_tokens or not tgt_tokens:
         _refuse("source/target neurons could not be read from the run")
 
@@ -989,9 +992,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     body2type = dict(type_map)
 
     src_labels = _match_type_labels(tmap["t"].to_list(), src_tokens,
-                                    body2type, prefix=query_prefix)
+                                    body2type, prefix=query_prefix_src)
     tgt_labels = _match_type_labels(tmap["t"].to_list(), tgt_tokens,
-                                    body2type)
+                                    body2type, prefix=query_prefix_tgt)
     if not src_labels or not tgt_labels:
         _refuse(f"query tokens resolved to no types "
                 f"(sources kept {sorted(src_labels)}, "
