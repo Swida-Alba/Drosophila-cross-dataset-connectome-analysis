@@ -4794,8 +4794,8 @@ class VisualizeSkeleton:
      the framing jump this script exists to forbid (measured +59.9% of the
      settled dolly radius on a frozen BANC page, +68.2% on a plotly page that
      carries no DROCAT script at all). The shadow copies the live camera into
-     the layout each frame until it stops moving. The write is deliberately not
-     a Plotly call: assigning the camera object moves nothing on screen and
+     both holders each frame until it stops moving. The write is deliberately
+     not a Plotly call: assigning the camera object moves nothing on screen and
      redraws nothing, it only makes the next flush an identity. Bounded, so a
      page that is merely open cannot keep an animation loop alive. */
   var CAM_PARTS = ['eye', 'center', 'up'];
@@ -4814,7 +4814,10 @@ class VisualizeSkeleton:
         eye: {x: c.eye.x, y: c.eye.y, z: c.eye.z},
         center: {x: c.center.x, y: c.center.y, z: c.center.z},
         up: {x: c.up.x, y: c.up.y, z: c.up.z},
-        projection: (c.projection && c.projection.type) || 'perspective'
+        // schema shape, not the bare string getCamera() reports: this object
+        // lands in gd.layout, which is what a later relayout re-validates.
+        projection: {type: (c.projection && c.projection.type)
+          || 'perspective'}
       };
     } catch (err) { return null; }
   }

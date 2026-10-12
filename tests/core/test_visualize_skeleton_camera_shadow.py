@@ -133,8 +133,15 @@ return {
   layout: L && L.eye ? rad(L.eye, L.center) : null,
   fullLayout: rad(F.eye, F.center),
   liveEye: [c.eye.x, c.eye.y, c.eye.z],
+  liveCenter: [c.center.x, c.center.y, c.center.z],
+  layoutCenter: (L && L.center)
+    ? [L.center.x, L.center.y, L.center.z] : null,
   layoutEye: (L && L.eye) ? [L.eye.x, L.eye.y, L.eye.z] : null,
   shadowed: !!(L && L.eye),
+  // what the shadow leaves in the user layout has to be schema-shaped: this
+  // is the object a later relayout re-validates.
+  layoutProjection: typeof (L && L.projection) === 'object'
+    ? (L.projection.type || null) : ('bare:' + (L && L.projection)),
   // the envelope is trace 1 of this fixture; the eye click is what has to
   // change it, and a guard that silently broke the toggle would also produce
   // a beautiful zero camera delta
@@ -255,6 +262,13 @@ class Chrome:
                 f"Plotly.restyle(gd, {{opacity:[{opacity}]}}, [{index}]);"
                 "return 1;")
 
+    def move_pivot(self, x=0.2):
+        """A camera write the page itself makes, the way the recenter control
+        and the View presets do it."""
+        self.js("var gd=document.querySelector('.js-plotly-plot');"
+                f"Plotly.relayout(gd, {{'scene.camera.center.x': {x}}});"
+                "return 1;")
+
     def close(self):
         if self.ws is not None:
             try:
@@ -306,6 +320,9 @@ class TestCameraShadowLive:
             assert abs(settled['fullLayout'] - settled['live']) <= EXACT, (
                 f'the resolved camera lags the scene: '
                 f'{settled["fullLayout"]} vs {settled["live"]}')
+            assert settled['layoutProjection'] == 'perspective', (
+                f'the shadow wrote a non-schema projection into the user '
+                f'layout: {settled["layoutProjection"]!r}')
 
             chrome.click_envelope_eye()
             time.sleep(2.0)
@@ -348,22 +365,57 @@ class TestCameraShadowLive:
             time.sleep(2.5)
             settled = chrome.camera()
             assert settled['layoutEye'] is not None, (
-                'the dolly never reached gd.layout, so there is nothing to '
-                'compare; the harness would pass vacuously')
-            lag = abs(settled['layout'] - settled['live'])
-            assert lag > 1e-3, (
-                'Plotly no longer leaves the layout camera behind the eased '
-                'dolly; re-check whether the page-side shadow is still needed')
+                'the dolly never reached gd.layout, so the harness would pass '
+                'vacuously')
             chrome.raw_restyle(index=1, opacity=0)
             time.sleep(2.0)
             after = chrome.camera()
             assert not after['errors'], f'the page raised: {after["errors"]}'
             assert after['opacity'] == 0, 'the restyle did not reach the trace'
             jump = after['live'] - settled['live']
+            # the only hard assertion here: if the guard's zero is real, this
+            # same measurement has to be able to be non-zero. (The layout lag is
+            # reported rather than asserted, because how far Plotly's emit
+            # schedule trails the easing is not what this test is about.)
             assert abs(jump) > 1e-3, (
-                f'the restyle flush did not move the view ({jump}); the '
-                f'measured lag of {lag:g} did not become a jump, so the '
-                'guarded assertion above is not being tested here')
+                f'the restyle flush did not move the view ({jump}); the layout '
+                f'lagged by {abs(settled["layout"] - settled["live"]):g}, so '
+                'either the flush no longer re-supplies the camera or the '
+                'guarded zero above is not being tested here')
+        finally:
+            chrome.close()
+
+    def test_the_shadow_carries_a_pivot_the_page_wrote(self, tmp_path):
+        """The shadow follows the scene; it must not overwrite what the page
+        decided.
+
+        The recenter control and the View presets both write
+        ``scene.camera.center`` through Plotly. If the shadow latched onto a
+        camera from before that write, orbiting would drift back to the old
+        pivot the moment the viewer zoomed again -- the same family of bug as
+        the jump, pointed the other way.
+        """
+        page = write_guarded_page(tmp_path)
+        chrome = Chrome(page)
+        try:
+            assert chrome.wait_for(PANEL_READY), 'the legend tree never booted'
+            chrome.arm_error_watch()
+            chrome.move_pivot(0.2)
+            time.sleep(1.0)
+            moved = chrome.camera()
+            assert abs(moved['liveCenter'][0] - 0.2) < 1e-6, (
+                f'the pivot write did not reach the scene: {moved["liveCenter"]}')
+            chrome.dolly(steps=2)
+            time.sleep(2.5)
+            after = chrome.camera()
+            assert abs(after['liveCenter'][0] - 0.2) < 1e-6, (
+                f'a dolly moved the pivot the page wrote: {after["liveCenter"]}')
+            assert abs(after['layoutCenter'][0] - 0.2) < 1e-6, (
+                f'the shadow left the user layout on the old pivot: '
+                f'{after["layoutCenter"]}')
+            assert abs(after['fullLayout'] - after['live']) <= EXACT, (
+                'the holders disagree again after the page wrote its own camera')
+            assert not after['errors'], f'the page raised: {after["errors"]}'
         finally:
             chrome.close()
 

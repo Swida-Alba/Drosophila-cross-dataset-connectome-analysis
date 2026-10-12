@@ -579,14 +579,10 @@ def _page_traces(fig):
 
 
 def _emitted_tree_script(fig):
-    return _emitted_tree_html_part(_make_visualizer(fig=fig), '<script>',
-                                   '</script>')
-
-
-def _emitted_tree_html_part(visualizer, start_tag, end_tag):
-    html = visualizer._legend_tree_html()
-    start = html.index(start_tag) + len(start_tag)
-    return html[start:html.index(end_tag, start)]
+    """The tree <script> body exactly as it is written into the page."""
+    html = _make_visualizer(fig=fig)._legend_tree_html()
+    start = html.index('<script>') + len('<script>')
+    return html[start:html.index('</script>', start)]
 
 
 def run_tree_js(expression, fig=None, *, script=None, prelude='',
