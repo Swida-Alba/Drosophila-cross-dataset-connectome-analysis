@@ -178,7 +178,17 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   fallback). Use `skeleton_mode="line"` and no exports for a first smoke test.
 - `legend_mode="tree"` renders like `"type"` for static exports and adds the
   collapsible group/type/bodyId panel to the permanent HTML pages only; counts
-  are unique neuron items, not Plotly traces. Those pages hide the native
+  are unique neuron items, not Plotly traces. A pre/post site trace that names
+  its owner leaf (`drocatLegend.ownerItem`, stamped by `_plot_site_group` from
+  `_neuron_tree_leaf_labels_by_layer`, which is keyed by bodyId aliases only --
+  the type/instance aliases a layer shares would otherwise point every site of
+  that layer at whichever neuron was plotted last) renders as that neuron's
+  child, and the neuron's eye then covers skeleton plus sites like every other
+  expandable row. A site with no single owner -- same-coloured neurons merged
+  into one trace, or a skeleton that was never plotted, or a leaf label two
+  neurons share -- keeps its sibling row, and `addUnplacedSites` guarantees a
+  row whose type bucket renders nothing is still shown rather than lost.
+  Those pages hide the native
   Plotly legend by stylesheet, so the panel *is* their legend: a boot that
   throws, or a poll that never finds the plotly div, appends
   `#drocat-legend-fallback` to put the native legend back and logs

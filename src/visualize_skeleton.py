@@ -338,7 +338,7 @@ TREE_BOOT_POLL_INTERVAL_MS = 200
 TREE_BOOT_MAX_POLLS = 300
 # Baked into every emitted tree so a broken page is identifiable from its
 # console alone: 'no legend' plus this version pins which script was shipped.
-LEGEND_TREE_SCRIPT_VERSION = '2026-10-12.1'
+LEGEND_TREE_SCRIPT_VERSION = '2026-10-13.1'
 # Plotly gives a 3D scene two home-shaped reset buttons that differ only in
 # which snapshot they restore. The viewer keeps "reset camera to last save" --
 # the framing the page opened with -- and drops "reset camera to default".
@@ -5720,8 +5720,8 @@ class VisualizeSkeleton:
         info as its leaf row, so scene inspection identifies the neuron
         even without reading the panel.
         Every group row stays expandable and exposes its bodyId-level
-        children, even singleton groups; only bodyId leaf rows are
-        childless. Multi-trace neurons still count once. Cross-dataset
+        children, even singleton groups; a bodyId row is childless only when
+        it owns no site trace. Multi-trace neurons still count once. Cross-dataset
         query overlays use their source row's native type for the bodyId
         label, rather than a mapped crosswalk value such as ``flywireType``.
         The native Plotly legend is hidden on
@@ -5731,7 +5731,14 @@ class VisualizeSkeleton:
         the panel appends ``#drocat-legend-fallback``, which puts the native
         legend back: a page whose tree script throws would otherwise carry no
         legend of any kind. Type toggles cover the type's skeleton plus its
-        pre/post site traces; synapse-group and mesh traces get their own
+        pre/post site traces, and so does the neuron row one level below: a
+        site trace that names its owner leaf (``drocatLegend.ownerItem``)
+        renders as that neuron's child rather than as a sibling row, so hiding
+        a neuron never leaves its synapses on the scene. A site whose owner
+        cannot be resolved to one leaf -- several same-colored neurons sharing
+        a trace, or a skeleton that was never plotted -- keeps the type-level
+        row it has always had; nothing disappears either way. Synapse-group and
+        mesh traces get their own
         rows, with meshes pinned last. A custom always-visible horizontal
         scrollbar is mounted on the panel and the capped leaf lists,
         because modern macOS browsers keep native bars overlay-only and
@@ -5941,8 +5948,10 @@ class VisualizeSkeleton:
         }
         g.indices.push(i);
         if (lg.kind === 'site') {
-          /* Sites toggle with their type sub-row when one exists. */
-          g.sites.push({type: lg.type || null, index: i});
+          /* Sites nest under their owner leaf when the renderer could name
+             one, and fall back to their type (or group) row otherwise. */
+          g.sites.push({type: lg.type || null, leaf: lg.ownerItem || null,
+                        index: i});
           return;
         }
         if (lg.type) {
@@ -6183,12 +6192,18 @@ class VisualizeSkeleton:
   function attachExpandable(parent, labelText, color, count, eyeIndices, opts) {
     /* One expandable row (caret + swatch + label + count + eye) with a
        hidden container for its children. Returns the children container;
-       the caller fills it with leaf rows or nested expandables. */
+       the caller fills it with leaf rows or nested expandables.
+       opts.leaf builds the same widget for a bodyId row: a neuron that owns
+       site traces is an expandable, but it is not a heading, so it keeps the
+       item-size swatch and the unbold label of its siblings. */
+    var asLeaf = !!(opts && opts.leaf);
     var groupEl = makeEl('div', 'drocat-lt-group');
     var caret = makeEl('span', 'drocat-lt-caret', '\\u25B6');
-    var row = makeEl('div', 'drocat-lt-row drocat-lt-group-row');
+    var row = makeEl('div', 'drocat-lt-row '
+      + (asLeaf ? 'drocat-lt-item-row' : 'drocat-lt-group-row'));
     var showSwatch = !(opts && opts.noSwatch);
-    var swatch = makeEl('span', 'drocat-lt-swatch');
+    var swatch = makeEl('span', 'drocat-lt-swatch'
+      + (asLeaf ? ' drocat-lt-swatch-item' : ''));
     swatch.style.background = color;
     if (showSwatch) { row.appendChild(swatch); }
     var label = makeEl('span', 'drocat-lt-label', labelText);
@@ -6364,18 +6379,69 @@ class VisualizeSkeleton:
                                      g.indices, {noSwatch: noSwatch,
                                                  expanded: CONFIG.expandRoots === true});
       var sitesByType = {};
+      var sitesByLeaf = {};
+      var siteRowsDone = {};
+      /* A leaf label is unique inside its group unless two neurons really do
+         share one label, so count them first: an ambiguous name must not nest,
+         because the row would then swallow another neuron's sites. */
+      var leafCounts = {};
+      function countLeaf(itemName) {
+        leafCounts[itemName] = (leafCounts[itemName] || 0) + 1;
+      }
+      g.typeOrder.forEach(function(t) {
+        g.types[t].itemOrder.forEach(countLeaf);
+      });
+      g.directOrder.forEach(countLeaf);
       g.sites.forEach(function(s) {
         (sitesByType[s.type] = sitesByType[s.type] || []).push(s.index);
+        /* The leaf is matched by name alone, not by (type, leaf): a site's
+           type is its owner's *legend group* while a neuron's type is its own
+           type label, and those two strings are equal only when the layer is
+           named after the type. Keying on the pair would silently un-nest
+           every site of a differently-named layer. */
+        if (s.leaf && leafCounts[s.leaf] === 1) {
+          (sitesByLeaf[s.leaf] = sitesByLeaf[s.leaf] || []).push(s.index);
+        }
       });
+      function addSiteRow(container, idx, fallbackColor) {
+        var meta = data[idx].meta.drocatLegend;
+        siteRowsDone[idx] = true;
+        attachLeaf(container, siteLabel(meta),
+                   meta.color || traceColor(data[idx]) || fallbackColor,
+                   [idx]);
+      }
       function addSiteLeaves(container, t) {
-        /* Pre/post site traces of this group: leaf rows under their type
-           sub-row, or under the group when there is no matching sub-row.
-           Their eye toggles just that site trace. */
+        /* Pre/post site traces of this type that no neuron row claimed. */
         (sitesByType[t] || []).forEach(function(idx) {
-          var meta = data[idx].meta.drocatLegend;
-          attachLeaf(container, siteLabel(meta),
-                     meta.color || traceColor(data[idx]) || color, [idx]);
+          if (!siteRowsDone[idx]) { addSiteRow(container, idx, color); }
         });
+      }
+      function addUnplacedSites(container) {
+        /* Every site row the branches below did not place. A type bucket can
+           hold no row at all -- a singleton plain type is rendered as its
+           bodyId directly, and a site whose owner identity names the layer
+           rather than the type matches no bucket either -- and a nested row is
+           already placed, so this is what keeps a site trace from vanishing
+           out of the panel entirely. */
+        g.sites.forEach(function(s) {
+          if (!siteRowsDone[s.index]) { addSiteRow(container, s.index, color); }
+        });
+      }
+      function attachItemRow(container, itemName, leafColor, indices) {
+        /* One bodyId row. Its site traces become its children when it owns
+           any, and then its eye covers skeleton plus sites -- the same rule
+           every other expandable row follows, so hiding a neuron cannot leave
+           its synapses on the scene. A neuron with nothing nested renders
+           exactly the plain leaf row it always had. */
+        var kids = sitesByLeaf[itemName] || [];
+        if (!kids.length) {
+          attachLeaf(container, itemName, leafColor, indices);
+          return;
+        }
+        var kidEl = attachExpandable(container, itemName, leafColor,
+                                     kids.length, indices.concat(kids),
+                                     {leaf: true, expanded: true});
+        kids.forEach(function(idx) { addSiteRow(kidEl, idx, leafColor); });
       }
 
       if (g.typeOrder.length > 1) {
@@ -6397,9 +6463,9 @@ class VisualizeSkeleton:
           if (typeNeuronCount < 2 && !prefixed) {
             /* Singleton plain type: no sub-row, show its bodyId directly. */
             tt.itemOrder.forEach(function(itemName) {
-              attachLeaf(itemsEl, itemName,
-                         itemColor(data, tt.items[itemName], tColor),
-                         tt.items[itemName]);
+              attachItemRow(itemsEl, itemName,
+                            itemColor(data, tt.items[itemName], tColor),
+                            tt.items[itemName]);
             });
             addSiteLeaves(itemsEl, t);
             return;
@@ -6408,14 +6474,14 @@ class VisualizeSkeleton:
           var subEl = attachExpandable(itemsEl, t, tColor,
                                        typeNeuronCount, eyeIdx);
           tt.itemOrder.forEach(function(itemName) {
-            attachLeaf(subEl, itemName,
-                       itemColor(data, tt.items[itemName], tColor),
-                       tt.items[itemName]);
+            attachItemRow(subEl, itemName,
+                          itemColor(data, tt.items[itemName], tColor),
+                          tt.items[itemName]);
           });
           addSiteLeaves(subEl, t);
         });
         g.directOrder.forEach(function(itemName) {
-          attachLeaf(itemsEl, itemName, color, g.direct[itemName]);
+          attachItemRow(itemsEl, itemName, color, g.direct[itemName]);
         });
         addSiteLeaves(itemsEl, null);
       } else {
@@ -6433,27 +6499,28 @@ class VisualizeSkeleton:
                                           g.types[t0].itemOrder.length,
                                           g.types[t0].indices);
             g.types[t0].itemOrder.forEach(function(itemName) {
-              attachLeaf(subEl0, itemName,
-                         itemColor(data, g.types[t0].items[itemName],
-                                   tColor0),
-                         g.types[t0].items[itemName]);
+              attachItemRow(subEl0, itemName,
+                            itemColor(data, g.types[t0].items[itemName],
+                                      tColor0),
+                            g.types[t0].items[itemName]);
             });
             addSiteLeaves(subEl0, t0);
           } else {
             g.types[t0].itemOrder.forEach(function(itemName) {
-              attachLeaf(itemsEl, itemName,
-                         itemColor(data, g.types[t0].items[itemName],
-                                   tColor0),
-                         g.types[t0].items[itemName]);
+              attachItemRow(itemsEl, itemName,
+                            itemColor(data, g.types[t0].items[itemName],
+                                      tColor0),
+                            g.types[t0].items[itemName]);
             });
             addSiteLeaves(itemsEl, t0);
           }
         }
         g.directOrder.forEach(function(itemName) {
-          attachLeaf(itemsEl, itemName, color, g.direct[itemName]);
+          attachItemRow(itemsEl, itemName, color, g.direct[itemName]);
         });
         if (!g.typeOrder.length) { addSiteLeaves(itemsEl, null); }
       }
+      addUnplacedSites(itemsEl);
     });
 
     if (model.synOrder.length) {
@@ -14033,6 +14100,11 @@ class VisualizeSkeleton:
         # maps let their legend labels and ranks mirror the exact skeleton
         # grouping chosen above instead of relying on connector-row order.
         self._neuron_legend_labels_by_layer = {}
+        # The same aliases, pointing at the *bodyId leaf* label rather than the
+        # legend group.  A site's group-level owner identity says which type it
+        # belongs to; only this says which neuron row of that type owns it,
+        # which is what lets the tree panel nest it one level deeper.
+        self._neuron_tree_leaf_labels_by_layer = {}
         self._neuron_legend_ranks = {}
         
         # One render-wide bar is more useful than a layer counter: a single
@@ -15155,6 +15227,13 @@ class VisualizeSkeleton:
                     # resolved row so pre/post sites can recover this exact
                     # skeleton legend label later.
                     aliases = list(self._normalize_neuron_lookup_keys(neuron_id))
+                    # A bodyId leaf is addressable only by bodyId.  The name /
+                    # type / instance aliases are shared by every neuron of the
+                    # layer that carries them, and this loop runs once per
+                    # trace, so the last neuron plotted wins those keys -- fine
+                    # for a group label all of them share, wrong for a leaf
+                    # label only one of them owns.
+                    body_aliases = list(aliases)
                     if (
                         self.neuron_dfs[i] is not None
                         and source_index < len(self.neuron_dfs[i])
@@ -15165,14 +15244,19 @@ class VisualizeSkeleton:
                             'flywireType', 'hemibrainType', 'mancType',
                         ):
                             if column in source_row.index:
-                                aliases.extend(
-                                    self._normalize_neuron_lookup_keys(
-                                        source_row[column]
-                                    )
+                                keys = self._normalize_neuron_lookup_keys(
+                                    source_row[column]
                                 )
+                                aliases.extend(keys)
+                                if column == 'bodyId':
+                                    body_aliases.extend(keys)
                     label_map = self._neuron_legend_labels_by_layer.setdefault(i, {})
+                    leaf_map = self._neuron_tree_leaf_labels_by_layer.setdefault(
+                        i, {})
                     for alias in aliases:
                         label_map[alias] = str(legend_group)
+                    for alias in body_aliases:
+                        leaf_map[alias] = str(identity_item)
                 
                 # Fix legend opacity: Add invisible marker traces with full opacity for legend display
                 # Needed when alpha < 1.0 (either from neuron_alpha or explicit alpha in colors)
@@ -16830,19 +16914,15 @@ class VisualizeSkeleton:
             self._pre_post_site_owner_label(neuron_id, layer_idx)
         ) or str(neuron_id)
 
-    def _pre_post_site_owner_identity(self, neuron_id, layer_idx, layer_name):
-        """Return the morphology legend identity for one site owner.
+    def _pre_post_site_owner_aliases(self, neuron_id, layer_idx):
+        """Every identifier one site row can use to name its owner skeleton.
 
-        Site data is keyed by connector body IDs, while a skeleton trace may
-        be named by a type/instance.  ``plot_skeleton`` records aliases for
-        the actual legend group; using that map keeps site labels synchronized
-        with the visible skeleton legend at every level.
+        Site data is keyed by connector body IDs while a skeleton trace may be
+        named by a type or instance, so ``plot_skeleton`` registers each of
+        these aliases against the legend labels it chose.  Both owner lookups
+        (the legend group and the bodyId leaf) read through this one list; a
+        second copy would drift the moment a column is added.
         """
-        mode = str(getattr(self, 'legend_mode', 'layer') or 'layer').lower()
-        layer = str(layer_name).strip() or f'layer_{layer_idx}'
-        label_map = getattr(self, '_neuron_legend_labels_by_layer', {}).get(
-            layer_idx, {}
-        )
         aliases = list(self._normalize_neuron_lookup_keys(neuron_id))
         row = self._pre_post_site_metadata_row(neuron_id, layer_idx)
         if row is not None:
@@ -16854,9 +16934,36 @@ class VisualizeSkeleton:
                     aliases.extend(
                         self._normalize_neuron_lookup_keys(row[column])
                     )
-        for alias in aliases:
-            if alias in label_map:
-                return str(label_map[alias])
+        return aliases
+
+    def _resolve_site_owner_alias(self, layer_maps, neuron_id, layer_idx):
+        """The label one site owner resolves to in a per-layer alias map.
+
+        An alias registered with an empty label counts as unresolved: a
+        ``'None'`` string reaching ``drocatLegend`` would read as a real leaf
+        label to the panel and the row would nest nowhere.
+        """
+        labels = (layer_maps or {}).get(layer_idx, {})
+        for alias in self._pre_post_site_owner_aliases(neuron_id, layer_idx):
+            if alias in labels and labels[alias]:
+                return str(labels[alias])
+        return None
+
+    def _pre_post_site_owner_identity(self, neuron_id, layer_idx, layer_name):
+        """Return the morphology legend identity for one site owner.
+
+        Site data is keyed by connector body IDs, while a skeleton trace may
+        be named by a type/instance.  ``plot_skeleton`` records aliases for
+        the actual legend group; using that map keeps site labels synchronized
+        with the visible skeleton legend at every level.
+        """
+        mode = str(getattr(self, 'legend_mode', 'layer') or 'layer').lower()
+        layer = str(layer_name).strip() or f'layer_{layer_idx}'
+        resolved = self._resolve_site_owner_alias(
+            getattr(self, '_neuron_legend_labels_by_layer', None),
+            neuron_id, layer_idx)
+        if resolved is not None:
+            return resolved
 
         # Standalone site rendering (or a caller that did not run
         # plot_skeleton first) still follows the documented legend levels.
@@ -16866,6 +16973,20 @@ class VisualizeSkeleton:
             return self._pre_post_site_type_label(neuron_id, layer_idx)
         owner = self._pre_post_site_owner_label(neuron_id, layer_idx)
         return f'{owner}_{layer}'
+
+    def _pre_post_site_owner_leaf(self, neuron_id, layer_idx):
+        """The owner's bodyId leaf label in the tree legend, or None.
+
+        The tree panel nests a site row under its neuron by matching
+        ``drocatLegend.ownerItem`` against the leaf's own ``item`` string, so
+        this has to be that exact label rather than anything derivable: the
+        bodyId is not, because connector tables serve ``'12254.0'`` where the
+        leaf reads ``'12254_5thsLNv_LNd6_R'``.  A site whose skeleton was never
+        plotted resolves to nothing and keeps its type-level row.
+        """
+        return self._resolve_site_owner_alias(
+            getattr(self, '_neuron_tree_leaf_labels_by_layer', None),
+            neuron_id, layer_idx)
 
     def _pre_post_site_legend_rank(self, owner_identity, site_type):
         """Place an owner's pre/post entries immediately after its skeleton."""
@@ -16924,6 +17045,7 @@ class VisualizeSkeleton:
         # color) stays valid while all legend levels remain distinct.
         color_groups = {}
         group_owner_ids = {}
+        group_owner_leaves = {}
         for _, row in site_df.iterrows():
             neuron_id = row['neuron_id']
             if site_type == 'pre':
@@ -16939,13 +17061,21 @@ class VisualizeSkeleton:
             # A group that collapses to exactly one owner can carry that
             # bodyId, which is how a bodyId-level profile keeps its sites.
             group_owner_ids.setdefault(key, set()).add(str(neuron_id))
+            # ...and its bodyId leaf label, which is what the tree panel
+            # nests by.  Neurons sharing a color share one site trace, so this
+            # set holds several leaves exactly when no single row can own them.
+            leaf = self._pre_post_site_owner_leaf(neuron_id, layer_idx)
+            if leaf:
+                group_owner_leaves.setdefault(key, set()).add(leaf)
 
         for (
             color_key, legend_group, legend_name, legend_rank
         ), pts in color_groups.items():
-            owners = group_owner_ids.get(
-                (color_key, legend_group, legend_name, legend_rank), set())
+            trace_key = (color_key, legend_group, legend_name, legend_rank)
+            owners = group_owner_ids.get(trace_key, set())
             owner_body_id = next(iter(owners)) if len(owners) == 1 else None
+            leaves = group_owner_leaves.get(trace_key, set())
+            owner_leaf = next(iter(leaves)) if len(leaves) == 1 else None
             owner_identity = legend_name[:-(len(site_type) + 1)]
             coords = np.array(pts, dtype=float)
             base_color = color_key
@@ -16969,6 +17099,12 @@ class VisualizeSkeleton:
                     site_display = self._get_opaque_color(base_color)
                 except Exception:
                     site_display = None
+                # ownerItem names the bodyId leaf this trace belongs to, so the
+                # panel can nest the row one level below its neuron instead of
+                # appending it beside the leaves. Absent whenever the trace
+                # spans more than one neuron (they share a color) or its
+                # skeleton was never plotted -- then the row stays where it
+                # always was rather than disappearing.
                 if self._tree_uses_custom_groups():
                     tree_meta = {
                         'kind': 'site',
@@ -16984,6 +17120,8 @@ class VisualizeSkeleton:
                         'item': legend_name,
                         'color': site_display,
                     }
+                if owner_leaf:
+                    tree_meta['ownerItem'] = owner_leaf
 
             if self.backend == 'plotly':
                 if getattr(self, 'pre_post_scatter', False):

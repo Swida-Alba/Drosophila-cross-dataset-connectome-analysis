@@ -106,11 +106,17 @@
         direct row with count <code>1</code>, so a skeleton plus its soma
         mesh does not become two neurons or a redundant child leaf.
         Toggling a type hides its skeleton and
-        pre/post site traces, individual neurons toggle separately, and
-        synapse/mesh rows sit below the types (meshes last). Pre/post site
-        traces also appear as their own <i>pre sites</i> / <i>post sites</i>
-        leaves under their type (or group), and any item list longer than
-        10 rows expands into a mini scrollable area. Static exports
+        pre/post site traces, and a neuron that owns site traces does the same
+        one level down: its <i>pre sites</i> / <i>post sites</i> rows nest
+        <b>inside</b> its own row, which becomes expandable with a caret and a
+        count of its own. Hiding a neuron therefore never leaves its synapses
+        on the scene, and one site row can still be hidden by itself — the
+        parent then reads as an empty circle without greying out. A site trace
+        the panel cannot assign to a single neuron (several same-coloured
+        neurons sharing one trace, or a skeleton that was never plotted) keeps
+        the sibling row under its type (or group) that it always had, and any item list longer than
+        10 rows expands into a mini scrollable area. Synapse and mesh rows sit
+        below the types (meshes last). Static exports
         keep the plain type-level legend, and give each context envelope a
         solid colour square for it: an envelope drawn nearly transparent would
         otherwise name a row whose square is invisible on the page background.

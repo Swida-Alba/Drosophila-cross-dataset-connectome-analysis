@@ -358,6 +358,198 @@ def test_pre_post_type_legend_merges_same_type_without_body_suffix(tmp_path):
     assert all("15832" not in str(trace.name) for trace in vs.fig_3d.data)
 
 
+# ---------------------------------------------------------------------------
+# The tree panel nests a site row one level below its neuron by matching the
+# site's ``drocatLegend.ownerItem`` against the leaf's own ``item`` string.
+# That key has to be the exact label the panel already uses: the bodyId is not
+# a usable substitute, because connector tables serve ``'15832.0'`` where the
+# leaf reads ``'15832_s-LNv_L'``.
+# ---------------------------------------------------------------------------
+
+_UNSET = object()
+
+
+def _two_neuron_site_vs(tmp_path, pre_color, post_color, *, custom=True,
+                        leaves=_UNSET, extra_site_ids=()):
+    """A tree-mode figure with two same-type neurons whose sites are plotted.
+
+    ``pre_color``/``post_color`` may be one color (both neurons share it, so
+    their sites merge into ONE trace) or a per-neuron pair.  The two alias maps
+    are written the way ``plot_skeleton`` writes them: the group map takes
+    every identifier the resolved row carries (bodyId, type, instance, ...),
+    while the leaf map takes bodyIds only -- the type alias is shared by both
+    neurons and the last one plotted would otherwise own it.
+    ``leaves={}`` stands in for sites rendered without a plotted skeleton.
+    """
+    import plotly.graph_objects as go
+
+    vs = build_vs(
+        tmp_path,
+        synapse_mode="pre_post",
+        legend_mode="tree",
+        pre_post_scatter=True,
+        brain_mesh="none",
+    )
+    vs.custom_layer_names = ["G1"] if custom else None
+    vs.neuron_layers = ["s-LNv"]
+    vs.layer_names = ["s-LNv"]
+    vs.layer_criteria = [None]
+    vs.neuron_dfs = [pd.DataFrame({
+        "bodyId": [15832, 16461],
+        "type": ["s-LNv", "s-LNv"],
+    })]
+    vs.fig_3d = go.Figure()
+    body_ids = [15832, 16461]
+    leaf_labels = {
+        "15832": "15832_s-LNv_L", "16461": "16461_s-LNv_R"}
+    if leaves is not _UNSET:
+        leaf_labels = leaves
+    label_map = {alias: "s-LNv" for bid in body_ids
+                 for alias in vs._normalize_neuron_lookup_keys(bid)}
+    # The shared type alias resolves to the group for both neurons.
+    for alias in vs._normalize_neuron_lookup_keys("s-LNv"):
+        label_map[alias] = "s-LNv"
+    leaf_map = {alias: leaf_labels.get(str(bid)) for bid in body_ids
+                for alias in vs._normalize_neuron_lookup_keys(bid)}
+    vs._neuron_legend_labels_by_layer = {0: label_map}
+    vs._neuron_tree_leaf_labels_by_layer = {0: leaf_map}
+    if isinstance(pre_color, dict):
+        vs._neuron_pre_color_overrides = dict(pre_color)
+        vs._neuron_post_color_overrides = dict(post_color)
+    else:
+        vs._neuron_pre_color_overrides = {b: pre_color for b in body_ids}
+        vs._neuron_post_color_overrides = {b: post_color for b in body_ids}
+    ids = ["15832.0", "15832.0", "16461.0", "16461.0"] + [
+        str(value) for value in extra_site_ids]
+    sites = pd.DataFrame({
+        "x": [float(n) for n in range(len(ids))],
+        "y": [0.0] * len(ids),
+        "z": [0.0] * len(ids),
+        # Float-shaped ids, exactly as a NeuPrint connector frame arrives.
+        "neuron_id": ids,
+    })
+    vs._collect_layer_sites = lambda _idx: (sites.copy(), sites.copy())
+    vs._pre_post_real_synapse_distance = 10.0
+    assert vs._plot_pre_post_sites() == 0
+    return vs
+
+
+def _site_legends(vs):
+    """``[(ownerItem, item), ...]`` for every site trace the figure carries."""
+    out = []
+    for trace in vs.fig_3d.data:
+        lg = (getattr(trace, "meta", None) or {}).get("drocatLegend") or {}
+        if lg.get("kind") == "site":
+            out.append((lg.get("ownerItem"), lg.get("item"), lg.get("type"),
+                        lg.get("group")))
+    return out
+
+
+class TestTreeSiteOwnerLeaf:
+    def test_each_site_trace_names_its_owner_leaf(self, tmp_path):
+        vs = _two_neuron_site_vs(
+            tmp_path, {"15832": "#ff0000", "16461": "#0000ff"},
+            {"15832": "#00ff00", "16461": "#ffff00"})
+        rows = _site_legends(vs)
+        assert len(rows) == 4, "two neurons x pre/post, one trace each"
+        assert sorted(owner for owner, *_ in rows) == [
+            "15832_s-LNv_L", "15832_s-LNv_L", "16461_s-LNv_R",
+            "16461_s-LNv_R"]
+        # The row label stays the group-level one it has always been; the new
+        # key is the leaf, so the two are independent strings by design.
+        assert sorted((owner, item) for owner, item, *_ in rows) == [
+            ("15832_s-LNv_L", "s-LNv_post"), ("15832_s-LNv_L", "s-LNv_pre"),
+            ("16461_s-LNv_R", "s-LNv_post"), ("16461_s-LNv_R", "s-LNv_pre")]
+
+    def test_merged_sites_of_two_neurons_stay_unnested(self, tmp_path):
+        """Same-color neurons share one site trace, so no single leaf owns it.
+
+        This is the case with no field sample (one page in the whole real-data
+        cache carries site traces), so it is pinned here rather than by a
+        census: dropping the key is what keeps the row at the type level
+        instead of losing it.
+        """
+        vs = _two_neuron_site_vs(tmp_path, "#ff0000", "#00ff00")
+        rows = _site_legends(vs)
+        assert len(rows) == 2, "pre and post each merged into one trace"
+        assert {owner for owner, *_ in rows} == {None}
+        # ...and the bodyId stamp agrees: no single owner either.
+        for trace in vs.fig_3d.data:
+            stamped = (getattr(trace, "meta", None) or {}).get("drocatTrace")
+            if stamped and stamped.get("kind") == "site":
+                assert stamped.get("owner_body_id") is None
+
+    def test_flat_tree_page_also_gets_the_leaf(self, tmp_path):
+        vs = _two_neuron_site_vs(
+            tmp_path, {"15832": "#ff0000", "16461": "#0000ff"},
+            {"15832": "#00ff00", "16461": "#ffff00"}, custom=False)
+        rows = _site_legends(vs)
+        assert sorted(owner for owner, *_ in rows) == [
+            "15832_s-LNv_L", "15832_s-LNv_L", "16461_s-LNv_R",
+            "16461_s-LNv_R"]
+        # A flat page files the site under the type-level group and no type.
+        assert {(r[2], r[3]) for r in rows} == {(None, "s-LNv")}
+
+    def test_site_without_a_plotted_skeleton_carries_no_key(self, tmp_path):
+        """Standalone site rendering keeps today's rows rather than guessing.
+
+        ``ownerItem`` must be absent, not ``None``: the panel reads the key's
+        presence to decide whether a row can nest.
+        """
+        vs = _two_neuron_site_vs(
+            tmp_path, {"15832": "#ff0000", "16461": "#0000ff"},
+            {"15832": "#00ff00", "16461": "#ffff00"}, leaves={})
+        rows = _site_legends(vs)
+        assert len(rows) == 4
+        assert {owner for owner, *_ in rows} == {None}
+        for trace in vs.fig_3d.data:
+            lg = (getattr(trace, "meta", None) or {}).get("drocatLegend") or {}
+            if lg.get("kind") == "site":
+                assert "ownerItem" not in lg
+                assert lg.get("item") and lg.get("group")
+
+    def test_an_unplotted_neuron_of_the_same_type_steals_no_leaf(self, tmp_path):
+        """The leaf map is bodyId-keyed precisely because the type alias is shared.
+
+        ``plot_skeleton`` registers ``s-LNv`` for every neuron of the layer and
+        the last write wins, so a leaf stored under that alias would point at one
+        arbitrary neuron.  A site for a neuron whose skeleton was never plotted
+        therefore has to fall back to the type-level row rather than nest under
+        a neighbour.
+        """
+        vs = _two_neuron_site_vs(
+            tmp_path,
+            {"15832": "#ff0000", "16461": "#0000ff", "77777": "#00ffff"},
+            {"15832": "#00ff00", "16461": "#ffff00", "77777": "#ff00ff"},
+            extra_site_ids=["77777.0"])
+        leaf_map = vs._neuron_tree_leaf_labels_by_layer[0]
+        assert vs._normalize_neuron_lookup_keys("s-LNv")[0] not in leaf_map
+        rows = _site_legends(vs)
+        assert {owner for owner, *_ in rows} == {
+            "15832_s-LNv_L", "16461_s-LNv_R", None}
+        unowned = [trace for trace in vs.fig_3d.data
+                   if ((getattr(trace, "meta", None) or {}).get(
+                       "drocatLegend") or {}).get("ownerItem") is None
+                   and ((getattr(trace, "meta", None) or {}).get(
+                       "drocatLegend") or {}).get("kind") == "site"]
+        assert len(unowned) == 2, "the third neuron's pre and post rows"
+        # Its bodyId stamp survives, so the profile plan can still place it --
+        # only the panel lacks a leaf to hang it on.
+        assert {str((trace.meta.get("drocatTrace") or {}).get("owner_body_id"))
+                for trace in unowned} == {"77777.0"}
+
+    def test_owner_leaf_resolves_through_the_connector_float_form(self, tmp_path):
+        """The alias map is keyed by int; the site frame arrives as ``'15832.0'``."""
+        vs = _two_neuron_site_vs(
+            tmp_path, {"15832": "#ff0000", "16461": "#0000ff"},
+            {"15832": "#00ff00", "16461": "#ffff00"})
+        assert vs._pre_post_site_owner_leaf("15832.0", 0) == "15832_s-LNv_L"
+        assert vs._pre_post_site_owner_leaf(16461, 0) == "16461_s-LNv_R"
+        assert vs._pre_post_site_owner_leaf("99999", 0) is None
+        # The group-level resolver keeps answering with the group, unchanged.
+        assert vs._pre_post_site_owner_identity("15832.0", 0, "s-LNv") == "s-LNv"
+
+
 def test_pre_post_fallback_baseline_is_scaled_by_requested_fold(tmp_path):
     vs = build_vs(
         tmp_path,

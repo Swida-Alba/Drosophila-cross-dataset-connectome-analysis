@@ -228,6 +228,17 @@ def test_legend_tree_html_contains_panel_and_markers():
     assert 'm.rank < CONFIG.brainMeshRank' in html
     # pre/post site traces get leaf rows; long item lists are scroll-capped
     assert 'addSiteLeaves' in html
+    # ...and a site that names its owner leaf nests one level below that neuron
+    # instead of standing beside it. addUnplacedSites is what keeps a site whose
+    # type bucket renders nothing from vanishing out of the panel.
+    assert 'function attachItemRow(container, itemName, leafColor, indices)' \
+        in html
+    assert 'sitesByLeaf[s.leaf] = sitesByLeaf[s.leaf] || []' in html
+    assert 'function addUnplacedSites(container)' in html
+    assert "if (s.leaf && leafCounts[s.leaf] === 1) {" in html
+    assert 'leaf: lg.ownerItem || null' in html
+    assert '{leaf: true, expanded: true}' in html
+    assert "asLeaf ? 'drocat-lt-item-row' : 'drocat-lt-group-row'" in html
     assert "children.length > 10" in html
     assert '.drocat-lt-items.drocat-lt-scroll{max-height:224px;' in html
     assert 'min-width:0;overflow-y:auto;overflow-x:hidden;}' in html
@@ -478,6 +489,91 @@ function toggle(label) {
 function toggleHeader() {
   fire(eyes()[0], 'click');
   return true;
+}
+/* Depth-aware readers. Everything above this line sees a FLAT row list, which
+   cannot tell a nested row from a sibling appended beside its parent -- the
+   exact difference the site-nesting contract is about. A row's own container
+   says which widget built it: attachExpandable puts its row inside a
+   .drocat-lt-group (whose second child is the children container), attachLeaf
+   puts it straight into the parent's .drocat-lt-items. */
+function rowDepth(row) {
+  var depth = 0;
+  var p = row.parentNode;
+  while (p) {
+    if (p.classList.contains('drocat-lt-items')) { depth++; }
+    p = p.parentNode;
+  }
+  return depth;
+}
+function rowIsExpandable(row) {
+  return !!(row.parentNode && row.parentNode.classList.contains('drocat-lt-group'));
+}
+function rowTree() {
+  return rows().map(function (r) {
+    return {label: rowLabel(r), depth: rowDepth(r),
+            expandable: rowIsExpandable(r), glyph: rowGlyph(r),
+            off: rowOff(r),
+            swatch: findByClass(r, 'drocat-lt-swatch').map(function (s) {
+              return s.classList.contains('drocat-lt-swatch-item')
+                ? 'item' : 'group';
+            })[0] || null};
+  });
+}
+function childLabels(label) {
+  /* Immediate children only: a group's children are its neuron rows, not
+     everything nested below them. */
+  var tree = rowTree();
+  var at = -1;
+  for (var i = 0; i < tree.length; i++) {
+    if (tree[i].label === label) { at = i; break; }
+  }
+  if (at < 0) { throw new Error('no row labelled ' + label); }
+  var out = [];
+  for (var j = at + 1; j < tree.length && tree[j].depth > tree[at].depth; j++) {
+    if (tree[j].depth === tree[at].depth + 1) { out.push(tree[j].label); }
+  }
+  return out;
+}
+function fireToggle(row) {
+  /* An expandable row toggles from its eye; a plain leaf row has no eye
+     handler at all -- attachLeaf puts the click on the row. */
+  var eye = rowEye(row);
+  if (eye && (eye.handlers.click || []).length) { fire(eye, 'click'); return; }
+  fire(row, 'click');
+}
+function toggleRowBody(label) {
+  /* Click the row itself (not its eye), which is what a single click on a
+     leaf row does and what a double click on any row starts. */
+  var row = rowByLabel(label);
+  if (!row) { throw new Error('no row labelled ' + label); }
+  fire(row, 'click');
+  return true;
+}
+function rowsAll(label) {
+  /* 'pre sites' is a legitimate label on several rows once sites nest, so a
+     child has to be reached by position rather than by name. */
+  return rows().filter(function (r) { return rowLabel(r) === label; });
+}
+function toggleNth(label, n) {
+  var hits = rowsAll(label);
+  if (hits.length <= n) { throw new Error('no ' + (n + 1) + 'th row ' + label); }
+  fireToggle(hits[n]);
+  return {glyphs: hits.map(function (r) { return rowGlyph(r); }),
+          off: hits.map(function (r) { return rowOff(r); })};
+}
+function rowStateNamed(label) {
+  var row = rowByLabel(label);
+  if (!row) { throw new Error('no row labelled ' + label); }
+  var c = findByClass(row, 'drocat-lt-count')[0];
+  var s = findByClass(row, 'drocat-lt-swatch')[0];
+  return {glyph: rowGlyph(row), off: rowOff(row),
+          count: c ? c.textContent : null,
+          expandable: rowIsExpandable(row), depth: rowDepth(row),
+          swatch: s ? (s.classList.contains('drocat-lt-swatch-item')
+                       ? 'item' : 'group') : null,
+          bold: row.classList.contains('drocat-lt-group-row'),
+          caret: findByClass(row, 'drocat-lt-caret').length > 0,
+          children: childLabels(label)};
 }
 
 var panel = new El('div');
@@ -936,3 +1032,245 @@ class TestLegendOverrideWinsTheCascade:
                     self.HIDE_SELECTOR), (
                     '%s: %r only ties %r, so the body stylesheet wins'
                     % (label, selector, self.HIDE_SELECTOR))
+
+
+# ---------------------------------------------------------------------------
+# Site rows nested one level under their neuron.
+#
+# A pre_post page used to append every site trace of a group as a sibling of
+# the neuron rows, so four skeletons and eight site rows shared one flat list
+# and only the swatch colour said who belonged to whom. The renderer now names
+# the owner leaf on the site's own drocatLegend (``ownerItem``), and the panel
+# turns that into a third level. These run the EMITTED script, because the
+# defect is in the row tree the browser builds -- a string assertion on the
+# script would pass while the panel nested nothing.
+# ---------------------------------------------------------------------------
+
+def _nest_neuron(item, color, rank, type_name='T'):
+    trace = go.Scatter3d(
+        x=[0, 1], y=[0, 1], z=[0, 1], mode='lines',
+        line=dict(color=color, width=4),
+        name=type_name, legendgroup=type_name, showlegend=True,
+    )
+    trace.legendrank = rank
+    trace.meta = {'drocatLegend': {
+        'kind': 'neuron', 'group': 'G', 'type': type_name, 'item': item,
+        'color': color, 'customGroup': True,
+    }}
+    return trace
+
+
+def _nest_site(role, owner, color, rank, type_name='T'):
+    meta = {'kind': 'site', 'group': 'G', 'type': type_name,
+            'item': type_name + '_' + role, 'color': color}
+    if owner is not None:
+        meta['ownerItem'] = owner
+    trace = go.Scatter3d(
+        x=[0.0], y=[0.0], z=[0.0], mode='markers',
+        marker=dict(size=3, color=color),
+        name=type_name + '_' + role,
+        legendgroup='pre_post:%s:%s' % (role, type_name),
+        showlegend=False,
+    )
+    trace.legendrank = rank
+    trace.meta = {'drocatLegend': meta}
+    return trace
+
+
+def _site_nesting_figure(nest=True):
+    """One custom group, one type, two neurons, and six site traces.
+
+    Traces 6 and 7 carry no ``ownerItem`` -- that is what a trace whose sites
+    merged across same-colored neurons looks like -- so the fallback row has to
+    survive next to the nested ones. ``nest=False`` strips the key from every
+    site, which is the page as it rendered before this change: the same rows,
+    all of them siblings.
+
+    Trace order is the panel's row order: 0/1 neurons, 2/3 the first neuron's
+    pre and post, 4/5 the second's, 6/7 the unowned pair, 8 the envelope.
+    """
+    owned = ('101_T_L', '101_T_L', '102_T_R', '102_T_R') if nest \
+        else (None, None, None, None)
+    fig = go.Figure()
+    fig.add_trace(_nest_neuron('101_T_L', '#1f77b4', 0))
+    fig.add_trace(_nest_neuron('102_T_R', '#ff7f0e', 100))
+    colors = [('#1f77b4', 200), ('#1f77b4', 201),
+              ('#ff7f0e', 300), ('#ff7f0e', 301)]
+    for (color, rank), owner in zip(colors, owned):
+        role = 'pre' if rank % 2 == 0 else 'post'
+        fig.add_trace(_nest_site(role, owner, color, rank))
+    fig.add_trace(_nest_site('pre', None, '#7f7f7f', 400))
+    fig.add_trace(_nest_site('post', None, '#7f7f7f', 401))
+    mesh = go.Mesh3d(
+        x=[0, 1, 0], y=[0, 0, 1], z=[0, 0, 0], i=[0], j=[1], k=[2],
+        color='#74a8d6', opacity=0.04, name='BANC (brain)', showlegend=True,
+    )
+    mesh.legendrank = visualize_skeleton.BRAIN_MESH_LEGEND_RANK
+    fig.add_trace(mesh)
+    return fig
+
+
+class TestTreeSiteNesting:
+    def test_a_neuron_that_owns_sites_becomes_their_parent_row(self):
+        run = run_tree_js(
+            '(function(){ return {tree: rowTree(), '
+            'first: rowStateNamed("101_T_L"), '
+            'second: rowStateNamed("102_T_R"), '
+            'group: rowStateNamed("G")}; })()',
+            fig=_site_nesting_figure())
+        assert run.code == 0, run.stderr
+        tree = run.value['tree']
+        assert [r['depth'] for r in tree] == [0, 1, 2, 2, 1, 2, 2, 1, 1, 0], tree
+        for key in ('first', 'second'):
+            state = run.value[key]
+            assert state['expandable'] is True, key
+            assert state['children'] == ['pre sites', 'post sites'], key
+            assert state['count'] == '2', key
+            assert state['depth'] == 1, key
+            assert state['swatch'] == 'item', (
+                key + ': a neuron row is not a heading, so it keeps the '
+                      'item-size swatch')
+            assert state['bold'] is False, key
+            assert state['caret'] is True, key
+        # The group root itself is untouched: bold, and no square because its
+        # leaves carry different colors (Revision 3.3 legend design).
+        assert run.value['group']['bold'] is True
+        assert run.value['group']['swatch'] is None
+        # The group row is unchanged: it counts neurons, not rows.
+        assert run.value['group']['count'] == '2'
+        assert run.value['group']['children'][:2] == ['101_T_L', '102_T_R']
+
+    def test_nesting_moves_rows_it_never_adds_one(self):
+        """The same six site traces exist either way; only their depth differs.
+
+        A row-count change here would mean a site row got dropped or duplicated
+        on the way into the tree -- the failure the fallback path guards.
+        """
+        nested = run_tree_js('rowTree()', fig=_site_nesting_figure(True))
+        flat = run_tree_js('rowTree()', fig=_site_nesting_figure(False))
+        assert nested.code == 0, nested.stderr
+        assert flat.code == 0, flat.stderr
+        assert len(nested.value) == len(flat.value) == 10
+        assert sorted(r['label'] for r in nested.value) \
+            == sorted(r['label'] for r in flat.value)
+        # ...and flat really is flat: no row sits below depth 1 there.
+        assert max(r['depth'] for r in flat.value) == 1
+        assert max(r['depth'] for r in nested.value) == 2
+
+    def test_an_unowned_site_stays_a_sibling_of_the_neurons(self):
+        run = run_tree_js(
+            '(function(){ var t = rowTree(); return {'
+            'flat: t.filter(function(r){ return r.depth === 1; })'
+            '.map(function(r){ return r.label; }), '
+            'nested: t.filter(function(r){ return r.depth === 2; }).length'
+            '}; })()',
+            fig=_site_nesting_figure())
+        assert run.code == 0, run.stderr
+        assert run.value['flat'] == ['101_T_L', '102_T_R', 'pre sites',
+                                     'post sites']
+        assert run.value['nested'] == 4
+
+    def test_the_parent_eye_covers_its_neurons_sites_too(self):
+        """Hiding a neuron must not leave its synapses on the scene.
+
+        The parent's eye restyles skeleton plus both site traces, exactly as
+        the type and group rows already cover the sites beneath them.
+        """
+        run = run_tree_js(
+            '(function(){ toggle("101_T_L"); '
+            'return {calls: RESTYLE_CALLS.map(function(c) {'
+            'return {visible: c.update.visible, indices: c.indices};}), '
+            'state: rowStateNamed("101_T_L")}; })()',
+            fig=_site_nesting_figure())
+        assert run.code == 0, run.stderr
+        hidden = [c for c in run.value['calls'] if c['visible'] is False]
+        assert hidden, 'the parent eye issued no hide restyle'
+        assert sorted(hidden[0]['indices']) == [0, 2, 3], hidden
+
+    def test_a_hidden_child_empties_the_parent_glyph_without_greying_it(self):
+        """One site off is not the whole neuron off.
+
+        ``sync()`` greys a group row only when nothing under it is drawn, while
+        its glyph reports every()-drawn; a nested row has to inherit both halves.
+        """
+        run = run_tree_js(
+            '(function(){ var before = toggleNth("pre sites", 0); '
+            'return {before: before, '
+            'parent: rowStateNamed("101_T_L"), '
+            'group: rowStateNamed("G")}; })()',
+            fig=_site_nesting_figure())
+        assert run.code == 0, run.stderr
+        assert run.value['before']['glyphs'][0] == '\u25CB'
+        assert run.value['parent']['glyph'] == '\u25CB'
+        assert run.value['parent']['off'] is False
+        # The group root still has a drawn neuron, so it stays solid as well.
+        assert run.value['group']['off'] is False
+
+    def test_double_click_on_a_parent_isolates_skeleton_and_sites(self):
+        run = run_tree_js(
+            '(function(){ toggleRowBody("101_T_L"); toggleRowBody("101_T_L"); '
+            'var hidden = []; var shown = []; '
+            'RESTYLE_CALLS.forEach(function(c) {'
+            ' if (c.update.visible === false) { hidden = hidden.concat(c.indices); }'
+            ' if (c.update.visible === true) { shown = shown.concat(c.indices); }'
+            '}); return {hidden: hidden, shown: shown}; })()',
+            fig=_site_nesting_figure())
+        assert run.code == 0, run.stderr
+        assert 0 in run.value['shown'] and 2 in run.value['shown'] \
+            and 3 in run.value['shown'], run.value
+        for other in (1, 4, 5, 6, 7):
+            assert other in run.value['hidden'], (other, run.value)
+        assert 0 not in run.value['hidden'] and 2 not in run.value['hidden']
+
+    def test_a_site_nests_whatever_type_string_its_owner_row_carries(self):
+        """The leaf name alone is the key, because a site's ``type`` is its
+        owner's *legend group* while a neuron's ``type`` is its own type label.
+        The two coincide only when the layer is named after the type -- which is
+        what the attached page looked like -- so pairing on both would silently
+        un-nest every site of a differently-named group.
+        """
+        fig = go.Figure()
+        fig.add_trace(_nest_neuron('101', '#1f77b4', 0, type_name='s-LNv'))
+        fig.add_trace(_nest_site('pre', '101', '#1f77b4', 200,
+                                 type_name='my custom group'))
+        run = run_tree_js('rowTree()', fig=fig)
+        assert run.code == 0, run.stderr
+        assert [(r['label'], r['depth']) for r in run.value] == [
+            ('G', 0), ('101', 1), ('pre sites', 2)]
+
+    def test_an_ambiguous_leaf_name_nests_nothing_and_loses_nothing(self):
+        """Two neurons sharing one label must not have their sites merged."""
+        fig = go.Figure()
+        fig.add_trace(_nest_neuron('101', '#1f77b4', 0, type_name='A'))
+        fig.add_trace(_nest_neuron('101', '#ff7f0e', 100, type_name='B'))
+        fig.add_trace(_nest_site('pre', '101', '#1f77b4', 200, type_name='A'))
+        fig.add_trace(_nest_site('pre', '101', '#ff7f0e', 300, type_name='B'))
+        run = run_tree_js('(function(){ var t = rowTree(); return {'
+                          'nested: t.filter(function(r) {'
+                          'return r.depth === 2; }).length, '
+                          'labels: t.map(function(r){ return r.label; })'
+                          '}; })()', fig=fig)
+        assert run.code == 0, run.stderr
+        assert run.value['nested'] == 0, run.value['labels']
+        assert run.value['labels'].count('pre sites') == 2, run.value['labels']
+
+    def test_a_site_no_bucket_received_still_gets_its_row(self):
+        """The hole the nesting key could have opened, and the sweep closes.
+
+        A singleton plain type renders as its bodyId with no type row, so the
+        bucket this site was filed under has no container to render it. Before
+        ``addUnplacedSites`` the row simply vanished -- a site trace the viewer
+        can neither see nor hide, drawn on the scene with no eye over it.
+        """
+        fig = go.Figure()
+        fig.add_trace(_nest_neuron('101', '#1f77b4', 0, type_name='s-LNv'))
+        fig.add_trace(_nest_site('pre', None, '#1f77b4', 200,
+                                 type_name='my custom group'))
+        run = run_tree_js('(function(){ var t = rowTree(); return {'
+                          'labels: t.map(function(r){ return r.label; }), '
+                          'depths: t.map(function(r){ return r.depth; })'
+                          '}; })()', fig=fig)
+        assert run.code == 0, run.stderr
+        assert run.value['labels'] == ['G', '101', 'pre sites'], (
+            run.value['labels'])
+        assert run.value['depths'] == [0, 1, 1]

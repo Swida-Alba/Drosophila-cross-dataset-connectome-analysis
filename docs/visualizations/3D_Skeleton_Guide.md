@@ -385,6 +385,13 @@ one neuron emits both a skeleton trace and a soma mesh trace: a custom group
 containing that one body is shown as a single direct row with count `1` and no
 redundant child leaf. Groups containing multiple neurons remain expandable.
 
+With `synapse_mode='pre_post'` a site trace that names its owner leaf nests
+*inside* that neuron's row, one level below the bodyId leaves, and the neuron's
+eye then hides skeleton and sites together. A site trace the panel cannot
+assign to one neuron — several same-coloured neurons sharing a trace, or a
+skeleton that was never plotted — keeps its row beside the neurons instead, so
+no site is ever left undrawable.
+
 The panel is content-width and caps at 420px, so a long bodyId row overflows
 it. The horizontal scrollbar shown in that case is the panel's own, and it is
 the only one: the panel's horizontal axis is `overflow-x:hidden`, which still
