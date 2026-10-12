@@ -5494,6 +5494,7 @@ class VisualizeSkeleton:
     if (Object.prototype.hasOwnProperty.call(opacityMeshes, String(i))) {
       return true;
     }
+    var gd = graphDiv();
     var tr = gd && gd.data ? gd.data[i] : null;
     return !!tr && typeof tr.legendrank === 'number'
       && tr.legendrank >= CONFIG.brainMeshRank;
