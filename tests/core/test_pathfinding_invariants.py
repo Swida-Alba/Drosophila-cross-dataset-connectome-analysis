@@ -482,3 +482,117 @@ class TestRealizedRatioCustomLabels:
             [9.0, 12.0], ("TS", "TA", "TT"),
             {"TA": 77.0, "TT": 154.0})
         assert res[0] == pytest.approx([9 / 77, 12 / 154])
+
+
+class TestLabelMapperBehaviors:
+    """The LabelMapper behavior matrix (plan §13.7 review): the custom
+    JSON's own semantics plus every consumer contract probed this round.
+    Uses the real clock mapper (3 datasets, 21 group labels)."""
+
+    @pytest.fixture(scope="class")
+    def mapper(self):
+        from comparison.label_mapper import LabelMapper
+        p = (ROOT / "clock-production/data/clock_validated_expanded/"
+             "LabelMapper_clock_FAFB-MCNS-BANC.json")
+        if not p.exists():
+            pytest.skip("clock LabelMapper JSON not present")
+        return LabelMapper(overall_mapping_json=str(p))
+
+    def test_get_label_mapped_bodyid_and_identity_fallback(self, mapper):
+        members = mapper.get_neurons_for_label(
+            "5th-LNv", "male-cns:v1.0", "target")
+        assert members
+        # mapped bodyId -> the custom label
+        assert mapper.get_label("male-cns:v1.0", members[0]) == "5th-LNv"
+        # unmapped bodyId -> the IDENTITY fallback (the id as string),
+        # which build_effective_type_map treats as 'no override'
+        unmapped = mapper.get_label("male-cns:v1.0", "999999999")
+        assert unmapped == "999999999"
+
+    def test_get_label_hemisphere_suffix_reapplied(self, mapper):
+        # a suffixed mapped id: base lookup + suffix re-application
+        members = mapper.get_neurons_for_label(
+            "LNd_CRY+", "male-cns:v1.0", "target")
+        base = members[0]
+        suffixed = mapper.get_label("male-cns:v1.0", f"{base}_L")
+        if suffixed.endswith("_L"):
+            assert suffixed == "LNd_CRY+_L"
+        else:
+            # the dataset's bodies may already be suffix-free; the base
+            # identity path must at least not lose the mapping
+            assert suffixed == "LNd_CRY+"
+
+    def test_roles_scoped_members(self, mapper):
+        # the clock export fills source and target mappings with the
+        # same groups; intermediate is absent
+        src = mapper.get_neurons_for_label(
+            "5th-LNv", "male-cns:v1.0", "source")
+        tgt = mapper.get_neurons_for_label(
+            "5th-LNv", "male-cns:v1.0", "target")
+        assert src == tgt and src
+
+    def test_dataset_keys_sanitized_and_raw(self, mapper):
+        # 'male-cns:v1.0' sanitizes to 'male-cns_v1_0' — both key forms
+        # must resolve (CSV-loaded mappers store the sanitized form)
+        raw = mapper.get_neurons_for_label(
+            "5th-LNv", "male-cns:v1.0", "target")
+        san = mapper.get_neurons_for_label(
+            "5th-LNv", "male-cns_v1_0", "target")
+        assert raw == san and raw
+
+    def test_apply_to_dataframe_adds_std_columns_with_bodyid_retry(
+            self, mapper):
+        import pandas as pd
+        members = mapper.get_neurons_for_label(
+            "5th-LNv", "male-cns:v1.0", "target")
+        df = pd.DataFrame({
+            "bodyId_pre": [members[0]],
+            "bodyId_post": ["999999999"],      # unmapped bodyId
+            "type_pre": ["5thsLNv_LNd6"],      # native type
+            "type_post": ["Native_Type"],
+            "weight": [21]})
+        out = mapper.apply_to_dataframe(df, "male-cns:v1.0")
+        # the mapped body's std_label = the custom label; the unmapped
+        # body's std_label = its native type (identity on the NAME — the
+        # bodyId retry adopts only when the bodyId itself maps)
+        assert out["std_label_pre"][0] == "5th-LNv"
+        assert out["std_label_post"][0] == "Native_Type"
+        # type columns are never renamed in place
+        assert out["type_pre"][0] == "5thsLNv_LNd6"
+
+    def test_f9_by_type_resolves_custom_labels(self, tmp_path, mapper):
+        """The F9 by-type fetch resolves mapper-group labels through the
+        members' D_t per-neuron totals (the plan §13.7 source-level
+        fix) — verified against a per-ROI-style temp cache."""
+        import coana
+        members = mapper.get_neurons_for_label(
+            "5th-LNv", "male-cns:v1.0", "target")
+        conn = tmp_path / "connections.parquet"
+        idx = tmp_path / "neuron_index.parquet"
+        # the members' incoming: pre-neurons X1/X2 -> member[0] (3+4),
+        # and an unrelated pair
+        rows = {"bodyId_pre": ["X1", "X2", "Q1"],
+                "bodyId_post": [members[0], members[0], "ZZ"],
+                "roi": ["R", "R", "R"], "weight": [3, 4, 9]}
+        pl.DataFrame(rows).write_parquet(conn)
+        pl.DataFrame({"bodyId": ["X1", "X2", "ZZ", str(members[0])],
+                      "type": ["X", "X", "Z", "TB"]}).write_parquet(idx)
+        fc = coana.FindNeuronConnection.__new__(
+            coana.FindNeuronConnection)
+        fc.dataset = "male-cns:v1.0"
+        fc.use_cache = True
+        fc.label_mapper = mapper
+        fc.client_type = "neuprint"
+        fc._conn_df_cache = None
+        fc._get_connection_db_path = lambda: str(conn)
+        fc._get_neuron_index_path = lambda: str(idx)
+        fc._pull_missing_incoming_totals = (
+            lambda types, min_weight, col: {})
+        # the D_t by-bodyId product (verified separately) as the stub seam:
+        body = pl.DataFrame({"bodyId_post": [str(members[0]), "ZZ"],
+                             "total_incoming_weight": [7, 9]})
+        fc._get_total_incoming_by_bodyid_table = lambda min_weight=1: body
+        res = fc._fetch_total_incoming_weight_by_type(["5th-LNv"], 1)
+        got = {r.type_post: r.total_incoming_weight
+               for r in res.itertuples()}
+        assert got.get("5th-LNv") == 7
