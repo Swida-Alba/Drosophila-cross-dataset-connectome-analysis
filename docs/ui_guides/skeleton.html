@@ -201,6 +201,13 @@
         The hidden half costs the <i>orbit</i> nothing, though: the page opens
         pivoted on the half it draws, so turning the scene keeps the brain
         where it is instead of swinging it around the cord's empty space.
+        Zooming in first costs it nothing either. Plotly's own wheel zoom keeps
+        easing the view after it stops updating the page's stored camera, and a
+        legend click redraws from that stored value — so before this was handled,
+        toggling a row after zooming snapped the framing back (measured at
+        roughly 60% of the zoom distance you had just dialled in). The page now
+        keeps its stored camera matched to what you are actually looking at, so
+        a toggle after a zoom moves only the traces you toggled.
         Nothing about a frozen view changes once you have it; <b>Fit</b>
         (<code>F</code>) is the control that follows content. The frame you
         open on is unchanged either way; untick the box to hand scaling back to Plotly.</li>

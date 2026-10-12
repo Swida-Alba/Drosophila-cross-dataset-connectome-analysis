@@ -262,6 +262,30 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   of on the gap between the two: a 40-degree turn slid the brain 212 px across a
   male-cns frame before, 2 px after. With nothing hidden the flag is false and
   the pivot is left where Plotly puts it.
+  Pinning the box is not the whole contract, because Plotly's own 3D dolly leaves
+  the camera holders disagreeing: a wheel zoom keeps easing the scene camera after
+  the last camera relayout it emits, so `gd.layout.scene.camera` holds a
+  mid-animation value while the viewer is looking at the eased end, and
+  `_fullLayout.scene.camera` is not refreshed at all until the next redraw. The
+  next `Plotly.restyle` -- every legend toggle is one, tree eye or native legend
+  click alike -- re-supplies `_fullLayout` from that stale layout and pushes it
+  into the scene, so the framing jumps: measured +59.9% of the settled dolly
+  radius on a frozen BANC page, +68.2% on a plotly page carrying no DROCAT
+  script, against exactly 0 for the same window with no restyle. The page
+  therefore shadows the live `_scene.getCamera()` into **both** holders every
+  frame until it stops moving (`startCameraShadow`, armed by plotly's camera
+  relayouts and by `wheel`/`pointerdown`/`touchstart` on the div, bounded by
+  `SHADOW_STABLE_FRAMES` and `SHADOW_MAX_MS`). Both, not just the layout: a
+  single-holder write leaves `_fullLayout` an entire dolly behind, and the flush
+  then applies that whole change at the moment the viewer asked for none. The
+  write is an assignment, never a `Plotly.relayout`, so it redraws nothing --
+  measured 6 relayouts and 0 afterplots during a dolly, and none after it. Only a
+  real browser can see any of this: at a page's own opening camera all three
+  holders agree, which is why the earlier "camera bit-identical across every
+  toggle" check passed on a page that still jumped for users. Pinned by
+  `tests/core/test_visualize_skeleton_camera_shadow.py` (`requires_chrome`),
+  which asserts the guarded page moves by <= 1e-9 and that the same harness
+  without the guard still moves -- the assertion that gives the gate its teeth.
   A Freeze/Fit button and the `F` key
   hand autoscaling back. All three floating controls -- those two and the
   light/dark switch -- show a hover hint naming the key and the current state,

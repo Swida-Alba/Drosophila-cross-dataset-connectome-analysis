@@ -4503,6 +4503,26 @@ class VisualizeSkeleton:
         under ``hidden_half``. Ordinary orbit drags end on an eye no preset
         owns, so they are never "corrected".
 
+        Holding the box is only half of "the framing does not move", because
+        Plotly's own 3D dolly leaves the two camera holders disagreeing: a wheel
+        zoom keeps easing the scene camera after the last camera relayout it
+        emits, so ``layout.scene.camera`` stays on a mid-animation value while
+        the viewer is looking at the eased end. The next restyle -- which is what
+        every legend toggle is, the tree's eye and a native legend click alike --
+        re-supplies ``_fullLayout`` from that stale layout and pushes it into the
+        scene, and the view snaps. Measured before this was handled: +59.9% of
+        the settled dolly radius on a frozen BANC page and +68.2% on a Plotly
+        page carrying no DROCAT script, against exactly 0 for the same window
+        with no restyle. The script therefore shadows the live scene camera into
+        both ``layout.scene.camera`` and ``_fullLayout.scene.camera`` every frame
+        until it stops moving, which makes any later flush an identity -- both
+        holders, because writing only the layout leaves ``_fullLayout`` on the
+        page's opening camera until the flush, and that flush then applies one
+        huge camera delta at the moment the viewer asked for no motion. That
+        write is deliberately not a Plotly call: assigning the camera object
+        neither moves the view nor redraws, and the loop is bounded so an idle
+        page keeps no animation frame alive.
+
         The page has exactly one box, and ``_scene_data_ranges`` already sized
         it around a brain/VNC envelope the run embedded without showing. That
         is the whole reveal contract: a toggle that draws nothing is a toggle
@@ -4766,6 +4786,84 @@ class VisualizeSkeleton:
     }
     update(updateObj);
   }
+  /* plotly's 3D dolly keeps easing the scene camera after the last camera
+     relayout it emits, so gd.layout.scene.camera holds a mid-animation value
+     while the viewer is looking at the eased end. Any later restyle -- a
+     legend-tree eye, a native legend click, a raw Plotly.restyle -- re-supplies
+     _fullLayout from that stale layout and pushes it into the scene, which is
+     the framing jump this script exists to forbid (measured +59.9% of the
+     settled dolly radius on a frozen BANC page, +68.2% on a plotly page that
+     carries no DROCAT script at all). The shadow copies the live camera into
+     the layout each frame until it stops moving. The write is deliberately not
+     a Plotly call: assigning the camera object moves nothing on screen and
+     redraws nothing, it only makes the next flush an identity. Bounded, so a
+     page that is merely open cannot keep an animation loop alive. */
+  var CAM_PARTS = ['eye', 'center', 'up'];
+  var SHADOW_STABLE_FRAMES = 3;
+  var SHADOW_MAX_MS = 4000;
+  var shadowing = false;
+  function liveCamera() {
+    var gd = graphDiv();
+    var scene = gd && gd._fullLayout && gd._fullLayout.scene
+      && gd._fullLayout.scene._scene;
+    if (!scene || typeof scene.getCamera !== 'function') { return null; }
+    try {
+      var c = scene.getCamera();
+      if (!c || !c.eye || !c.center || !c.up) { return null; }
+      return {
+        eye: {x: c.eye.x, y: c.eye.y, z: c.eye.z},
+        center: {x: c.center.x, y: c.center.y, z: c.center.z},
+        up: {x: c.up.x, y: c.up.y, z: c.up.z},
+        projection: (c.projection && c.projection.type) || 'perspective'
+      };
+    } catch (err) { return null; }
+  }
+  function cameraPartsAgree(a, b) {
+    if (!a || !b) { return false; }
+    for (var p = 0; p < CAM_PARTS.length; p++) {
+      var pa = a[CAM_PARTS[p]];
+      var pb = b[CAM_PARTS[p]];
+      for (var i = 0; i < AXES.length; i++) {
+        if (Math.abs(pa[AXES[i]] - pb[AXES[i]]) > 1e-12) { return false; }
+      }
+    }
+    return true;
+  }
+  function shadowOnce() {
+    var cam = liveCamera();
+    if (!cam) { return null; }
+    var gd = graphDiv();
+    try {
+      // Both holders, not just the user layout. A restyle re-supplies
+      // _fullLayout *from* the layout, so writing only the layout leaves
+      // _fullLayout on the page's opening camera until that flush -- and the
+      // flush then applies one enormous camera delta at the moment the viewer
+      // asked for no motion at all. With both updated the flush is an
+      // identity: measured live, layout and _fullLayout all read the same
+      // radius after the gesture, on the same scene that used to jump.
+      gd.layout.scene.camera = cam;
+      gd._fullLayout.scene.camera = cam;
+    } catch (err) { return null; }
+    return cam;
+  }
+  function startCameraShadow() {
+    if (shadowing) { return; }
+    shadowing = true;
+    var start = Date.now();
+    var stable = 0;
+    var last = null;
+    (function step() {
+      var cam = shadowOnce();
+      if (!cam) { shadowing = false; return; }
+      stable = cameraPartsAgree(cam, last) ? stable + 1 : 0;
+      last = cam;
+      if (stable < SHADOW_STABLE_FRAMES && Date.now() - start < SHADOW_MAX_MS) {
+        requestAnimationFrame(step);
+      } else {
+        shadowing = false;
+      }
+    })();
+  }
   function drifted() {
     var gd = graphDiv();
     var scene = gd && gd._fullLayout && gd._fullLayout.scene;
@@ -4932,6 +5030,9 @@ class VisualizeSkeleton:
           var cameraMoved = ('scene.camera' in event)
             || ('scene.camera.eye' in event) || ('scene.camera.up' in event);
           if (!cameraMoved) { return; }
+          // plotly emits the camera while it is still easing, so this is the
+          // point where layout and scene are known to disagree.
+          startCameraShadow();
           if (!centerIsDefault()) { return; }
           var gdNow = graphDiv();
           var scene = gdNow && gdNow._fullLayout && gdNow._fullLayout.scene;
@@ -4940,6 +5041,15 @@ class VisualizeSkeleton:
           recenter();
         });
       } catch (err) { /* older plotly builds expose no such hook */ }
+      try {
+        // A dolly or orbit also starts the shadow before plotly has emitted
+        // anything, so the layout is never left holding a mid-animation camera
+        // for the next legend toggle to flush into the scene.
+        ['wheel', 'pointerdown', 'touchstart'].forEach(function(type) {
+          gd.addEventListener(type, startCameraShadow,
+                              {capture: true, passive: true});
+        });
+      } catch (err) { /* no gesture listeners, no shadow: the page still works */ }
       return;
     }
     if (++tries < 300) { setTimeout(whenPlotly, 200); }
