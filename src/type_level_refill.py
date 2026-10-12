@@ -253,6 +253,22 @@ def read_emitted_pairs(run_dir) -> Dict[Tuple[str, str], int]:
             info_path,
             dtype={'bodyId_pre': str, 'bodyId_post': str,
                    'type_pre': str, 'type_post': str})
+        # EFFECTIVE-LABEL preference (2026-10-12, plan §13.5): a
+        # label-mapper run exports the NATIVE types in type_pre/type_post
+        # and the mapper's labels in std_label_pre/std_label_post — while
+        # the cut re-derivation keys pairs through the EFFECTIVE
+        # (mapper-applied) type map. Reading the native columns made
+        # every custom-labeled pair mismatch ('re-derived 0 vs exported
+        # N') and the refill refuse fail-closed. Prefer the std-label
+        # columns when they carry values; fall back to the type columns
+        # per row (unmapped bodies keep their native labels either way).
+        if {'std_label_pre', 'std_label_post'} <= set(ci.columns):
+            ci['type_pre'] = ci['std_label_pre'].where(
+                ci['std_label_pre'].notna() & (ci['std_label_pre'] != ''),
+                ci['type_pre'])
+            ci['type_post'] = ci['std_label_post'].where(
+                ci['std_label_post'].notna() & (ci['std_label_post'] != ''),
+                ci['type_post'])
         if not ci.empty and {'bodyId_pre', 'bodyId_post',
                              'type_pre', 'type_post'} <= set(ci.columns):
             # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)

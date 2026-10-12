@@ -15518,6 +15518,25 @@ class FindNeuronConnection:
         missing = [t for t in wanted if t not in mass]
         if missing:
             members = getattr(self, '_ratio_lane_type_members', None) or {}
+            # CUSTOM-LABEL posts (2026-10-12, plan §13): a label-mapper
+            # group label ('5th-LNv', 'LNd_CRY+_ITP+', ...) has no
+            # native-type rows, so the by-type fetch cannot see it —
+            # resolve the group's member bodyIds through the run's label
+            # mapper and sum their F9 per-neuron totals below (the
+            # group's physical incoming mass). Without this, one
+            # custom-label hop made _realized_ratio_readout return None
+            # for the ENTIRE path's realized ratios.
+            mapper = getattr(self, 'label_mapper', None)
+            ds = str(getattr(self, 'dataset', '') or '')
+            if mapper is not None:
+                for t in list(missing):
+                    try:
+                        ids = mapper.get_neurons_for_label(t, ds, 'target')
+                    except Exception:
+                        ids = None
+                    if ids:
+                        members = dict(members)
+                        members.setdefault(t, [str(i) for i in ids])
             totals = getattr(self, '_ratio_lane_totals', None)
             if totals is None:
                 totals = {}
