@@ -156,6 +156,14 @@ TIER-0 comparison identities, the same contract as the cross-dataset lanes:
 - label identities are never re-resolved through the auto type mapper —
   anchors, merge keys, and partner keys that carry a label pass
   canonicalization verbatim;
+- on the inter-dataset (anchor) path a preset label is resolved **literally**:
+  `_build_anchor_profiles` tries the exact name before treating an item as a
+  regex, so a label containing `+`, `.` or `(` keeps its own cross-dataset row
+  instead of expanding against the first dataset's native type pool (which
+  need not contain the preset's spelling at all). An item only anchors when its
+  licensed label is a profile row in **≥ 2** datasets; anything that anchors
+  nothing is disclosed as `dropped_inter_anchors` in `parameters.json`, repeated
+  in `README.txt` and the log, and shown as a report chip;
 - bodyId-level matrix axes read `{bodyId}_{label}({native})` on
   preset-resolved bodyIds — dropped when the label already is the native
   name (`{bodyId}_{label}`, or `{bodyId}_{label}_{L|R}` when only the side

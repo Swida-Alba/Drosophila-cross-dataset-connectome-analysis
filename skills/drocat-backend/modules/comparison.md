@@ -96,8 +96,13 @@ labeler = LabelMapper()                # explicit per-dataset override (wins)
 # LabelMapper as tier-0 identity + axis overlay (profiling/morph family):
 # axis_label_resolver(mapper) -> (dataset, body_id) -> label | None (the
 # mapper's identity fallback is NOT a resolution); load_label_mapper(file,
-# log) contains load failures to None. label_utils.build_body_id_label(...,
-# label_of=) formats bodyId axes as {bodyId}_{label}({native}) — dropped
+# log) contains load failures to None — EXCEPT the preset version gate, which
+# raises PresetFormatError (a preset with no 'format' tag, or an unknown one,
+# must not degrade a run to native keys behind the user's back). Presets
+# declare "format": "drocat_custom_groups/v1" (label_mapper.PRESET_FORMAT_TAG,
+# the same tag the board's exporter writes); to_dict()/export_to_json emit it.
+# label_utils.build_body_id_label(..., label_of=) formats bodyId axes as
+# {bodyId}_{label}({native}) — dropped
 # when the label already is the native name; side-only difference keeps
 # {bodyId}_{label}_{L|R}. Unmapped ids stay byte-identical to the legacy
 # form, so a no-preset run's exports are unchanged.

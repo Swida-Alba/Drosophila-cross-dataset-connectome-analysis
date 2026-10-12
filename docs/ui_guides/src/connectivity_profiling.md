@@ -34,6 +34,8 @@ Selecting <b>two or more datasets</b> profiles the SAME query in every dataset a
 
 Different names of the same neuron across datasets are handled automatically via the <b>male-cns v1.0</b> neuron info (the type mapper), e.g. FAFB <code>MTe07</code> is standardized to <code>MeVPLo2</code>. <code>cross_dataset/mapping_summary.csv</code> lists the resolved name of every queried neuron per dataset and adds a numeric <code>same name</code> flag (1 when every dataset has the same non-empty name, otherwise 0).
 
+An inter-dataset comparison exists only for a queried item that has a profile row in <b>at least two</b> datasets — that item is an <i>anchor</i>. Names resolve <b>exactly first</b>: with a LabelMapper preset loaded (<code>label_mapping_file</code>) a preset label is a literal, so a label containing <code>+</code>, <code>.</code> or <code>(</code> keeps its own row instead of being expanded into the family its spelling happens to match; only an item with no exact row anywhere is treated as a pattern. An item that forms no anchor is never dropped silently: it is listed in <code>parameters.json</code> under <code>dropped_inter_anchors</code> (with its kind, the datasets that did hold a row, and the reason), repeated as a WARNING block in <code>README.txt</code>, and shown as a chip in the report, so a partial cross-dataset matrix cannot be mistaken for a complete one.
+
 
 ## Profile construction
 
@@ -79,7 +81,9 @@ The folder name uses the first dataset's abbreviation (<code>MCNS</code> = male-
 report.html                        # hub: inter-dataset section + link cards
 report_<dataset>.html              # full heatmap report per dataset (2+ datasets)
 plotly.min.js                      # shared chart library — keep beside the reports
-parameters.json, README.txt        # README lists only the folders written
+parameters.json, README.txt        # README lists only the folders written;
+                                   # parameters.json also carries
+                                   # dropped_inter_anchors (2+ datasets)
 # ---- ONE dataset: level folders appear only for levels that ran ----
 type_level/                        # type level only (custom groups write
   results/type_similarity_{metric}_{direction}.csv
@@ -101,7 +105,8 @@ intra_dataset/{dataset_folder}/    # per-dataset N×N comparisons
   results/type_avg_bodyid_similarity_{metric}_{direction}.csv
   visualization/heatmap_intra_*.html, heatmap_intra_type_avg_*.html
 cross_dataset/                     # same neuron across datasets (2+ datasets)
-  mapping_summary.csv              # resolved names + same-name flag
+  mapping_summary.csv              # resolved names + same-name flag (anchors
+                                   # only — see dropped_inter_anchors)
   all_types/
     results/similarity_{direction}_{metric}.csv
     visualization/heatmap_inter_all_types_*.html

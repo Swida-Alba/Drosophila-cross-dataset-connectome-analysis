@@ -34,6 +34,9 @@ comparer = ConnectivityProfileComparer(
     ensure_cache_complete=False,
 )
 # for aggregation_level="custom", add: comparer = ConnectivityProfileComparer(..., custom_mapping_file="/path/to/mapping.json")
+# to compare a preset's standard labels WITHOUT changing the rows, add:
+#   label_mapping_file="/path/to/mapping.json", group_partners_by_mapping=True
+# (a preset file must declare "format": "drocat_custom_groups/v1")
 
 results = comparer.run()
 ```
@@ -89,6 +92,13 @@ Two or more datasets use the `intra_dataset/` + `cross_dataset/` layout.
   same 1000-bodyId budget the `auto` rule enforces, since the pair loop is
   quadratic. Past it the skip stands and the log says what to change.
 - `aggregation_level="custom"` requires `custom_mapping_file`.
+- With 2+ datasets an item only becomes an inter-dataset **anchor** when its
+  licensed label is a profile row in at least two datasets, and names resolve
+  exactly first — a `label_mapping_file` label containing `+`, `.` or `(` is a
+  literal and keeps its own row rather than expanding into its regex family.
+  Anything that forms no anchor is disclosed, never dropped quietly:
+  `parameters.json → dropped_inter_anchors`, a README WARNING block, the log,
+  and a report chip.
 - `ensure_cache_complete=True` forces a full cache; use it deliberately.
 - The profiling resolver resolves the query before comparing; a completed run
   means the queried chips resolved in the dataset.

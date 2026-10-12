@@ -69,7 +69,11 @@ directories such as `morph_cross_dataset/` are shared roots holding many
 runs and are only descended into, never offered whole.
 
 * **Caches** (`cache/`, rebuildable) are listed per class × dataset with
-  sizes and rebuild-cost notes. BANC connection caches rebuild offline
+  sizes and rebuild-cost notes. Connection caches carry the
+  pair-collapsed `connections.parquet` (one row per pair at the
+  physical slice-summed weight) plus the `connections_by_roi.parquet`
+  sidecar — the per-ROI audit surface, which roughly doubles the
+  footprint of per-ROI datasets (hemibrain, male-cns). BANC connection caches rebuild offline
   from the local merged tables (gated by the `connections.parquet.src`
   marker); FAFB re-derives from its local merged table; NeuPrint datasets
   refetch from the server. The NeuronBridge match cache clears through
@@ -199,7 +203,7 @@ Progress previews written before the run completes (type-level and bodyId-level 
 
 #### Run Metadata
 *   **`parameters.txt`**: Human-readable record of all parameters, plus the **applied-threshold provenance block** written after enumeration (both modes): `requested_threshold`, `applied_threshold`, `applied_threshold_source` (`requested` | `strongest_first_budget` | `edge_budget` | `strongest_first_budget+edge_budget`), `strongest_first_budget` (effective path budget; 0/auto → 1,000,000), `strongest_first_budget_bitten`, `strongest_first_tau` (landing τ), `tau_canonical` (minimal threshold reproducing the output: `w2+1` when the budget bite leaves a gap, else the natural τ), `strongest_dropped_bottleneck` (w2), `edge_budget`, `edge_budget_applied`, `edge_budget_landing` (w1), `edge_weight_floor` (w0), `strongest_retained_bottleneck` (W\* — the widest-path ceiling after lossless pruning), and `paths_complete`. The same block is written to `all_attributes.json` and `data_details/parameters.csv`. Semantics: `applied_threshold` equals the requested threshold for complete/unbounded runs (the natural τ is reported separately); when a lossy budget affected the output it is the canonical minimal threshold reproducing the materialized set, and `applied_threshold_source` names the mechanism(s). Backward-compatible alias lines `applied_tau (min path bottleneck)` and `edge_weight_floor` are kept.
-*   **`user_warning_notes.txt`**: Warnings/notes collected during the run (e.g. skipped filters, edge trimming); gains an `[untyped dropped]` entry only when the Drop Untyped Neurons filter actually removed rows, a `[combined threshold]` note when both the StrongestFirst budget and the Edge Budget affected the run, an explicit `[hemisphere] ... IGNORED` note when Keep-Only-Conserved-Edges was set without Hemisphere-aware (that filter only runs with hemisphere splitting), a `[ratio denominators]` note when the connection cache was absent or incomplete and the missing incoming masses were auto-pulled (source disclosed) so connection_ratio / connection_ratio_adj still divide by the post's complete incoming map, a `[data generation]` note ONLY when the connection cache or the incoming lane predates the dataset's local release table (in-place replacement under the same dataset name — results may mix two data generations; consistent generations stay silent), a `[shortest weights]` note when duplicate fetches of one edge carried DIFFERENT weights across backward layers (should not exist; first fetch kept, store frames retain everything), and — for auto-mapped comparison runs — the per-run state blocks `[merge policy]`, `[BANC auto labels]` (mappings resting on auto-transferred labels only), `[BANC alignment fallback]` (2026-09-27: mappings filled by the weaker `fafb_alignment_cell_type` lane where the curated pass had no winner, with vote and `fafb_match` counts), `[same-name-first]`, and `[multi-value type cells]`; re-exports replace prior copies of these state blocks instead of accumulating them
+*   **`user_warning_notes.txt`**: Warnings/notes collected during the run (e.g. skipped filters, edge trimming); gains an `[untyped dropped]` entry only when the Drop Untyped Neurons filter actually removed rows, a `[combined threshold]` note when both the StrongestFirst budget and the Edge Budget affected the run, an explicit `[hemisphere] ... IGNORED` note when Keep-Only-Conserved-Edges was set without Hemisphere-aware (that filter only runs with hemisphere splitting), a `[ratio denominators]` note when the connection cache was absent or incomplete and the missing incoming masses were auto-pulled (source disclosed) so connection_ratio / connection_ratio_adj still divide by the post's complete incoming map, a `[data generation]` note ONLY when the connection cache or the incoming lane predates the dataset's local release table (in-place replacement under the same dataset name — results may mix two data generations; consistent generations stay silent), a `[shortest weights]` note when duplicate fetches of one edge carried DIFFERENT weights across backward layers (the physical weight is the per-pair ROI-slice sum, layers deduplicated keep-first; store frames retain everything), and — for auto-mapped comparison runs — the per-run state blocks `[merge policy]`, `[BANC auto labels]` (mappings resting on auto-transferred labels only), `[BANC alignment fallback]` (2026-09-27: mappings filled by the weaker `fafb_alignment_cell_type` lane where the curated pass had no winner, with vote and `fafb_match` counts), `[same-name-first]`, and `[multi-value type cells]`; re-exports replace prior copies of these state blocks instead of accumulating them
 *   **`.provenance_incomplete`** (only on failure): the post-enumeration re-stamp of `all_attributes.json`/`parameters.txt` failed; the files hold the pre-enumeration snapshot, and this marker names the error — treat the run's final tau/floor provenance as missing
 
 #### Hemisphere Symmetry (`hemisphere_symmetry/`)
@@ -225,7 +229,18 @@ produced, for every weight basis (see
 `data_details/type_level_refill/` for the raw records). Additionally,
 the REFILL-ASKED records (recovering budget-cut mass) are written when
 the applied threshold &gt; asked, and on EVERY ratio-basis run with
-status `complete_at_asked` even when the budget did not bite: the
+status `complete_at_asked` even when the budget did not bite. The
+FULL-scope enumeration is per-chain (2026-10-11: restricted to the
+emitted chains — exact layered DP for distinct-type chains, an
+alive-pruned visited DFS for multi-visit chains (walk-level dead-end
+pruning, lossless; deterministic collection order; structures recorded
+ON COMPLETION so only edges on ≥ 1 collected realization enter the
+masses) with a 2M
+path cap and honest
+`chains_truncated` disclosure beside the `chains` denominator; the pair
+tables' `refilled_total` is
+chain-scoped and `pair_offchain_mass` discloses the ≥1 admitted mass
+off-chain): the
 refilled data mirrored in the path/connection data format, parallel to
 `find_reciprocal/`.
 *   **Ratio-basis refills** run at **synapse \u2265 1** (the run's own
@@ -288,13 +303,18 @@ all-mode run):
     refill mass drawn like the reciprocal views.
 *   **`parameters.csv`**: the run's parameters.
 
-#### Corridor Lane Standalone Folder (`route_scope_paths/`)
+#### Fast Mode Standalone Folder (`route_scope_paths/`)
 Written by the corridor lane — the route-scoped deep pass
 (plan-corridor-lane.md), the second of the two analysis modes
 (**Complete mode** = the run itself: all intact paths &ge; the applied
 threshold; **Fast mode** = this lane: the strongest type-level routes
-at the ASKED threshold) — after Complete/Shortest Paths runs with
-Fast Mode = `on`, or `auto` with Max Intermediate Layers &ge; 4. The
+at the ASKED threshold; bodyId-level paths are body-SIMPLE (a neuron
+appears at most once — multi-visit chains' layered candidates that
+reuse a neuron are rejected and disclosed as `layered_rejected`)) —
+after Complete/Shortest Paths runs with
+Fast Mode = `both`, or `auto` with Max Intermediate Layers &ge; 4
+(canonical values `complete`/`auto`/`both`; legacy `off`/`on`
+normalized on read). The
 lane re-enumerates at the run's ASKED threshold restricted to validated
 top-M* type corridors (per source-target type pair &times; hop length,
 phantom-validated, 100-path class budgets, StrongestFirst tie-drain
@@ -331,8 +351,10 @@ lowest-threshold folder carries the superset corridors).
     reasons `budget`/`probe_cap`/`exhausted`/`dry`/`infeasible`,
     phantoms, `unverified` work-capped probes, `off_plan`/`off_len`),
     `gap_partition` vs this run's own `*_allpaths_type.csv` (and the
-    refill's paths when present), `plan_hash`, runtime, time-capped
-    flag.
+    refill's paths when present), `plan_hash`, runtime, `phases_s`
+    per-stage timings, the `store_dedup` policy (per-layer ROI-slice
+    sum; keep-first by sorted layer) with the `store_weight_conflicts`
+    count on shortest-store validation bases, time-capped flag.
 *   **`route_type_heatmap.html`** / **`route_type_network.html`**:
     the corridor scope drawn like the refill views (weight + ratio +
     adjusted-ratio matrices/toggle).
@@ -504,14 +526,18 @@ across all three modes; the mode, sizes and removals are recorded in
     verbatim). One file per `conn_layer`; the
     per-layer granularity is deliberate — it is the audit surface for
     WHAT was fetched (an edge whose post sits at two reverse depths for
-    different targets recurs in two files with the same physical
-    weight). It is not the weight semantics: the enumeration and the
-    exported per-hop Weights/min_weight use the PHYSICAL weight — one
-    row per `(pre, post)`, first fetch kept — because summing the
+    different targets recurs in two files, and the fetched frames carry
+    per-ROI slice rows whose weights differ). It is not the weight
+    semantics: the enumeration and the exported per-hop
+    Weights/min_weight use the PHYSICAL weight — the pair's ROI-SLICE
+    SUM within a layer, layers then deduplicated keep-first (after
+    summation the layers agree exactly; original-data adjudication
+    2026-10-12) — because summing the
     per-layer refetches multiplied weights by the fetch multiplicity
     (engine fix 2026-10-05: a real run exported [52, 129] for physical
-    edges of [26, 43]). 'all' mode keeps the documented cross-layer
-    summation.
+    edges of [26, 43]) and keep-one-row dedup sampled a different slice
+    per layer (refined 2026-10-12). 'all' mode keeps the documented
+    cross-layer summation.
 *   **`node_distances/node_distances_L{d}_c{k}.parquet`**: per-target BFS
     distance labels `(target, node, dist)` streamed at discovery time
     (`0` = the target itself); enumeration rehydrates these per batch.
@@ -1011,13 +1037,15 @@ Example: `profiling_MCNS_aMe_20260815_143922/` (query `aMe.*` over male-cns:v1.0
 *   **`report.html`**: Hub report for MULTI-dataset runs — hero/meta chips, link cards to the per-dataset reports, and the inter-dataset section (direction tabs × metric heatmap cards with CSV + VisPath links, plus the resolved-names table). SINGLE-dataset runs write the full tabbed report here instead (inlined Plotly, renders offline)
 *   **`report_{dataset}.html`**: One full heatmap report per dataset (three matrix levels × directions × five metrics, Ward-clustered, per-card CSV + VisPath editor links). Written for MULTI-dataset runs so no single file carries every dataset's BodyId-level matrices
 *   **`plotly.min.js`**: Shared chart library written once per run folder; every report file references it via a relative `src`, so the reports render offline as a folder (a report copied out alone needs its library)
-*   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed). A one-dataset run also records `row_kind` (`type` / `neuron` / `group`) and `levels_computed`, so the artifact set is self-describing. Label-mapper runs add `label_mapping_file` / `custom_mapping_file` (whichever was supplied), `group_partners_by_mapping`, and `user_label_mapper_active`; `mapping_resolution_counts`/`mapping_resolution_record` gain the `user_label` status for query chips that named a preset label (tier-0 identity — the auto type mapper is never consulted for them)
-*   **`README.txt`**: Human-readable summary listing **only the folders this run wrote** (a bodyId-level run lists no `type_level/`)
+*   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed). A one-dataset run also records `row_kind` (`type` / `neuron` / `group`) and `levels_computed`, so the artifact set is self-describing. Label-mapper runs add `label_mapping_file` / `custom_mapping_file` (whichever was supplied), `group_partners_by_mapping`, and `user_label_mapper_active`; `mapping_resolution_counts`/`mapping_resolution_record` gain the `user_label` status for query chips that named a preset label (tier-0 identity — the auto type mapper is never consulted for them). MULTI-dataset runs add `inter_anchors` (the queried items that formed a cross-dataset row) and `dropped_inter_anchors` (every queried item that did not, each with `kind`, `datasets_with_anchor_row` and a `reason` — an anchor needs a licensed profile row in at least two datasets, so a partial cross matrix is always named, never implied)
+*   **`README.txt`**: Human-readable summary listing **only the folders this run wrote** (a bodyId-level run lists no `type_level/`); a multi-dataset run that lost anchors adds a `WARNING` block naming them (first 20, the rest in `parameters.json`)
 
 The report header carries disclosure chips when a label mapper is active:
 `User labels N (tier 0)` and — when the partner/feature space was collapsed
 through the groups — `Partner grouping ON` (see
-`docs/CONNECTIVITY_PROFILING.md` §"Tier-0 user label mapper"). With partner
+`docs/CONNECTIVITY_PROFILING.md` §"Tier-0 user label mapper"); a multi-dataset
+run that lost anchors adds `Inter anchors N queried item(s) dropped`, whose
+details are in `parameters.json → dropped_inter_anchors`. With partner
 grouping on, `profiles/aggregated/*_profile.json` partner keys are in the
 group-label namespace (member types folded in with summed weights); a
 partner type whose members span several labels stays raw.

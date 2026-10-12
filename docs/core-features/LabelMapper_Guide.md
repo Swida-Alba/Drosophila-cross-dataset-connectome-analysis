@@ -32,9 +32,17 @@ PPL101,PPL101,PPL101,720575940621886666
 ### 2. JSON Format
 The JSON format allows for defining source, target, and intermediate mappings in a single file and supports nested structures.
 
+A preset file must declare which grammar it uses through the top-level `format`
+key (`drocat_custom_groups/v1`, the value the grouping board exports). The
+backend refuses a preset without it, or with a grammar it does not read, rather
+than accepting it on shape alone — and a comparison run does not degrade that
+refusal to raw names, it stops. In-memory `source_mapping_dict` payloads and CSV
+role files make no such claim and are not gated.
+
 **Example (`examples/data/example_label_mapping.json`):**
 ```json
 {
+  "format": "drocat_custom_groups/v1",
   "source_mapping": {
     "custom_label": ["aMe12"],
     "hemibrain:v1.2.1": [["aMe12"]],

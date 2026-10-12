@@ -31,9 +31,20 @@ comparer = ConnectivityProfileComparer(
     aggregation_level="type",           # "type" | "bodyid" | "custom"
     ensure_cache_complete=False,
     custom_mapping_file=None,           # required when aggregation_level="custom"
+    label_mapping_file=None,            # tier-0 preset; does NOT change the rows
+    group_partners_by_mapping=False,    # fold the partner space into preset labels
 )
 results = comparer.run()
 ```
+
+`custom_mapping_file` and `label_mapping_file` take the same LabelMapper preset
+JSON. The first makes the preset's groups the ROWS (it forces
+`aggregation_level="custom"`); the second only overlays label identity on
+whatever rows the query already produces, and is the parameter the
+cross-dataset (multi-`datasets`) lane needs to compare settled labels.
+`group_partners_by_mapping` collapses the PARTNER side of every type-level
+profile through the same preset (weights summed per label, ranks rebuilt); it
+requires one of the two mapping files and is ignored on bodyId-level vectors.
 
 ## HomologFinder
 
@@ -106,6 +117,17 @@ result: ComparisonResult = ProfileComparator.compare_profiles(...)
   `skip_bodyId_level` cannot skip the bodyId pass on a run left with one
   comparison row while that row stays inside the 1000-bodyId auto budget (the
   pair loop is quadratic, so past it the skip stands and the log says so).
+- Multi-dataset runs pair a queried item across datasets in
+  `_build_anchor_profiles`: the item becomes an anchor only when its licensed
+  label is a profile row in **≥ 2** datasets, so a label present in one volume
+  still yields its intra rows but no cross row. Names resolve EXACTLY first —
+  a tier-0 user label is a literal and is never regex-expanded, and a type
+  name containing `+`, `.` or `(` keeps its own row instead of expanding into
+  the family its spelling happens to `re.match`; only an item with no exact
+  row anywhere is treated as a pattern. Every item that forms no anchor is
+  recorded in `parameters.json → dropped_inter_anchors`, repeated in
+  `README.txt`, logged, and shown as a report meta chip, so a partial
+  cross-dataset matrix cannot read as a complete one.
 - The pooled level's folder names its axes (`_aggregate_names()`):
   `type_level/type_similarity_*` at `type`, `group_level/group_similarity_*` at
   `custom`. The internal level key stays `'type'`; only the artifact names move.

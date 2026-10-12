@@ -39,9 +39,10 @@ Every tab with a <b>Custom Grouping</b> button opens a popup panel (same design 
 
 ## Mapping file format (JSON)
 
-The exported mapping uses LabelMapper's native JSON schema — one mapping per role, a <code>custom_label</code> list of group names, and one list of group lists per dataset:
+The exported mapping uses LabelMapper's native JSON schema — a top-level <code>format</code> tag naming the grammar, one mapping per role, a <code>custom_label</code> list of group names, and one list of group lists per dataset:
 
 <pre>{
+"format": "drocat_custom_groups/v1",
 "source_mapping": {
   "custom_label": ["aMe12"],
   "hemibrain:v1.2.1": [["aMe12"]],
@@ -58,7 +59,12 @@ The exported mapping uses LabelMapper's native JSON schema — one mapping per r
 <div class="callout info">
   <b>Only JSON</b> is supported for <code>overall_mapping_json</code>. A role
   may be omitted (e.g. source-only mappings); at least one mapping key must
-  be present.
+  be present. The <code>format</code> key is required for a preset a run reads:
+  it names the grammar the grouping board writes, and a preset that omits it —
+  or declares a grammar this build does not read — is refused with a clear error
+  rather than parsed on shape alone (CSV role files and in-memory dictionaries
+  make no such claim and stay accepted). Exports from this board, and
+  <code>LabelMapper.to_dict()</code>, always write the tag.
 </div>
 
 

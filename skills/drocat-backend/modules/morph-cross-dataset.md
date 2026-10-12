@@ -53,16 +53,31 @@ comparer = CrossDatasetMorphComparer(
     visualize=True,                  # one overlay scene per run
     generate_heatmaps=True,          # standalone VisPath heatmaps per pair
     fetch_online=True,
+    label_mapping_file=None,         # tier-0 LabelMapper preset (see below)
     verbose=True,
 )
 result = comparer.run()   # {"output_folder", "files", "warnings"}
 ```
 
+`label_mapping_file` takes the same LabelMapper preset JSON the connectivity
+lane uses (`custom_mapping_file`/`label_mapping_file` in
+`profile_comparator.md`). It rides ALONGSIDE the auto type mapper rather than
+replacing it — the two are different vocabularies (user standard labels vs
+type-mapper results) — and it changes only these outputs: the bodyId axes
+upgrade, and the label-aligned type view is added beside the native one. The
+native-keyed artifacts stay byte-identical, so a run without a preset is
+unaffected.
+
 Outputs per run folder: `overview.csv` (per queried type: the best target-type cell with
-its name + the pair baseline), `members_summary.csv` (compared member counts per
+its name + the pair baseline; with a preset loaded it gains a `label` column
+holding each row's standard label), `members_summary.csv` (compared member counts per
 type/dataset), `report.html`, `parameters.json`, `README.txt`, per pair
-`<SRC>_to_<TGT>/results/{morph_type_matrix.csv,morph_bodyid_matrix.csv,morph_bodyid_scores.csv,null_baseline.json}`,
-per pair `<SRC>_to_<TGT>/visualization/heatmap_morph_<SRC>_to_<TGT>_{type,bodyid}.html`
+`<SRC>_to_<TGT>/results/{morph_type_matrix.csv,morph_bodyid_matrix.csv,morph_bodyid_scores.csv,null_baseline.json}`
+— plus `morph_labeltype_matrix.csv` beside the native-keyed
+`morph_type_matrix.csv` when `label_mapping_file` is loaded (same cells, rows
+keyed by the preset label instead of the native type name; the native file is
+still written), and per pair
+`<SRC>_to_<TGT>/visualization/heatmap_morph_<SRC>_to_<TGT>_{type,bodyid}.html`
 (VisPath interactive, shared report_kit — open with square cells locked), and `plot-3d_*/` overlay scenes in the
 reference render space. `report.html` uses the same tabbed generator as the
 connectivity-profiling export (shared `comparison.report_kit`): scrollable

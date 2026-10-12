@@ -119,7 +119,13 @@ morphology run (`label_mapping_file`). A loaded preset is the **tier-0
 identity**: labels are never re-resolved through the auto type mapper,
 bodyId axes read `{bodyId}_{label}({native})` (dropped when the label
 already is the native name), and the cross run writes a label-aligned
-`morph_labeltype_matrix.csv` beside the native one. The legacy
+`morph_labeltype_matrix.csv` beside the native one. On the multi-dataset
+connectivity lane the preset also drives the inter-dataset **anchors**: a
+queried item anchors only when its label is a profile row in ≥ 2 datasets,
+names resolve exactly first (so a label containing `+`, `.` or `(` keeps its
+own row instead of being regex-expanded into its family), and every item that
+forms no anchor is disclosed in `parameters.json → dropped_inter_anchors`,
+repeated in `README.txt` and shown as a report chip. The legacy
 `group_map_csv` CSV input on the profiling comparer is retired (raises
 with migration guidance).
 
@@ -179,6 +185,19 @@ similar-neuron → 3D skeleton), see [references/combinations.md](references/com
   standalone records quantifying the budget-cut bodyId mass behind the
   existing `connection_type.csv` rows. See
   `docs/core-features/TypeLevelRefill.md`.
+- `scripts/CorridorDeepDive.py <run_dir>` — Fast mode (the corridor
+  lane; the run itself is Complete mode): re-enumerates at the ASKED
+  threshold restricted to validated top-M* type corridors per
+  source-target pair × hop length,
+  writing `route_scope_paths/` (walk rows with both ratio flavors —
+  plain + adjusted — per-path bodyId rows, scope connection table,
+  provenance with gap partition, content-hashed plan.json, mirror
+  heatmap/network). Auto-fires after deep runs (Max Intermediate Layers
+  >= 4; the Fast Mode control values are complete/auto/both — legacy
+  off/on normalized); never modifies the run's own outputs.
+  Visualization metric bases (Synapses / Ratio / Ratio (>= N) /
+  Refilled) are selectable on the heatmap toggle and the network +
+  Sankey Connection-Metric selectors when the data carries them.
 
 ## References
 
