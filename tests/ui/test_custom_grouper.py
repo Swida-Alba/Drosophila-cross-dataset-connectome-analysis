@@ -51,9 +51,14 @@ class TestCanonicalSerializer:
             assert data[side][DS_B] == [[]]
 
     def test_format_and_meta_tags(self):
+        from comparison.label_mapper import PRESET_FORMAT_TAG
+
         data = cg.to_canonical_dict(
             [{"name": "g", "cells": {DS_A: ["x"]}}], [DS_A], origin="inline")
         assert data["format"] == cg.FORMAT_TAG
+        # The board's writer and the backend's loader must speak one grammar:
+        # a preset the board exports is a preset the loader accepts.
+        assert cg.FORMAT_TAG == PRESET_FORMAT_TAG
         assert data["groups_meta"]["origin"] == "inline"
         assert data["groups_meta"]["updated_at"]
 

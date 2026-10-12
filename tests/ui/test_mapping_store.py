@@ -82,12 +82,15 @@ class TestStoreCrud:
 
 
 class TestExport:
-    def test_export_file_contains_only_mapping_keys(self):
+    def test_export_file_carries_the_mapping_keys_and_grammar_tag(self):
         store.save_mapping("export me", SAMPLE)
         path = store.mapping_file_path("export me")
         assert path is not None and Path(path).exists()
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        assert set(data.keys()) == {"source_mapping", "target_mapping"}
+        # 'format' is what the backend loader gates presets on, so the export
+        # a run receives has to declare it (see comparison.label_mapper).
+        assert set(data.keys()) == {"format", "source_mapping", "target_mapping"}
+        assert data["format"] == "drocat_custom_groups/v1"
         assert "name" not in data and "description" not in data
 
     def test_export_roundtrip_through_label_mapper(self):

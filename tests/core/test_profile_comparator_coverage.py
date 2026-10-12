@@ -4,12 +4,15 @@ Hermetic: all comparisons run on synthetic ConnectivityProfile objects built
 directly in memory. No profiler network methods are exercised.
 """
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 from pathlib import Path
 
 from comparison.connectivity_profiler import ConnectivityProfile, compute_ranks
+from comparison.label_mapper import PRESET_FORMAT_TAG
 from comparison.profile_comparator import (
     DEFAULT_SCORE_WEIGHTS,
     ComparisonResult,
@@ -2527,10 +2530,6 @@ def test_comparer_query_helpers(tmp_path):
     assert ConnectivityProfileComparer._safe_folder_name('a/b c:d.e') == 'a_b_c_d_e'
 
     # query mapping pass-throughs (no type mapper loaded)
-    assert comp._map_query_item(5, DS_A) == 5
-    assert comp._map_query_item('17', DS_A) == '17'
-    assert comp._map_query_item('aMe.*', DS_A) == 'aMe.*'
-    assert comp._map_query_item('Mi1', DS_A) == 'Mi1'
     assert comp._mapped_query_for(DS_A) == comp.query
     assert comp._canonical_label('Mi1', DS_A) == 'Mi1'
 
@@ -2558,7 +2557,8 @@ def test_comparer_load_custom_groups_from_mapping(tmp_path):
 
     def _write(data):
         p = tmp_path / 'preset.json'
-        p.write_text(json.dumps(data), encoding='utf-8')
+        p.write_text(json.dumps({'format': PRESET_FORMAT_TAG, **data}),
+                     encoding='utf-8')
         return str(p)
 
     # no labels -> ([], [])
@@ -2968,6 +2968,46 @@ def test_comparer_run_multi_dataset(tmp_path, pc_fake_repo):
     assert list(mapping_df['anchor']) == ['T1', 'T2']
     assert (mapping_df['same name'] == 1).all()
 
+    # Every queried item anchored, so the run discloses an empty drop list
+    # and no README warning block.
+    params = json.loads((out / 'parameters.json').read_text(encoding='utf-8'))
+    assert params['dropped_inter_anchors'] == []
+    readme = (out / 'README.txt').read_text(encoding='utf-8')
+    assert 'formed NO inter-dataset anchor' not in readme
+
+
+def test_comparer_run_multi_dataset_discloses_dropped_anchor(tmp_path):
+    """A queried item with a licensed row in only ONE dataset legitimately
+    loses its anchor — but must say so in parameters.json and README.txt."""
+    comp = ConnectivityProfileComparer(
+        ['T1', 'T3'], datasets=[DS_A, DS_B],
+        output_dir=str(tmp_path), verbose=False,
+        generate_heatmaps=False, use_auto_type_mapping=False,
+        skip_bodyId_level=True)
+    comp.profiler = _FakeProfilerFull(
+        profiles={
+            ('1', DS_A): _rich_profile(1, DS_A),
+            ('3', DS_A): _rich_profile(3, DS_A),
+            ('10', DS_B): _rich_profile(10, DS_B),
+        },
+        bodyids={
+            ('T1', DS_A): [1], ('T3', DS_A): [3],
+            ('T1', DS_B): [10],
+        },
+    )
+    res = comp.run()
+    assert sorted(res['inter_anchors']) == ['T1']
+    dropped = res['dropped_inter_anchors']
+    assert [(d['item'], d['kind']) for d in dropped] == [('T3', 'type name')]
+    assert dropped[0]['datasets_with_anchor_row'] == [DS_A]
+
+    out = Path(res['output_path'])
+    params = json.loads((out / 'parameters.json').read_text(encoding='utf-8'))
+    assert [d['item'] for d in params['dropped_inter_anchors']] == ['T3']
+    readme = (out / 'README.txt').read_text(encoding='utf-8')
+    assert 'formed NO inter-dataset anchor' in readme
+    assert '- T3 [type name]' in readme
+
 
 def test_comparer_run_cross_dataset(tmp_path):
     comp = ConnectivityProfileComparer(
@@ -3100,7 +3140,7 @@ def test_comparer_verbose_log_and_progress(tmp_path):
 
 def test_comparer_multi_init_with_mappings(tmp_path):
     preset = tmp_path / 'preset.json'
-    preset.write_text(json.dumps({'source_mapping': {
+    preset.write_text(json.dumps({'format': PRESET_FORMAT_TAG, 'source_mapping': {
         'custom_label': ['g1'], DS_A: [['T1']]}
     }), encoding='utf-8')
     comp2 = ConnectivityProfileComparer(
@@ -3116,7 +3156,8 @@ def test_comparer_custom_groups_mapping_edges(tmp_path):
 
     def _write(data):
         p = tmp_path / 'preset.json'
-        p.write_text(json.dumps(data), encoding='utf-8')
+        p.write_text(json.dumps({'format': PRESET_FORMAT_TAG, **data}),
+                     encoding='utf-8')
         return str(p)
 
     # string member list (single member not wrapped in a list)
@@ -3172,9 +3213,6 @@ def test_comparer_query_name_and_neuron_edges(tmp_path):
 def test_comparer_type_mapper_branches(tmp_path):
     comp = _comparer(['T1'], tmp_path)
     comp._type_mapper = _FakeTypeMapper()
-    assert comp._map_query_item('Mi1', DS_A) == 'Mi1_mapped'
-    assert comp._map_query_item(5, DS_A) == 5
-    assert comp._map_query_item('Mi.*', DS_A) == 'Mi.*'
     # anchor merge key via the shared resolver: a licensed rename keys
     # under its canonical target (not the legacy raw get_canonical_type)
     assert comp._canonical_label('Mi1', DS_A) == 'Mi1_mapped'

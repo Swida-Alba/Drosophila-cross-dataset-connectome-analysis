@@ -16,8 +16,9 @@ LabelMapper's native JSON schema:
     }
 
 For a run, the selected preset is exported to a dedicated JSON file
-(``cache/user_mappings/<slug>.json``) that only contains the mapping keys,
-so it can be passed straight to ``LabelMapper(overall_mapping_json=...)``.
+(``cache/user_mappings/<slug>.json``) that carries the mapping keys plus the
+``format`` grammar tag the backend gates presets on, so it can be passed
+straight to ``LabelMapper(overall_mapping_json=...)``.
 """
 import json
 import os
@@ -190,8 +191,19 @@ def _export_path(name: str) -> Path:
 
 
 def _export_mapping_file(name: str, preset: dict) -> Optional[Path]:
-    """Write only the mapping keys to the preset's export file."""
-    payload = {side: preset.get(side) for side in MAPPING_SIDES if preset.get(side)}
+    """Write the mapping keys to the preset's export file.
+
+    The export is what a run hands to ``LabelMapper(overall_mapping_json=...)``,
+    so it carries the grammar tag the backend gates on (``format``, taken from
+    the backend's own constant so writer and loader cannot drift); the store
+    entry itself keeps only name/description/sides.
+    """
+    from comparison.label_mapper import PRESET_FORMAT_TAG
+
+    payload = {
+        "format": PRESET_FORMAT_TAG,
+        **{side: preset.get(side) for side in MAPPING_SIDES if preset.get(side)},
+    }
     try:
         _store_dir.mkdir(parents=True, exist_ok=True)
         path = _export_path(name)

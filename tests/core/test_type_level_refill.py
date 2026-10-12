@@ -663,6 +663,7 @@ def test_build_effective_type_map_mapper_semantics(tmp_path):
     # LabelMapper overall-JSON form: custom_label list + per-dataset
     # member-pattern lists (docstring format)
     mapping = {
+        'format': 'drocat_custom_groups/v1',
         'source_mapping': {
             'custom_label': ['GRP_A', 'grp_t'],
             'test_v1': [['N1'], ['TA', 'TB']],
@@ -1370,3 +1371,104 @@ def test_ratio_mode_refill_floor_synapse_ge_1(tmp_path):
     assert rec['refill_synapse_floor'] == 1
     assert rec['refill_weight_total'] == 0
     assert rec['refill_edges'] == 0
+
+
+def test_dfs_chain_structures_alive_pruning_and_completion_recording():
+    """F6 (plan-2026-10-11): walk-level alive pruning strips dead-end
+    branches losslessly, and structures record only edges/bodies on
+    >= 1 collected realization (the old explore-time recording inflated
+    multi-visit masses with realized-nothing edges)."""
+    from type_level_refill import (_dfs_chain_structures,
+                                   _dp_chain_structures)
+    # chain A->B->A->C; walk-dead decoys: a1->b2 (no B->A from b2),
+    # b1->a3 (no A->C from a3)
+    pair_edges = {
+        ('A', 'B'): {'a1': [('b1', 10.0), ('b2', 4.0)]},
+        ('B', 'A'): {'b1': [('a2', 9.0), ('a3', 8.0)]},
+        ('A', 'C'): {'a2': [('c1', 7.0)]},
+    }
+    type_map = {'a1': 'A', 'a2': 'A', 'a3': 'A', 'b1': 'B', 'b2': 'B',
+                'c1': 'C'}
+    chain = ('A', 'B', 'A', 'C')
+    res = _dfs_chain_structures(chain, pair_edges, ['a1'], ['c1'],
+                                type_map, set())
+    assert res is not None and res['path_count'] == 1
+    assert res['truncated'] is False
+    assert set(res['traversals']) == {('a1', 'b1'), ('b1', 'a2'),
+                                      ('a2', 'c1')}
+    assert res['edges_at'][0] == {('a1', 'b1'): 10.0}
+    assert res['edges_at'][2] == {('a2', 'c1'): 7.0}
+    assert res['nodes_at'][1] == {'b1'} and res['nodes_at'][3] == {'c1'}
+    # the walk-dead start-only case: prune to nothing -> None
+    res2 = _dfs_chain_structures(
+        chain, {('A', 'B'): {'a1': [('b9', 4.0)]},
+                ('B', 'A'): {'b9': [('a9', 4.0)]},
+                ('A', 'C'): {'a9': [('c1', 4.0)]}},
+        ['zz'], ['c1'],
+        {'a1': 'A', 'b9': 'B', 'a9': 'A', 'c1': 'C', 'zz': 'A'}, set())
+    assert res2 is None
+
+
+def test_dfs_matches_dp_on_distinct_chain_fixture():
+    """The multi-visit DFS and the distinct-chain DP must agree exactly
+    on a distinct-type chain (simplicity is automatic there) — the
+    standing parity pin, now against the pruned + completion-recorded
+    DFS."""
+    from type_level_refill import (_dfs_chain_structures,
+                                   _dp_chain_structures)
+    pair_edges = {
+        ('A', 'B'): {'a1': [('b1', 9.0), ('b2', 5.0)],
+                     'a2': [('b2', 6.0)]},
+        ('B', 'C'): {'b1': [('c1', 8.0)], 'b2': [('c1', 3.0),
+                                                 ('c2', 2.0)]},
+    }
+    type_map = {'a1': 'A', 'a2': 'A', 'b1': 'B', 'b2': 'B',
+                'c1': 'C', 'c2': 'C'}
+    chain = ('A', 'B', 'C')
+    dp = _dp_chain_structures(chain, pair_edges, ['a1', 'a2'],
+                              ['c1', 'c2'], type_map, set())
+    dfs = _dfs_chain_structures(chain, pair_edges, ['a1', 'a2'],
+                                ['c1', 'c2'], type_map, set())
+    assert dp['path_count'] == dfs['path_count'] == 5
+    assert dp['traversals'] == dfs['traversals']
+    assert dp['edges_at'] == dfs['edges_at']
+    assert dp['nodes_at'] == dfs['nodes_at']
+
+
+def test_load_shortest_store_slice_sum(tmp_path):
+    """Per-ROI slice-sum fix (plan §10, original-data adjudication):
+    the store's layer frames are verbatim per-ROI fetch slices — the
+    per-layer physical pair weight is the SUM of the slices; keep-one-
+    row policies sampled a different slice per layer. The loader must
+    also iterate layers in sorted label order (deterministic keep-first
+    at consumption)."""
+    import polars as pl
+    run = tmp_path / "run"
+    store = run / "shortest_discovery_store"
+    (store / "connections").mkdir(parents=True)
+    (store / "meta.json").write_text('{"targets_found": []}')
+    # (a1,b1): two L1 slices 2+7=9; a later same-roi row in L0 (4) is
+    # a refetch of the SAME slice -> keep-first at consumption picks
+    # L0's 4 for the physical dict; within L0 the duplicate exact row
+    # collapses (refetch multiplicity)
+    pl.DataFrame({
+        "bodyId_pre": ["a1", "a1"],
+        "bodyId_post": ["b1", "b1"],
+        "roi": ["A", "A"],
+        "weight": [4.0, 4.0]}).write_parquet(
+        store / "connections" / "connections_L0.parquet")
+    pl.DataFrame({
+        "bodyId_pre": ["a1", "a1", "b1"],
+        "bodyId_post": ["b1", "b1", "c1"],
+        "roi": ["A", "B", "A"],
+        "weight": [2.0, 7.0, 3.0]}).write_parquet(
+        store / "connections" / "connections_L1.parquet")
+    from type_level_refill import _load_shortest_store
+    res = _load_shortest_store(run)
+    assert res is not None
+    by_layer = dict(res["layer_weights"])
+    assert [k for k, _ in res["layer_weights"]] == \
+        sorted(k for k, _ in res["layer_weights"])
+    assert by_layer["connections_L1"] == {("a1", "b1"): 9.0,
+                                          ("b1", "c1"): 3.0}
+    assert by_layer["connections_L0"] == {("a1", "b1"): 4.0}

@@ -1,6 +1,6 @@
 """LabelMapper axis compatibility across the morphology comparison family.
 
-The issue report (`_clock_production/DROCAT_issue_morph_comparison_labelmapper_axes.md`)
+The issue report (`clock-production/DROCAT_issue_morph_comparison_labelmapper_axes.md`)
 established: the cross-dataset morph comparer had NO LabelMapper entry point,
 and bodyId-level axes never carried the standard labels. These tests pin the
 fix contract:
@@ -32,6 +32,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from comparison.morph_cross_dataset import CrossDatasetMorphComparer  # noqa: E402
+from comparison.label_mapper import PRESET_FORMAT_TAG  # noqa: E402
 
 DS_A = "male-cns:v1.0"
 DS_B = "flywire_FAFB_v783"
@@ -40,6 +41,7 @@ DS_B = "flywire_FAFB_v783"
 def _write_preset(tmp_path: Path) -> str:
     """Two labels over DS_A members; bodyId 3 stays unmapped (native key)."""
     preset = {
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {
             "custom_label": ["La", "Lb"],
             DS_A: [["1", "2"], ["5"]],

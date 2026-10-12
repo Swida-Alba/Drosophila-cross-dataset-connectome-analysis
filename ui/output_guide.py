@@ -985,7 +985,7 @@ _PATHFINDING_FILES = [
      "preview_title": "Path table (bodyId-level)",
      "columns": _PATH_COLUMNS},
     {"pattern": "route_scope_paths/route_paths_type.csv",
-     "description": "Corridor lane (deep runs, Corridor Lane != off): one "
+     "description": "Fast mode (deep runs, Fast Mode != complete): one "
                     "row per validated top-M* corridor walk with emitted "
                     "paths, re-enumerated "
                     "at the ASKED threshold. Engine path-table columns "
@@ -1009,7 +1009,9 @@ _PATHFINDING_FILES = [
      "description": "Corridor lane provenance: per-(pair,h)-class floors, "
                     "floors_next, stop reasons (budget/probe_cap/exhausted/"
                     "dry/infeasible), phantoms, off_plan/off_len "
-                    "disclosures, knobs, runtime, gap partition vs this "
+                    "disclosures, knobs, runtime + per-stage phases_s "
+                    "timings, the store_dedup policy on shortest-store "
+                    "validation bases, gap partition vs this "
                     "run's own type paths, plan_hash."},
     {"pattern": "route_scope_paths/route_type_heatmap.html",
      "description": "Corridor mirror heatmap: the validated scope drawn "
@@ -1304,6 +1306,30 @@ _PATHFINDING_FILES = [
 # (first row = header).
 _PATHFINDING_EXPLANATION = [
     {
+        "heading": "Two analysis modes: Complete and Fast",
+        "paragraphs": [
+            "Every pathfinding run is COMPLETE mode: it finds ALL intact "
+            "paths with bottleneck >= the run's applied threshold (the "
+            "StrongestFirst budget + optional Edge Budget floor set that "
+            "threshold; the Refill recovers the mass the budget cut). FAST "
+            "mode — the corridor lane — is a standalone second pass that "
+            "re-enumerates at the run's ASKED threshold restricted to "
+            "validated top-M* type-level corridors (per source-target type "
+            "pair x hop length): the strongest type-level routes and the "
+            "weak-but-real [asked, applied) mass along them, which the "
+            "budget cut. The Fast Mode control selects when it runs: "
+            "'Complete only' never; 'Auto (deep runs)' when "
+            "max_interlayer >= 4; 'Complete + Fast' always. Fast writes "
+            "only its own route_scope_paths/ folder beside the run (plus "
+            "data_details/route_plan/plan.json) and never modifies this "
+            "run's outputs; a user_warning_notes entry appears only when "
+            "Fast refuses or fails. See the Fast (corridor) tab in "
+            "path_report.html and the route_scope_paths/ file list above.",
+        ],
+        "table": None,
+        "pipeline": None,
+    },
+    {
         "heading": "How the path set was produced",
         "paragraphs": [
             "Every pathfinding run passes through the same stages, in this "
@@ -1576,8 +1602,11 @@ _PATHFINDING_EXPLANATION = [
             "carries a Refill-asked | Refill-full scope switch. Mass that "
             "can fire on no chain is disclosed per pair as "
             "unfired_residual (asked) and pruned non-emitted-pair mass as "
-            "non_emitted_pair_mass; the full scope enumerates UNBUDGETED "
-            "so its weak tail is never silently lost.",
+            "non_emitted_pair_mass; the full scope enumerates PER CHAIN "
+            "(exact layered DP for distinct-type chains — no path budget, "
+            "so its weak tail is never silently lost; multi-visit chains "
+            "via an alive-pruned simple-path DFS whose 2M path cap is "
+            "disclosed as chains_truncated beside the chains count).",
             "Adjusted ratios per scope. The Adj. ratios column is "
             "scope-aware and CHAIN-DERIVED in both refill scopes: the "
             "refill-asked scope divides each chain's realized hop mass "
@@ -1931,10 +1960,19 @@ TOOL_GUIDE_SPECS = {
                             "the folder renders offline as a whole)."},
             {"pattern": "parameters.json",
              "description": "All analysis parameters (query, datasets, "
-                            "top_k/top_m, thresholds, metrics)."},
+                            "top_k/top_m, thresholds, metrics), the mapping "
+                            "inputs (custom_mapping_file / label_mapping_file "
+                            "/ group_partners_by_mapping), and — on "
+                            "multi-dataset runs — the anchor disclosure: "
+                            "inter_anchors lists the queried items that form "
+                            "cross-dataset rows, dropped_inter_anchors names "
+                            "every queried item that did not (kind, the "
+                            "datasets holding a row, and the reason)."},
             {"pattern": "README.txt",
              "description": "Human-readable summary listing only the folders "
-                            "this run wrote."},
+                            "this run wrote, plus a WARNING block naming each "
+                            "dropped inter-dataset anchor when a multi-dataset "
+                            "run lost one (its cross matrices are partial)."},
             {"pattern": "type_level/results/type_similarity_*.csv",
              "description": "ONE-DATASET runs at the type level: pooled "
                             "profiles compared, one file per direction × "
@@ -2018,7 +2056,12 @@ TOOL_GUIDE_SPECS = {
                             "dendrograms beside the clustered matrices."},
             {"pattern": "cross_dataset/mapping_summary.csv",
              "description": "Resolved type names per dataset with same-name "
-                            "flags.",
+                            "flags. One row per ANCHOR: a queried item whose "
+                            "licensed label is a profile row in fewer than "
+                            "two datasets has no row here — it is listed in "
+                            "parameters.json under dropped_inter_anchors "
+                            "instead (names resolve exactly first, so a label "
+                            "containing + . ( ) keeps its own row).",
              "preview": True,
              "preview_title": "Cross-dataset type mapping",
              "columns": ["anchor", "same name"]},

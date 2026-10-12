@@ -15,7 +15,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from comparison.label_mapper import LabelMapper
+from comparison.label_mapper import (
+    PRESET_FORMAT_TAG, PresetFormatError, LabelMapper)
 
 DS1 = "hemibrain:v1.2.1"
 DS2 = "male-cns:v0.9"
@@ -167,19 +168,21 @@ def test_load_from_json_missing_file():
 def test_load_from_json_errors(tmp_path):
     # no mapping keys at all
     bad = tmp_path / "bad.json"
-    bad.write_text(json.dumps({"foo": 1}))
+    bad.write_text(json.dumps({"format": PRESET_FORMAT_TAG, "foo": 1}))
     with pytest.raises(ValueError):
         LabelMapper(source_mapping_file=str(bad))
 
     # missing label key
     bad2 = tmp_path / "bad2.json"
-    bad2.write_text(json.dumps({"source_mapping": {"ds1": [["a"]]}}))
+    bad2.write_text(json.dumps({"format": PRESET_FORMAT_TAG,
+                                "source_mapping": {"ds1": [["a"]]}}))
     with pytest.raises(ValueError):
         LabelMapper(source_mapping_file=str(bad2))
 
     # group count mismatch
     bad3 = tmp_path / "bad3.json"
     bad3.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {"custom_label": ["l1", "l2"], "ds1": [["a"]]}
     }))
     with pytest.raises(ValueError):
@@ -188,6 +191,7 @@ def test_load_from_json_errors(tmp_path):
     # unified file legitimately missing target role -> ok
     ok = tmp_path / "ok.json"
     ok.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {"custom_label": ["l1"], "ds1": [["a"]]}
     }))
     mapper = LabelMapper(overall_mapping_json=str(ok))
@@ -196,6 +200,7 @@ def test_load_from_json_errors(tmp_path):
     # non-list group value gets wrapped
     scalar = tmp_path / "scalar.json"
     scalar.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {"custom_label": ["l1"], "ds1": ["a"]}
     }))
     mapper2 = LabelMapper(source_mapping_file=str(scalar))
@@ -268,6 +273,7 @@ def test_verify_csv_format(tmp_path):
 def test_verify_json_format(tmp_path):
     good = tmp_path / "good.json"
     good.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {"custom_label": ["a"], "ds1": [["1"]]},
         "target_mapping": {"std_label": ["b"], "ds1": [["2"]]},
     }))
@@ -286,25 +292,109 @@ def test_verify_json_format(tmp_path):
     assert not LabelMapper.verify_json_format(str(no_sections))["valid"]
 
     bad_section = tmp_path / "badsec.json"
-    bad_section.write_text(json.dumps({"source_mapping": {"ds1": [["a"]]}}))
+    bad_section.write_text(json.dumps({"format": PRESET_FORMAT_TAG,
+                                       "source_mapping": {"ds1": [["a"]]}}))
     assert not LabelMapper.verify_json_format(str(bad_section))["valid"]
 
     bad_labels_type = tmp_path / "badtype.json"
-    bad_labels_type.write_text(json.dumps({"source_mapping": {"custom_label": "notalist", "ds1": [["a"]]}}))
+    bad_labels_type.write_text(json.dumps({"format": PRESET_FORMAT_TAG,
+                                           "source_mapping": {"custom_label": "notalist", "ds1": [["a"]]}}))
     assert not LabelMapper.verify_json_format(str(bad_labels_type))["valid"]
 
     bad_ds_type = tmp_path / "baddstype.json"
-    bad_ds_type.write_text(json.dumps({"source_mapping": {"custom_label": ["a"], "ds1": "notalist"}}))
+    bad_ds_type.write_text(json.dumps({"format": PRESET_FORMAT_TAG,
+                                       "source_mapping": {"custom_label": ["a"], "ds1": "notalist"}}))
     assert not LabelMapper.verify_json_format(str(bad_ds_type))["valid"]
 
     mismatch = tmp_path / "mismatch.json"
-    mismatch.write_text(json.dumps({"source_mapping": {"custom_label": ["a", "b"], "ds1": [["1"]]}}))
+    mismatch.write_text(json.dumps({"format": PRESET_FORMAT_TAG,
+                                    "source_mapping": {"custom_label": ["a", "b"], "ds1": [["1"]]}}))
     assert not LabelMapper.verify_json_format(str(mismatch))["valid"]
+
+    # Shape is not a version gate: a preset that omits the tag — or declares a
+    # grammar this build does not read — is refused on the tag, not parsed.
+    no_tag = tmp_path / "notag.json"
+    no_tag.write_text(json.dumps({
+        "source_mapping": {"custom_label": ["a"], "ds1": [["1"]]},
+    }))
+    res_no_tag = LabelMapper.verify_json_format(str(no_tag))
+    assert not res_no_tag["valid"] and "no 'format' key" in res_no_tag["errors"][0]
+
+    other_grammar = tmp_path / "v2.json"
+    other_grammar.write_text(json.dumps({
+        "format": "drocat_custom_groups/v2",
+        "source_mapping": {"custom_label": ["a"], "ds1": [["1"]]},
+    }))
+    res_v2 = LabelMapper.verify_json_format(str(other_grammar))
+    assert not res_v2["valid"]
+    assert "drocat_custom_groups/v2" in res_v2["errors"][0]
+
+
+def test_preset_format_gate_on_load(tmp_path):
+    """The loader refuses the same two cases verify_json_format reports."""
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
+        "source_mapping": {"custom_label": ["l1"], "ds1": [["a"]]},
+    }))
+    assert LabelMapper(overall_mapping_json=str(good)).get_std_label(
+        "ds1", "a", "source") == "l1"
+
+    no_tag = tmp_path / "notag.json"
+    no_tag.write_text(json.dumps({
+        "source_mapping": {"custom_label": ["l1"], "ds1": [["a"]]},
+    }))
+    with pytest.raises(PresetFormatError, match="no 'format' key"):
+        LabelMapper(overall_mapping_json=str(no_tag))
+
+    unknown = tmp_path / "unknown.json"
+    unknown.write_text(json.dumps({
+        "format": "drocat_custom_groups/v2",
+        "source_mapping": {"custom_label": ["l1"], "ds1": [["a"]]},
+    }))
+    with pytest.raises(PresetFormatError, match="drocat_custom_groups/v2"):
+        LabelMapper(overall_mapping_json=str(unknown))
+
+    # An in-memory dict makes no file-format claim, so it stays ungated.
+    assert LabelMapper(source_mapping_dict={"ds1": [["a"]]},
+                       source_labels=["l1"]).get_std_label(
+        "ds1", "a", "source") == "l1"
+
+
+def test_exported_preset_reload_is_self_consistent(tmp_path):
+    """Whatever the backend exports, it must be able to read back."""
+    mapper = _dict_mapper()
+    path = tmp_path / "roundtrip.json"
+    mapper.export_to_json(str(path))
+    assert json.loads(path.read_text())["format"] == PRESET_FORMAT_TAG
+    assert LabelMapper(overall_mapping_json=str(path)).get_std_label(
+        DS1, "aMe12", "source") == "aMe12_grp1"
+
+
+def test_load_label_mapper_gate_and_swallow(tmp_path):
+    """load_label_mapper degrades a BROKEN preset to None (a run keeps its
+    native keys) but re-raises the version gate — silently dropping the
+    overlay would publish labels that were never applied."""
+    from comparison.label_mapper import load_label_mapper
+
+    logs = []
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json")
+    assert load_label_mapper(str(broken), log=logs.append) is None
+    assert any("could not load the label mapper" in line for line in logs)
+
+    no_tag = tmp_path / "notag.json"
+    no_tag.write_text(json.dumps({
+        "source_mapping": {"custom_label": ["l1"], "ds1": [["a"]]},
+    }))
+    with pytest.raises(PresetFormatError):
+        load_label_mapper(str(no_tag), log=logs.append)
 
 
 def test_verify_mapping_file_dispatch(tmp_path):
     good_json = tmp_path / "m.json"
-    good_json.write_text(json.dumps({"source_mapping": {"custom_label": ["a"], "ds1": [["1"]]}}))
+    good_json.write_text(json.dumps({"format": PRESET_FORMAT_TAG,
+                                     "source_mapping": {"custom_label": ["a"], "ds1": [["1"]]}}))
     assert LabelMapper.verify_mapping_file(str(good_json))["valid"]
 
     good_csv = tmp_path / "m.csv"
@@ -378,7 +468,8 @@ def test_load_legacy_intermediate_csv(tmp_path):
 def test_load_json_std_label_key(tmp_path):
     p = tmp_path / "sl.json"
     p.write_text(json.dumps(
-        {"source_mapping": {"std_label": ["g1"], "ds1": [["9"]]}}))
+        {"format": PRESET_FORMAT_TAG,
+         "source_mapping": {"std_label": ["g1"], "ds1": [["9"]]}}))
     mapper = LabelMapper(source_mapping_file=str(p))
     assert mapper.get_std_label("ds1", "9", "source") == "g1"
 

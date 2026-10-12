@@ -15,7 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 @pytest.fixture
 def mapping_file(tmp_path):
+    from comparison.label_mapper import PRESET_FORMAT_TAG
+
     mapping = {
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {
             "custom_label": ["grpA", "grpB"],
             "hemibrain:v1.2.1": [["aMe12", "aMe12_R"], ["aMe12_L"]],
@@ -62,8 +65,12 @@ class TestComparisonParametersOverlay:
 
     def test_malformed_file_rejected(self, tmp_path):
         from comparison.comparison_parameters import ComparisonParameters
+        from comparison.label_mapper import PRESET_FORMAT_TAG
+
+        # Tagged so this tests the SHAPE refusal, not the version gate.
         bad = tmp_path / "bad.json"
-        bad.write_text('{"foo": 1}', encoding="utf-8")
+        bad.write_text(json.dumps({"format": PRESET_FORMAT_TAG, "foo": 1}),
+                       encoding="utf-8")
         with pytest.raises(ValueError, match="source_mapping"):
             ComparisonParameters(
                 datasets=["hemibrain:v1.2.1"], source_neurons=["x"],
@@ -228,6 +235,7 @@ class TestCanonicalInlineFormat:
             tmp_path, ["Group_1"], {"male-cns:v0.9": [["aMe12"]]})
         preset = tmp_path / "preset.json"
         preset.write_text(json.dumps({
+            "format": "drocat_custom_groups/v1",
             "source_mapping": {"custom_label": ["Group_1"],
                                "male-cns:v0.9": [["aMe12"]]},
             "target_mapping": {"custom_label": ["Group_1"],
@@ -312,6 +320,7 @@ class TestTypeCollisionResidualRenaming:
             "post": [100, 90, 80, 70, 60, 50, 40, 30],
         }).to_csv(d / "banc_v888_allneurons_neuron_df.csv", index=False)
         mapping = {
+            "format": "drocat_custom_groups/v1",
             "source_mapping": {
                 "custom_label": ["DN1pD", "DN1pA", "DN2"],
                 "banc_v888": [["72001"], ["1"], ["4"]],

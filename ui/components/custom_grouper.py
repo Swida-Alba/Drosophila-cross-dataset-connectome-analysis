@@ -498,8 +498,10 @@ class LiteCustomGrouper:
         with ui.button(icon="upload_file").props("flat dense round").tooltip(
                 "Load… (mapping JSON)"):
             with ui.menu():
-                ui.label("Load groups from a mapping JSON (canonical or "
-                         "legacy preset format)").classes(
+                ui.label('Load groups from a mapping JSON (canonical or '
+                         'legacy preset format). A legacy file loads for '
+                         'editing; to feed a run it must declare '
+                         '"format": "drocat_custom_groups/v1".').classes(
                     "text-caption drocat-muted px-3 pt-2")
                 ui.upload(label="Choose .json", auto_upload=True,
                           on_upload=self._handle_load).props(

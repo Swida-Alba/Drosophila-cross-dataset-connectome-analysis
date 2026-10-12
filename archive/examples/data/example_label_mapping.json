@@ -1,4 +1,5 @@
 {
+  "format": "drocat_custom_groups/v1",
   "source_mapping": {
     "custom_label": ["aMe12"],
     "hemibrain:v1.2.1": [["aMe12"]],

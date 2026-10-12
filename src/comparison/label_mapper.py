@@ -17,6 +17,41 @@ except ImportError:  # pragma: no cover - direct package imports
     from utils.naming_utils import canonical_dataset_name
 
 
+# The preset grammar the grouping board writes
+# (``ui/components/custom_grouper.py`` exports this same tag).  A JSON preset
+# has to declare it: the tag is the only version gate between the board's
+# layout and every backend that reads the file, so a preset that omits it — or
+# declares a version this build does not know — is refused instead of parsed on
+# shape alone.  CSV role-files and in-memory ``source_mapping_dict`` payloads
+# predate the tag and stay accepted.
+PRESET_FORMAT_TAG = 'drocat_custom_groups/v1'
+
+
+class PresetFormatError(ValueError):
+    """A preset JSON declares no, or an unknown, ``format`` grammar."""
+
+
+def verify_preset_format(data: Any, filepath: str = '') -> None:
+    """Raise :class:`PresetFormatError` unless *data* declares a known grammar.
+
+    Called on every preset file the backend loads, so a future grammar change
+    fails closed here rather than being accepted on shape by ``source_mapping``
+    key inspection.
+    """
+    declared = data.get('format') if isinstance(data, dict) else None
+    if declared == PRESET_FORMAT_TAG:
+        return
+    where = f' in {filepath}' if filepath else ''
+    if declared is None:
+        raise PresetFormatError(
+            f"LabelMapper preset{where} has no 'format' key — expected "
+            f"'{PRESET_FORMAT_TAG}'. Export it from the grouping board, or add "
+            "the key if the file was written by hand.")
+    raise PresetFormatError(
+        f"LabelMapper preset{where} declares format {declared!r}, which this "
+        f"DROCAT build does not understand (it reads '{PRESET_FORMAT_TAG}').")
+
+
 class LabelMapper:
     """
     Cross-dataset label standardization for comparison analysis.
@@ -41,6 +76,7 @@ class LabelMapper:
         
     JSON Format Example:
         {
+            "format": "drocat_custom_groups/v1",
             "source_mapping": {
                 "custom_label": ["aMe12_grp1", "aMe12_grp2"],
                 "hemibrain:v1.2.1": [["aMe12", "aMe12_R"], ["aMe12_L"]]
@@ -48,6 +84,12 @@ class LabelMapper:
             "target_mapping": { ... },
             "intermediate_mapping": { ... }
         }
+
+    A preset FILE must declare that 'format' tag (PRESET_FORMAT_TAG): loading
+    one without it, or with a grammar this build does not know, raises
+    PresetFormatError instead of being accepted on shape. In-memory
+    ``source_mapping_dict`` payloads and CSV role files carry no such claim and
+    are not gated.
     
     Example Usage:
         >>> # From unified JSON file (contains source, target, and/or intermediate mappings)
@@ -266,9 +308,12 @@ class LabelMapper:
         Convert current mappings to a dictionary compatible with _load_from_json.
         
         Returns:
-            Dictionary with 'source_mapping', 'target_mapping', and/or 'intermediate_mapping'
+            Dictionary with 'source_mapping', 'target_mapping', and/or 'intermediate_mapping',
+            plus the 'format' tag that identifies the grammar (the key
+            :func:`verify_preset_format` gates on, so an exported preset reloads
+            without a hand-written tag)
         """
-        output = {}
+        output = {'format': PRESET_FORMAT_TAG}
         
         # Export source mapping
         if self._source_mapping:
@@ -535,6 +580,7 @@ class LabelMapper:
         
         JSON Format:
             {
+                "format": "drocat_custom_groups/v1",   # required, see verify_preset_format
                 "source_mapping": {  # or "target_mapping" or "intermediate_mapping"
                     "custom_label": ["label1", "label2"],  # or "std_label" for legacy
                     "dataset1": [["id1", "id2"], ["id3"]],
@@ -551,6 +597,10 @@ class LabelMapper:
         
         with open(filepath, 'r') as f:
             data = json.load(f)
+
+        # Version gate: a preset the backend reads must declare the grammar the
+        # grouping board writes (see PRESET_FORMAT_TAG).
+        verify_preset_format(data, filepath)
         
         key = f'{role}_mapping'
         if key not in data:
@@ -1184,6 +1234,7 @@ class LabelMapper:
         
         Expected JSON Format:
             {
+                "format": "drocat_custom_groups/v1",
                 "source_mapping": {
                     "custom_label": ["label1", "label2"],
                     "dataset1": [["id1", "id2"], ["id3"]],
@@ -1194,6 +1245,9 @@ class LabelMapper:
                     "dataset1": [["id7"]]
                 }
             }
+
+        The 'format' tag is part of the contract: a file without it (or with a
+        different grammar) is reported invalid here and refused by the loader.
         
         Args:
             filepath: Path to JSON file to verify
@@ -1223,6 +1277,14 @@ class LabelMapper:
         except Exception as e:
             result['valid'] = False
             result['errors'].append(f"Failed to read file: {str(e)}")
+            return result
+
+        # Version gate (the same check _load_from_json applies on load).
+        try:
+            verify_preset_format(data, filepath)
+        except PresetFormatError as e:
+            result['valid'] = False
+            result['errors'].append(str(e))
             return result
         
         # Check for at least one mapping section
@@ -1357,7 +1419,10 @@ def load_label_mapper(mapping_file: Optional[str], log=None) -> Optional['LabelM
     Returns ``None`` when *mapping_file* is empty. A load failure is
     contained: the warning goes to *log* (when given) and the result is
     ``None``, so a broken preset degrades a run to native-key output
-    instead of killing it.
+    instead of killing it. The version gate is the exception — a preset
+    declaring no, or an unknown, ``format`` grammar raises
+    :class:`PresetFormatError`, because degrading to native keys would
+    publish a run whose labels were silently never applied.
     """
     path = str(mapping_file or "").strip()
     if not path:
@@ -1374,6 +1439,8 @@ def load_label_mapper(mapping_file: Optional[str], log=None) -> Optional['LabelM
             log(f"LabelMapper loaded from {path}: {n} label(s) govern "
                 "axis/identity overlays")
         return mapper
+    except PresetFormatError:
+        raise
     except Exception as e:
         if log is not None:
             log(f"Warning: could not load the label mapper ({path}): {e}")

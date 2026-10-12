@@ -10405,9 +10405,11 @@ class ConnectivityProfileComparer:
                 one group, and its members for the profiling dataset fill the row.
                 When provided, this overrides `query` and forces
                 aggregation_level='custom' (rows = groups).
-                JSON format: {"source_mapping": {
+                JSON format: {"format": "drocat_custom_groups/v1", "source_mapping": {
                     "custom_label": ["grp1", "grp2"],
-                    "hemibrain:v1.2.1": [["aMe12", "aMe12_R"], ["aMe12_L"]]}}
+                    "male-cns:v1.0": [["aMe12", "aMe12_R"], ["aMe12_L"]]}}
+                (the 'format' tag must declare the grammar this build reads —
+                see comparison.label_mapper.PRESET_FORMAT_TAG).
             label_mapping_file: Path to a LabelMapper preset JSON applied as a
                 TIER-0 USER-LABEL overlay WITHOUT changing the rows
                 (aggregation_level is NOT forced). A query token that names a
@@ -10468,6 +10470,11 @@ class ConnectivityProfileComparer:
         self._expansion_status_counts: Counter = Counter()
         # Canonical merge-key cache for anchor keys (_canonical_label).
         self._merge_key_cache: Dict = {}
+        # Queried items that formed NO inter-dataset anchor in the last
+        # multi-dataset run (an anchor needs a licensed row in >= 2
+        # datasets).  Partial matrices must never look complete: this is
+        # echoed in parameters.json, README.txt, the log and the report.
+        self.inter_anchor_dropped: List[Dict[str, Any]] = []
 
         # Detect cross-dataset mode (dict query format)
         self.is_cross_dataset = isinstance(query, dict)
@@ -10592,11 +10599,13 @@ class ConnectivityProfileComparer:
         # custom-group file carries the same source_mapping side, so custom
         # rows and label identity come from one preset.  A load failure must
         # not kill the run: the mapper stays None and the analysis proceeds
-        # on raw names (the warning says so).
+        # on raw names (the warning says so).  The preset version gate is the
+        # exception — running on raw names behind a refused preset would
+        # publish labels that were never applied.
         mapper_source = custom_mapping_file or label_mapping_file
         if mapper_source:
+            from .label_mapper import LabelMapper, PresetFormatError
             try:
-                from .label_mapper import LabelMapper
                 self._user_label_mapper = LabelMapper(
                     overall_mapping_json=mapper_source)
                 n_labels = len(self._user_label_governing_labels())
@@ -10604,6 +10613,8 @@ class ConnectivityProfileComparer:
                     self._log(
                         f"User label mapper loaded from {mapper_source}: "
                         f"{n_labels} label(s) govern identity (tier 0)")
+            except PresetFormatError:
+                raise
             except Exception as e:
                 self._user_label_mapper = None
                 self._log(f"Warning: could not load the label mapper "
@@ -10875,9 +10886,12 @@ class ConnectivityProfileComparer:
 
         The preset format is the LabelMapper overall JSON exported by the
         Settings tab's mapping presets:
-            {"source_mapping": {
+            {"format": "drocat_custom_groups/v1",
+             "source_mapping": {
                 "custom_label": ["grp1", "grp2"],
                 "hemibrain:v1.2.1": [["aMe12", "aMe12_R"], ["aMe12_L"]]}}
+        The 'format' tag is required (comparison.label_mapper.PRESET_FORMAT_TAG
+        — a preset that omits it or declares another grammar is refused).
         Each custom_label/std_label row becomes one group; the group members
         are the identifiers listed for the profiling dataset. Groups without
         any members in this dataset are dropped with a warning.
@@ -10917,8 +10931,13 @@ class ConnectivityProfileComparer:
     @staticmethod
     def _looks_like_pattern(item: str) -> bool:
         """Whether a query item is likely a regex pattern rather than a
-        literal type name (exact-type lookup is tried first, so a literal
-        containing '.' still resolves as a type when one exists)."""
+        literal type name.
+
+        Callers resolve an item EXACTLY first and only then treat it as a
+        pattern, so a literal containing '.' (or '+', '(' , … ) still
+        resolves as a type when one exists — including on the inter-dataset
+        anchor path, where a tier-0 user label is never pattern-matched at
+        all."""
         return any(ch in item for ch in '*?[]()^$|+{}.')
 
 
@@ -10981,26 +11000,6 @@ class ConnectivityProfileComparer:
                 / 'local_data' / 'connectivity_profiling' / folder_name
             )
     
-    def _map_query_item(self, item: Any, dataset: str) -> Any:
-        """Map one query item (type / bodyId / pattern) into a dataset's naming.
-
-        bodyIds and patterns pass through unchanged (patterns are expanded per
-        dataset); type names resolve through the shared validity resolver
-        (``comparison.type_resolver``) when the auto mapper is loaded.  Only
-        an unambiguous one-target case renames the item here; valid splits
-        are expanded (and conflicts dropped) by ``_mapped_query_for`` via
-        ``_map_query_item_multi``.
-        """
-        if isinstance(item, int) or (isinstance(item, str) and item.isdigit()):
-            return item
-        item_str = str(item)
-        if self._looks_like_pattern(item_str):
-            return item_str
-        targets, _status = self._map_query_item_multi(item_str, dataset)
-        if len(targets) == 1 and targets[0] != item_str:
-            return targets[0]
-        return item_str
-
     def _map_query_item_multi(self, item_str: str, dataset: str
                               ) -> Tuple[List[str], str]:
         """Resolve one type item to its licensed target names and status.
@@ -11146,6 +11145,12 @@ class ConnectivityProfileComparer:
             chips.append(
                 "<div class='meta-chip'><span>Partner grouping</span>"
                 "<strong>ON</strong></div>")
+        dropped = getattr(self, 'inter_anchor_dropped', None) or []
+        if dropped:
+            chips.append(
+                "<div class='meta-chip'><span>Inter anchors</span>"
+                f"<strong>{len(dropped)} queried item(s) dropped</strong>"
+                "</div>")
         return chips
 
     def _axis_label(self, dataset: str, bid, fallback_type: str = None) -> str:
@@ -11235,9 +11240,12 @@ class ConnectivityProfileComparer:
                 return out
             up = fold(profile.upstream_partners)
             down = fold(profile.downstream_partners)
-            n_folded += (len(up) + len(down)
-                         - len(profile.upstream_partners)
-                         - len(profile.downstream_partners))
+            # How many partner keys the fold REMOVED (several members sharing
+            # one label collapse into that label) — pre minus post, so a real
+            # collapse reports a positive count.
+            n_folded += (len(profile.upstream_partners)
+                         + len(profile.downstream_partners)
+                         - len(up) - len(down))
             collapsed[row_label] = ConnectivityProfile(
                 neuron_id=profile.neuron_id, dataset=profile.dataset,
                 upstream_partners=up, downstream_partners=down,
@@ -11687,6 +11695,58 @@ class ConnectivityProfileComparer:
     # Inter-dataset comparisons (same queried neuron across datasets)
     # ------------------------------------------------------------------
     
+    def _note_dropped_anchor(self, item: Any,
+                             per_ds: Dict[str, Tuple[str, Any]],
+                             kind: str, detail: str) -> None:
+        """Record a queried item that formed no inter-dataset anchor.
+
+        Anchors need a licensed profile row in at least TWO datasets, so a
+        row that exists in only one volume (or resolves to a name that is not
+        a row at all) legitimately drops — legitimately, but never silently.
+        """
+        dropped = getattr(self, 'inter_anchor_dropped', None)
+        if dropped is None:  # instances built via __new__ (some tests)
+            dropped = self.inter_anchor_dropped = []
+        dropped.append({
+            'item': str(item),
+            'kind': kind,
+            'datasets_with_anchor_row': sorted(str(ds) for ds in per_ds),
+            'reason': detail,
+        })
+
+    def _dropped_anchor_lines(self, limit: int = 20) -> List[str]:
+        """Human-readable lines for the dropped-anchor list, capped.
+
+        A type-level cross-dataset run can query thousands of names, and a
+        long tail of them legitimately anchors nowhere — the full record stays
+        in parameters.json while the log and README name the first ``limit``.
+        """
+        dropped = getattr(self, 'inter_anchor_dropped', None) or []
+        lines = [f"  - {entry['item']} [{entry['kind']}]: {entry['reason']}"
+                 for entry in dropped[:limit]]
+        if len(dropped) > limit:
+            lines.append(
+                f"  ... and {len(dropped) - limit} more — "
+                "parameters.json -> dropped_inter_anchors lists all of them.")
+        return lines
+
+    def _exact_anchor_per_dataset(
+        self, item_str: str,
+        profiles_by_dataset: Dict[str, Dict[str, ConnectivityProfile]],
+    ) -> Dict[str, Tuple[str, ConnectivityProfile]]:
+        """Resolve one queried NAME as a literal in every dataset.
+
+        The per-dataset row is the licensed label for the name (a tier-0 user
+        label licenses to itself) when that label IS a row of the dataset's
+        profiles.  An empty result means the name anchors nothing here.
+        """
+        per_ds: Dict[str, Tuple[str, ConnectivityProfile]] = {}
+        for ds, profiles in profiles_by_dataset.items():
+            label = self._licensed_anchor_label(item_str, ds)
+            if label is not None and label in profiles:
+                per_ds[ds] = (label, profiles[label])
+        return per_ds
+
     def _build_anchor_profiles(
         self, profiles_by_dataset: Dict[str, Dict[str, ConnectivityProfile]]
     ) -> Dict[str, Dict[str, Tuple[str, ConnectivityProfile]]]:
@@ -11698,10 +11758,16 @@ class ConnectivityProfileComparer:
           per dataset during extraction)
         - type names: anchor key is the canonical merge key (shared
           resolver); the per-dataset profile is the profile of the mapped
-          name in that dataset
+          name in that dataset.  A name is resolved EXACTLY first and only
+          an item with no exact row anywhere is treated as a pattern
+          afterwards, so a literal containing a regex metacharacter
+          ('LNd_CRY+', 'DN1pA(II)') keeps its own row instead of being
+          expanded into the family its spelling happens to regex-match.
         - bodyIds: anchor is the bodyId; per-dataset profiles are the mapped
           type's profiles (the bodyId's type in the source dataset)
         - patterns: anchors are the matched types of the FIRST dataset
+        - tier-0 user labels: the label IS the comparison identity, so it is
+          resolved literally and never reaches the pattern branch
 
         Per-dataset labels come from ``_licensed_anchor_label``: a
         CONFLICTED type contributes no label in the dataset it conflicts
@@ -11714,6 +11780,7 @@ class ConnectivityProfileComparer:
             anchors present in >= 2 datasets are kept.
         """
         anchors: Dict[str, Dict[str, Tuple[str, ConnectivityProfile]]] = {}
+        self.inter_anchor_dropped = []
             
         if self._custom_group_names:
             for gname in self._custom_group_names:
@@ -11723,6 +11790,11 @@ class ConnectivityProfileComparer:
                         per_ds[ds] = (gname, profiles[gname])
                 if len(per_ds) >= 2:
                     anchors[gname] = per_ds
+                else:
+                    self._note_dropped_anchor(
+                        gname, per_ds, 'custom group',
+                        f"group is a profile row in {len(per_ds)} of "
+                        f"{len(profiles_by_dataset)} dataset(s)")
             return anchors
             
         for item in self.query:
@@ -11748,28 +11820,59 @@ class ConnectivityProfileComparer:
                             break
                 if len(per_ds) >= 2:
                     anchors[item_str] = per_ds
-            elif self._looks_like_pattern(item_str):
-                # patterns: anchors = matched types in the first dataset
-                matched = self.profiler.list_types(item_str, self.datasets[0])
-                for tname in matched:
-                    per_ds = {}
-                    for ds, profiles in profiles_by_dataset.items():
-                        label = self._licensed_anchor_label(tname, ds)
-                        if label is not None and label in profiles:
-                            per_ds[ds] = (label, profiles[label])
-                    if len(per_ds) >= 2:
-                        key = self._canonical_label(tname, self.datasets[0])
-                        anchors[key] = per_ds
+                else:
+                    self._note_dropped_anchor(
+                        item_str, per_ds, 'bodyId',
+                        f"mapped type is a profile row in {len(per_ds)} of "
+                        f"{len(profiles_by_dataset)} dataset(s)")
             else:
-                # exact type name
-                per_ds = {}
-                for ds, profiles in profiles_by_dataset.items():
-                    label = self._licensed_anchor_label(item_str, ds)
-                    if label is not None and label in profiles:
-                        per_ds[ds] = (label, profiles[label])
-                if len(per_ds) >= 2:
-                    key = self._canonical_label(item_str, self.datasets[0])
-                    anchors[key] = per_ds
+                # Exact-name resolution comes FIRST (the order
+                # `_looks_like_pattern` documents and `_get_neurons_to_compare`
+                # already uses): a tier-0 user label is a literal by
+                # definition, and so is a type name that merely contains a
+                # regex metacharacter.  Only a pattern-looking item that is
+                # NEITHER falls through to the regex branch, so an intended
+                # pattern never enters the type-mapping bookkeeping.
+                if (not self._looks_like_pattern(item_str)
+                        or self._user_label_governs(item_str)
+                        or any(item_str in profiles
+                               for profiles in profiles_by_dataset.values())):
+                    per_ds = self._exact_anchor_per_dataset(
+                        item_str, profiles_by_dataset)
+                    if len(per_ds) >= 2:
+                        key = self._canonical_label(item_str, self.datasets[0])
+                        anchors[key] = per_ds
+                    else:
+                        self._note_dropped_anchor(
+                            item_str, per_ds,
+                            ('user label (tier 0)'
+                             if self._user_label_governs(item_str)
+                             else 'type name'),
+                            (f"licensed label is a profile row in "
+                             f"{len(per_ds)} of "
+                             f"{len(profiles_by_dataset)} dataset(s)"
+                             if per_ds else
+                             "no dataset has a profile row for its licensed "
+                             "label (conflicted, split, or absent there)"))
+                else:
+                    # patterns: anchors = matched types in the first dataset
+                    matched = self.profiler.list_types(item_str, self.datasets[0])
+                    anchored = 0
+                    for tname in matched:
+                        t_per_ds = self._exact_anchor_per_dataset(
+                            tname, profiles_by_dataset)
+                        if len(t_per_ds) >= 2:
+                            key = self._canonical_label(tname, self.datasets[0])
+                            anchors[key] = t_per_ds
+                            anchored += 1
+                    if not anchored:
+                        self._note_dropped_anchor(
+                            item_str, {}, 'pattern',
+                            (f"pattern matched {len(matched)} type(s) in "
+                             f"{self.datasets[0]}, none a licensed row in "
+                             f">= 2 datasets"
+                             if matched else
+                             f"pattern matched no type in {self.datasets[0]}"))
             
         return anchors
     
@@ -13825,6 +13928,8 @@ class ConnectivityProfileComparer:
             'direction': self.direction,
             'use_auto_type_mapping': self._type_mapper is not None,
             'inter_anchors': list(anchor_profiles.keys()),
+            'dropped_inter_anchors': list(
+                getattr(self, 'inter_anchor_dropped', None) or []),
             'timestamp': datetime.now().isoformat(),
         }
         params.update(auto_mapping_result_metadata(
@@ -13839,6 +13944,7 @@ class ConnectivityProfileComparer:
             json.dump(params, f, indent=2, default=str)
         
         # --- README.txt ---
+        dropped_anchors = getattr(self, 'inter_anchor_dropped', None) or []
         readme_lines = [
             "Multi-Dataset Connectivity Profile Comparison Results",
             "=" * 50,
@@ -13863,6 +13969,13 @@ class ConnectivityProfileComparer:
             "  dataset pairs as columns (one heatmap per direction/metric).",
             "cross_dataset/mapping_summary.csv: resolved name of each anchor per dataset",
             "  plus a numeric same-name flag (1 = same non-empty name everywhere).",
+            *(("",
+               f"WARNING — {len(dropped_anchors)} queried item(s) formed NO "
+               "inter-dataset anchor (an anchor needs a licensed profile row "
+               "in >= 2 datasets), so the cross_dataset matrices are PARTIAL. "
+               "Details in parameters.json -> dropped_inter_anchors:",
+               *self._dropped_anchor_lines())
+              if dropped_anchors else ()),
             "report.html: hub report — inter-dataset overview (neurons as rows,",
             "  dataset pairs as columns) plus link cards to the per-dataset",
             "  reports; keep plotly.min.js beside it (every report file",
@@ -14304,6 +14417,7 @@ class ConnectivityProfileComparer:
         self._expansion_decision_cache = {}
         self._expansion_status_counts = Counter()
         self._merge_key_cache = {}
+        self.inter_anchor_dropped = []
         if self.use_auto_type_mapping:
             try:
                 candidate_mapper = get_type_mapper()
@@ -14421,6 +14535,15 @@ class ConnectivityProfileComparer:
         inter_matrices = self._compute_inter_dataset_matrices(anchor_profiles)
         self._log(f"Inter-dataset comparisons ready for "
                   f"{len(anchor_profiles)} queried neurons/groups")
+        if self.inter_anchor_dropped:
+            self._log(f"WARNING: {len(self.inter_anchor_dropped)} queried "
+                      "item(s) formed no inter-dataset anchor (an anchor "
+                      "needs a licensed profile row in >= 2 datasets) — the "
+                      "cross-dataset matrices are PARTIAL; "
+                      "parameters.json -> dropped_inter_anchors keeps the "
+                      "full list:")
+            for line in self._dropped_anchor_lines():
+                self._log(line)
         
         # Step 3: save everything + overall report
         self._progress(4, 4, "Saving results and report")
@@ -14463,6 +14586,8 @@ class ConnectivityProfileComparer:
             'is_cross_dataset': False,
             'use_auto_type_mapping': self._type_mapper is not None,
             'inter_anchors': list(anchor_profiles.keys()),
+            'dropped_inter_anchors': list(
+                getattr(self, 'inter_anchor_dropped', None) or []),
             'inter_type_matrices': saved_files.get('inter_type_matrices', {}),
             'intra_matrices_by_dataset': matrices_by_dataset,
             'type_matrices_by_dataset': {

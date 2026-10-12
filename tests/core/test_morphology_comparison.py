@@ -1006,8 +1006,11 @@ def test_members_type_column_stays_true(vector_setup):
 def _write_preset(tmp_path, groups, dataset="male-cns:v1.0"):
     import json
 
+    from comparison.label_mapper import PRESET_FORMAT_TAG
+
     path = tmp_path / "preset.json"
-    path.write_text(json.dumps({"source_mapping": {
+    path.write_text(json.dumps({"format": PRESET_FORMAT_TAG,
+                                "source_mapping": {
         "custom_label": [name for name, _ in groups],
         dataset: [members for _, members in groups],
     }}), encoding="utf-8")

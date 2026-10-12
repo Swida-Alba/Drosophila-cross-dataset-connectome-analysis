@@ -21,6 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from comparison.connectivity_profiler import ConnectivityProfiler  # noqa: E402
+from comparison.label_mapper import PRESET_FORMAT_TAG  # noqa: E402
 from comparison.profile_comparator import ConnectivityProfileComparer  # noqa: E402
 
 DATASET = "hemibrain:v1.2.1"
@@ -120,6 +121,7 @@ def test_bodyid_aggregation_expands_patterns_to_bodyids():
 
 def _write_mapping(tmp_path, dataset_key=DATASET):
     preset = {
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {
             "custom_label": ["grp1", "grp2", "grp3"],
             dataset_key: [["aMe12", "aMe12_R"], ["aMe12_L"], []],
@@ -608,6 +610,19 @@ def test_collapse_partners_sums_member_weights(tmp_path):
     assert out.upstream_ranks == {"grp1": 1, "Tm3": 2}
 
 
+def test_collapse_reports_the_number_of_folded_partners(tmp_path):
+    """The folding disclosure counts what disappeared (pre - post), so a run
+    never logs a negative number of folded partner entries."""
+    mapping_path = _write_mapping(tmp_path)
+    comparer = _make_comparer(label_mapping_file=mapping_path)
+    lines: list = []
+    comparer._log = lambda msg: lines.append(str(msg))
+    profile = _make_profile(up={"aMe12": 2.0, "aMe12_R": 3.0, "Tm3": 1.0})
+    comparer.collapse_partners_by_label_mapper({"grp2": profile}, DATASET)
+    # three partner keys became two (aMe12 + aMe12_R -> grp1) => 1 folded
+    assert lines and "1 partner entr(ies) folded into group labels" in lines[-1]
+
+
 def test_collapse_without_mapper_is_identity():
     """U9-lite: no mapper -> the profiles pass through untouched."""
     comparer = _make_comparer()
@@ -622,6 +637,26 @@ def test_group_partners_requires_a_mapper():
     provided — a run must not claim grouping it cannot apply."""
     comparer = _make_comparer(group_partners_by_mapping=True)
     assert comparer.group_partners_by_mapping is False
+
+
+def test_preset_without_format_tag_refuses_the_run(tmp_path):
+    """F4: a preset declaring no grammar is refused, not parsed on shape — and
+    the profiling comparer does NOT swallow that into a raw-name run (which
+    would publish labels it never applied)."""
+    from comparison.label_mapper import PresetFormatError
+
+    untagged = tmp_path / "untagged.json"
+    untagged.write_text(json.dumps({"source_mapping": {
+        "custom_label": ["grp1"], DATASET: [["aMe12"]],
+    }}), encoding="utf-8")
+    with pytest.raises(PresetFormatError, match="no 'format' key"):
+        _make_comparer(query=["grp1"], label_mapping_file=str(untagged))
+
+    # A genuinely broken file still degrades to raw names with a warning.
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    degraded = _make_comparer(query=["grp1"], label_mapping_file=str(broken))
+    assert degraded._user_label_mapper is None
 
 
 def test_anchor_profiles_align_by_user_label(tmp_path):
@@ -639,12 +674,202 @@ def test_anchor_profiles_align_by_user_label(tmp_path):
     assert set(anchors["grp1"]) == {DATASET, "banc_v626"}
 
 
+def _write_metachar_mapping(tmp_path):
+    """Preset whose labels contain regex metacharacters.
+
+    The spellings are the clock set's (``LNd_CRY+``, ``LNd_CRY+_ITP+``,
+    ``LNd_CRY-``) plus a parenthesised variant, so every entry is a literal
+    that ``_looks_like_pattern`` would route to the regex branch."""
+    preset = {
+        "format": PRESET_FORMAT_TAG,
+        "source_mapping": {
+            "custom_label": ["LNd_CRY+", "LNd_CRY+_ITP+", "LNd_CRY-",
+                             "DN1pA(II)"],
+            DATASET: [["1"], ["2"], ["3"], ["4"]],
+        }
+    }
+    path = tmp_path / "metachar_mapping.json"
+    path.write_text(json.dumps(preset), encoding="utf-8")
+    return str(path)
+
+
+def _two_dataset_profiles(labels):
+    return {ds: {lbl: _make_profile(up={ds: 1.0}) for lbl in labels}
+            for ds in (DATASET, "banc_v626")}
+
+
+def test_anchor_profile_tier0_metachar_label_never_hits_the_pool(tmp_path):
+    """U11b: a tier-0 label IS the comparison identity — a label containing
+    ``+`` must anchor as itself, and the dataset type pool may not be
+    consulted for it at all."""
+    comparer = _make_comparer(
+        query=["LNd_CRY+", "LNd_CRY+_ITP+"], datasets=[DATASET, "banc_v626"],
+        label_mapping_file=_write_metachar_mapping(tmp_path))
+
+    def boom(pattern, ds):
+        raise AssertionError(
+            f"tier-0 label pattern-matched: {pattern!r} in {ds}")
+
+    comparer.profiler.list_types = boom
+    anchors = comparer._build_anchor_profiles(
+        _two_dataset_profiles(["LNd_CRY+", "LNd_CRY+_ITP+", "LNd_CRY-"]))
+    assert set(anchors) == {"LNd_CRY+", "LNd_CRY+_ITP+"}
+    assert set(anchors["LNd_CRY+_ITP+"]) == {DATASET, "banc_v626"}
+
+
+def test_anchor_profile_tier0_label_does_not_leak_its_regex_family(tmp_path):
+    """U11c: querying one label publishes ONE anchor — not the family a
+    regex expansion of its ``+`` spelling would have matched."""
+    comparer = _make_comparer(
+        query=["LNd_CRY+"], datasets=[DATASET, "banc_v626"],
+        label_mapping_file=_write_metachar_mapping(tmp_path))
+    comparer.profiler.list_types = (
+        lambda p, ds: ["LNd_CRY+", "LNd_CRY+_ITP+", "LNd_CRY-"]
+        if p == "LNd_CRY+" else [])
+    anchors = comparer._build_anchor_profiles(
+        _two_dataset_profiles(["LNd_CRY+", "LNd_CRY+_ITP+", "LNd_CRY-"]))
+    assert set(anchors) == {"LNd_CRY+"}
+
+
+def test_anchor_profile_exact_type_with_metachar_beats_the_pool(tmp_path):
+    """U11d: even without a preset, an exact type name that happens to
+    contain ``( resolves exactly — _looks_like_pattern's documented order.
+    """
+    comparer = _make_comparer(query=["DN1pA(II)"],
+                              datasets=[DATASET, "banc_v626"])
+    comparer.profiler.list_types = (
+        lambda p, ds: ["DN1pA(II)R", "DN1pA(II)L"])
+    anchors = comparer._build_anchor_profiles(
+        _two_dataset_profiles(["DN1pA(II)", "DN1pA(II)R", "DN1pA(II)L"]))
+    assert set(anchors) == {"DN1pA(II)"}
+
+
+def test_anchor_profile_dot_bearing_label_resolves_exactly(tmp_path):
+    """U11d2: a label containing '.' (a version-suffix spelling) is a literal
+    too — '.' as a regex wildcard must not pull in same-length neighbours."""
+    preset = tmp_path / "dot_preset.json"
+    preset.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
+        "source_mapping": {
+            "custom_label": ["DN1pA.1", "DN1pAxl"],
+            DATASET: [["1"], ["2"]],
+        }
+    }), encoding="utf-8")
+    comparer = _make_comparer(query=["DN1pA.1"],
+                              datasets=[DATASET, "banc_v626"],
+                              label_mapping_file=str(preset))
+
+    def boom(pattern, ds):
+        raise AssertionError(
+            f"tier-0 label pattern-matched: {pattern!r} in {ds}")
+
+    comparer.profiler.list_types = boom
+    # 'DN1pAxl' is what re.match('DN1pA.1') would have matched as a sibling.
+    anchors = comparer._build_anchor_profiles(
+        _two_dataset_profiles(["DN1pA.1", "DN1pAxl"]))
+    assert set(anchors) == {"DN1pA.1"}
+
+
+def test_anchor_profile_pattern_item_still_expands(tmp_path):
+    """U11e: the exact-first reorder must not kill pattern support — an item
+    with no exact row still expands through the dataset's type pool."""
+    comparer = _make_comparer(query=["CRY.*"],
+                              datasets=[DATASET, "banc_v626"])
+    comparer.profiler.list_types = (
+        lambda p, ds: ["LNd_CRY+", "LNd_CRY-"] if p == "CRY.*" else [])
+    anchors = comparer._build_anchor_profiles(
+        _two_dataset_profiles(["LNd_CRY+", "LNd_CRY-"]))
+    assert set(anchors) == {"LNd_CRY+", "LNd_CRY-"}
+
+
+def test_anchor_profile_plain_type_name_unchanged_without_preset(tmp_path):
+    """U11f: the no-metacharacter, no-preset baseline stays byte-identical."""
+    comparer = _make_comparer(query=["Mi1", "Tm3"],
+                              datasets=[DATASET, "banc_v626"])
+    anchors = comparer._build_anchor_profiles(
+        _two_dataset_profiles(["Mi1", "Tm3"]))
+    assert set(anchors) == {"Mi1", "Tm3"}
+    assert comparer.inter_anchor_dropped == []
+
+
+def test_dropped_anchor_listing_is_capped_but_not_in_json(tmp_path):
+    """U11j: the log/README name a bounded number of drops; the full record
+    stays in parameters.json (a long-tail type-level run can lose hundreds)."""
+    comparer = _make_comparer(query=[f"T{i}" for i in range(25)],
+                              datasets=[DATASET, "banc_v626"])
+    assert comparer._build_anchor_profiles(
+        {DATASET: {}, "banc_v626": {}}) == {}
+    assert len(comparer.inter_anchor_dropped) == 25
+    lines = comparer._dropped_anchor_lines()
+    assert len(lines) == 21                       # 20 named + the summary
+    assert "and 5 more" in lines[-1]
+    assert "dropped_inter_anchors" in lines[-1]
+    # a short list is not padded with a summary line
+    other = _make_comparer(query=["Mi1", "Tm3"],
+                           datasets=[DATASET, "banc_v626"])
+    other._build_anchor_profiles({DATASET: {"Mi1": _make_profile()},
+                                  "banc_v626": {}})
+    assert len(other._dropped_anchor_lines()) == len(other.inter_anchor_dropped)
+
+
+def test_anchor_profile_records_dropped_anchor(tmp_path):
+    """U11g: an item with a row in only ONE dataset drops — legitimately, but
+    never silently: the drop names the item, its kind and the reason."""
+    comparer = _make_comparer(query=["Mi1", "Tm3"],
+                              datasets=[DATASET, "banc_v626"])
+    profiles = {
+        DATASET: {"Mi1": _make_profile(up={"a": 1.0}),
+                  "Tm3": _make_profile(up={"a": 1.0})},
+        "banc_v626": {"Mi1": _make_profile(up={"b": 1.0})},
+    }
+    anchors = comparer._build_anchor_profiles(profiles)
+    assert set(anchors) == {"Mi1"}
+    assert [(d["item"], d["kind"]) for d in comparer.inter_anchor_dropped] \
+        == [("Tm3", "type name")]
+    dropped = comparer.inter_anchor_dropped[0]
+    assert dropped["datasets_with_anchor_row"] == [DATASET]
+    assert "1 of 2" in dropped["reason"]
+
+
+def test_anchor_profile_tier0_label_without_rows_is_disclosed(tmp_path):
+    """U11h: a tier-0 label that anchors nothing is reported as a tier-0
+    drop, and the type pool is still never consulted for it."""
+    comparer = _make_comparer(
+        query=["LNd_CRY+"], datasets=[DATASET, "banc_v626"],
+        label_mapping_file=_write_metachar_mapping(tmp_path))
+
+    def boom(pattern, ds):
+        raise AssertionError(
+            f"tier-0 label pattern-matched: {pattern!r} in {ds}")
+
+    comparer.profiler.list_types = boom
+    assert comparer._build_anchor_profiles(
+        {DATASET: {}, "banc_v626": {}}) == {}
+    dropped = comparer.inter_anchor_dropped[0]
+    assert dropped["kind"] == "user label (tier 0)"
+    assert dropped["datasets_with_anchor_row"] == []
+
+
+def test_anchor_profile_dropped_pattern_names_the_pool_size(tmp_path):
+    """U11i: a pattern that matches nothing is disclosed as a pattern drop
+    with the dataset whose pool was searched."""
+    comparer = _make_comparer(query=["CRY.*"],
+                              datasets=[DATASET, "banc_v626"])
+    comparer.profiler.list_types = lambda p, ds: []
+    assert comparer._build_anchor_profiles(
+        _two_dataset_profiles(["Mi1"])) == {}
+    dropped = comparer.inter_anchor_dropped[0]
+    assert dropped["kind"] == "pattern"
+    assert f"matched no type in {DATASET}" in dropped["reason"]
+
+
 def test_collapse_bodyid_keyed_map_type_bridge(tmp_path):
     """U7b: bodyId-keyed maps bridge partner TYPE names through the type's
     bodyIds — all resolved members must agree on one label."""
     import json as _json
     bodyid_map = tmp_path / "bodyid_map.json"
     bodyid_map.write_text(_json.dumps({
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {
             "custom_label": ["grpA", "grpB"],
             DATASET: [["10", "11"], ["20"]],
@@ -679,6 +904,7 @@ def test_bodyid_axes_carry_standard_labels_with_preset(tmp_path):
     import json as _json
     preset = tmp_path / "axis_map.json"
     preset.write_text(_json.dumps({
+        "format": PRESET_FORMAT_TAG,
         "source_mapping": {
             "custom_label": ["grpM"],
             DATASET: [["1"]],

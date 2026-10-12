@@ -311,9 +311,11 @@ def load_labelmapper_source_groups(mapping_path, dataset, log=None):
     """Read the source-side groups of a LabelMapper preset JSON.
 
     Preset format (the overall JSON exported by the Settings tab's mapping
-    presets)::
+    presets; the ``format`` tag is required by the backend loader, see
+    ``comparison.label_mapper.PRESET_FORMAT_TAG``)::
 
-        {"source_mapping": {
+        {"format": "drocat_custom_groups/v1",
+         "source_mapping": {
             "custom_label": ["grp1", "grp2"],
             "hemibrain:v1.2.1": [["aMe12", "aMe12_R"], ["aMe12_L"]]}}
 
