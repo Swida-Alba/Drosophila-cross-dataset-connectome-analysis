@@ -1,0 +1,120 @@
+---
+title: Find Driver Lines
+tag: NeuronBridge
+tag_class: nb
+page_title: Find Driver Lines (NeuronBridge)
+---
+
+Find GAL4 / Split-GAL4 driver lines whose expression matches EM neurons, using NeuronBridge color-depth search (CDS) or point-pattern matching (PPPM).
+
+  
+  
+## Quick start
+
+1. Enter EM neurons (bodyIds, types, instances, or patterns) — the box auto-suggests type/instance/bodyId names with the dataset they come from, and the history list tags each value with its datasets. Picking a suggestion adds the chip and keeps that query's rows listed (in either list a name already added stays, tinted and ticked, and clicking it again takes the chip back out), so several entries go in without retyping.
+2. Pick one or more <b>Datasets</b>, or keep the exclusive <code>(all)</code> indicator to search everywhere. Datasets NeuronBridge does not host are greyed out (advisory — runs still proceed with a warning).
+3. Keep <b>Expand query names across datasets</b> on to find every hosted release's equivalent of each name.
+4. Click <b>Find Driver Lines</b>.
+
+  
+## Datasets &amp; NeuronBridge coverage
+
+NeuronBridge hosts EM bodies for a subset of DROCAT's datasets, and only at specific releases. The tab keeps an auto-refreshing coverage snapshot (<code>cache/neuronbridge/coverage\_snapshot.json</code>) and shows it in the caption under the dataset selector:
+
+- <b>Hosted exactly</b> — searched as-is (e.g. hemibrain:v1.2.1, male-cns:v0.9, manc:v1.2.1, flywire FAFB v783).
+- <b>Aligned</b> — the same bodies live in another hosted release (e.g. <code>male-cns:v1.0 → male-cns:v0.9</code>, <code>manc:v1.2.3 → manc:v1.2.1</code>); expansion searches the hosted release's names.
+- <b>Not hosted (disabled)</b> — datasets with no NeuronBridge records (e.g. BANC, optic-lobe, fib19, mushroombody) are greyed out; runs targeting them warn but never block, in case a snapshot is stale or the refresh failed.
+
+  
+## Inputs &amp; examples
+
+  
+
+<table>
+  <tr><th>Query</th><th>Behavior</th></tr>
+  <tr><td><code>aMe12</code></td><td>Find lines labeling all aMe12 neurons</td></tr>
+  <tr><td><code>636798093</code></td><td>Find lines for one bodyId</td></tr>
+  <tr><td><code>MBON.*</code></td><td>Pattern across types</td></tr>
+  <tr><td><code>aMe12, MBON01</code></td><td>Lines labeling <b>both</b> groups; use separate queries for different groups</td></tr>
+</table>
+
+  
+## Parameters
+
+  
+
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td>Datasets</td><td>(all)</td><td>Multi-select (labeled "Datasets ('(all)' or empty searches everywhere)"); <code>(all)</code> or an empty selection searches everywhere. Unhosted datasets are greyed out.</td></tr>
+  <tr><td>Expand query names across datasets</td><td>on</td><td>Expand each name through the cross-dataset type mapper into every hosted release before searching (splits expand to all branch names, conflicts to none, unmapped keeps the raw name)</td></tr>
+  <tr><td>Algorithm</td><td>cds</td><td>cds (fast), pppm (precise), both</td></tr>
+  <tr><td>Top Lines for Images</td><td>30</td><td>When image download is enabled, download images only for the top N ranked lines (per category in separate mode); the search CSVs still contain all matches</td></tr>
+  <tr><td>Separate Split-GAL4 Results</td><td>on</td><td>GAL4/LexA and Split-GAL4 summarized separately</td></tr>
+  <tr><td>Region</td><td>Brain</td><td>Brain, VNC, or All (image downloads)</td></tr>
+  <tr><td>Max Workers</td><td>8</td><td>Parallel API workers; lower if rate-limited. These last four rows sit behind the collapsed <b>Advanced Settings</b> expansion</td></tr>
+  <tr><td>Sort By</td><td>max</td><td>max score or completeness (coverage)</td></tr>
+  <tr><td>Output detail</td><td>Full</td><td>Expanded Compact runs keep the newest N runs' match tables (default 1), prune older Compact runs' tables, and remove the downloaded images after the PDF/PPTX is generated (audited in <code>cleanup_audit.json</code>); a plain (non-expanded) Compact run deletes its match tables immediately once the summaries are written</td></tr>
+  <tr><td>Compact: Keep Last N Runs' Match Tables</td><td>1</td><td>Rolling window for Compact: the newest N expanded runs keep their bodyId-level match tables; older Compact runs are pruned. 0 deletes immediately. Full ignores this.</td></tr>
+</table>
+
+  
+## Image download options
+
+- <b>Download Images</b> from NeuronBridge and/or <b>From FlyLight</b>. FlyLight misses automatically fall back to NeuronBridge.
+- <b>Image Formats</b>: png/jpg (NeuronBridge); h5j/mp4/json added for FlyLight.
+- <b>Image Types</b>: cdm/mip, aligned, translation, metadata.
+- <b>Max Images / Line</b>: download cap per line.
+- <b>FlyLight Collections</b>: searched in priority order; missing lines automatically fall back to MCFO, RawImages, then NeuronBridge.
+- <b>Simple Mode</b> (labeled "Simple Mode (fewer files)"): fewer representative files.
+- <b>Organize by Region</b>: Brain/VNC subfolders for the downloaded images (off saves everything directly in the output root).
+- <b>PDF Summary</b> (on), <b>PPTX Summary</b> (off), <b>Summary Background</b> (black / white), and the <b>PDF Images Per Page</b> (cols 3 / rows 2) layout.
+- The <b>Output Directory</b> control (it inherits your saved default otherwise) sits above the run button.
+
+  
+## Output
+
+With expansion on (default), everything lands in ONE per-run folder:
+
+  
+
+<pre><code>{output_dir}/NB-find-lines-expanded_ALL_DNp01_20260915_040155/
+expansion_map.csv          # chip → expanded name → hosted release → mapping status
+expansion_summary.json     # original selection + coverage routing + cleanup audit
+user_warning_notes.txt     # (when unavailable datasets were targeted; "coverage:" prefix)
+cleanup_audit.json         # (Compact runs: removed files + reclaimed bytes)
+DNp01_lines.csv            # single-chip runs are FLAT (multi-chip: chip_{query}/ folders)
+line_summary.csv           # summary per line (sorted by weighted_score)
+gal4_lexa_summary.csv      # (when Split-GAL4 separation is on)
+split_gal4_summary.csv     # (when Split-GAL4 separation is on)
+parameters.json
+images/...                 # (when image download is on)
+{query}_summary.pdf        # (when a PDF/PPTX summary is requested)</code></pre>
+
+With <b>Expand query names</b> off, the plain single-folder layout is used: <code>NB-find-lines\_MCNS\_aMe12\_20260815\_145107/</code> with the same per-query files directly inside.
+
+  
+
+<div class="callout info">
+  <b>Output detail:</b> <b>Full</b> (default) keeps every file. <b>Compact</b>
+  keeps the newest N runs' match tables (<code>{query}_lines.csv</code>;
+  N defaults to 1 — the latest query stays inspectable), prunes older
+  Compact runs' tables, and removes the downloaded images once the PDF/PPTX
+  is generated — every removal is audited in the runs'
+  <code>cleanup_audit.json</code>, and a zero-byte summary/PDF (a crashed
+  writer) never licenses deletion. The NeuronBridge match cache is off by
+  default (<b>Settings → NeuronBridge Match Cache</b> re-enables it), so a
+  pruned match table regenerates only by re-running the query.
+</div>
+
+<div class="callout warn">
+  <b>Weighted score</b> = avg match score × coverage. A line labeling all
+  queried neurons ranks higher than one with a single high score.
+</div>
+
+<div class="callout info">
+  <b>Exported run guide:</b> every successful run also writes
+  <code>_UserGuide_please_read_me.html</code> into the run folder — a
+  self-contained explanation of every output file, every table column, and
+  any warnings recorded for the run. Format (html / txt / markdown /
+  disabled) is set in Settings → Default Settings → Run Guide Format.
+</div>

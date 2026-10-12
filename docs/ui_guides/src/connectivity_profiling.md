@@ -79,7 +79,7 @@ The folder name uses the first dataset's abbreviation (<code>MCNS</code> = male-
 
 <pre><code>{output_dir}/profiling_MCNS_aMe_20260815_143922/
 report.html                        # hub: inter-dataset section + link cards
-report_<dataset>.html              # full heatmap report per dataset (2+ datasets)
+report_&lt;dataset&gt;.html              # full heatmap report per dataset (2+ datasets)
 plotly.min.js                      # shared chart library — keep beside the reports
 parameters.json, README.txt        # README lists only the folders written;
                                    # parameters.json also carries

@@ -1,0 +1,96 @@
+---
+title: FlyLight Downloader
+tag: FlyLight
+tag_class: nb
+---
+
+Download FlyLight driver-line imagery directly from the Janelia S3 bucket (<code>janelia-flylight-imagery</code>) and the HTTP CDN (<code>flimg.janelia.org</code>). The line type is detected automatically: R-lines (Gen1 GAL4) and SS-lines (Split-GAL4) come from S3, VT lines from the CDN.
+
+  
+  
+## Quick start
+
+1. Enter one or more driver lines and press Enter after each one so they appear as removable chips, e.g. <code>R10A06</code>, <code>VT037867</code>, and <code>SS00731</code>. The chip input keeps a Recent/Frequent history (successful downloads are recorded into it), shows a live <i>N lines</i> count badge, and offers Clear and Expand/Collapse for long lists.
+2. Pick an output directory (defaults to your saved default).
+3. Click <b>Download Images</b>. Progress streams below; files appear in <b>Output Files</b> when the run finishes.
+
+  
+## Preview tools
+
+  
+
+<table>
+  <tr><th>Action</th><th>Behavior</th></tr>
+  <tr><td><b>Search Lines</b></td><td>Find driver lines matching a pattern
+    (e.g. <code>R10A0</code>, <code>VT037</code>, <code>SS01</code>).
+    At most 60 result chips are shown; click a result chip to add it to
+    the line list.</td></tr>
+  <tr><td><b>List Files</b></td><td>Show the exact files the current
+    filters would download, without downloading (table capped at 200 rows;
+    columns Line / File / Type / Size). Click a file name to
+    open its URL.</td></tr>
+</table>
+
+  
+## File filters
+
+  
+
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><b>Formats</b></td><td><code>png, jpg</code></td><td>File
+    formats: <code>png</code>, <code>jpg</code>, <code>h5j</code> (3D
+    stacks), <code>lsm</code> (raw confocal), <code>mp4</code> (videos),
+    <code>json</code> (metadata). VT lines primarily have jpg/mp4.</td></tr>
+  <tr><td><b>Image Types</b></td><td><code>mip, cdm</code></td><td>MIP /
+    CDM projections, aligned stacks, metadata, translation videos.</td></tr>
+  <tr><td><b>Region</b></td><td><code>Brain</code></td><td>Restrict to
+    brain imagery, VNC, or keep all regions.</td></tr>
+  <tr><td><b>Collections</b></td><td><code>GAL4/LEXA, SplitGAL4</code></td>
+    <td>Collection categories searched in priority order; missing lines
+    fall back to MCFO and then RawImages.</td></tr>
+</table>
+
+  
+## Download options
+
+  
+
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><b>Simple Mode (fewer files)</b></td><td>on</td><td>Download only
+    representative files: 20x + multichannel for Split-GAL4 (excluding
+    image1/image2 duplicates), <code>total</code> for GAL4/LexA. A small
+    fallback keeps at least a few files when nothing matches.</td></tr>
+  <tr><td><b>Max Files / Line</b></td><td><code>6</code></td><td>Cap per
+    line (applied after filtering). Number input, range 1–200 — the cap
+    always applies; it cannot be cleared to disable it.</td></tr>
+  <tr><td><b>Max Workers</b></td><td><code>4</code></td><td>Parallel
+    download threads.</td></tr>
+  <tr><td><b>Flat Folder Structure</b></td><td>on</td><td>Save files directly
+    instead of preserving the S3 key structure.</td></tr>
+  <tr><td><b>Timestamp Folder</b></td><td>on</td><td>Create a
+    <code>flylight-downloads_..._{timestamp}</code> output folder so re-runs
+    never overwrite.</td></tr>
+  <tr><td><b>Image Summary</b></td><td><code>pdf</code></td><td>Contact
+    sheet of the downloaded images: <code>none</code>, <code>pdf</code>,
+    <code>pptx</code>, or <code>pdf + pptx</code>. <b>Summary Columns</b>
+    (3) and <b>Summary Rows</b> (2) set the per-page grid.</td></tr>
+</table>
+
+  
+## Notes
+
+- Downloads need internet access to <code>s3.amazonaws.com</code> and <code>flimg.janelia.org</code>; no API token is required (public data).
+- Large files (h5j stacks, lsm raw data) can be hundreds of MB — the log streams the total size before downloading.
+- Backend: <code>src/flylight\_downloader.py</code> (same engine used by the NeuronBridge <b>Find Lines</b> image download).
+
+  
+
+<div class="callout info">
+  <b>Exported run guide:</b> every successful run also writes
+  <code>_UserGuide_please_read_me.html</code> into the run folder — a
+  self-contained explanation of every output file, every table column, and
+  any warnings recorded for the run. Format (html / txt / markdown /
+  disabled) is set in Settings → Default Settings → Run Guide Format.
+</div>

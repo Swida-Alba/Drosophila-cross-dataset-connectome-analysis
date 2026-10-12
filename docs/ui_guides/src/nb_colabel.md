@@ -1,0 +1,77 @@
+---
+title: Co-Labeling Analysis
+tag: NeuronBridge
+tag_class: nb
+page_title: Co-Labeling Analysis (NeuronBridge)
+---
+
+Analyze overlap between driver lines: which neuron types each line labels, Jaccard / weighted-Jaccard co-labeling matrices, and line specificity.
+
+  
+  
+## Quick start
+
+1. Enter at least two <b>Driver Line Names</b> as chips (e.g. <code>VT037867</code>, then <code>R10A06</code>, Enter after each).
+2. Keep Jaccard and Weighted Jaccard enabled.
+3. Click <b>Run Co-Labeling</b>.
+
+  
+## Parameters
+
+  
+
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td>Algorithm</td><td>cds</td><td>Match algorithm: cds, pppm, or both</td></tr>
+  <tr><td>Similarity methods</td><td>Jaccard + Weighted Jaccard (both on)</td><td>Binary vs score-weighted overlap (checkboxes)</td></tr>
+  <tr><td>Top N Matches Per Line</td><td>50</td><td>Ranked matches retrieved per line before score filtering</td></tr>
+  <tr><td>Score Cutoff</td><td>30000</td><td>Filters expression/labeling matrices and similarity inputs after top-N retrieval</td></tr>
+  <tr><td>Min Type Avg Score</td><td>10000</td><td>Additional filter for the co-labeling similarity matrices; it does <b>not</b> filter the expression matrix</td></tr>
+  <tr><td>Heatmaps / HTML Report</td><td>on</td><td>Interactive outputs</td></tr>
+  <tr><td>3D Skeleton</td><td>off</td><td>Render top co-labeled types; <b>3D Dataset</b> (default <b>(all)</b>) limits which dataset the optional 3D output draws from, and enabling it reveals the <b>Advanced Visualization</b> expansion (Visualize Top N = 5 by default, Visualize By type/bodyId, appearance, synapse/region and export settings)</td></tr>
+  <tr><td>Sort By</td><td>max_score</td><td>Advanced Settings: max_score or type_avg_score ordering</td></tr>
+  <tr><td>Profile Background / Images Per Page</td><td>white / 3 cols × 2 rows</td><td>Advanced Settings: PDF/PPTX profile layout</td></tr>
+</table>
+
+The <b>Output Directory</b> control (it inherits your saved default otherwise) sits above the run button.
+
+  
+## Output
+
+  
+
+<pre><code>{output_dir}/NB-colabeling_SS01015_VT037867_SS46115_20260815_145150/
+expression_matrix.csv, expression_matrix.html
+expression_matrix_merged.csv, expression_matrix_merged.html
+expression_matrix_viz.csv, expression_matrix_merged_viz.csv
+colabeling_matrix_jaccard.csv/.html
+colabeling_matrix_weighted_jaccard.csv/.html
+labeling_distribution_by_{type,neuron}.html, labeling_distribution_stacked.html
+distribution_data_by_type.csv, distribution_data_by_neuron.csv
+labeling_info.csv
+line_summary.csv            (specificity statistics)
+line_labeled_neurons/...    # per-line neuron details
+colabeling_report.html
+plot-3d_{dataset}/...       # 3D views (when Visualize Top N > 0)
+user_warning_notes.txt      # cutoff interpretation notes
+parameters.json</code></pre>
+
+<div class="callout tip">
+  <b>Line specificity</b> is high when a line labels few distinct types -
+  useful for identifying selective drivers.
+</div>
+
+  
+## Output detail
+
+<b>Full</b> (default) keeps every exported file. <b>Compact</b> drops the row-level source data (<code>line\_labeled\_neurons/</code> and <code>distribution\_data\_by\_neuron.csv</code>) once the similarity matrices and report are written — every removal is audited in the run's <code>cleanup\_audit.json</code>. Matrices, expression data, by-type distributions, and the HTML report always stay. The NeuronBridge match cache is off by default (<b>Settings → NeuronBridge Match Cache</b> re-enables it), so removed tables regenerate only by re-running the analysis.
+
+  
+
+<div class="callout info">
+  <b>Exported run guide:</b> every successful run also writes
+  <code>_UserGuide_please_read_me.html</code> into the run folder — a
+  self-contained explanation of every output file, every table column, and
+  any warnings recorded for the run. Format (html / txt / markdown /
+  disabled) is set in Settings → Default Settings → Run Guide Format.
+</div>

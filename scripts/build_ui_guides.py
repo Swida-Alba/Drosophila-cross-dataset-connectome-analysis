@@ -121,11 +121,13 @@ def render_page(meta: dict, body: str) -> str:
     # the output) at the first blank line, render the two halves
     # separately, and wrap the lede in the class — regexing rendered HTML
     # would misfire on the raw callout divs several guides open with.
+    # `lede: false` opts out (pages that open with a plain paragraph).
     blocks = body.split("\n\n", 1)
     lede_src = blocks[0]
     rest_src = blocks[1] if len(blocks) > 1 else ""
     lede = markdown.markdown(lede_src, extensions=_EXTENSIONS)
-    if lede.startswith("<p>"):
+    if lede.startswith("<p>") and str(meta.get("lede", "true")).strip().lower() \
+            not in ("false", "no", "off"):
         lede = f'<p class="lede">{lede[3:]}'
     body_html = f"{lede}\n"
     if rest_src.strip():

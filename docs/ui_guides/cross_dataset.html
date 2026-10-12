@@ -14,806 +14,245 @@
     <span class="tag">Connectome</span>
   </header>
   <h1>Cross-Dataset Comparison</h1>
-  <p class="lede">
-    This guide covers the <b>Paths</b> tab, now grouped under
-    <b>Cross-Dataset</b> beside <a href="type_validation.html">Type
-    Validation</a> (which validates a type mapping at the bodyId level).
-  </p>
-  <p class="lede">
-    Analyze one dataset across multiple synapse thresholds, or compare
-    connectivity between two or more datasets (e.g.
-    <code>male-cns:v0.9</code> vs <code>hemibrain:v1.2.1</code>) for the same
-    source → target query.
-  </p>
+<p class="lede">
+This guide covers the <b>Paths</b> tab, now grouped under
+<b>Cross-Dataset</b> beside <a href="type_validation.html">Type
+Validation</a> (which validates a type mapping at the bodyId level).
+</p>
+<p class="lede">
+Analyze one dataset across multiple synapse thresholds, or compare
+connectivity between two or more datasets (e.g.
+<code>male-cns:v0.9</code> vs <code>hemibrain:v1.2.1</code>) for the same
+source → target query.
+</p>
 <p><strong>Threshold basis</strong>: on <code>weight_basis='connection_ratio'</code> runs the edge weight is the F9 connection ratio (synapses / the post neuron's total incoming at min_weight=1) — the threshold, Edge Budget tiers and StrongestFirst bottlenecks are in ratio units; every synapse column is unchanged. Auto mode also runs on float ratio tiers: the density bootstrap and alignment use float64 ratio arrays and distinct-tier ladders. See <code>docs/core-features/ConnectionRatioPaths.md</code>.</p>
+<h2>Quick start</h2>
+<ol>
+<li>Select one or more <b>Datasets</b>. The dropdown opens with a <b>Recommended</b> section (<code>male-cns:v1.0</code>, <code>flywire_FAFB_v783</code>, <code>banc_v888</code>), followed by an <b>Available</b> section listing every dataset grouped by source (NeuPrint, then FAFB, then BANC) and sorted by name within each source — the recommended three repeat there, and selecting either copy toggles the same dataset. One dataset with multiple thresholds is also supported; select multiple datasets for cross-dataset comparison.</li>
+<li>Add <b>Source Neurons</b> and <b>Target Neurons</b>.</li>
+<li>Click <b>Run Comparison</b> - a report plus matrices are produced for every threshold.</li>
+</ol>
+<div class="callout info">
+  <b>Release recommendation:</b> if you select
+  <code>male-cns:v0.9</code> while <code>male-cns:v1.0</code> is available,
+  the selector shows an in-page notice recommending the newer release for
+  current type mapping. Choose <b>Use male-cns:v1.0</b> deliberately to
+  replace it, or keep v0.9 for legacy/reproducible runs. The notice never
+  changes a selection silently and disappears when v1.0 is already selected
+  or is not available in the current options.
+</div>
 
+<h2>Inputs &amp; examples</h2>
+<p>The <b>Source Neurons</b> and <b>Target Neurons</b> boxes accept one query per chip (exact / starts with / contains / ends with / regex) and help while you type: dataset-aware suggestions list matching type / instance / bodyId names with a gray hint naming the matched column and dataset (<code>type &middot; male-cns:v1.0</code>). Picking a row adds the chip and only then clears what you typed, while that query's rows stay listed in the same order: a name you already added is tinted and ticked rather than dropped, so the list never shifts under the cursor and you can keep clicking through it without retyping — type <code>PPL1</code>, pick <code>PPL101</code>, then <code>PPL102</code>. Clicking a ticked row takes that chip back out, exactly as the chip's own <b>x</b> does, so a marked row works as a checkbox in either list. With the field empty, the <b>Recent/Frequent</b> history lists your previously run queries — it carries the same marks, and its small &times; &mdash; which appears only while that row is hovered, so it cannot be confused with the tick &mdash; is the other action, dropping the entry from the history while keeping the chip — and the list is click-to-toggle: clicking the focused field again hides it, clicking once more brings it back (clicking a row still toggles its chip, and clicks on chips or their &times; buttons never toggle the list). A click that closes a held suggestion list ends that query too, so the next opening shows the history instead; clicking outside the box, pressing ESC or typing new text do the same. Long chip lists collapse into a scrollable view; <b>Expand</b> shows every chip and <b>Collapse</b> restores the compact view &mdash; in both states the chips scroll <i>inside</i> the field border and never render outside it. Each history row carries one gray tag per <i>selected</i> dataset whose local neuron pool actually contains the value &mdash; a male-cns-only type such as <code>5thsLNv_LNd6</code> is tagged <code>male-cns:v1.0</code> only, never the other datasets that merely shared the same run. Values that resolve in none of the selected datasets (regex patterns, names only in datasets without local tables) show no tags. The Recent/Frequent list itself stays scoped to your selection: a query recorded only for datasets you have deselected is hidden until you select one of them again. Both boxes also accept an <b>upload</b> (CSV / TSV / XLSX / XLS, first column is read — see the <a href="input_formats.html">input formats guide</a>).</p>
+<table>
+  <tr><th>Example</th><th>Behavior</th></tr>
+  <tr><td>Datasets: male-cns:v0.9, hemibrain:v1.2.1</td><td>Two datasets compared using their automatic display names</td></tr>
+  <tr><td>Thresholds: <code>3, 5, 10</code></td><td>Separate analyses per threshold</td></tr>
+  <tr><td style="white-space:nowrap">Rough equivalence</td><td>Whole-dataset hint, <b>typed-searched basis</b> (distinct typed&harr;typed pairs with weight ≥ t &divide; typed neurons, measured 2026-09-25 from the cached tables — BANC v888 188.5k typed, FAFB v783 139.3k, male-cns v1.0 164.5k; this is the universe the searched graph actually scores): BANC ≥ 3 ≈ 19 pairs/neuron ≈ FAFB ≥ ~8 ≈ male-cns ≥ ~9; BANC ≥ 5 ≈ 10 ≈ FAFB ≥ ~11 ≈ male-cns ≥ ~15; at τ ≥ 5, FAFB ≈ 2.7x BANC and male-cns ≈ 3.8x BANC. The 2026-09-07 reference table in the Cross-Dataset guide uses a different basis — <i>all</i> table pairs (unfiltered endpoints, weight = max over ROI rows) &divide; all neuron-table rows — under which BANC @3 = 46.1 lands at parity with FAFB 47.3; BANC's untyped-endpoint pairs are what drive the difference. Thresholds are empirical calibrations, not interchangeable by rule — per-query alignment differs. The <code>threshold_alignment_*.csv</code> files are raw-run density diagnostics (and are marked as such in combination mode); actual advanced comparisons use the query manifest.</td></tr>
+  <tr><td>Mode: <code>edge</code></td><td>Edges compared by weight only</td></tr>
+  <tr><td>Mode: <code>path</code> (default)</td><td>Edges discovered through paths</td></tr>
+  <tr><td>Path Enumeration: <code>shortest</code></td><td>Per-dataset runs keep only per-pair minimum-hop paths (all ties)</td></tr>
+</table>
 
-  <h2>Quick start</h2>
-  <ol>
-    <li>Select one or more <b>Datasets</b>. The dropdown opens with a
-      <b>Recommended</b> section (<code>male-cns:v1.0</code>,
-      <code>flywire_FAFB_v783</code>, <code>banc_v888</code>), followed by an
-      <b>Available</b> section listing every dataset grouped by source
-      (NeuPrint, then FAFB, then BANC) and sorted by name within each
-      source — the recommended three repeat there, and selecting either
-      copy toggles the same dataset. One dataset with multiple thresholds
-      is also supported; select multiple datasets for cross-dataset
-      comparison.</li>
-    <li>Add <b>Source Neurons</b> and <b>Target Neurons</b>.</li>
-    <li>Click <b>Run Comparison</b> - a report plus matrices are produced
-      for every threshold.</li>
-  </ol>
+<h2>Parameters</h2>
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td>Path Enumeration</td><td>all</td><td><code>all</code>: every path within the layer limit (FindAllPath). <code>shortest</code>: only the per-(source bodyId, target bodyId) minimum-hop paths (FindShortestPath), using target-rooted incoming discovery. Switching to <code>shortest</code> resets <b>Max Intermediate Layers to 8</b>, forces <b>Edge Budget to 0</b> (and disables it) with a notice; switching back to <code>all</code> restores the defaults (2 / 1,000,000) — user-entered values are not kept.</td></tr>
+  <tr><td>Source / Target Coverage (shortest)</td><td>Any / Full</td><td>Shortest mode only (per delegate, <code>shortest_source_coverage</code> / <code>shortest_target_coverage</code>): coverage early-stop measured per queried TYPE at every backward discovery layer — Any = >=1 enrolled bodyId per type, a % = each type individually reaches that share, Full = all. Deepening stops once both sides are satisfied; under a target requirement a covered target closes its frontier immediately (early-covered targets keep the pairs found up to their own closure layer — exact hops). The stop is disclosed per delegate (<code>[shortest coverage stop]</code> note + diagnostics + the pair report's per-delegate Coverage stop column). Ignored (sent <code>None</code>) in <code>all</code> mode</td></tr>
+  <tr><td>Max Intermediate Layers</td><td>2</td><td>Path depth for path mode. In shortest mode, 0 = direct connections only; a positive value caps paths at layers + 1 hops. A capped result is shortest only within the explored graph.</td></tr>
+  <tr><td>Fast Mode (corridor lane)</td><td>auto</td><td>The second of the two analysis modes, per dataset: <b>Complete mode</b> (the run) finds all intact paths &ge; the applied threshold; <b>Fast mode</b> is the route-scoped deep pass: after each per-dataset path run at the sweep's <strong>lowest threshold</strong> (corridors at the lowest tier are supersets for higher tiers), a separate lane re-enumerates at the ASKED threshold restricted to validated top-M* type corridors, writing <code>route_scope_paths/</code> (both ratio flavors — plain + adjusted, like the Refill tab) beside that run folder. The comparison report gains a presence-driven Corridor Lane section (per-dataset plan summary, canonical-type corridor comparison, gap partition vs each run's own paths) when any compared run has lane artifacts; absence changes nothing. <code>auto</code> = fires for datasets whose Max Intermediate Layers &ge; 4. Values: <code>complete</code> / <code>auto</code> / <code>both</code> (legacy <code>off</code>/<code>on</code> normalized). Fast also runs standalone on any existing run folder: <code>python scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>.</td><td><code>complete</code> to skip</td></tr>
 
-  <div class="callout info">
-    <b>Release recommendation:</b> if you select
-    <code>male-cns:v0.9</code> while <code>male-cns:v1.0</code> is available,
-    the selector shows an in-page notice recommending the newer release for
-    current type mapping. Choose <b>Use male-cns:v1.0</b> deliberately to
-    replace it, or keep v0.9 for legacy/reproducible runs. The notice never
-    changes a selection silently and disappears when v1.0 is already selected
-    or is not available in the current options.
-  </div>
+  <tr><td>Top Edges in Analysis Reports</td><td>500</td><td>Limits top-edge comparison/overlap results, edge/path presence-matrix rows, and path-presence data used by comparison summary plots; it does not trim pathfinding or set the per-visualization drawn-edge cap</td></tr>
+  <tr><td>Edge Budget</td><td>1,000,000</td><td>Fix D (budget-fit search): after the lossless prunes, discovery cones exceeding this many bodyId edges are floored at the weakest weight tier whose lossless-closed cone still fits the cap — exactly equivalent to raising the threshold; the applied floor is reported as <code>edge_weight_floor</code> with the residual slack and probe trace. 0 = off; shortest mode never floors</td></tr>
+  <tr><td>Visualization Edge Limit</td><td>500</td><td>Caps edges drawn in each network/Sankey/heatmap visualization; it does not alter fetched connections or pathfinding</td></tr>
+  <tr><td>Max Paths (BodyId)</td><td>0 = auto (1M)</td><td>StrongestFirst path budget: when the search exceeds it, ALL paths above the achieved strength cutoff (tau) are kept and tau is reported. StrongestFirst is the built-in 'all'-mode algorithm (the selector was removed); see the <a href="pathfinding_algorithms.html">pathfinding algorithms guide</a>.</td></tr>
+  <tr><td>Threshold mode: Auto</td><td>default</td><td>Requires at least two selected datasets. Threshold chips are optional: an empty box uses the bootstrap floor (Min Synapse Count 3 — or the ratio tier 0.001 under the Connection-ratio basis), and entered chips raise the floor to the lowest chip. One bootstrap pathfinding run per dataset (floor = Min Synapse Count 3) measures each dataset's own window <code>[w_start, w_star_measured]</code> from its <b>searched graph</b> (not the whole dataset); the vertical (same-threshold) and horizontal (same-density) integer rows are then emitted and run through the combination engine. <b>Auto covers both comparisons: the per-threshold analysis (vertical rows) and the density-aligned analysis (horizontal rows).</b> <b>Density alignment is computed on the query's bodyId searched graph; the compared matrices are type-level projections of the same search. A threshold here is a per-connection synapse count (Min Synapse Count).</b> The run guide mirrors every <code>[auto threshold]</code> / <code>[density]</code> warning.</td></tr>
+  <tr><td>Threshold mode: Standard</td><td>off</td><td>Each entered chip is one query and the same requested N is applied to every selected dataset.</td></tr>
+  <tr><td>Threshold mode: Custom combination</td><td>off</td><td>Requires at least two selected datasets. Core Parameters shows a table with datasets as columns and query rows. Every row is one complete comparison identity, such as BANC=3 + FAFB=7; it is not an independent threshold list per dataset. The sorted union is used only to deduplicate raw jobs.</td></tr>
+  <tr><td>Replay Paths</td><td>on</td><td>Path mode 'all': enumerate once at the lowest threshold and materialize higher thresholds from the bottleneck-annotated path set (identical outputs, no re-enumeration). With a tau collapse, folders exist only for real thresholds — the tau folder is materialized fresh (tau denominators) and collapsed thresholds alias it. Shortest mode is never replayed. Works under the Connection-ratio basis too — replay slices materialize float tiers (<code>minratio_</code> delegate folders) from the one lowest-tier enumeration</td></tr>
+  <tr><td>Auto-extend Collapsed Thresholds</td><td>off</td><td>F7: when a run's effective tau collapses asked thresholds, extend each dataset with k × τ_ref points (τ_ref = max per-dataset tau) while ≤ 2× the max asked threshold — the schedule is global, so the expanded points stay shared across datasets. Under the Connection-ratio basis the ladder multiplies the float tier and respects the (0, 1] ceiling</td></tr>
+  <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving source/target names in every dataset: <code>auto</code> = all columns (bodyId → type → instance → flywireType/hemibrainType/…), or restrict to <code>type</code> / <code>instance</code> / <code>bodyId</code>. Use <code>auto</code> when names come from a cross-dataset type column (e.g. <code>MTe07</code> in <code>flywireType</code> on male-cns v1.0).</td></tr>
+  <tr><td>Auto Type Mapping</td><td>on</td><td>Query resolution across datasets: a taxonomy value (e.g. FAFB <code>cell_type=circadian_clock</code>) expands natively where present and bridges into the other datasets through member mapping (Route A). The curated crosswalk's reverse direction is licensed as a type-pool split — querying the merge target reaches the whole member pool (circadian_clock → 40 male-cns types / 219 neurons).</td><td>keep on for cross-dataset concept queries</td></tr>
+  <tr><td>Min Connection Ratio</td><td>hidden</td><td>F9: readout column only (weight / ALL-POST incoming weight — threshold-free); no longer filters</td></tr>
+  <tr><td>Min Traversal Prob.</td><td>hidden</td><td>F9: readout column only (ratio/0.3, capped at 1.0); no longer filters</td></tr>
+  <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
+</table>
 
-  <h2>Inputs &amp; examples</h2>
-  <p>The <b>Source Neurons</b> and <b>Target Neurons</b> boxes accept one
-    query per chip (exact / starts with / contains / ends with / regex) and
-    help while you type: dataset-aware suggestions list matching type /
-    instance / bodyId names with a gray hint naming the matched column and
-    dataset (<code>type &middot; male-cns:v1.0</code>). Picking a row adds the
-    chip and only then clears what you typed, while that query's rows stay
-    listed in the same order: a name you already added is tinted and ticked
-    rather than dropped, so the list never shifts under the cursor and you can
-    keep clicking through it without retyping — type <code>PPL1</code>, pick
-    <code>PPL101</code>, then <code>PPL102</code>. Clicking a ticked row takes
-    that chip back out, exactly as the chip's own <b>x</b> does, so a marked row
-    works as a checkbox in either list. With the field empty,
-    the <b>Recent/Frequent</b> history lists your previously run queries — it
-    carries the same marks, and its small &times; &mdash; which appears only
-    while that row is hovered, so it cannot be confused with the tick &mdash; is
-    the other action, dropping
-    the entry from the history while keeping the
-    chip — and
-    the list is click-to-toggle: clicking the focused field again hides it,
-    clicking once more brings it back (clicking a row still toggles its chip, and
-    clicks on chips or their &times; buttons never toggle the list). A click
-    that closes a held suggestion list ends that query too, so the next
-    opening shows the history instead; clicking outside the box, pressing ESC
-    or typing new text do the same.
-    Long chip lists collapse into a scrollable view; <b>Expand</b> shows every
-    chip and <b>Collapse</b> restores the compact view &mdash; in both states
-    the chips scroll <i>inside</i> the field border and never render outside
-    it.
-    Each history row carries one gray tag per <i>selected</i> dataset whose
-    local neuron pool actually contains the value &mdash; a male-cns-only
-    type such as <code>5thsLNv_LNd6</code> is tagged
-    <code>male-cns:v1.0</code> only, never the other datasets that merely
-    shared the same run. Values that resolve in none of the selected
-    datasets (regex patterns, names only in datasets without local tables)
-    show no tags. The Recent/Frequent list itself stays scoped to your
-    selection: a query recorded only for datasets you have deselected is
-    hidden until you select one of them again. Both boxes also accept an
-    <b>upload</b> (CSV / TSV / XLSX / XLS, first column is read — see the
-    <a href="input_formats.html">input formats guide</a>).</p>
-  <table>
-    <tr><th>Example</th><th>Behavior</th></tr>
-    <tr><td>Datasets: male-cns:v0.9, hemibrain:v1.2.1</td><td>Two datasets compared using their automatic display names</td></tr>
-    <tr><td>Thresholds: <code>3, 5, 10</code></td><td>Separate analyses per threshold</td></tr>
-    <tr><td style="white-space:nowrap">Rough equivalence</td><td>Whole-dataset hint, <b>typed-searched basis</b> (distinct typed&harr;typed pairs with weight ≥ t &divide; typed neurons, measured 2026-09-25 from the cached tables — BANC v888 188.5k typed, FAFB v783 139.3k, male-cns v1.0 164.5k; this is the universe the searched graph actually scores): BANC ≥ 3 ≈ 19 pairs/neuron ≈ FAFB ≥ ~8 ≈ male-cns ≥ ~9; BANC ≥ 5 ≈ 10 ≈ FAFB ≥ ~11 ≈ male-cns ≥ ~15; at τ ≥ 5, FAFB ≈ 2.7x BANC and male-cns ≈ 3.8x BANC. The 2026-09-07 reference table in the Cross-Dataset guide uses a different basis — <i>all</i> table pairs (unfiltered endpoints, weight = max over ROI rows) &divide; all neuron-table rows — under which BANC @3 = 46.1 lands at parity with FAFB 47.3; BANC's untyped-endpoint pairs are what drive the difference. Thresholds are empirical calibrations, not interchangeable by rule — per-query alignment differs. The <code>threshold_alignment_*.csv</code> files are raw-run density diagnostics (and are marked as such in combination mode); actual advanced comparisons use the query manifest.</td></tr>
-    <tr><td>Mode: <code>edge</code></td><td>Edges compared by weight only</td></tr>
-    <tr><td>Mode: <code>path</code> (default)</td><td>Edges discovered through paths</td></tr>
-    <tr><td>Path Enumeration: <code>shortest</code></td><td>Per-dataset runs keep only per-pair minimum-hop paths (all ties)</td></tr>
-  </table>
+<h2>Threshold query table</h2>
+<p>Use <b>Standard</b> for the historical same-threshold comparison. Switch to <b>Custom combination</b> when one cross-dataset query needs different thresholds. It requires at least two selected datasets. The query editor uses one column per selected dataset and one row per query; every cell must be a positive integer. Rows receive stable IDs such as <code>combo_001</code>. <b>Add combination</b> appends a row, each row carries a remove button, and <b>Suggest from alignment</b> prefills rows with density-equivalent thresholds read from a completed run's <code>comparison_results/suggested_threshold_combinations.json</code>. This replaces the old Advanced Settings per-dataset schedule. A dataset's cells across rows are not a custom schedule to compare independently: the row is the unit of alignment, similarity, report, and provenance.</p>
+<p>The raw jobs are deduplicated across rows. For example, rows <code>(BANC=3, FAFB=7)</code> and <code>(BANC=5, FAFB=7)</code> reuse the FAFB@7 raw run but remain two distinct comparison queries.</p>
+<p><b>Auto</b> is the default mode (listed first; it covers both the per-threshold and the density-aligned comparison, so no threshold chips are needed). It runs one bootstrap enumeration per dataset at the floor (Min Synapse Count 3), measures each dataset's completeness window <code>[w_start, w_star_measured]</code> from the query's own searched graph (the ceiling is the measured <code>max(path bottlenecks)</code>, not the stored provenance value), and then emits integer aligned rows: vertical rows share one threshold across all datasets, horizontal rows share a normalized edge density <code>E(t)/N</code> (N = typed searched nodes, fixed in t). Vertical rows are named <code>threshold={N}</code> and horizontal rows <code>aligned_density={level}</code> — these ids are the tab buttons, the report card headers, and the keys inside <code>threshold_combinations.csv</code> and the per-query export filenames (e.g. <code>conserved_network_threshold_19_network.html</code>; two density levels that round to the same name get a <code>_2</code> suffix). The rows feed the same combination engine, so the comparison runs end-to-end with no new pathfinder. A dataset without a density capture is <b>excluded</b> from the horizontal rows instead of vetoing them: those rows carry a <code>partial_datasets</code> marker, the run notes log a <code>[density partial]</code> line, and the report labels them. The report's density section embeds the curves as an interactive Plotly chart — grey dashed vertical guides mark the vertical rows' thresholds, grey dotted horizontal guides the horizontal rows' density levels; hover either guide for its row id. Outputs: <code>comparison_results/density_curves.csv</code>, <code>density_windows.csv</code>, and <code>density_alignment_best_matches.csv</code>; the run guide (<code>_UserGuide_please_read_me</code>) mirrors the auto warnings.</p>
+<p>Auto mode resolves in one of three ways, and never quietly: <b>installed</b> (every dataset measured — vertical spine plus the density-matched rows), <b>verticals_only</b> (a dataset could not be measured, so the horizontal rows are exported for reference but not run; the aligned-rows card names those advisory ids), or <b>degraded</b> (no schedule could be measured, so the requested thresholds run as-is and the density section is bannered red). The outcome and its per-dataset reasons are written to <code>user_warning_notes.txt</code> and to <code>run_manifest.json → auto_mode_status</code>, and a failed neuron cache marker no longer costs the measurement behind it — it costs a later re-fetch of those neurons only.</p>
+<p>Density curves are not exclusive to auto mode: <b>every pathfinding comparison</b> exports <code>density_curves.csv</code> and <code>density_windows.csv</code> for every queried dataset, spanning its own window from the minimal available threshold to the measured ceiling, computed on the cone (the searched graph at the lowest executed threshold). The edge basis follows the Drop Untyped setting (<code>bodyId_edges_typed</code> when on, <code>bodyId_edges_all_but_debris</code> when off); segmentation debris is always excluded.</p>
+<h2>Release-aware type mapping</h2>
+<p>BANC v626 and v888 remain separate type/bodyId namespaces. Their curated columns provide direct evidence: <code>malecns_cell_type</code> for MCNS, <code>fafb_cell_type</code> for FAFB, <code>hemibrain_cell_type</code> for hemibrain, and <code>manc_cell_type</code> for MANC. MCNS <code>flywireType</code> maps to FAFB only; it is not a BANC bridge. The two BANC releases additionally use the metadata-backed <code>root_626</code> ↔ <code>root_888</code> relation as the narrow <code>banc_release_crosswalk</code> bridge.</p>
+<p><code>fafb_alignment_cell_type</code> is a second, weaker FAFB lane (96.5% vs 99.2% <code>fafb_match</code> agreement). It is fallback-only: it fills a mapping just where <code>fafb_cell_type</code> produced no winner — 18 types per release, all cross-name — and its mappings carry the tier <code>direct alignment label</code> and are disclosed in the <code>[BANC alignment fallback]</code> run-note block. A curated winner or curated conflict is never touched.</p>
+<p>The preview's summary strip reads in the round-17 taxonomy: <em>Mapped</em> is the total neurons the mapped types reach (<em>BodyId routed</em> + <em>Type pooled</em>), <em>BodyId routed</em> is the CLAIM set (adopted pairs only, pure basis — a bodyId-level flow routes the neuron into a mapped type), <em>Type pooled</em> is reached by type-pool membership only (the former Out-map), <em>Evidence reach (all flows)</em> adds the disclosure ends the decision declined, and the two SUSPECT columns itemize the declined material by class (routed = same-name-first rivals; pooled = declined fan-out branches / vote-conflict ends — hover either for the per-pair illustration). claim ≤ reach always; the validation report's headlines grade the claim tier and carry the disclosure as advisory material.</p>
+<p>For a shared type queried in <code>male-cns:v0.9</code>, the mapping report shows <code>v0.9 type → release_alias → v1.0</code> before any downstream cross-dataset linker. v0.9-only names use only their native <code>*Type</code> fallback and never borrow v1.0 body IDs.</p>
+<p>Derivation guards keep the bridges honest: a curated BANC label hop (<code>fafb_cell_type</code> et al.) ends the derivation once it lands in the target namespace <em>when the cell token names the target type exactly</em> — a rename-resolved token terminates at the raw-token name node and the chain continues through FAFB's own <code>additional_type(s)</code> edge (2026-09-27 token chaining: <code>fct 'SMP537' → aT → DN1pD</code>), so the rename is shown rather than hidden in one hop; when a curated chain bridges the same token to the same target as a one-linker annotation chain, the annotation chain is dropped as redundant (curated subsumption). A primary's annotation cell naming another primary of the same namespace is a cross-reference, not a rename, and is never hopped through; and a derivation whose target-side evidence pools zero rows on the reached type is dropped rather than rendered with a <code>0 of n</code> coverage.</p>
+<h2>Query-anchored merge granularity</h2>
+<p>Auto-mapping comparison runs build a per-run <b>merge policy</b> from your query chips, so the report is keyed by the chips' group labels instead of always folding names toward the male-cns namespace. The anchor is chosen from where your chips resolve: when all chips resolve into a common naming, the run anchors on the first chip's home dataset; chips that are the same native name in every selected dataset simply use that name (with the canonical fallback for everything else); mixed chips emit a <code>[type granularity]</code> note in <code>user_warning_notes.txt</code> and keep the minimal inseparable leaf rows, with a shared 1-to-N parent left as its own whole row. A clean reverse rename (e.g. FAFB <code>5th-LNv</code> renaming into MCNS <code>5thsLNv_LNd6</code>) never absorbs the split parent into a leaf row.</p>
+<p>For a conflicted type such as MCNS <code>5thsLNv_LNd6</code> (which bridges two FAFB types): querying it from MCNS merges <em>all</em> its branches — FAFB <code>5th-LNv</code> and <code>LNd_CRY+_ITP+</code> with the BANC names that follow each — into <b>one</b> row whose target cells color the dataset-specific names (split-branch members share one color across columns) and collapse beyond three names. Querying one of the FAFB leaves instead yields that leaf's own row (with its BANC counterpart), while the MCNS parent stays a separate whole row. A type claimed by two queried parents (a fan-in leaf) merges with <b>neither</b>: it stays its own row, it is pruned from both parents' displayed rows, and a <code>[merge fan-in]</code> note explains why — and when the shared branch belongs to a queried parent, the note explicitly states that the parent's row is <b>partial by design</b> (the co-queried branch is presented separately at its own minimal level). The same prune also applies <b>globally</b>: a split branch that the type-mapper crosswalk itself lists as a 1-to-N target of a <em>different</em> parent type in the home namespace (even one not queried in this run) is contested — it leaves the queried parent's row <b>and</b> the merge counts, and a <code>[merge fan-in] … global contest</code> note names the rival parent. The custom label mapper overrides any of this when you know better.</p>
+<p>Evidence surfaces for the split groups: the report's Type Mapping section leads with the role tables below and keeps the full canonical mapping grid as a collapsed appendix. The grid's <b>Source (priority)</b> column shows the one observation from the highest-priority dataset where the row resolves (male-cns → FAFB → other neuprint → BANC — a global dataset order, never the per-name merge anchor); a type that resolves in a single dataset keeps that dataset, and the remaining observations collapse into a tooltip. The source dataset's own target cell repeats its member name with a muted <code>●</code> mark. The section also carries a collapsed <b>Resolution topology</b> card (per-group tree with per-branch bridge pool sizes and vote provenance), the run folder gains <code>type_resolution_topology.json</code>, and <code>auto_type_mapping.csv</code> gains additive <code>anchor_group</code> / <code>auto_only</code> columns. Mappings resting on auto-transferred labels only carry a <code>⚠️ auto-only</code> badge on the auto-label <b>source dataset cell</b> of the grid (the BANC column in a BANC-anchored run) and are listed under a <code>[BANC auto labels]</code> note — they remain valid; the custom label mapper is the removal path.</p>
+<p><b>Same-name-first within a fan-out.</b> When a fan-out's candidate set contains the source type's own name (exactly — never as a prefix), the mapper selects that same-name candidate and demotes the other candidates to <b>suspects</b>. Rows carrying suspects show a <code>⚠️ suspects (N)</code> badge plus a collapsed <b>details</b> block listing each rival (own 1-to-1 pair · votes · reverse target · rival pair status), and the section opens with a <b>Same-name-first suspects</b> card counting the fan-outs by disposition. The full per-rival evidence — whether the rival's own name also pairs 1-to-1 in this direction (<code>own_1to1_pair</code> / <code>no_own_1to1_pair</code> — an observation, not a verdict) and whether its mapping points back at the source — with votes, populations and a ready-made custom label-mapper entry, is exported to <code>auto_type_mapping_suspects.csv</code>. Suspects are never merged automatically; if you believe a rival is a buried fact, add the mapping with the <b>custom label mapper</b>. A terminal BANC vote conflict only selects when every rival is a confirmed duplicate; <code>evidence_only</code> (N-to-1 convergence) fan-outs are left as-is.</p>
+<p><b>In the interactive panel and the viewer.</b> The Type Mapping panel marks a same-name-first selection with a <code>⚠ suspects (N)</code> badge in the row's own <b>Suspects</b> column — on the pair-card mapped pairs table, the forward/backward Type coverage tables, and the per-type breakdown. <b>Hovering the badge</b> explains the flag and lists the rivals (own 1-to-1 pair, votes, reverse target, rival pair status); the collapsed <b>Suspects</b> expander below each table carries the same facts, so the hover is additive and never the only route to the evidence (one row per rival: own 1-to-1 pair, votes, reverse target, rival pair status). A pair kept unmapped for the same reason says so in the Orphan list instead of looking unmapped for no reason. The "See available neurons" viewer with cross-dataset type mapping enabled shows the same three-way distinction in its annotations — curated relation, same-name-first selection, or the bare-name caveat — with the rivals behind a collapsed expander. Both surfaces display the mapper's facts; neither gates or merges anything. In the viewer's type list, the header checkbox is a tri-state <b>select-all</b>: empty selects every listed subtype, a partial selection also resolves to select-all (a partial page cannot know the unshown rows), and a checked state deselects the rows matching the current query. The full-table header checkbox behaves the same way over the whole result table.</p>
+<p><b>Multi-value type cells.</b> Some releases annotate a neuron with several candidate names in ONE <code>type</code> cell (e.g. <code>DNp51,DNpe019</code>). The cell stays a single atomic type name — no mapping changes — but rows carrying one are marked <code>🧩 multi</code>, the run notes it as a data-quality item, and the conflicts CSV carries <code>multivalue_source</code>/<code>source_parts</code>.</p>
+<p>The section's tables are organized by <b>query role</b>: <b>Queried Sources</b> (one row per queried source type, resolved per dataset with status colors), <b>Queried Targets</b> (same for target types), and <b>Path Intermediates</b> (distinct types that appear inside multi-hop paths, ranked by traversal count, showing the <b>resolved name in each dataset</b> — muted when the type resolves there but was not traversed in this run's paths — plus their query roles). A <b>color legend</b> between the table title and its intro line shows the six resolution colors (green identity/mapped/ bridged, blue taxonomy, purple valid split, amber fallback/evidence, red conflict, grey unmapped) plus the muted and — marks, rendered from the same palette as the cells. The full canonical mapping grid remains as a collapsed appendix. With <code>separate_hemispheres</code> enabled the run header carries a <b>Hemisphere-aware run</b> badge explaining the _L/_R/_U type suffixes.</p>
+<p>Report tables: every data table renders in a ~20-row scrollable viewport with sticky headers (very large presence matrices are capped at 1,000 rendered rows with a note — the full set is always in the CSV exports). Similarity-trend plots split the comparison axis into two columns — per-threshold (left) and per-density (right, levels descending so thresholds increase left-to-right) — with one metric row each (Jaccard, Edge Rank, Cosine, Spearman). A metric row with no plottable value in any query renders an explanatory note instead of bare axes — for Spearman the note names the rule that applied: the query-keyed grid uses the ≥10-shared-edge gate, while the Standard-mode panel stays ungated (≥3-shared floor) so tiny samples remain visible for manual judgement. Neuron-count charts and tables show only the types present in their own role (source chart = source-present types only, target chart = target-present only).</p>
+<h2>Pathfinding threshold &amp; bottleneck provenance</h2>
+<p>Every pathfinding row records both the threshold the user requested and the threshold that actually describes the materialized output. These are not interchangeable:</p>
+<table>
+  <tr><th>Value</th><th>Meaning</th></tr>
+  <tr><td><code>requested_threshold</code></td><td>The entered Min Synapse Count before any budget effect.</td></tr>
+  <tr><td><code>applied_threshold</code></td><td>The canonical equivalent Min Synapse Count: for a complete run it is the requested value; after a StrongestFirst budget bite it is <code>w2 + 1</code> (<code>tau_canonical</code>), the minimal threshold that reproduces the materialized path set.</td></tr>
+  <tr><td><code>applied_threshold_source</code></td><td><code>requested</code>, <code>strongest_first_budget</code>, <code>edge_budget</code>, or <code>strongest_first_budget+edge_budget</code>.</td></tr>
+  <tr><td><code>tau</code> / <code>strongest_first_tau</code></td><td>The StrongestFirst landing/collapse bound: the weakest retained path bottleneck at the path budget boundary. A complete run reports its natural weakest emitted-path bottleneck.</td></tr>
+  <tr><td><code>strongest_first_budget</code></td><td>The effective path-output budget (0/empty uses the 1,000,000 auto default); <code>strongest_first_budget_bitten</code> says whether it was reached.</td></tr>
+  <tr><td><code>w0</code> / <code>edge_weight_floor</code></td><td>The lossy Edge Budget floor applied to the graph in <code>all</code> mode. It is a threshold raise before path enumeration.</td></tr>
+  <tr><td><code>w1</code> / <code>edge_budget_landing</code></td><td>The strongest edge-weight tier whose admission would exceed the Edge Budget; the floor lands just above it.</td></tr>
+  <tr><td><code>w2</code> / <code>strongest_dropped_bottleneck</code></td><td>The strongest path bottleneck excluded by the StrongestFirst budget. The gap <code>[w2 + 1, tau]</code> is equivalent, so <code>w2 + 1</code> is canonical.</td></tr>
+  <tr><td><code>W*</code> / <code>strongest_retained_bottleneck</code></td><td>The widest-path ceiling after lossless pruning; lossless pruning does not change it.</td></tr>
+  <tr><td><code>paths_complete</code></td><td>Whether all intact paths within the search/depth bound were emitted; false means a budget affected the materialized set.</td></tr>
+</table>
 
-  <h2>Parameters</h2>
-  <table>
-    <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Path Enumeration</td><td>all</td><td><code>all</code>: every path within the layer limit (FindAllPath). <code>shortest</code>: only the per-(source bodyId, target bodyId) minimum-hop paths (FindShortestPath), using target-rooted incoming discovery. Switching to <code>shortest</code> resets <b>Max Intermediate Layers to 8</b>, forces <b>Edge Budget to 0</b> (and disables it) with a notice; switching back to <code>all</code> restores the defaults (2 / 1,000,000) — user-entered values are not kept.</td></tr>
-    <tr><td>Source / Target Coverage (shortest)</td><td>Any / Full</td><td>Shortest mode only (per delegate, <code>shortest_source_coverage</code> / <code>shortest_target_coverage</code>): coverage early-stop measured per queried TYPE at every backward discovery layer — Any = >=1 enrolled bodyId per type, a % = each type individually reaches that share, Full = all. Deepening stops once both sides are satisfied; under a target requirement a covered target closes its frontier immediately (early-covered targets keep the pairs found up to their own closure layer — exact hops). The stop is disclosed per delegate (<code>[shortest coverage stop]</code> note + diagnostics + the pair report's per-delegate Coverage stop column). Ignored (sent <code>None</code>) in <code>all</code> mode</td></tr>
-    <tr><td>Max Intermediate Layers</td><td>2</td><td>Path depth for path mode. In shortest mode, 0 = direct connections only; a positive value caps paths at layers + 1 hops. A capped result is shortest only within the explored graph.</td></tr>
-    <tr><td>Fast Mode (corridor lane)</td><td>auto</td><td>The second of the two analysis modes, per dataset: <b>Complete mode</b> (the run) finds all intact paths &ge; the applied threshold; <b>Fast mode</b> is the route-scoped deep pass: after each per-dataset path run at the sweep's <strong>lowest threshold</strong> (corridors at the lowest tier are supersets for higher tiers), a separate lane re-enumerates at the ASKED threshold restricted to validated top-M* type corridors, writing <code>route_scope_paths/</code> (both ratio flavors — plain + adjusted, like the Refill tab) beside that run folder. The comparison report gains a presence-driven Corridor Lane section (per-dataset plan summary, canonical-type corridor comparison, gap partition vs each run's own paths) when any compared run has lane artifacts; absence changes nothing. <code>auto</code> = fires for datasets whose Max Intermediate Layers &ge; 4. Values: <code>complete</code> / <code>auto</code> / <code>both</code> (legacy <code>off</code>/<code>on</code> normalized). Fast also runs standalone on any existing run folder: <code>python scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>.</td><td><code>complete</code> to skip</td></tr>
+<p>The same block is exported in each materialized data folder under <code>dataset_data/.../</code> — a genuine requested run keeps the bare <code>minsyn_{requested}</code>, the collapse floor others alias to is <code>minsyn_{applied}_applied_floor</code>, and an aliased requested level is a marker folder <code>minsyn_{requested}_skipped/</code> (README only, no data; a requested level coinciding with its own floor is skipped silently). Each folder carries <code>parameters.txt</code>, <code>all_attributes.json</code>, and <code>data_details/parameters.csv</code>; each dataset also writes <code>APPLIED_THRESHOLDS.md</code>. The comparison root also writes <code>effective_thresholds.json</code> for the UI notice and one row per dataset/threshold in <code>comparison_results/pathfinding_provenance.csv</code>. Combination mode additionally writes <code>comparison_results/threshold_combinations.csv</code>, one row per <code>query_id</code> and dataset, so the requested threshold map and the dataset-specific applied threshold are never confused.</p>
+<h2>Similarity score formulas</h2>
+<p>The cross-dataset comparison writes one row per dataset pair and per threshold into <code>similarity_matrices/similarity_threshold_{N}.csv</code> in Standard mode, or <code>similarity_matrices/similarity_query_{query_id}.csv</code> (where the filename uses a filesystem-safe query-ID slug) and <code>similarity_by_query.csv</code> in Custom combination mode. The manifest and table columns retain the original query ID. Let E1, E2 be the thresholded edge sets (edges with <code>weight ≥ N</code>) and W1, W2 the corresponding edge-weight vectors over the union of edges (missing edges = 0).</p>
+<table>
+  <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
+  <tr><td><code>jaccard_similarity</code></td><td>|E1 ∩ E2| / |E1 ∪ E2|</td><td>0–1</td></tr>
+  <tr><td><code>ruzicka_similarity</code></td><td>Σ min(W1, W2) / Σ max(W1, W2) (weighted Jaccard)</td><td>0–1</td></tr>
+  <tr><td><code>pearson_correlation</code></td><td>Pearson correlation of matched edge weights</td><td>−1 to 1</td></tr>
+  <tr><td><code>cosine_similarity</code></td><td>(W1·W2) / (‖W1‖·‖W2‖) over the union</td><td>0–1</td></tr>
+  <tr><td><code>edge_rank_correlation</code></td><td>Spearman ρ of edge-weight ranks over the union (missing = 0)</td><td>−1 to 1</td></tr>
+  <tr><td><code>spearman_rank_correlation</code></td><td>Spearman ρ of the compared values</td><td>−1 to 1</td></tr>
+  <tr><td><code>path_rank_correlation</code></td><td>Spearman ρ of path ranks (historically probability ranks — probability SUSPENDED 2026-10-06)</td><td>−1 to 1</td></tr>
+  <tr><td><code>rv_coefficient</code></td><td>⟨E1, E2⟩_F² / (‖E1‖_F²·‖E2‖_F²) on normalized matrices</td><td>0–1</td></tr>
+</table>
 
-    <tr><td>Top Edges in Analysis Reports</td><td>500</td><td>Limits top-edge comparison/overlap results, edge/path presence-matrix rows, and path-presence data used by comparison summary plots; it does not trim pathfinding or set the per-visualization drawn-edge cap</td></tr>
-    <tr><td>Edge Budget</td><td>1,000,000</td><td>Fix D (budget-fit search): after the lossless prunes, discovery cones exceeding this many bodyId edges are floored at the weakest weight tier whose lossless-closed cone still fits the cap — exactly equivalent to raising the threshold; the applied floor is reported as <code>edge_weight_floor</code> with the residual slack and probe trace. 0 = off; shortest mode never floors</td></tr>
-    <tr><td>Visualization Edge Limit</td><td>500</td><td>Caps edges drawn in each network/Sankey/heatmap visualization; it does not alter fetched connections or pathfinding</td></tr>
-    <tr><td>Max Paths (BodyId)</td><td>0 = auto (1M)</td><td>StrongestFirst path budget: when the search exceeds it, ALL paths above the achieved strength cutoff (tau) are kept and tau is reported. StrongestFirst is the built-in 'all'-mode algorithm (the selector was removed); see the <a href="pathfinding_algorithms.html">pathfinding algorithms guide</a>.</td></tr>
-    <tr><td>Threshold mode: Auto</td><td>default</td><td>Requires at least two selected datasets. Threshold chips are optional: an empty box uses the bootstrap floor (Min Synapse Count 3 — or the ratio tier 0.001 under the Connection-ratio basis), and entered chips raise the floor to the lowest chip. One bootstrap pathfinding run per dataset (floor = Min Synapse Count 3) measures each dataset's own window <code>[w_start, w_star_measured]</code> from its <b>searched graph</b> (not the whole dataset); the vertical (same-threshold) and horizontal (same-density) integer rows are then emitted and run through the combination engine. <b>Auto covers both comparisons: the per-threshold analysis (vertical rows) and the density-aligned analysis (horizontal rows).</b> <b>Density alignment is computed on the query's bodyId searched graph; the compared matrices are type-level projections of the same search. A threshold here is a per-connection synapse count (Min Synapse Count).</b> The run guide mirrors every <code>[auto threshold]</code> / <code>[density]</code> warning.</td></tr>
-    <tr><td>Threshold mode: Standard</td><td>off</td><td>Each entered chip is one query and the same requested N is applied to every selected dataset.</td></tr>
-    <tr><td>Threshold mode: Custom combination</td><td>off</td><td>Requires at least two selected datasets. Core Parameters shows a table with datasets as columns and query rows. Every row is one complete comparison identity, such as BANC=3 + FAFB=7; it is not an independent threshold list per dataset. The sorted union is used only to deduplicate raw jobs.</td></tr>
-    <tr><td>Replay Paths</td><td>on</td><td>Path mode 'all': enumerate once at the lowest threshold and materialize higher thresholds from the bottleneck-annotated path set (identical outputs, no re-enumeration). With a tau collapse, folders exist only for real thresholds — the tau folder is materialized fresh (tau denominators) and collapsed thresholds alias it. Shortest mode is never replayed. Works under the Connection-ratio basis too — replay slices materialize float tiers (<code>minratio_</code> delegate folders) from the one lowest-tier enumeration</td></tr>
-    <tr><td>Auto-extend Collapsed Thresholds</td><td>off</td><td>F7: when a run's effective tau collapses asked thresholds, extend each dataset with k × τ_ref points (τ_ref = max per-dataset tau) while ≤ 2× the max asked threshold — the schedule is global, so the expanded points stay shared across datasets. Under the Connection-ratio basis the ladder multiplies the float tier and respects the (0, 1] ceiling</td></tr>
-    <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving source/target names in every dataset: <code>auto</code> = all columns (bodyId → type → instance → flywireType/hemibrainType/…), or restrict to <code>type</code> / <code>instance</code> / <code>bodyId</code>. Use <code>auto</code> when names come from a cross-dataset type column (e.g. <code>MTe07</code> in <code>flywireType</code> on male-cns v1.0).</td></tr>
-    <tr><td>Auto Type Mapping</td><td>on</td><td>Query resolution across datasets: a taxonomy value (e.g. FAFB <code>cell_type=circadian_clock</code>) expands natively where present and bridges into the other datasets through member mapping (Route A). The curated crosswalk's reverse direction is licensed as a type-pool split — querying the merge target reaches the whole member pool (circadian_clock → 40 male-cns types / 219 neurons).</td><td>keep on for cross-dataset concept queries</td></tr>
-    <tr><td>Min Connection Ratio</td><td>hidden</td><td>F9: readout column only (weight / ALL-POST incoming weight — threshold-free); no longer filters</td></tr>
-    <tr><td>Min Traversal Prob.</td><td>hidden</td><td>F9: readout column only (ratio/0.3, capped at 1.0); no longer filters</td></tr>
-    <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
-  </table>
+<p>Rank-based metrics return <code>NaN</code> with fewer than 3 non-zero edges; cosine returns <code>NaN</code> when both vectors are zero. These values are preserved as <code>NaN</code> in the CSV and rendered as 0 in the heatmaps. Weights are normalized before the RV coefficient so the metric is invariant to different total synapse counts.</p>
+<h2>Advanced options</h2>
+<ul>
+<li><b>Custom Mapping</b>: the label-mapper panel button beside the dataset selectors — define inline groups or load them from history (see the <a href="label_mapper.html">label-mapper guide</a>). With a mapping applied, <b>group labels are compulsory</b>: the shared label is what aligns datasets, so a blank row blocks the run at validation.</li>
+<li><b>Skip BodyId Level</b>: type-level only (faster, recommended).</li>
+<li><b>Cache Only (Offline)</b>: no server contact; requires caches.</li>
+<li><b>Auto Type Mapping</b>: map equivalent type names across datasets.</li>
+<li><b>Parallel Processing / Max Workers</b>: tune speed vs API load.</li>
+<li><b>Drop Untyped Neurons</b>: removes edges touching untyped neurons (empty / Unknown / NaN / all-digit bodyId-fallback labels) using the SAME shared predicate as the pathfinding tabs (<code>utils.label_utils.is_untyped_type_label</code>), applied AFTER the standardized cross-dataset labels are resolved (post label-mapping). Comparison-level records land in <code>comparison_results/untyped_dropped_records.csv</code>, while each delegated per-dataset pathfinding folder intentionally keeps raw rows; counts are appended to <code>user_warning_notes.txt</code>.</li>
+<li><b>Hemisphere analysis</b> (its own card): <b>Hemisphere-aware</b> (off) separates L/R labels; <b>Symmetry Analysis</b> (on) is auto-enabled with Hemisphere-aware and forced off otherwise; <b>Keep Only Hemisphere-Conserved Edges</b> requires Hemisphere-aware. <b>Find Reciprocal Connections</b> is a separate Core Parameters checkbox for reciprocal graphs. The threshold chips control is labeled <b>Synapse Thresholds</b>; under the Connection-ratio basis a twin editor (<b>Connection-Ratio Thresholds</b>, float tiers in (0, 1], default 0.001 / 0.005) takes its place — the Threshold Basis selection swaps which editor shows.</li>
+</ul>
+<h2 id="type-mapping-panel">The Type Mapping panel</h2>
 
-  <h2>Threshold query table</h2>
-  <p>Use <b>Standard</b> for the historical same-threshold
-    comparison. Switch to <b>Custom combination</b> when one
-    cross-dataset query needs different thresholds. It requires at least two
-    selected datasets. The query editor uses one column per selected dataset and one row per query; every cell must be a
-    positive integer. Rows receive stable IDs such as <code>combo_001</code>.
-    <b>Add combination</b> appends a row, each row carries a remove button,
-    and <b>Suggest from alignment</b> prefills rows with density-equivalent
-    thresholds read from a completed run's
-    <code>comparison_results/suggested_threshold_combinations.json</code>.
-    This replaces the old Advanced Settings per-dataset schedule. A dataset's
-    cells across rows are not a custom schedule to compare independently: the
-    row is the unit of alignment, similarity, report, and provenance.</p>
-  <p>The raw jobs are deduplicated across rows. For example, rows
-    <code>(BANC=3, FAFB=7)</code> and <code>(BANC=5, FAFB=7)</code> reuse the
-    FAFB@7 raw run but remain two distinct comparison queries.</p>
-  <p><b>Auto</b> is the default mode (listed first; it covers both the per-threshold and the density-aligned comparison, so no threshold chips are needed). It runs one bootstrap
-    enumeration per dataset at the floor (Min Synapse Count 3), measures each
-    dataset's completeness window <code>[w_start, w_star_measured]</code>
-    from the query's own searched graph (the ceiling is the measured
-    <code>max(path bottlenecks)</code>, not the stored provenance value),
-    and then emits integer aligned rows: vertical rows share one threshold
-    across all datasets, horizontal rows share a normalized edge density
-    <code>E(t)/N</code> (N = typed searched nodes, fixed in t). Vertical
-    rows are named <code>threshold={N}</code> and horizontal rows
-    <code>aligned_density={level}</code> — these ids are the tab buttons,
-    the report card headers, and the keys inside
-    <code>threshold_combinations.csv</code> and the per-query export
-    filenames (e.g. <code>conserved_network_threshold_19_network.html</code>;
-    two density levels that round to the same name get a <code>_2</code>
-    suffix). The rows
-    feed the same combination engine, so the comparison runs end-to-end with
-    no new pathfinder. A dataset without a density capture is <b>excluded</b>
-    from the horizontal rows instead of vetoing them: those rows carry a
-    <code>partial_datasets</code> marker, the run notes log a
-    <code>[density partial]</code> line, and the report labels them.
-    The report's density section embeds the curves as an interactive Plotly
-    chart — grey dashed vertical guides mark the vertical rows' thresholds,
-    grey dotted horizontal guides the horizontal rows' density levels; hover
-    either guide for its row id. Outputs:
-    <code>comparison_results/density_curves.csv</code>,
-    <code>density_windows.csv</code>, and
-    <code>density_alignment_best_matches.csv</code>; the run guide
-    (<code>_UserGuide_please_read_me</code>) mirrors the auto warnings.</p>
-  <p>Auto mode resolves in one of three ways, and never quietly:
-    <b>installed</b> (every dataset measured — vertical spine plus the
-    density-matched rows), <b>verticals_only</b> (a dataset could not be
-    measured, so the horizontal rows are exported for reference but not run;
-    the aligned-rows card names those advisory ids), or <b>degraded</b> (no
-    schedule could be measured, so the requested thresholds run as-is and the
-    density section is bannered red). The outcome and its per-dataset reasons
-    are written to <code>user_warning_notes.txt</code> and to
-    <code>run_manifest.json → auto_mode_status</code>, and a failed neuron
-    cache marker no longer costs the measurement behind it — it costs a later
-    re-fetch of those neurons only.</p>
-  <p>Density curves are not exclusive to auto mode: <b>every pathfinding
-    comparison</b> exports <code>density_curves.csv</code> and
-    <code>density_windows.csv</code> for every queried dataset, spanning its
-    own window from the minimal available threshold to the measured ceiling,
-    computed on the cone (the searched graph at the lowest executed
-    threshold). The edge basis follows the Drop Untyped setting
-    (<code>bodyId_edges_typed</code> when on,
-    <code>bodyId_edges_all_but_debris</code> when off); segmentation debris
-    is always excluded.</p>
+<p>The <b>Type Mapping</b> button (enabled when &ge; 2 selected datasets have cached neuron indexes) previews the auto type mapping the run will use — informational only, please double check. The same validity-aware decision (shared resolver, <code>comparison/type_resolver.py</code>) backs the panel, the viewer's <i>See available neurons</i> mapping, homolog finding, and the connectivity-profile comparison. A <b>Route scope</b> selector above the preview picks the mapping's route universe (re-ratified 2026-10-01): <b>Curated</b> (default) is exactly the historical licensed routes, while <b>Full map</b> is a complete parallel mode — <b>all datasets are licensed as connectors</b> (the previously disabled BANC routes included: HEMI&harr;FAFB ends via BANC bridges, FAFB&harr;BANC via male-cns, &hellip;). In full mode the whole panel runs on that universe: flows, the claim/reach readout, the summary strip's labeled <code>Full-map ends</code> cell, the per-type breakdown's <code>Full-map reach</code> column (delta, <code>via &lt;mid&gt;</code> badges, &and; route-conflict markers), the bridge visualizations, and a per-pair <code>Export full-map routes (CSV)</code> — all matched to the same composed routes. The validation pipeline accepts the scope gated (<code>RunMappingValidation.py --route-scope full</code>); composed pairs are labeled <code>route_basis/via_mid</code> in its exports. Per-hop licensing rules are unchanged in both modes — full map widens the <i>route</i> universe, never the per-hop rule set.</p>
+<ul>
+<li><b>Unique rename</b> (e.g. MCNS <code>MeVPLo2</code> &harr; FAFB <code>MTe07</code>): one canonical target everywhere.</li>
+<li><b>Valid split</b> (e.g. MCNS <code>VS</code> &rarr; FAFB <code>VS1</code>…<code>VS8</code>): every licensed branch is listed; no arbitrary single target is chosen. For a queried split parent the panel additionally resolves the split <b>per neuron</b> (see <i>bodyId-level split resolution</i> below).</li>
+<li><b>Conflict</b> (e.g. BANC <code>CB1011</code>): fails closed — no automatic target, and the type is never merged by raw same-name in path/edge tables or comparison anchors.</li>
+<li>
+<p><b>Unmapped</b>: keeps its raw name as the counted long-tail fallback (surfaced in the saved metadata's <code>raw_fallback_used</code>).</p>
+</li>
+<li>
+<p><b>Search</b>: one query per chip (exact / starts with / contains / ends with / regex), with dataset-aware type suggestions. A chip that names a taxonomy value (e.g. FAFB <code>cell_type</code> <code>circadian_clock</code>) expands to that label's member types. The exported <code>Mapping graph (HTML)</code> and <code>Mapping sankey (HTML)</code> plot <b>types only</b> — the chip itself is search provenance, so it appears in the tables and CSVs, never as a node on the canvas. The per-pair <code>Network (type-level)</code> download follows the same rule, and still presents the dataset where the query resolved on the left.</p>
+</li>
+<li><b>Centre-source layout</b>: when one dataset is the origin and exactly two receive it, both exports place the origin in the <b>middle</b> column with one target on each flank (<code>target 1 | origin | target 2</code>), the denser flank on the left. The composed Sankey covers one or two target datasets; for a wider selection use a pair card's <code>Sankey (type-level)</code>. Sankey ribbons are labelled in <b>neurons</b> — the mapping views never say "synapses".</li>
+<li><b>Summary table</b> (per dataset): Matched types, Neurons (the issued side — every matched type is issued into the resolution, flowed or orphaned), <b>Mapped</b> — the total neurons the mapped types reach, split into <b>BodyId routed</b> (what the dataset RECEIVES: the branch-claimed bodyIds — union of the branches' resolved pools, each bodyId counted ONCE — the claim set per plan-same-name-fidelity-and-three-level-coverage.md; shown as <code>{N}({m} types)</code> from 2 distinct received types up; a dataset that only issues the query reads 0) and <b>Type pooled (in-map types)</b>, the received types' own neurons that the claim set does <i>not</i> reach (union of those types' populations minus the claim, so a type pooled on its full population contributes 0; on circadian_clock → male-cns this reads 219 − 204 = <b>15</b>, while the validate-expand-visualize run's <code>family</code> bin holds 11 rows because a morph-qualified candidate closes holes there and nothing does in the panel), plus Unmapped (orphans stay visible).</li>
+<li><b>Pair cards</b> (<code>src → tgt · N mapped pairs</code>): Type, Mapped to, Neurons (<code>source → foreign</code>), <b>Relationship</b> (the per-flow cardinality, matching the coverage tables and the CSV), <b>Suspects</b> (a <code>⚠ suspects (N)</code> badge on a row whose same-name-first selection demoted rival candidates — <b>hover the badge</b> for the explanation and one line per rival, or expand the collapsed <b>Suspects</b> block below the table, which carries the same facts as a table), Map used (the derivation linkers, e.g. <code>flywireType 'LMTe01' + additional_type(s) 'LMTe01'</code>), and <b>Pool coverage</b> — one basis-aware cell per side so the states can never be confused: a measured subset (<code>FB: 1,655 of 1,683 (98.3%)</code>), an unconstrained full population (<code>FB: all 1,683</code> — the chain names the type identity, nothing was filtered), an unmeasurable side (<code>FB: not measured</code> — the coverage index is unavailable), and a missing pool (<code>not pooled</code>). A measured zero renders explicitly as <code>0 of n (0.0%)</code>. Coverage is measured independently per endpoint; the mapper does not infer bodyId-to-bodyId pairings. When more than one supported bridge chain reaches the same endpoint pair, the card identifies the selected bridge and the all-valid union; the latter includes the unique bodyIds from supported alternatives. Raw linker values such as <code>auto:MeVPLo2</code> and their canonical matching tokens are retained in the extended export. The card's <b>Out-map (this type)</b> column is the endpoint type's own neurons this branch's pool does <i>not</i> reach — per branch, so split branches can each quote the same neuron; it reads <code>not adopted</code> on a disclosure row and <code>not pooled</code> where no pool resolved.</li>
+<li><b>Type coverage tables</b> (top-level expansion per pair, bidirectional): the FORWARD view lists each queried type with its neurons, mapped targets, <code>1-to-N</code>/<code>1-to-1</code>, a <b>Suspects</b> badge column, and per-side coverage; the BACKWARD view lists each receiving type with the sources that map onto it, read from the receiving type back to its sources — relationship cells follow the row subject's fan-out, so a row with several sources reads <code>1-to-N</code>, never <code>1-to-1</code>. Backward rows marked <code>dataset-wide incoming</code> list EVERY source type in the source dataset that maps onto the receiving type (the active query marked in <code>Mapped from</code>) — the context that explains why one queried type's few neurons fan out to a large target population (e.g. MCNS <code>SMP227</code>: 6 neurons &rarr; 94 FAFB neurons, whose receiving types collect from 4/4/6 incoming MCNS types). This context is explanatory evidence, not a canonical acceptance of every incoming source. Coverage columns carry short labels such as <code>MCNS &middot; selected</code>; hover a header for the full dataset key and the scope explanation — <code>selected</code> = the first supported bridge chain after deterministic evidence ordering (the primary chain behind edge weights and hovers, not a biological adjudication), <code>all valid</code> = the deduplicated union of bodyIds from every independently supported candidate bridge (completeness of supported evidence; branches are not mutually exclusive). In a dataset-wide row the source denominator is the union population of ALL incoming source types. Split branch rows are labeled as <code>branch evidence (non-exclusive)</code>; overlap counts explain when the same source bodyId supports multiple branches. Cells read <code>x of y (share)</code> with thousands separators; a side whose coverage index is unavailable renders <code>not measured</code> (never a fake zero), and a row without any pool renders <code>not pooled</code>. The state legend rides on the expansion title's hover. That title is data-driven — it reads <code>1-to-N fan-out</code> / <code>N-to-1 fan-in</code> / <code>all 1-to-1</code> off the forward rows and appends <code>· ⚠ N suspect pair(s)</code> when the pair carries suspects, so the heading always matches the tables. The per-rival suspect details render once, in a collapsed <b>Suspects</b> block below the tables.</li>
+<li><b>Same-name pairs</b>: a pair sharing its name derives through its metadata bridge when one exists (e.g. <code>flywireType 'DN1a'</code> — the male-cns crosswalk cell verifies it); the bare "same name — no metadata verification" warning appears only when no evidence connects the pair.</li>
+<li><b>Exports</b>: Sankey (type-level / linker), Network (type-level / linker paths), the <b>Mapping graph</b> (HTML, downloaded as <code>mapping_graph_*.html</code>), the cross-dataset <b>Mapping sankey</b> (HTML, <code>mapping_sankey_*.html</code>; one column per dataset with the origin centred, offered whenever the selection is one origin into at most two targets), and <b>Export mapping</b> (per pair and <b>all pairs (CSV)</b>; filenames <code>mapping_*.csv</code>). One fixed column set: <code>source_dataset, source_entry, matched_column, source_type, target_dataset, target_type, relationship, source_neurons, target_neurons, bridge, bridge_columns, mapping_origin</code>, numeric <code>source_pool/source_total/ target_pool/target_total</code>, the FULL per-type bodyId populations (<code>source_body_ids</code> / <code>target_body_ids</code> — every bodyId of the mapped type in its own dataset, one brace-wrapped comma-separated list quoted as one CSV field per cell so spreadsheet delimiters never split it; listed per type, never paired across datasets), plus the human-readable <code>pool_coverage</code> and <code>pool_coverage_basis</code> columns. The UI's extended export additionally carries the selected bridge, mapping status, selected rank, valid-chain count, raw/canonical selected linker values, unsupported attempts, selected/all-valid pool IDs and totals, overlap, and scope, plus <code>target_out_map</code> / <code>target_out_map_body_ids</code> — the endpoint type's own neurons this branch's pool does <i>not</i> reach (a set difference, so a full-population basis reads 0 and an unresolved pool stays an empty cell rather than a false 0; this is the panel-side overhang, at least as large as the validation run's <code>family</code> bin because no morphology closes a hole here). The full mapping is never silently dropped — a <code>+N more flows</code> notice points at the CSV when the drawn cap trims).</li>
+<li><b>BodyId-level granularity (row-based bridge evidence)</b>: the mapper's granularity mechanism is the bridges' own row-based evidence — each branch's <b>linker-refined bodyId pool</b> (the linker rows tie specific bodyIds) and per-bridge <b>label-vote provenance</b> (curated vs <code>auto:</code>, e.g. the BANC <code>aMe24</code> bridge: 1 auto vote vs <code>s-LNv_a</code>: 2). These pools and votes are what the split rows, coverage cells and exports carry — no connectivity similarity is involved anywhere in the mapper. When several types are queried, or a chip resolves to many types (a taxonomy label such as <code>circadian_clock</code>), a collapsed <b>Per-type breakdown</b> expansion shows one row per (matched type × target dataset) — the mapped counts are specific to the row's target dataset, never summed across datasets — with the originating query chip and the combined <code>{N}({m} types)</code> Mapped-neurons cell.</li>
+<li><b>Legends</b>: the artifact header carries one chip per entry in the <code>CODE: full name (count)</code> format — datasets (with node counts) and the bridge linker columns (color-coded: <code>flywireType</code> male-cns→FAFB crosswalk, <code>additional_type(s)</code> FAFB cells, curated BANC label columns, <code>Alternative Cell Type(s)</code> BANC cells, <code>banc_release_crosswalk</code>, and <code>hemibrainType</code>/<code>mancType</code> crosswalks). The linker network lays out ONE column per linker (e.g. <code>MCNS type → flywireType → additional_type(s) → FAFB type</code> = four columns). On the FAFB↔BANC pair (both directions), annotation routes through <code>Alternative Cell Type(s)</code> or <code>additional_type(s)</code> never extend past a same-name arrival — such transitive extensions are only offered when the pair is confirmed by a reverse-direction bridge, and then carry a <code>(reciprocal)</code> provenance in the exports.</li>
+</ul>
+<p>Full semantics: <code>docs/AUTO_TYPE_MAPPING.md</code>; implementation reference: <code>docs/technical/AUTO_TYPE_MAPPING_IMPLEMENTATION.md</code>.</p>
+<h2 id="type-mapping-validation">Validating a mapping — the TM VEV pipeline (CLI)</h2>
 
-  <h2>Release-aware type mapping</h2>
-  <p>BANC v626 and v888 remain separate type/bodyId namespaces. Their
-    curated columns provide direct evidence: <code>malecns_cell_type</code>
-    for MCNS, <code>fafb_cell_type</code> for FAFB,
-    <code>hemibrain_cell_type</code> for hemibrain, and
-    <code>manc_cell_type</code> for MANC. MCNS <code>flywireType</code> maps to
-    FAFB only; it is not a BANC bridge. The two BANC releases additionally
-    use the metadata-backed <code>root_626</code> ↔ <code>root_888</code>
-    relation as the narrow <code>banc_release_crosswalk</code> bridge.</p>
-  <p><code>fafb_alignment_cell_type</code> is a second, weaker FAFB lane
-    (96.5% vs 99.2% <code>fafb_match</code> agreement). It is
-    fallback-only: it fills a mapping just where <code>fafb_cell_type</code>
-    produced no winner — 18 types per release, all cross-name — and its
-    mappings carry the tier <code>direct alignment label</code> and are
-    disclosed in the <code>[BANC alignment fallback]</code> run-note block.
-    A curated winner or curated conflict is never touched.</p>
-  <p>The preview's summary strip reads in the round-17 taxonomy:
-    <em>Mapped</em> is the total neurons the mapped types reach
-    (<em>BodyId routed</em> + <em>Type pooled</em>), <em>BodyId
-    routed</em> is the CLAIM set (adopted pairs only, pure basis — a
-    bodyId-level flow routes the neuron into a mapped type),
-    <em>Type pooled</em> is reached by type-pool membership only (the
-    former Out-map), <em>Evidence reach (all flows)</em> adds the
-    disclosure ends the decision declined, and the two SUSPECT columns
-    itemize the declined material by class (routed = same-name-first
-    rivals; pooled = declined fan-out branches / vote-conflict ends —
-    hover either for the per-pair illustration). claim ≤ reach always; the validation report's headlines
-    grade the claim tier and carry the disclosure as advisory
-    material.</p>
-  <p>For a shared type queried in <code>male-cns:v0.9</code>, the mapping
-    report shows <code>v0.9 type → release_alias → v1.0</code> before any
-    downstream cross-dataset linker. v0.9-only names use only their native
-    <code>*Type</code> fallback and never borrow v1.0 body IDs.</p>
-  <p>Derivation guards keep the bridges honest: a curated BANC label hop
-    (<code>fafb_cell_type</code> et al.) ends the derivation once it lands
-    in the target namespace <em>when the cell token names the target type
-    exactly</em> — a rename-resolved token terminates at the raw-token name
-    node and the chain continues through FAFB's own
-    <code>additional_type(s)</code> edge (2026-09-27 token chaining:
-    <code>fct 'SMP537' → aT → DN1pD</code>), so the rename is shown rather
-    than hidden in one hop; when a curated chain bridges the same token to
-    the same target as a one-linker annotation chain, the annotation chain
-    is dropped as redundant (curated subsumption). A primary's annotation
-    cell naming another primary of the
-    same namespace is a cross-reference, not a rename, and is never hopped
-    through; and a derivation whose target-side evidence pools zero rows on
-    the reached type is dropped rather than rendered with a
-    <code>0 of n</code> coverage.</p>
+<p>The panel preview is <b>informational</b>. To grade a mapping at bodyId level — and estimate how much of the gap its evidence can fill — run the validation pipeline (type-mapping validate-expand-visualize, TM VEV) from the repo root:</p>
+<pre><code>python3 scripts/RunMappingValidation.py     --source flywire_FAFB_v783 --target male-cns:v1.0     --types circadian_clock --mode family     --scene-selfcheck --output-dir /path/to/data</code></pre>
 
-  <h2>Query-anchored merge granularity</h2>
-  <p>Auto-mapping comparison runs build a per-run <b>merge policy</b> from
-    your query chips, so the report is keyed by the chips' group labels
-    instead of always folding names toward the male-cns namespace. The
-    anchor is chosen from where your chips resolve: when all chips resolve
-    into a common naming, the run anchors on the first chip's home
-    dataset; chips that are the same native name in every selected dataset
-    simply use that name (with the canonical fallback for everything
-    else); mixed chips emit a
-    <code>[type granularity]</code> note in <code>user_warning_notes.txt</code>
-    and keep the minimal inseparable leaf rows, with a shared 1-to-N parent
-    left as its own whole row. A clean reverse rename (e.g. FAFB
-    <code>5th-LNv</code> renaming into MCNS <code>5thsLNv_LNd6</code>)
-    never absorbs the split parent into a leaf row.</p>
-  <p>For a conflicted type such as MCNS <code>5thsLNv_LNd6</code> (which
-    bridges two FAFB types): querying it from MCNS merges <em>all</em> its
-    branches — FAFB <code>5th-LNv</code> and <code>LNd_CRY+_ITP+</code> with
-    the BANC names that follow each — into <b>one</b> row whose target cells
-    color the dataset-specific names (split-branch members share one color
-    across columns) and collapse beyond three names. Querying one of the
-    FAFB leaves instead yields that leaf's own row (with its BANC
-    counterpart), while the MCNS parent stays a separate whole row. A type
-    claimed by two queried parents (a fan-in leaf) merges with <b>neither</b>:
-    it stays its own row, it is pruned from both parents' displayed rows, and
-    a <code>[merge fan-in]</code> note explains why — and when the shared
-    branch belongs to a queried parent, the note explicitly states that
-    the parent's row is <b>partial by design</b> (the co-queried branch is
-    presented separately at its own minimal level). The same prune also
-    applies <b>globally</b>: a split branch that the type-mapper crosswalk
-    itself lists as a 1-to-N target of a <em>different</em> parent type in
-    the home namespace (even one not queried in this run) is contested —
-    it leaves the queried parent's row <b>and</b> the merge counts, and a
-    <code>[merge fan-in] … global contest</code> note names the rival
-    parent. The custom label mapper
-    overrides any of this when you know better.</p>
-  <p>Evidence surfaces for the split groups: the report's Type Mapping
-    section leads with the role tables below and keeps the full canonical
-    mapping grid as a collapsed appendix. The grid's <b>Source
-    (priority)</b> column shows the one observation from the
-    highest-priority dataset where the row resolves (male-cns → FAFB →
-    other neuprint → BANC — a global dataset order, never the per-name
-    merge anchor); a type that resolves in a single dataset keeps that
-    dataset, and the remaining observations collapse into a tooltip. The
-    source dataset's own target cell repeats its member name with a muted
-    <code>●</code> mark. The section also carries a collapsed <b>Resolution
-    topology</b> card
-    (per-group tree with per-branch bridge pool sizes and vote provenance),
-    the run folder gains <code>type_resolution_topology.json</code>, and
-    <code>auto_type_mapping.csv</code> gains additive
-    <code>anchor_group</code> / <code>auto_only</code> columns. Mappings
-    resting on auto-transferred labels only carry a
-    <code>⚠️ auto-only</code> badge on the auto-label <b>source dataset
-    cell</b> of the grid (the BANC column in a BANC-anchored run)
-    and are listed under a <code>[BANC auto labels]</code> note — they remain
-    valid; the custom label mapper is the removal path.</p>
-  <p><b>Same-name-first within a fan-out.</b> When a fan-out's candidate
-    set contains the source type's own name (exactly — never as a prefix),
-    the mapper selects that same-name candidate and demotes the other
-    candidates to <b>suspects</b>. Rows carrying suspects show a
-    <code>⚠️ suspects (N)</code> badge plus a collapsed <b>details</b>
-    block listing each rival (own 1-to-1 pair · votes · reverse target ·
-    rival pair status), and the section opens with a
-    <b>Same-name-first suspects</b> card counting the fan-outs by
-    disposition. The full per-rival evidence — whether the rival's own name
-    also pairs 1-to-1 in this direction (<code>own_1to1_pair</code> /
-    <code>no_own_1to1_pair</code> — an observation, not a verdict) and
-    whether its mapping points back at the source — with votes, populations
-    and a ready-made custom label-mapper entry, is exported to
-    <code>auto_type_mapping_suspects.csv</code>. Suspects are never merged
-    automatically; if you believe a rival is a buried fact, add the mapping
-    with the <b>custom label mapper</b>. A terminal BANC vote conflict only
-    selects when every rival is a confirmed duplicate; <code>evidence_only</code>
-    (N-to-1 convergence) fan-outs are left as-is.</p>
-  <p><b>In the interactive panel and the viewer.</b> The Type Mapping panel
-    marks a same-name-first selection with a <code>⚠ suspects (N)</code>
-    badge in the row's own <b>Suspects</b> column — on the pair-card mapped
-    pairs table, the forward/backward Type coverage tables, and the
-    per-type breakdown. <b>Hovering the badge</b> explains the flag and lists
-    the rivals (own 1-to-1 pair, votes, reverse target, rival pair status);
-    the collapsed <b>Suspects</b> expander below each table carries the same
-    facts, so the hover is additive and never the only route to the evidence
-    (one row per rival: own
-    1-to-1 pair, votes, reverse target, rival pair status). A pair kept
-    unmapped for the same reason says so in the Orphan list instead of
-    looking unmapped for no reason. The "See available neurons" viewer with
-    cross-dataset type mapping enabled shows the same three-way distinction
-    in its annotations — curated relation, same-name-first selection, or the
-    bare-name caveat — with the rivals behind a collapsed expander. Both
-    surfaces display the mapper's facts; neither gates or merges anything.
-    In the viewer's type list, the header checkbox is a tri-state
-    <b>select-all</b>: empty selects every listed subtype, a partial
-    selection also resolves to select-all (a partial page cannot know the
-    unshown rows), and a checked state deselects the rows matching the
-    current query. The full-table header checkbox behaves the same way
-    over the whole result table.</p>
-  <p><b>Multi-value type cells.</b> Some releases annotate a neuron with
-    several candidate names in ONE <code>type</code> cell (e.g.
-    <code>DNp51,DNpe019</code>). The cell stays a single atomic type name —
-    no mapping changes — but rows carrying one are marked
-    <code>🧩 multi</code>, the run notes it as a data-quality item, and the
-    conflicts CSV carries <code>multivalue_source</code>/<code>source_parts</code>.</p>
-  <p>The section's tables are organized by <b>query role</b>: <b>Queried
-    Sources</b> (one row per queried source type, resolved per dataset with
-    status colors), <b>Queried Targets</b> (same for target types), and
-    <b>Path Intermediates</b> (distinct types that appear inside multi-hop
-    paths, ranked by traversal count, showing the <b>resolved name in each
-    dataset</b> — muted when the type resolves there but was not traversed
-    in this run's paths — plus their
-    query roles). A <b>color legend</b> between the table title and its
-    intro line shows the six resolution colors (green identity/mapped/
-    bridged, blue taxonomy, purple valid split, amber fallback/evidence,
-    red conflict, grey unmapped) plus the muted and — marks, rendered from
-    the same palette as the cells. The full canonical mapping grid remains
-    as a collapsed
-    appendix. With <code>separate_hemispheres</code> enabled the run header
-    carries a <b>Hemisphere-aware run</b> badge explaining the _L/_R/_U type
-    suffixes.</p>
-  <p>Report tables: every data table renders in a ~20-row scrollable
-    viewport with sticky headers (very large presence matrices are capped
-    at 1,000 rendered rows with a note — the full set is always in the CSV
-    exports). Similarity-trend plots split the comparison axis into two
-    columns — per-threshold (left) and per-density (right, levels
-    descending so thresholds increase left-to-right) — with one metric row
-    each (Jaccard, Edge Rank, Cosine, Spearman). A metric row with no
-    plottable value in any query renders an explanatory note instead of
-    bare axes — for Spearman the note names the rule that applied: the
-    query-keyed grid uses the ≥10-shared-edge gate, while the
-    Standard-mode panel stays ungated (≥3-shared floor) so tiny samples
-    remain visible for manual judgement. Neuron-count charts and
-    tables show only the types present in their own role (source chart =
-    source-present types only, target chart = target-present only).</p>
-
-  <h2>Pathfinding threshold &amp; bottleneck provenance</h2>
-  <p>Every pathfinding row records both the threshold the user requested and
-    the threshold that actually describes the materialized output. These are
-    not interchangeable:</p>
-  <table>
-    <tr><th>Value</th><th>Meaning</th></tr>
-    <tr><td><code>requested_threshold</code></td><td>The entered Min Synapse Count before any budget effect.</td></tr>
-    <tr><td><code>applied_threshold</code></td><td>The canonical equivalent Min Synapse Count: for a complete run it is the requested value; after a StrongestFirst budget bite it is <code>w2 + 1</code> (<code>tau_canonical</code>), the minimal threshold that reproduces the materialized path set.</td></tr>
-    <tr><td><code>applied_threshold_source</code></td><td><code>requested</code>, <code>strongest_first_budget</code>, <code>edge_budget</code>, or <code>strongest_first_budget+edge_budget</code>.</td></tr>
-    <tr><td><code>tau</code> / <code>strongest_first_tau</code></td><td>The StrongestFirst landing/collapse bound: the weakest retained path bottleneck at the path budget boundary. A complete run reports its natural weakest emitted-path bottleneck.</td></tr>
-    <tr><td><code>strongest_first_budget</code></td><td>The effective path-output budget (0/empty uses the 1,000,000 auto default); <code>strongest_first_budget_bitten</code> says whether it was reached.</td></tr>
-    <tr><td><code>w0</code> / <code>edge_weight_floor</code></td><td>The lossy Edge Budget floor applied to the graph in <code>all</code> mode. It is a threshold raise before path enumeration.</td></tr>
-    <tr><td><code>w1</code> / <code>edge_budget_landing</code></td><td>The strongest edge-weight tier whose admission would exceed the Edge Budget; the floor lands just above it.</td></tr>
-    <tr><td><code>w2</code> / <code>strongest_dropped_bottleneck</code></td><td>The strongest path bottleneck excluded by the StrongestFirst budget. The gap <code>[w2 + 1, tau]</code> is equivalent, so <code>w2 + 1</code> is canonical.</td></tr>
-    <tr><td><code>W*</code> / <code>strongest_retained_bottleneck</code></td><td>The widest-path ceiling after lossless pruning; lossless pruning does not change it.</td></tr>
-    <tr><td><code>paths_complete</code></td><td>Whether all intact paths within the search/depth bound were emitted; false means a budget affected the materialized set.</td></tr>
-  </table>
-  <p>The same block is exported in each materialized data folder under
-    <code>dataset_data/.../</code> — a genuine requested run keeps the bare
-    <code>minsyn_{requested}</code>, the collapse floor others alias to is
-    <code>minsyn_{applied}_applied_floor</code>, and an aliased requested level
-    is a marker folder <code>minsyn_{requested}_skipped/</code> (README only, no
-    data; a requested level coinciding with its own floor is skipped silently).
-    Each folder carries <code>parameters.txt</code>, <code>all_attributes.json</code>, and
-    <code>data_details/parameters.csv</code>; each dataset also writes
-    <code>APPLIED_THRESHOLDS.md</code>. The comparison root also writes
-    <code>effective_thresholds.json</code> for the UI notice and one row per
-    dataset/threshold in
-    <code>comparison_results/pathfinding_provenance.csv</code>. Combination
-    mode additionally writes
-    <code>comparison_results/threshold_combinations.csv</code>, one row per
-    <code>query_id</code> and dataset, so the requested threshold map and the
-    dataset-specific applied threshold are never confused.</p>
-
-  <h2>Similarity score formulas</h2>
-  <p>The cross-dataset comparison writes one row per dataset pair and
-    per threshold into
-    <code>similarity_matrices/similarity_threshold_{N}.csv</code> in Standard
-    mode, or <code>similarity_matrices/similarity_query_{query_id}.csv</code>
-    (where the filename uses a filesystem-safe query-ID slug) and
-    <code>similarity_by_query.csv</code> in Custom combination mode. The manifest and
-    table columns retain the original query ID. Let E1, E2
-    be the thresholded edge sets (edges with <code>weight ≥ N</code>) and W1,
-    W2 the corresponding edge-weight vectors over the union of edges (missing
-    edges = 0).</p>
-  <table>
-    <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
-    <tr><td><code>jaccard_similarity</code></td><td>|E1 ∩ E2| / |E1 ∪ E2|</td><td>0–1</td></tr>
-    <tr><td><code>ruzicka_similarity</code></td><td>Σ min(W1, W2) / Σ max(W1, W2) (weighted Jaccard)</td><td>0–1</td></tr>
-    <tr><td><code>pearson_correlation</code></td><td>Pearson correlation of matched edge weights</td><td>−1 to 1</td></tr>
-    <tr><td><code>cosine_similarity</code></td><td>(W1·W2) / (‖W1‖·‖W2‖) over the union</td><td>0–1</td></tr>
-    <tr><td><code>edge_rank_correlation</code></td><td>Spearman ρ of edge-weight ranks over the union (missing = 0)</td><td>−1 to 1</td></tr>
-    <tr><td><code>spearman_rank_correlation</code></td><td>Spearman ρ of the compared values</td><td>−1 to 1</td></tr>
-    <tr><td><code>path_rank_correlation</code></td><td>Spearman ρ of path ranks (historically probability ranks — probability SUSPENDED 2026-10-06)</td><td>−1 to 1</td></tr>
-    <tr><td><code>rv_coefficient</code></td><td>⟨E1, E2⟩_F² / (‖E1‖_F²·‖E2‖_F²) on normalized matrices</td><td>0–1</td></tr>
-  </table>
-  <p>Rank-based metrics return <code>NaN</code> with fewer than 3 non-zero
-    edges; cosine returns <code>NaN</code> when both vectors are zero. These
-    values are preserved as <code>NaN</code> in the CSV and rendered as 0 in
-    the heatmaps. Weights are normalized before the RV coefficient so the
-    metric is invariant to different total synapse counts.</p>
-
-  <h2>Advanced options</h2>
-  <ul>
-    <li><b>Custom Mapping</b>: the label-mapper panel button beside the
-      dataset selectors — define inline groups or load them from history
-      (see the <a href="label_mapper.html">label-mapper guide</a>). With a
-      mapping applied, <b>group labels are compulsory</b>: the shared label
-      is what aligns datasets, so a blank row blocks the run at validation.</li>
-    <li><b>Skip BodyId Level</b>: type-level only (faster, recommended).</li>
-    <li><b>Cache Only (Offline)</b>: no server contact; requires caches.</li>
-    <li><b>Auto Type Mapping</b>: map equivalent type names across datasets.</li>
-    <li><b>Parallel Processing / Max Workers</b>: tune speed vs API load.</li>
-    <li><b>Drop Untyped Neurons</b>: removes edges touching untyped neurons
-      (empty / Unknown / NaN / all-digit bodyId-fallback labels) using the
-      SAME shared predicate as the pathfinding tabs
-      (<code>utils.label_utils.is_untyped_type_label</code>), applied AFTER
-      the standardized cross-dataset labels are resolved (post
-      label-mapping). Comparison-level records land in
-      <code>comparison_results/untyped_dropped_records.csv</code>, while each
-      delegated per-dataset pathfinding folder intentionally keeps raw rows;
-      counts are appended to <code>user_warning_notes.txt</code>.</li>
-    <li><b>Hemisphere analysis</b> (its own card): <b>Hemisphere-aware</b>
-      (off) separates L/R labels; <b>Symmetry Analysis</b> (on) is
-      auto-enabled with Hemisphere-aware and forced off otherwise;
-      <b>Keep Only Hemisphere-Conserved Edges</b> requires Hemisphere-aware.
-      <b>Find Reciprocal Connections</b> is a separate Core Parameters
-      checkbox for reciprocal graphs. The threshold chips control is labeled
-      <b>Synapse Thresholds</b>; under the Connection-ratio basis a twin editor (<b>Connection-Ratio Thresholds</b>, float tiers in (0, 1], default 0.001 / 0.005) takes its place — the Threshold Basis selection swaps which editor shows.</li>
-  </ul>
-
-  <h2 id="type-mapping-panel">The Type Mapping panel</h2>
-  <p>The <b>Type Mapping</b> button (enabled when &ge; 2 selected datasets
-    have cached neuron indexes) previews the auto type mapping the run
-    will use — informational only, please double check. The same
-    validity-aware decision (shared resolver,
-    <code>comparison/type_resolver.py</code>) backs the panel, the viewer's
-    <i>See available neurons</i> mapping, homolog finding, and the
-    connectivity-profile comparison. A <b>Route scope</b> selector above
-    the preview picks the mapping's route universe (re-ratified
-    2026-10-01): <b>Curated</b> (default) is exactly the historical
-    licensed routes, while <b>Full map</b> is a complete parallel mode —
-    <b>all datasets are licensed as connectors</b> (the previously
-    disabled BANC routes included: HEMI&harr;FAFB ends via BANC bridges,
-    FAFB&harr;BANC via male-cns, &hellip;). In full mode the whole panel
-    runs on that universe: flows, the claim/reach readout, the summary
-    strip's labeled <code>Full-map ends</code> cell, the per-type
-    breakdown's <code>Full-map reach</code> column (delta,
-    <code>via &lt;mid&gt;</code> badges, &and; route-conflict markers),
-    the bridge visualizations, and a per-pair
-    <code>Export full-map routes (CSV)</code> — all matched to the same
-    composed routes. The validation pipeline accepts the scope gated
-    (<code>RunMappingValidation.py --route-scope full</code>); composed
-    pairs are labeled <code>route_basis/via_mid</code> in its exports.
-    Per-hop licensing rules are unchanged in both modes — full map
-    widens the <i>route</i> universe, never the per-hop rule set.</p>
-  <ul>
-    <li><b>Unique rename</b> (e.g. MCNS <code>MeVPLo2</code> &harr; FAFB
-      <code>MTe07</code>): one canonical target everywhere.</li>
-    <li><b>Valid split</b> (e.g. MCNS <code>VS</code> &rarr; FAFB
-      <code>VS1</code>…<code>VS8</code>): every licensed branch is listed;
-      no arbitrary single target is chosen. For a queried split parent the
-      panel additionally resolves the split <b>per neuron</b> (see
-      <i>bodyId-level split resolution</i> below).</li>
-    <li><b>Conflict</b> (e.g. BANC <code>CB1011</code>): fails closed — no
-      automatic target, and the type is never merged by raw same-name in
-      path/edge tables or comparison anchors.</li>
-    <li><b>Unmapped</b>: keeps its raw name as the counted long-tail
-      fallback (surfaced in the saved metadata's <code>raw_fallback_used</code>).</li>
-  </ul>
-  <ul>
-    <li><b>Search</b>: one query per chip (exact / starts with / contains /
-      ends with / regex), with dataset-aware type suggestions. A chip that
-      names a taxonomy value (e.g. FAFB <code>cell_type</code>
-      <code>circadian_clock</code>) expands to that label's member types. The
-      exported <code>Mapping graph (HTML)</code> and <code>Mapping sankey
-      (HTML)</code> plot <b>types only</b> — the chip itself is search
-      provenance, so it appears in the tables and CSVs, never as a node on the
-      canvas. The per-pair <code>Network (type-level)</code> download follows
-      the same rule, and still presents the dataset where the query resolved on
-      the left.</li>
-    <li><b>Centre-source layout</b>: when one dataset is the origin and exactly
-      two receive it, both exports place the origin in the <b>middle</b> column
-      with one target on each flank (<code>target 1 | origin | target 2</code>),
-      the denser flank on the left. The composed Sankey covers one or two target
-      datasets; for a wider selection use a pair card's <code>Sankey
-      (type-level)</code>. Sankey ribbons are labelled in <b>neurons</b> — the
-      mapping views never say "synapses".</li>
-    <li><b>Summary table</b> (per dataset): Matched types, Neurons (the
-      issued side — every matched type is issued into the resolution,
-      flowed or orphaned), <b>Mapped</b> — the total neurons the mapped
-      types reach, split into <b>BodyId routed</b> (what the dataset
-      RECEIVES: the branch-claimed bodyIds — union of the branches'
-      resolved pools, each bodyId counted ONCE — the claim set per
-      plan-same-name-fidelity-and-three-level-coverage.md; shown as
-      <code>{N}({m} types)</code> from 2 distinct received types up; a
-      dataset that only issues the query reads 0) and <b>Type pooled
-      (in-map types)</b>, the received types' own
-      neurons that the claim set does <i>not</i> reach (union of those types'
-      populations minus the claim, so a type pooled on its full population
-      contributes 0; on circadian_clock → male-cns this reads
-      219 − 204 = <b>15</b>, while the validate-expand-visualize run's
-      <code>family</code> bin holds 11 rows because a morph-qualified
-      candidate closes holes there and nothing does in the panel), plus
-      Unmapped (orphans stay visible).</li>
-    <li><b>Pair cards</b> (<code>src → tgt · N mapped pairs</code>): Type,
-      Mapped to, Neurons (<code>source → foreign</code>), <b>Relationship</b>
-      (the per-flow cardinality, matching the coverage tables and the CSV),
-      <b>Suspects</b> (a <code>⚠ suspects (N)</code> badge on a row whose
-      same-name-first selection demoted rival candidates — <b>hover the badge</b>
-      for the explanation and one line per rival, or expand the collapsed
-      <b>Suspects</b> block below the table, which carries the same facts as a
-      table), Map used (the
-      derivation linkers, e.g. <code>flywireType 'LMTe01' +
-      additional_type(s) 'LMTe01'</code>), and <b>Pool coverage</b> —
-      one basis-aware cell per side so the states can never be confused:
-      a measured subset (<code>FB: 1,655 of 1,683 (98.3%)</code>), an
-      unconstrained full population (<code>FB: all 1,683</code> — the
-      chain names the type identity, nothing was filtered), an
-      unmeasurable side (<code>FB: not measured</code> — the coverage
-      index is unavailable), and a missing pool (<code>not pooled</code>).
-      A measured zero renders explicitly as <code>0 of n (0.0%)</code>.
-      Coverage is measured independently per endpoint; the mapper does
-      not infer bodyId-to-bodyId pairings. When more than one supported
-      bridge chain reaches the same endpoint pair, the card identifies the
-      selected bridge and the all-valid union; the latter includes the
-      unique bodyIds from supported alternatives. Raw linker values such as
-      <code>auto:MeVPLo2</code> and their canonical matching tokens are
-      retained in the extended export. The card's <b>Out-map (this type)</b>
-      column is the endpoint type's own neurons this branch's pool does
-      <i>not</i> reach — per branch, so split branches can each quote the
-      same neuron; it reads <code>not adopted</code> on a disclosure row and
-      <code>not pooled</code> where no pool resolved.</li>
-    <li><b>Type coverage tables</b> (top-level expansion per pair,
-      bidirectional): the FORWARD view lists each queried type with its
-      neurons, mapped targets, <code>1-to-N</code>/<code>1-to-1</code>, a
-      <b>Suspects</b> badge column, and per-side coverage; the BACKWARD view
-      lists each receiving type with
-      the sources that map onto it, read from the receiving type back to
-      its sources — relationship cells follow the row subject's fan-out, so
-      a row with several sources reads <code>1-to-N</code>, never
-      <code>1-to-1</code>. Backward rows marked <code>dataset-wide
-      incoming</code> list EVERY source type in the source dataset that
-      maps onto the receiving type (the active query marked in
-      <code>Mapped from</code>) — the context that explains why one
-      queried type's few neurons fan out to a large target population
-      (e.g. MCNS <code>SMP227</code>: 6 neurons &rarr; 94 FAFB neurons,
-      whose receiving types collect from 4/4/6 incoming MCNS types). This
-      context is explanatory evidence, not a canonical acceptance of every
-      incoming source. Coverage columns carry short labels such as
-      <code>MCNS &middot; selected</code>; hover a header for the full
-      dataset key and the scope explanation — <code>selected</code> = the
-      first supported bridge chain after deterministic evidence ordering
-      (the primary chain behind edge weights and hovers, not a biological
-      adjudication), <code>all valid</code> = the deduplicated union of
-      bodyIds from every independently supported candidate bridge
-      (completeness of supported evidence; branches are not mutually
-      exclusive). In a dataset-wide row the source denominator is the
-      union population of ALL incoming source types. Split branch rows
-      are labeled as <code>branch evidence (non-exclusive)</code>; overlap
-      counts explain when the same source bodyId supports multiple
-      branches. Cells read <code>x of y (share)</code> with thousands
-      separators; a side whose coverage index is unavailable renders
-      <code>not measured</code> (never a fake zero), and a row without any
-      pool renders <code>not pooled</code>. The state legend rides on the
-      expansion title's hover. That title is data-driven — it reads
-      <code>1-to-N fan-out</code> / <code>N-to-1 fan-in</code> /
-      <code>all 1-to-1</code> off the forward rows and appends
-      <code>· ⚠ N suspect pair(s)</code> when the pair carries suspects, so
-      the heading always matches the tables. The per-rival suspect details
-      render once, in a collapsed <b>Suspects</b> block below the tables.</li>
-    <li><b>Same-name pairs</b>: a pair sharing its name derives through its
-      metadata bridge when one exists (e.g.
-      <code>flywireType 'DN1a'</code> — the male-cns crosswalk cell
-      verifies it); the bare "same name — no metadata verification"
-      warning appears only when no evidence connects the pair.</li>
-    <li><b>Exports</b>: Sankey (type-level / linker), Network (type-level /
-      linker paths), the <b>Mapping graph</b> (HTML, downloaded as
-      <code>mapping_graph_*.html</code>), the cross-dataset <b>Mapping
-      sankey</b> (HTML, <code>mapping_sankey_*.html</code>; one column per
-      dataset with the origin centred, offered whenever the selection is one
-      origin into at most two targets), and <b>Export mapping</b> (per pair and
-      <b>all pairs (CSV)</b>; filenames <code>mapping_*.csv</code>).  One
-      fixed column set: <code>source_dataset, source_entry, matched_column,
-      source_type, target_dataset, target_type, relationship,
-      source_neurons, target_neurons, bridge, bridge_columns,
-      mapping_origin</code>, numeric <code>source_pool/source_total/
-      target_pool/target_total</code>, the FULL per-type bodyId
-      populations (<code>source_body_ids</code> /
-      <code>target_body_ids</code> — every bodyId of the mapped type in
-      its own dataset, one brace-wrapped comma-separated list quoted as one
-      CSV field per cell so spreadsheet delimiters never split it; listed
-      per type, never paired across datasets), plus the human-readable
-      <code>pool_coverage</code> and <code>pool_coverage_basis</code>
-      columns. The UI's extended export additionally carries the selected
-      bridge, mapping status, selected rank, valid-chain count,
-      raw/canonical selected linker values, unsupported attempts,
-      selected/all-valid pool IDs and totals, overlap, and scope, plus
-      <code>target_out_map</code> / <code>target_out_map_body_ids</code> —
-      the endpoint type's own neurons this branch's pool does <i>not</i>
-      reach (a set difference, so a full-population basis reads 0 and an
-      unresolved pool stays an empty cell rather than a false 0; this is the
-      panel-side overhang, at least as large as the validation run's
-      <code>family</code> bin because no morphology closes a hole here). The full
-      mapping is never silently dropped — a
-      <code>+N more flows</code> notice points at the CSV when the drawn
-      cap trims).</li>
-    <li><b>BodyId-level granularity (row-based bridge evidence)</b>:
-      the mapper's granularity mechanism is the bridges' own row-based
-      evidence — each branch's <b>linker-refined bodyId pool</b> (the
-      linker rows tie specific bodyIds) and per-bridge <b>label-vote
-      provenance</b> (curated vs <code>auto:</code>, e.g. the BANC
-      <code>aMe24</code> bridge: 1 auto vote vs <code>s-LNv_a</code>: 2).
-      These pools and votes are what the split rows, coverage cells and
-      exports carry — no connectivity similarity is involved anywhere in
-      the mapper.  When several types are queried, or a
-      chip resolves to many types (a taxonomy label such as
-      <code>circadian_clock</code>), a collapsed <b>Per-type breakdown</b>
-      expansion shows one row per (matched type × target dataset) — the
-      mapped counts are specific to the row's target dataset, never summed
-      across datasets — with the originating query chip and the combined
-      <code>{N}({m} types)</code> Mapped-neurons cell.</li>
-    <li><b>Legends</b>: the artifact header carries one chip per entry in
-      the <code>CODE: full name (count)</code> format — datasets (with
-      node counts) and the bridge linker columns (color-coded:
-      <code>flywireType</code> male-cns→FAFB crosswalk,
-      <code>additional_type(s)</code> FAFB cells, curated BANC label columns,
-      <code>Alternative Cell Type(s)</code> BANC cells,
-      <code>banc_release_crosswalk</code>, and
-      <code>hemibrainType</code>/<code>mancType</code> crosswalks). The
-      linker network lays out ONE column per linker (e.g.
-      <code>MCNS type → flywireType → additional_type(s) → FAFB type</code>
-      = four columns). On the FAFB↔BANC pair (both directions), annotation
-      routes through <code>Alternative Cell Type(s)</code> or
-      <code>additional_type(s)</code> never extend past a same-name
-      arrival — such transitive extensions are only offered when the pair
-      is confirmed by a reverse-direction bridge, and then carry a
-      <code>(reciprocal)</code> provenance in the exports.</li>
-  </ul>
-  <p>Full semantics: <code>docs/AUTO_TYPE_MAPPING.md</code>; implementation
-    reference:
-    <code>docs/technical/AUTO_TYPE_MAPPING_IMPLEMENTATION.md</code>.</p>
-
-  <h2 id="type-mapping-validation">Validating a mapping — the TM VEV pipeline (CLI)</h2>
-  <p>The panel preview is <b>informational</b>. To grade a mapping at
-    bodyId level — and estimate how much of the gap its evidence can fill —
-    run the validation pipeline (type-mapping
-    validate-expand-visualize, TM VEV) from the repo root:</p>
-  <pre><code>python3 scripts/RunMappingValidation.py     --source flywire_FAFB_v783 --target male-cns:v1.0     --types circadian_clock --mode family     --scene-selfcheck --output-dir /path/to/data</code></pre>
-  <ul>
-    <li><b>Confidence tiers</b>: <code>matched</code> (asserted) &gt;
-      <code>verified</code> &gt; <code>borderline</code> &gt;
-      <code>unmatched</code> for in-pool targets; <code>sibling</code>,
-      <code>candidates</code>, <code>family</code>, <code>relative</code>,
-      <code>examinees</code> for the expansion (nested modes:
-      restrictive / family / aggressive; <code>examinees</code> was
-      renamed from <code>suspicious</code> — the type mapper's
-      rival-suspects concept owns that word now).</li>
-    <li><b>Same-name-first</b>: when the type mapper selects a fan-out
-      candidate carrying the source's own name, the pair is marked
-      &#11260; in the report and the withheld rivals can be verified
-      connectivity-wise with <code>--verify-suspects</code> (advisory;
-      held/excluded fan-outs land in
-      <code>same_name_excluded.csv</code>).</li>
-    <li><b>Layered gap-fill report</b>
-      (<code>gap_fill_levels.csv</code>): every non-claim bodyId graded
-      <code>high</code> (native floor) / <code>medium</code> (Track-A
-      backup <code>B_b − Δ</code>) / <code>low</code> (null bar) /
-      <code>type_gated</code> (family) / <code>advice</code> (relative);
-      hole-closing candidates annotated.</li>
-    <li><b>Out-map branch</b> per type: the unclaimed source neurons (no
-      branch pool claims) beside their expansion candidates
-      (connectivity-ranked, morph-checked) — the source-side gap next to
-      the fill.</li>
-    <li><b>Scene notes</b>: root groups start expanded one layer;
-      <code>sibling</code> layers start hidden (one eye click restores);
-      the run root folder carries the <code>type-map-validation_</code>
-      prefix and sorts its exports into <code>validation/</code>,
-      <code>expansion/</code>, <code>gap_fill/</code> and
-      <code>mapping/</code> (folders written before that change keep every
-      CSV at the root).</li>
-    <li>Machine-readable progress lands in
-      <code>pipeline_progress.jsonl</code>; full export contract in
-      <code>docs/OUTPUT_FILES.md</code> §9.</li>
-  </ul>
-
-  <h2>Output</h2>
-  <p>One timestamped folder per run, e.g.
-    <code>cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/</code>
-    (male-cns v1.0 + FAFB v783 + BANC v626 + BANC v888). The report opens
-    on an <b>Overview</b> page; the rest of the content is organized into
-    tabs — <b>Combos (per query)</b> (one dashboard card per query row:
-    KPIs, involved types, jump buttons), <b>Type Mapping</b>,
-    <b>Plots</b> (per-threshold and density-matched charts as separate
-    sub-tabs), <b>Matrices &amp; Networks</b>, <b>Cross-views</b> and
-    <b>Notes</b>. Deep links: <code>#tab=combos</code> etc.:</p>
-  <p>The run also writes a per-source-target-pair report
-    (<code>path_report.html</code> + <code>paths_pair_breakdown/*.csv</code>)
-    at the run root when it completes: each
-    <code>dataset_data/&lt;dataset&gt;/minsyn_&lt;N&gt;/</code> delegate
-    becomes a unit, the Global tab gives the pair × unit path-count matrix
-    and coverage histogram, and the Pair Explorer renders per-pair
-    capped top-paths tables and interactive offline networks alongside this
-    comparison report (see <code>docs/OUTPUT_FILES.md</code> §1 "Pair
-    Report"). Every delegate folder additionally receives its own
-    single-unit <code>path_report.html</code>, browsable standalone; the
-    root report's Data tab links them.</p>
-  <pre><code>{output_dir}/cross-dataset_{source}_to_{target}_{dataset_codes}_{timestamp}/
-  comparison_report.html, comparison_report.txt   # single-page report shell
-                                                   # (report_layout='tabbed' opts
-                                                   # into the new page-tabbed
-                                                   # report; 'both' also writes
-                                                   # comparison_report_legacy.html)
-  label_map.json, parameters.json
-  run_manifest.json                      # self-describing manifest; includes a
-                                         # dataset_coverage block (ok / no_data
-                                         # per configured dataset)
-  dataset_data/{dataset}/run_log.txt     # per-dataset console trace of every
-                                         # threshold instance (fetch/enumeration
-                                         # failures are diagnosable here)
+<ul>
+<li><b>Confidence tiers</b>: <code>matched</code> (asserted) &gt; <code>verified</code> &gt; <code>borderline</code> &gt; <code>unmatched</code> for in-pool targets; <code>sibling</code>, <code>candidates</code>, <code>family</code>, <code>relative</code>, <code>examinees</code> for the expansion (nested modes: restrictive / family / aggressive; <code>examinees</code> was renamed from <code>suspicious</code> — the type mapper's rival-suspects concept owns that word now).</li>
+<li><b>Same-name-first</b>: when the type mapper selects a fan-out candidate carrying the source's own name, the pair is marked &#11260; in the report and the withheld rivals can be verified connectivity-wise with <code>--verify-suspects</code> (advisory; held/excluded fan-outs land in <code>same_name_excluded.csv</code>).</li>
+<li><b>Layered gap-fill report</b> (<code>gap_fill_levels.csv</code>): every non-claim bodyId graded <code>high</code> (native floor) / <code>medium</code> (Track-A backup <code>B_b − Δ</code>) / <code>low</code> (null bar) / <code>type_gated</code> (family) / <code>advice</code> (relative); hole-closing candidates annotated.</li>
+<li><b>Out-map branch</b> per type: the unclaimed source neurons (no branch pool claims) beside their expansion candidates (connectivity-ranked, morph-checked) — the source-side gap next to the fill.</li>
+<li><b>Scene notes</b>: root groups start expanded one layer; <code>sibling</code> layers start hidden (one eye click restores); the run root folder carries the <code>type-map-validation_</code> prefix and sorts its exports into <code>validation/</code>, <code>expansion/</code>, <code>gap_fill/</code> and <code>mapping/</code> (folders written before that change keep every CSV at the root).</li>
+<li>Machine-readable progress lands in <code>pipeline_progress.jsonl</code>; full export contract in <code>docs/OUTPUT_FILES.md</code> §9.</li>
+</ul>
+<h2>Output</h2>
+<p>One timestamped folder per run, e.g. <code>cross-dataset_aMe12_to_PPL101_MFB_v626B_v888_20260815_142812/</code> (male-cns v1.0 + FAFB v783 + BANC v626 + BANC v888). The report opens on an <b>Overview</b> page; the rest of the content is organized into tabs — <b>Combos (per query)</b> (one dashboard card per query row: KPIs, involved types, jump buttons), <b>Type Mapping</b>, <b>Plots</b> (per-threshold and density-matched charts as separate sub-tabs), <b>Matrices &amp; Networks</b>, <b>Cross-views</b> and <b>Notes</b>. Deep links: <code>#tab=combos</code> etc.:</p>
+<p>The run also writes a per-source-target-pair report (<code>path_report.html</code> + <code>paths_pair_breakdown/*.csv</code>) at the run root when it completes: each <code>dataset_data/&lt;dataset&gt;/minsyn_&lt;N&gt;/</code> delegate becomes a unit, the Global tab gives the pair × unit path-count matrix and coverage histogram, and the Pair Explorer renders per-pair capped top-paths tables and interactive offline networks alongside this comparison report (see <code>docs/OUTPUT_FILES.md</code> §1 "Pair Report"). Every delegate folder additionally receives its own single-unit <code>path_report.html</code>, browsable standalone; the root report's Data tab links them.</p>
+<pre><code>{output_dir}/cross-dataset_{source}_to_{target}_{dataset_codes}_{timestamp}/
+comparison_report.html, comparison_report.txt   # single-page report shell
+                                                 # (report_layout='tabbed' opts
+                                                 # into the new page-tabbed
+                                                 # report; 'both' also writes
+                                                 # comparison_report_legacy.html)
+label_map.json, parameters.json
+run_manifest.json                      # self-describing manifest; includes a
+                                       # dataset_coverage block (ok / no_data
+                                       # per configured dataset)
+dataset_data/{dataset}/run_log.txt     # per-dataset console trace of every
+                                       # threshold instance (fetch/enumeration
+                                       # failures are diagnosable here)
+dataset_metadata_comparison.csv
+auto_type_mapping.json, auto_type_mapping.csv, auto_type_mapping_conflicts.csv
+                                      # csv: trailing mapping_support column
+                                      # (bridge label votes / pooled
+                                      # same-name identity, evidence only)
+comparison_report_used_data/            # CSVs backing the report
+comparison_results/
+  edge_presence_matrix.csv, edge_presence_matrix_{minsyn|minratio}_{N}.csv
+  path_presence_matrix.csv, path_presence_matrix_{minsyn|minratio}_{N}.csv
+  edge_weight_comparison.csv, path_count_comparison.csv
+  unified_edge_comparison.csv, unified_summary.csv
+  unique_to_{dataset}.csv               # edges unique per dataset
+  # per-threshold tier token: minsyn_{N} synapse basis, minratio_{decimal} ratio basis
+  top_edges_comparison.csv, top_edges_overlap.csv
+  degree_in.csv, degree_out.csv, degree_statistics.csv
+  neuron_counts_by_type.csv, neuron_counts_summary.csv
+  motif_analysis.csv
+  threshold_combinations.csv    # combination-mode query/provenance manifest
+  type_resolution_union.csv     # union of appeared types resolved into
+                                # EVERY dataset: resolved name + absence
+                                # verdict (below_threshold w/ max weight,
+                                # not_in_dataset, unmapped, conflict, ...)
+threshold_sensitivity.csv   # standard: edge_count/retention; advanced:
+                              # query_id/query_label query-cell diagnostics
+  pathfinding_provenance.csv  # full provenance; advanced rows also carry
+                              # query_id/query_label
+  edge_presence_matrix_query_{query_id}.csv
+  path_presence_matrix_query_{query_id}.csv
+  untyped_dropped_records.csv # comparison-level dropped rows, when any
+effective_thresholds.json (run root)  # UI notice for every path run:
+                              # requested → applied plus tau/w0/w1/w2/W*
   dataset_metadata_comparison.csv
-  auto_type_mapping.json, auto_type_mapping.csv, auto_type_mapping_conflicts.csv
-                                        # csv: trailing mapping_support column
-                                        # (bridge label votes / pooled
-                                        # same-name identity, evidence only)
-  comparison_report_used_data/            # CSVs backing the report
-  comparison_results/
-    edge_presence_matrix.csv, edge_presence_matrix_{minsyn|minratio}_{N}.csv
-    path_presence_matrix.csv, path_presence_matrix_{minsyn|minratio}_{N}.csv
-    edge_weight_comparison.csv, path_count_comparison.csv
-    unified_edge_comparison.csv, unified_summary.csv
-    unique_to_{dataset}.csv               # edges unique per dataset
-    # per-threshold tier token: minsyn_{N} synapse basis, minratio_{decimal} ratio basis
-    top_edges_comparison.csv, top_edges_overlap.csv
-    degree_in.csv, degree_out.csv, degree_statistics.csv
-    neuron_counts_by_type.csv, neuron_counts_summary.csv
-    motif_analysis.csv
-    threshold_combinations.csv    # combination-mode query/provenance manifest
-    type_resolution_union.csv     # union of appeared types resolved into
-                                  # EVERY dataset: resolved name + absence
-                                  # verdict (below_threshold w/ max weight,
-                                  # not_in_dataset, unmapped, conflict, ...)
-  threshold_sensitivity.csv   # standard: edge_count/retention; advanced:
-                                # query_id/query_label query-cell diagnostics
-    pathfinding_provenance.csv  # full provenance; advanced rows also carry
-                                # query_id/query_label
-    edge_presence_matrix_query_{query_id}.csv
-    path_presence_matrix_query_{query_id}.csv
-    untyped_dropped_records.csv # comparison-level dropped rows, when any
-  effective_thresholds.json (run root)  # UI notice for every path run:
-                                # requested → applied plus tau/w0/w1/w2/W*
-    dataset_metadata_comparison.csv
-  comparison_visualizations/              # edge/path heatmap PNGs + data
-    edge_heatmap_{N}.png, path_heatmap_{N}.png, path_counts.png
-    query-keyed edge_heatmap_query_{query_id}.png and
-    path_heatmap_query_{query_id}.png; visualization_data/...
-    (no by_ratio/by_probability for pathfinding comparisons)
-  similarity_matrices/similarity_threshold_{N}.csv
-  similarity_matrices/similarity_query_{query_id}.csv
-  similarity_matrices/similarity_by_query.csv
-  dataset_data/{dataset_folder}/minsyn_*/...      # per-dataset FindAllPath
-                                                 # outputs (see Complete
-                                                 # Paths guide), incl.
-                                                 # hemisphere_symmetry/
-                                                 # and find_reciprocal/
-                                                 # when enabled</code></pre>
+comparison_visualizations/              # edge/path heatmap PNGs + data
+  edge_heatmap_{N}.png, path_heatmap_{N}.png, path_counts.png
+  query-keyed edge_heatmap_query_{query_id}.png and
+  path_heatmap_query_{query_id}.png; visualization_data/...
+  (no by_ratio/by_probability for pathfinding comparisons)
+similarity_matrices/similarity_threshold_{N}.csv
+similarity_matrices/similarity_query_{query_id}.csv
+similarity_matrices/similarity_by_query.csv
+dataset_data/{dataset_folder}/minsyn_*/...      # per-dataset FindAllPath
+                                               # outputs (see Complete
+                                               # Paths guide), incl.
+                                               # hemisphere_symmetry/
+                                               # and find_reciprocal/
+                                               # when enabled</code></pre>
 
-  <div class="callout tip">
-    <b>Deprecated datasets</b> (e.g. male-cns:v0.9) may no longer answer
-    server queries; enable <b>Cache Only</b> after warming the cache once.
-  </div>
+<div class="callout tip">
+  <b>Deprecated datasets</b> (e.g. male-cns:v0.9) may no longer answer
+  server queries; enable <b>Cache Only</b> after warming the cache once.
+</div>
 
-  <div class="callout info">
-    <b>Exported run guide:</b> every successful run also writes
-    <code>_UserGuide_please_read_me.html</code> into the run folder — a
-    self-contained explanation of every output file, every table column, and
-    any warnings recorded for the run. Format (html / txt / markdown /
-    disabled) is set in Settings → Default Settings → Run Guide Format.
-  </div>
-</main>
+<div class="callout info">
+  <b>Exported run guide:</b> every successful run also writes
+  <code>_UserGuide_please_read_me.html</code> into the run folder — a
+  self-contained explanation of every output file, every table column, and
+  any warnings recorded for the run. Format (html / txt / markdown /
+  disabled) is set in Settings → Default Settings → Run Guide Format.
+</div>
+
 <div style="border:1px solid #ccc; padding:12px; margin:12px; font-family:sans-serif;">
 <h3>Thresholds are nested — and the run states its real cutoffs</h3>
 <p>Each threshold run discovers its own cone (edges &ge; threshold), so
@@ -833,5 +272,6 @@ Edge-Budget-floored. The same explanation and values appear in
 <code>pathfinding_provenance.csv</code>; collapsed rows additionally carry
 <code>skipped</code>/<code>duplicate_of</code> markers.</p>
 </div>
+</main>
 </body>
 </html>

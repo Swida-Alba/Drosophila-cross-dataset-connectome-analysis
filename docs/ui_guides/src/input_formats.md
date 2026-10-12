@@ -1,0 +1,110 @@
+---
+title: Input File Formats
+tag: Formats
+tag_class: sys
+page_title: Input File Formats - DROCAT
+---
+
+This guide covers the neuron-list upload menus (the <b>File format instructions</b> link inside chip inputs). The same rules apply to entries typed into the chip input; use a file when loading a larger list. Other uploads (mapping JSON, edge-list CSV, layer-style CSV, path files) have their own formats, described in their own guides.
+
+  
+  
+## Neuron lists (CSV / TSV / Excel)
+
+Used by the neuron query boxes with an upload menu: Complete Paths, Shortest Paths, Find Network, Connectivity &rarr; Comparison, Cross-Dataset, Type Validation and more.
+
+  
+
+<table>
+  <tr><th>Format</th><th>Rule</th><th>Example</th></tr>
+  <tr><td>CSV / TSV</td><td>One neuron per row. The
+    <b>first column</b> is read.</td>
+    <td><code>aMe12</code><br><code>aMe10</code><br><code>PPL101</code></td></tr>
+  <tr><td>XLSX / XLS</td><td>The <b>first sheet, first column</b> is read.</td>
+    <td>Column A: aMe12, aMe10, 720575940610453042</td></tr>
+</table>
+
+Optional header names are skipped automatically (case-insensitive): <code>type</code>, <code>neuron</code>, <code>name</code>, <code>bodyId</code>, <code>id</code>, <code>body\_id</code>.
+
+  
+
+<div class="example">
+  <div class="example-title">CSV with header</div>
+
+<pre><code>type
+aMe12
+aMe10
+PPL101</code></pre>
+
+<p class="small">The header line is skipped; three neurons are loaded.</p>
+</div>
+
+  
+
+<div class="example">
+  <div class="example-title">CSV without header</div>
+
+<pre><code>aMe12
+aMe10
+PPL101</code></pre>
+
+<p class="small">Each first-column row becomes one neuron entry. The chip
+input accepts one query at a time; use this file format for a list.</p>
+</div>
+
+  
+
+<div class="example">
+  <div class="example-title">Mixed types, bodyIds and patterns</div>
+
+<pre><code>aMe12
+720575940610453042
+DN1p
+PPL.*
+KC.*</code></pre>
+
+<p class="small">Numeric bodyIds stay integers; patterns are applied
+according to the panel's <b>Match by</b> mode. Blank rows are skipped;
+a wrong extension (or any parse failure) shows an error and clears the
+previously loaded list.</p>
+</div>
+
+  
+## Accepted neuron entries
+
+  
+
+<table>
+  <tr><th>Kind</th><th>Example</th><th>Notes</th></tr>
+  <tr><td>Neuron type</td><td><code>aMe12</code></td><td>Matches all bodyIds of that type</td></tr>
+  <tr><td>BodyId</td><td><code>720575940610453042</code></td><td>Kept as an integer</td></tr>
+  <tr><td>Instance</td><td><code>aMe12_R</code></td><td>Hemisphere-specific instance</td></tr>
+  <tr><td>Regex pattern</td><td><code>KC.*</code>, <code>PPL.*</code>, <code>.*_R</code></td><td>Use with Match by = Regex (or the other Match by modes)</td></tr>
+</table>
+
+  
+## Path files (Complete Paths output)
+
+Used by the Net-Viz (PlotPath) panel. Upload one of:
+
+- <code>\*\_allpaths\_type.csv</code> - type-level paths (recommended)
+- <code>\*\_allpaths\_bodyId\_paths.csv</code> - bodyId-level paths
+- <code>\*\_allpaths\_info.xlsx</code> - Excel workbook with path sheets
+
+The file must contain either a path column (<code>path\_block</code> or <code>path</code>) plus <code>weights</code>, or an edge list (<code>source</code>/<code>target</code>/<code>weight</code> or <code>\*\_pre</code>/<code>\*\_post</code>/<code>weight</code>). The full specification - all accepted column names, edge lists and connection matrices - is in the <a href="network.html#input-files">Network guide</a>.
+
+  
+## Neuron layers (3D skeleton)
+
+The Skeleton tab arranges neurons into display layers with the built-in <b>layer tree editor</b> — no upload needed for the editor itself. Drag layer rows to reorder them and drag neuron chips between layers; each layer accepts types, instances, bodyIds or regex patterns, and an optional custom name. A third editor mode, <b>File upload</b>, loads a <b>custom-layer CSV</b> instead (columns <code>layer, neuron</code>, plus optional <code>color</code>, <code>synapse\_color</code>, <code>pre\_synaptic\_color</code>, <code>post\_synaptic\_color</code>; <code>layer</code> takes any whole numbers &mdash; they may start at 0 or 1 and gaps are allowed). The editor serializes to the same nested-list format the script-level <code>layer\_map\_csv</code> parser produces, so a scene built in the UI is identical to one built from a mapping file. See the <a href="skeleton.html">3D Skeleton guide</a>.
+
+  
+
+<div class="callout warn">
+  <b>Common mistakes</b>
+  - Saving CSV as UTF-16 — the reader expects UTF-8 (a UTF-8 BOM is fine;
+  UTF-16 yields garbled entries rather than an error).
+  - Putting neurons in the second column - only the first column is read.
+  - Uploading a path file with only <code>path</code> and no
+  <code>weights</code> column.
+</div>

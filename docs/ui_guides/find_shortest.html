@@ -14,257 +14,197 @@
     <span class="tag">Connectome</span>
   </header>
   <h1>Shortest Paths</h1>
-  <p class="lede">
-    Find only the shortest (minimum hop-count) paths between source and
-    target neuron groups. For every reachable pair, all tied shortest paths
-    are kept. Discovery starts from target neurons and follows incoming
-    branches to enrolled source bodyIds. Runs on the full pathfinding pipeline (discovery,
-    enrichment, outputs, visualization) with shortest-only enumeration.
-  </p>
+<p class="lede">Find only the shortest (minimum hop-count) paths between source and target neuron groups. For every reachable pair, all tied shortest paths are kept. Discovery starts from target neurons and follows incoming branches to enrolled source bodyIds. Runs on the full pathfinding pipeline (discovery, enrichment, outputs, visualization) with shortest-only enumeration.</p>
+<div class="callout info">
+  <b>Per-pair minimum:</b> the minimum is enforced per exact
+  <i>(source bodyId, target bodyId)</i> pair, before any type aggregation —
+  not a single global path-length cutoff. A type-level row can therefore mix
+  pairs of different hop counts: each pair contributes its own shortest
+  paths.
+</div>
 
-  <div class="callout info">
-    <b>Per-pair minimum:</b> the minimum is enforced per exact
-    <i>(source bodyId, target bodyId)</i> pair, before any type aggregation —
-    not a single global path-length cutoff. A type-level row can therefore mix
-    pairs of different hop counts: each pair contributes its own shortest
-    paths.
-  </div>
+<h2>Quick start</h2>
+<ol>
+<li>Add <b>Source Neurons</b> (e.g. <code>aMe12</code>, <code>aMe10</code>).</li>
+<li>Add <b>Target Neurons</b> (e.g. <code>PPL101</code>, <code>DN1p</code>).</li>
+<li>Click <b>Shortest Paths</b>.</li>
+</ol>
+<div class="callout warn">
+  <b>Use a small source set:</b> if Source Neurons contains more than one
+  type/name query, the page warns that each query can expand to many source
+  bodyIds and enlarge the target-rooted search. Prefer one source type or
+  query. Use explicit bodyIds with bodyId output enabled when exact
+  source-target pairs are needed.
+</div>
 
-  <h2>Quick start</h2>
-  <ol>
-    <li>Add <b>Source Neurons</b> (e.g. <code>aMe12</code>,
-      <code>aMe10</code>).</li>
-    <li>Add <b>Target Neurons</b> (e.g. <code>PPL101</code>,
-      <code>DN1p</code>).</li>
-    <li>Click <b>Shortest Paths</b>.</li>
-  </ol>
+<h2>All-neurons queries (<code>all_neurons</code>)</h2>
+<p>Typing the special chip <code>all_neurons</code> as the <b>source or target</b> loads the full (typed) neuron set on that side, so the run fetches <b>every adjacent neuron at the given thresholds</b> (Min Synapse Count):</p>
+<ul>
+<li><code>all_neurons</code> <b>replaces every other chip</b> in the same input.</li>
+<li>Source and target cannot both be <code>all_neurons</code>.</li>
+<li>An <code>all_neurons</code> side forces <b>Max Intermediate Layers = 0</b> (direct connections only). With shortest-path semantics this reports every direct edge (one hop) from or to the other side at the given thresholds.</li>
+</ul>
+<div class="callout info">
+  <b>Script/API parity:</b> the backend
+  (<code>FindNeuronConnection.InitializeNeuronInfo</code>) enforces the
+  same rules, so passing <code>sourceNeurons=['all_neurons']</code> in
+  code behaves identically. All typed neurons are loaded from local data
+  (works offline with Cache Only).
+</div>
 
-  <div class="callout warn">
-    <b>Use a small source set:</b> if Source Neurons contains more than one
-    type/name query, the page warns that each query can expand to many source
-    bodyIds and enlarge the target-rooted search. Prefer one source type or
-    query. Use explicit bodyIds with bodyId output enabled when exact
-    source-target pairs are needed.
-  </div>
+<h2>Depth cap (default: 5 intermediate layers)</h2>
+<ul>
+<li><b>Max Intermediate Layers = 0</b> means direct connections only. For a positive value <code>M</code>, paths are capped at <code>M + 1</code> hops.</li>
+<li>The tab default is 5 (deeper than the Complete Paths default of 2), because shortest-path searches typically target deeper routes. Increase it further when a query needs deeper intermediate layers. Backward discovery continues until the enrolled source bodyIds are reached or this bound is hit.</li>
+<li>If the bound truncates an active frontier, results are shortest only within the explored, threshold-filtered graph. A path at that boundary is a constrained solution, not proof of a globally shortest route.</li>
+</ul>
+<h2>Parameters</h2>
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td>Max Intermediate Layers</td><td>5</td><td>0 = direct only; &gt;0 caps path length at <i>layers + 1</i> edges</td></tr>
+  <tr><td>Min Synapse Count</td><td>3</td><td>Minimum edge weight</td></tr>
+  <tr><td>Combine Thresholds</td><td>Any one (default)</td><td>How Min Synapse Count and Min Connection Ratio combine when both are set: <em>Any one</em> — one threshold governs discovery; <em>Both (AND)</em> — an edge is admitted only when it clears BOTH thresholds (the ratio input becomes visible and co-thresholds the target-rooted discovery). Round-13.</td><td>Both (AND) to exclude edges failing either scale</td></tr>
+  <tr><td>Max Paths (BodyId)</td><td>0 = auto (1M)</td><td>Path-output budget. StrongestFirst budget on min-hop paths: when the search exceeds it, all min-hop paths above the achieved strength cutoff (tau) are kept and tau is reported; unbitten runs are the complete min-hop set</td></tr>
+  <tr><td>Drop Untyped Neurons</td><td>checked</td><td>Neuron-label filter (same shared predicate as Complete Paths and Cross-Dataset Comparison, <code>utils.label_utils.is_untyped_type_label</code>): removes edges touching untyped neurons — empty, Unknown/None/NaN sentinel (case-insensitive), or all-digit bodyId-fallback labels — after label enrichment and BEFORE the graph is built, so an untyped neuron can never be an intermediate node of a returned path or visualization. Dropped rows: <code>data_details/untyped_dropped_records.csv</code> (only when something was dropped); counts in <code>user_warning_notes.txt</code></td></tr>
+  <tr><td>Min Connection Ratio</td><td>hidden</td><td>F9: readout column only (weight / ALL-POST incoming weight); no longer filters</td></tr>
+  <tr><td>Min Traversal Prob.</td><td>hidden</td><td>F9: readout column only (ratio/0.3, capped at 1.0); no longer filters</td></tr>
+  <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving source/target names: <code>auto</code> = all columns (bodyId → type → instance → …), or restrict to <code>type</code> / <code>instance</code> / <code>bodyId</code>. Only <code>auto</code>/<code>type</code> scopes trigger the multi-source advisory; numeric bodyId chips are exempt</td></tr>
+  <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
+  <tr><td>Show Figure</td><td>off</td><td>Open the interactive figures in the browser as they are generated</td></tr>
+  <tr><td>Edge Budget</td><td>not applicable</td><td>Shortest mode is never floored (the tab omits the Edge Budget control and always sends 0) — flooring would raise the threshold and can inflate shortest distances</td></tr>
+  <tr><td>Fast Mode (corridor lane)</td><td>auto</td><td>The second of the two analysis modes: <b>Complete mode</b> (this run) finds all minimum-hop paths &ge; the applied threshold; <b>Fast mode</b> is the route-scoped deep pass: after the run, a separate lane re-enumerates at the <strong>ASKED</strong> threshold restricted to validated top-M* type corridors, writing only <code>route_scope_paths/</code> (both ratio flavors — plain + adjusted — like the Refill tab, plus mirror heatmap/network) beside the run (this run's own outputs are never modified). <code>auto</code> = runs after deep searches (Max Intermediate Layers &ge; 4). <em>Scope note:</em> corridor validation currently runs against a fresh lossless prune at the asked threshold, not the run's shortest-DAG discovery store — results are route-scoped at asked, not min-hop-restricted. Values: <code>complete</code> / <code>auto</code> / <code>both</code> (legacy <code>off</code>/<code>on</code> normalized). Fast also runs standalone on any existing run folder: <code>python scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>. Ratio-basis runs are refused. See the <a href="pathfinding_algorithms.html#corridor-lane">pathfinding algorithms guide</a>.</td><td><code>off</code> to skip</td></tr>
 
-  <h2>All-neurons queries (<code>all_neurons</code>)</h2>
-  <p>Typing the special chip <code>all_neurons</code> as the <b>source or
-    target</b> loads the full (typed) neuron set on that side, so the run
-    fetches <b>every adjacent neuron at the given thresholds</b> (Min
-    Synapse Count):</p>
-  <ul>
-    <li><code>all_neurons</code> <b>replaces every other chip</b> in the
-      same input.</li>
-    <li>Source and target cannot both be <code>all_neurons</code>.</li>
-    <li>An <code>all_neurons</code> side forces <b>Max Intermediate Layers
-      = 0</b> (direct connections only). With shortest-path semantics this
-      reports every direct edge (one hop) from or to the other side at the
-      given thresholds.</li>
-  </ul>
-  <div class="callout info">
-    <b>Script/API parity:</b> the backend
-    (<code>FindNeuronConnection.InitializeNeuronInfo</code>) enforces the
-    same rules, so passing <code>sourceNeurons=['all_neurons']</code> in
-    code behaves identically. All typed neurons are loaded from local data
-    (works offline with Cache Only).
-  </div>
+  <tr><td>Discovery Batch Budget</td><td>2,000,000</td><td>Advanced (memory control, <code>discovery_batch_budget</code>): discovery labels stream to <code>shortest_discovery_store/</code> and enumeration runs per batch of targets whose combined BFS distance states stay under this budget. <code>0</code> = single batch (legacy behavior). Results are identical either way; see the memory note below</td></tr>
+  <tr><td>Targets per Batch</td><td>0</td><td>Advanced (<code>target_batch_size</code>): fixed number of targets per enumeration batch instead of the state budget; <code>0</code> = use the Discovery Batch Budget</td></tr>
+  <tr><td>Discovery Store</td><td>keep</td><td>Advanced (<code>discovery_store_retention</code>): what happens to the run's <code>shortest_discovery_store/</code> after a successful run. <code>keep</code> (default) leaves it untouched. <code>compact</code> merges the connection layers into one 4-column file (weight multiplicity preserved) and drops the derivable dag-edge chunks — roughly halves a deep run's store. <code>prune</code> deletes all store data files, keeping <code>meta.json</code> as the size census. Path outputs are identical in every mode; the action is recorded in <code>meta.json</code>, the run metadata and <code>user_warning_notes.txt</code></td></tr>
+  <tr><td>Source Coverage</td><td>Any</td><td>Core (<code>shortest_source_coverage</code>): source side of the coverage early-stop. Measured <b>per queried source TYPE</b> at every backward discovery layer (a source bodyId counts once it reaches at least one target): <code>Any</code> = at least 1 bodyId per type; a % = each queried type individually reaches that share of its enrolled bodyIds; <code>Full</code> = all. Deepening stops once BOTH sides are satisfied — instead of exhausting the depth bound on per-pair completeness. Emitted pairs keep their exact per-pair minimum hop; deeper pairs within the depth bound are simply not searched (disclosed via the <code>[shortest coverage stop]</code> note and <code>shortest_discovery_diagnostics.coverage_stop</code>)</td></tr>
+  <tr><td>Target Coverage</td><td>Full</td><td>Core (<code>shortest_target_coverage</code>): target side of the coverage early-stop (a target bodyId counts once at least one enrolled source reaches it). Default <code>Full</code> = stop once every queried target type is fully reached. Same per-type semantics and disclosure as Source Coverage; <code>Custom %</code> uses the shared custom percentage field. Under any target requirement a covered target closes its frontier immediately — early-covered targets keep the pairs found up to their own closure layer (exact hops), and the union frontier shrinks while straggler targets finish</td></tr>
+  <tr><td>Visualization Edge Limit</td><td>500</td><td>Maximum edges drawn in each network/Sankey/heatmap visualization; does not alter shortest-path discovery</td></tr>
+  <tr><td>Filter By</td><td>bodyId</td><td>bodyId or type aggregation</td></tr>
+  <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
+</table>
 
-  <h2>Depth cap (default: 5 intermediate layers)</h2>
-  <ul>
-    <li><b>Max Intermediate Layers = 0</b> means direct connections
-      only. For a positive value <code>M</code>, paths are capped at
-      <code>M + 1</code> hops.</li>
-    <li>The tab default is 5 (deeper than the Complete Paths default of 2),
-      because shortest-path searches typically target deeper routes. Increase
-      it further when a query needs deeper intermediate layers. Backward
-      discovery continues until the enrolled source bodyIds are reached or
-      this bound is hit.</li>
-    <li>If the bound truncates an active frontier, results are shortest only
-      within the explored, threshold-filtered graph. A path at that boundary
-      is a constrained solution, not proof of a globally shortest route.</li>
-  </ul>
-
-  <h2>Parameters</h2>
-  <table>
-    <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Max Intermediate Layers</td><td>5</td><td>0 = direct only; &gt;0 caps path length at <i>layers + 1</i> edges</td></tr>
-    <tr><td>Min Synapse Count</td><td>3</td><td>Minimum edge weight</td></tr>
-    <tr><td>Combine Thresholds</td><td>Any one (default)</td><td>How Min Synapse Count and Min Connection Ratio combine when both are set: <em>Any one</em> — one threshold governs discovery; <em>Both (AND)</em> — an edge is admitted only when it clears BOTH thresholds (the ratio input becomes visible and co-thresholds the target-rooted discovery). Round-13.</td><td>Both (AND) to exclude edges failing either scale</td></tr>
-    <tr><td>Max Paths (BodyId)</td><td>0 = auto (1M)</td><td>Path-output budget. StrongestFirst budget on min-hop paths: when the search exceeds it, all min-hop paths above the achieved strength cutoff (tau) are kept and tau is reported; unbitten runs are the complete min-hop set</td></tr>
-    <tr><td>Drop Untyped Neurons</td><td>checked</td><td>Neuron-label filter (same shared predicate as Complete Paths and Cross-Dataset Comparison, <code>utils.label_utils.is_untyped_type_label</code>): removes edges touching untyped neurons — empty, Unknown/None/NaN sentinel (case-insensitive), or all-digit bodyId-fallback labels — after label enrichment and BEFORE the graph is built, so an untyped neuron can never be an intermediate node of a returned path or visualization. Dropped rows: <code>data_details/untyped_dropped_records.csv</code> (only when something was dropped); counts in <code>user_warning_notes.txt</code></td></tr>
-    <tr><td>Min Connection Ratio</td><td>hidden</td><td>F9: readout column only (weight / ALL-POST incoming weight); no longer filters</td></tr>
-    <tr><td>Min Traversal Prob.</td><td>hidden</td><td>F9: readout column only (ratio/0.3, capped at 1.0); no longer filters</td></tr>
-    <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving source/target names: <code>auto</code> = all columns (bodyId → type → instance → …), or restrict to <code>type</code> / <code>instance</code> / <code>bodyId</code>. Only <code>auto</code>/<code>type</code> scopes trigger the multi-source advisory; numeric bodyId chips are exempt</td></tr>
-    <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
-    <tr><td>Show Figure</td><td>off</td><td>Open the interactive figures in the browser as they are generated</td></tr>
-    <tr><td>Edge Budget</td><td>not applicable</td><td>Shortest mode is never floored (the tab omits the Edge Budget control and always sends 0) — flooring would raise the threshold and can inflate shortest distances</td></tr>
-    <tr><td>Fast Mode (corridor lane)</td><td>auto</td><td>The second of the two analysis modes: <b>Complete mode</b> (this run) finds all minimum-hop paths &ge; the applied threshold; <b>Fast mode</b> is the route-scoped deep pass: after the run, a separate lane re-enumerates at the <strong>ASKED</strong> threshold restricted to validated top-M* type corridors, writing only <code>route_scope_paths/</code> (both ratio flavors — plain + adjusted — like the Refill tab, plus mirror heatmap/network) beside the run (this run's own outputs are never modified). <code>auto</code> = runs after deep searches (Max Intermediate Layers &ge; 4). <em>Scope note:</em> corridor validation currently runs against a fresh lossless prune at the asked threshold, not the run's shortest-DAG discovery store — results are route-scoped at asked, not min-hop-restricted. Values: <code>complete</code> / <code>auto</code> / <code>both</code> (legacy <code>off</code>/<code>on</code> normalized). Fast also runs standalone on any existing run folder: <code>python scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>. Ratio-basis runs are refused. See the <a href="pathfinding_algorithms.html#corridor-lane">pathfinding algorithms guide</a>.</td><td><code>off</code> to skip</td></tr>
-
-    <tr><td>Discovery Batch Budget</td><td>2,000,000</td><td>Advanced (memory control, <code>discovery_batch_budget</code>): discovery labels stream to <code>shortest_discovery_store/</code> and enumeration runs per batch of targets whose combined BFS distance states stay under this budget. <code>0</code> = single batch (legacy behavior). Results are identical either way; see the memory note below</td></tr>
-    <tr><td>Targets per Batch</td><td>0</td><td>Advanced (<code>target_batch_size</code>): fixed number of targets per enumeration batch instead of the state budget; <code>0</code> = use the Discovery Batch Budget</td></tr>
-    <tr><td>Discovery Store</td><td>keep</td><td>Advanced (<code>discovery_store_retention</code>): what happens to the run's <code>shortest_discovery_store/</code> after a successful run. <code>keep</code> (default) leaves it untouched. <code>compact</code> merges the connection layers into one 4-column file (weight multiplicity preserved) and drops the derivable dag-edge chunks — roughly halves a deep run's store. <code>prune</code> deletes all store data files, keeping <code>meta.json</code> as the size census. Path outputs are identical in every mode; the action is recorded in <code>meta.json</code>, the run metadata and <code>user_warning_notes.txt</code></td></tr>
-    <tr><td>Source Coverage</td><td>Any</td><td>Core (<code>shortest_source_coverage</code>): source side of the coverage early-stop. Measured <b>per queried source TYPE</b> at every backward discovery layer (a source bodyId counts once it reaches at least one target): <code>Any</code> = at least 1 bodyId per type; a % = each queried type individually reaches that share of its enrolled bodyIds; <code>Full</code> = all. Deepening stops once BOTH sides are satisfied — instead of exhausting the depth bound on per-pair completeness. Emitted pairs keep their exact per-pair minimum hop; deeper pairs within the depth bound are simply not searched (disclosed via the <code>[shortest coverage stop]</code> note and <code>shortest_discovery_diagnostics.coverage_stop</code>)</td></tr>
-    <tr><td>Target Coverage</td><td>Full</td><td>Core (<code>shortest_target_coverage</code>): target side of the coverage early-stop (a target bodyId counts once at least one enrolled source reaches it). Default <code>Full</code> = stop once every queried target type is fully reached. Same per-type semantics and disclosure as Source Coverage; <code>Custom %</code> uses the shared custom percentage field. Under any target requirement a covered target closes its frontier immediately — early-covered targets keep the pairs found up to their own closure layer (exact hops), and the union frontier shrinks while straggler targets finish</td></tr>
-    <tr><td>Visualization Edge Limit</td><td>500</td><td>Maximum edges drawn in each network/Sankey/heatmap visualization; does not alter shortest-path discovery</td></tr>
-    <tr><td>Filter By</td><td>bodyId</td><td>bodyId or type aggregation</td></tr>
-    <tr><td>Output Format</td><td>csv</td><td>csv or xlsx</td></tr>
-  </table>
-
-  <h2>Score formulas</h2>
-  <p>Every connection and path is scored on the <b>thresholded graph</b> D_t
-    (edges with <code>weight ≥ Min Synapse Count</code>). Ratios use the
-    global total incoming weight so the denominator reflects the whole
-    dataset, not just the query:</p>
+<h2>Score formulas</h2>
+<p>Every connection and path is scored on the <b>thresholded graph</b> D_t (edges with <code>weight ≥ Min Synapse Count</code>). Ratios use the global total incoming weight so the denominator reflects the whole dataset, not just the query:</p>
 <p><strong>Threshold basis</strong>: on <code>weight_basis='connection_ratio'</code> runs the edge weight is the F9 connection ratio (synapses / the post neuron's total incoming at min_weight=1) — the threshold, Edge Budget tiers and StrongestFirst bottlenecks are in ratio units; every synapse column is unchanged. See <code>docs/core-features/ConnectionRatioPaths.md</code>.</p>
+<table>
+  <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
+  <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj over D_t (edge weight ÷ total input to the post neuron)</td><td>0–1</td></tr>
+  <tr><td><code>traversal_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+  <tr><td><code>block_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+  <tr><td><code>path_prob</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
+  <tr><td><code>min_weight</code></td><td>weakest edge synapse count along the path (the bottleneck)</td><td>integer</td></tr>
+  <tr><td><code>min_ratio</code></td><td>smallest edge connection ratio along the path</td><td>0–1</td></tr>
+</table>
 
-  <table>
-    <tr><th>Score</th><th>Formula</th><th>Range</th></tr>
-    <tr><td><code>connection_ratio</code></td><td>w_ij / Σ_k w_kj over D_t (edge weight ÷ total input to the post neuron)</td><td>0–1</td></tr>
-    <tr><td><code>traversal_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
-    <tr><td><code>block_probability</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
-    <tr><td><code>path_prob</code></td><td><b>SUSPENDED (2026-10-06, unverifiable fidelity)</b> — no longer exported, displayed, or used for ranking</td><td>—</td></tr>
-    <tr><td><code>min_weight</code></td><td>weakest edge synapse count along the path (the bottleneck)</td><td>integer</td></tr>
-    <tr><td><code>min_ratio</code></td><td>smallest edge connection ratio along the path</td><td>0–1</td></tr>
-  </table>
-  <p><b>SUSPENDED (2026-10-06, unverifiable fidelity):</b> the aggregate
-    traversal probabilities are no longer computed for display or export
-    (historically the <b>product</b> method). Full
-    derivations live in
-    <a href="../core-features/ScoreCalculation_Guide.md">Score Calculation Guide</a>.</p>
+<p><b>SUSPENDED (2026-10-06, unverifiable fidelity):</b> the aggregate traversal probabilities are no longer computed for display or export (historically the <b>product</b> method). Full derivations live in <a href="../core-features/ScoreCalculation_Guide.md">Score Calculation Guide</a>.</p>
+<div class="callout tip">
+  <b>No algorithm selector:</b> the tab enumerates through
+  <code>FastGraph.find_paths_shortest_strongest_first</code> — a
+  per-target reverse BFS outlines the min-hop DAG, a maximin bottleneck
+  DP annotates every branch with the best achievable strength, and tied
+  shortest paths are emitted best-first in strength order with a k-way
+  merge across targets — polynomial in graph size per pair. (The
+  <code>find_paths_shortest_backward</code> exporter also exists in
+  FastGraph, but the pipeline does not call it.) The branching^depth
+  explosion of Complete Paths does not exist here, but the total number
+  of min-hop paths can still grow quickly at depth (tied routes multiply
+  at every layer).
+</div>
 
-  <div class="callout tip">
-    <b>No algorithm selector:</b> the tab enumerates through
-    <code>FastGraph.find_paths_shortest_strongest_first</code> — a
-    per-target reverse BFS outlines the min-hop DAG, a maximin bottleneck
-    DP annotates every branch with the best achievable strength, and tied
-    shortest paths are emitted best-first in strength order with a k-way
-    merge across targets — polynomial in graph size per pair. (The
-    <code>find_paths_shortest_backward</code> exporter also exists in
-    FastGraph, but the pipeline does not call it.) The branching^depth
-    explosion of Complete Paths does not exist here, but the total number
-    of min-hop paths can still grow quickly at depth (tied routes multiply
-    at every layer).
-  </div>
+<div class="callout tip">
+  <b>Path budget (Max Paths, BodyId):</b> the min-hop enumeration runs
+  through the StrongestFirst budget — paths are emitted strongest-first
+  (descending bottleneck) and, when the budget (<code>max_paths_bodyid</code>,
+  0 = auto → 1,000,000) is reached, all ties at the achieved cutoff
+  <b>tau</b> are drained and weaker paths dropped: the output is exactly
+  "all min-hop paths with bottleneck ≥ tau". Unbitten runs are identical
+  to the complete min-hop set.
+</div>
 
-  <div class="callout tip">
-    <b>Path budget (Max Paths, BodyId):</b> the min-hop enumeration runs
-    through the StrongestFirst budget — paths are emitted strongest-first
-    (descending bottleneck) and, when the budget (<code>max_paths_bodyid</code>,
-    0 = auto → 1,000,000) is reached, all ties at the achieved cutoff
-    <b>tau</b> are drained and weaker paths dropped: the output is exactly
-    "all min-hop paths with bottleneck ≥ tau". Unbitten runs are identical
-    to the complete min-hop set.
-  </div>
+<div class="callout warn">
+  <b>The Edge Budget is off in shortest mode.</b> Its purpose (bounding the
+  exponential path count) does not apply to shortest enumeration, and
+  flooring (a threshold raise) preserves pair <i>reachability</i> but not
+  <i>shortest distance</i> — a dropped weak edge can silently inflate a
+  reported distance. The tab has no Edge Budget input at all and always
+  sends 0; API callers passing <code>graph_edge_limit_bodyid</code> still get
+  the full un-floored graph here because the setting is ignored. The <b>Max Paths (BodyId)</b> input is the
+  knob that bounds this mode.
+</div>
 
-  <div class="callout warn">
-    <b>The Edge Budget is off in shortest mode.</b> Its purpose (bounding the
-    exponential path count) does not apply to shortest enumeration, and
-    flooring (a threshold raise) preserves pair <i>reachability</i> but not
-    <i>shortest distance</i> — a dropped weak edge can silently inflate a
-    reported distance. The tab has no Edge Budget input at all and always
-    sends 0; API callers passing <code>graph_edge_limit_bodyid</code> still get
-    the full un-floored graph here because the setting is ignored. The <b>Max Paths (BodyId)</b> input is the
-    knob that bounds this mode.
-  </div>
+<div class="callout tip">
+  <b>Memory sizing (Discovery Batch Budget).</b> Discovery memory for
+  many broad targets otherwise grows with <b>targets × union frontier ×
+  depth</b> — a measured 2026-10-02 run (242 circadian targets at depth
+  5, ~450 GB RSS) is why batching is the default: labels stream to
+  <code>shortest_discovery_store/</code> and enumeration holds at most
+  one batch of targets (bounded by the state budget). The <b>Path
+  Budget bounds only the result</b> (emitted paths) and the <b>Edge
+  Budget never applies here</b> — neither controls discovery memory.
+  Deep runs with a single broad target remain depth-bound: lower Max
+  Intermediate Layers or raise Min Synapse Count. Results are identical
+  with or without batching (the run folder's
+  <code>shortest_discovery_diagnostics.batching</code> records the
+  realized composition).
+</div>
 
-  <div class="callout tip">
-    <b>Memory sizing (Discovery Batch Budget).</b> Discovery memory for
-    many broad targets otherwise grows with <b>targets × union frontier ×
-    depth</b> — a measured 2026-10-02 run (242 circadian targets at depth
-    5, ~450 GB RSS) is why batching is the default: labels stream to
-    <code>shortest_discovery_store/</code> and enumeration holds at most
-    one batch of targets (bounded by the state budget). The <b>Path
-    Budget bounds only the result</b> (emitted paths) and the <b>Edge
-    Budget never applies here</b> — neither controls discovery memory.
-    Deep runs with a single broad target remain depth-bound: lower Max
-    Intermediate Layers or raise Min Synapse Count. Results are identical
-    with or without batching (the run folder's
-    <code>shortest_discovery_diagnostics.batching</code> records the
-    realized composition).
-  </div>
+<h2>Applied threshold &amp; bottleneck provenance</h2>
+<p>The exported parameters distinguish the requested Min Synapse Count from the cutoff that describes the materialized output. In every run, <code>applied_threshold</code> is the canonical equivalent threshold; <code>applied_threshold_source</code> identifies whether it came from the request or a budget. The related values are:</p>
+<table>
+  <tr><th>Value</th><th>Meaning</th></tr>
+  <tr><td><code>requested_threshold</code></td><td>The Min Synapse Count entered by the user.</td></tr>
+  <tr><td><code>applied_threshold</code> / <code>tau_canonical</code></td><td>The minimal threshold that reproduces the output. When the StrongestFirst budget bites, this is <code>w2 + 1</code>; in an unbitten run it is the requested threshold.</td></tr>
+  <tr><td><code>strongest_first_budget</code> and <code>strongest_first_budget_bitten</code></td><td>The effective Max Paths (BodyId) budget and whether it was reached.</td></tr>
+  <tr><td><code>tau</code> / <code>strongest_first_tau</code></td><td>The StrongestFirst landing/collapse bound; it is the weakest retained bottleneck at the budget boundary, not always the minimal applied threshold.</td></tr>
+  <tr><td><code>w2</code> / <code>strongest_dropped_bottleneck</code></td><td>The strongest path bottleneck omitted by the budget. The interval <code>[w2 + 1, tau]</code> yields the same path set.</td></tr>
+  <tr><td><code>W*</code> / <code>strongest_retained_bottleneck</code></td><td>The widest-path ceiling after lossless pruning.</td></tr>
+  <tr><td><code>edge_budget</code>, <code>w0</code>, <code>w1</code></td><td>Shortest mode never applies this graph budget: <code>edge_budget</code> is reported as not applied and <code>edge_weight_floor</code>/<code>edge_budget_landing</code> remain empty. These values are active only in Complete Paths.</td></tr>
+  <tr><td><code>paths_complete</code></td><td>Whether all shortest paths within the explored graph/depth bound were emitted; false means the StrongestFirst path budget bounded the output.</td></tr>
+</table>
 
-  <h2>Applied threshold &amp; bottleneck provenance</h2>
-  <p>The exported parameters distinguish the requested Min Synapse Count
-    from the cutoff that describes the materialized output. In every run,
-    <code>applied_threshold</code> is the canonical equivalent threshold;
-    <code>applied_threshold_source</code> identifies whether it came from the
-    request or a budget. The related values are:</p>
-  <table>
-    <tr><th>Value</th><th>Meaning</th></tr>
-    <tr><td><code>requested_threshold</code></td><td>The Min Synapse Count entered by the user.</td></tr>
-    <tr><td><code>applied_threshold</code> / <code>tau_canonical</code></td><td>The minimal threshold that reproduces the output. When the StrongestFirst budget bites, this is <code>w2 + 1</code>; in an unbitten run it is the requested threshold.</td></tr>
-    <tr><td><code>strongest_first_budget</code> and <code>strongest_first_budget_bitten</code></td><td>The effective Max Paths (BodyId) budget and whether it was reached.</td></tr>
-    <tr><td><code>tau</code> / <code>strongest_first_tau</code></td><td>The StrongestFirst landing/collapse bound; it is the weakest retained bottleneck at the budget boundary, not always the minimal applied threshold.</td></tr>
-    <tr><td><code>w2</code> / <code>strongest_dropped_bottleneck</code></td><td>The strongest path bottleneck omitted by the budget. The interval <code>[w2 + 1, tau]</code> yields the same path set.</td></tr>
-    <tr><td><code>W*</code> / <code>strongest_retained_bottleneck</code></td><td>The widest-path ceiling after lossless pruning.</td></tr>
-    <tr><td><code>edge_budget</code>, <code>w0</code>, <code>w1</code></td><td>Shortest mode never applies this graph budget: <code>edge_budget</code> is reported as not applied and <code>edge_weight_floor</code>/<code>edge_budget_landing</code> remain empty. These values are active only in Complete Paths.</td></tr>
-    <tr><td><code>paths_complete</code></td><td>Whether all shortest paths within the explored graph/depth bound were emitted; false means the StrongestFirst path budget bounded the output.</td></tr>
-  </table>
-  <p>The same provenance block is written to <code>parameters.txt</code>,
-    <code>all_attributes.json</code>, and
-    <code>data_details/parameters.csv</code>, and is shown in the exported
-    <code>_UserGuide_please_read_me</code> files.</p>
+<p>The same provenance block is written to <code>parameters.txt</code>, <code>all_attributes.json</code>, and <code>data_details/parameters.csv</code>, and is shown in the exported <code>_UserGuide_please_read_me</code> files.</p>
+<h2>BodyId enrollment</h2>
+<p>When type-level output is used, several exact bodyId pairs can collapse to one type sequence. The run records this caveat in <code>user_warning_notes.txt</code>. Check the root-level <code>source_neurons.csv</code> (<code>isInPath</code>) and <code>target_neurons.csv</code> (<code>Checked</code>, <code>Layer</code>). <b>Skip BodyId ships on</b>; run Shortest Paths with <b>Skip BodyId</b> off for specific bodyId pairs, or use <b>Complete Paths</b> to enumerate all paths under a chosen depth.</p>
+<h2>Advanced options</h2>
+<ul>
+<li><b>Keywords to Exclude from Paths</b> — same semantics as Complete Paths. These, with <b>Filter By</b>, live in the Advanced Settings expansion, together with <b>Use Cache</b> (reuse cached connection data, on by default) and <b>Cache Only (Offline)</b>.</li>
+<li><b>Custom source/target names</b> and <b>Save Folder Name</b> live in the Output Options card.</li>
+<li><b>Custom Grouping</b> — map neurons into custom groups before the comparison; see the <a href="label_mapper.html">label-mapper guide</a>.</li>
+<li><b>Hemisphere options</b>: separate L/R labels, hemisphere filter, keep conserved edges, symmetry analysis — see <a href="find_path.html#hemisphere-analysis">Hemisphere analysis</a>.</li>
+<li><b>Find Reciprocal Connections</b> — enriches the path graph with direct connections among its nodes.</li>
+</ul>
+<h2>Output</h2>
+<p>Same layout as Complete Paths (see the Complete Paths guide):</p>
+<pre><code>{output_dir}/find-paths-shortest_MCNS_aMe12_to_PPL101_L1w3_20260815_142717/
+aMe12_to_PPL101_allpaths_type.csv  # shortest paths (same columns)
+source_neurons.csv, target_neurons.csv  # enrollment/status details
+all_attributes.json
+parameters.txt, user_warning_notes.txt
+data_details/          # matrices, connection_type.csv, parameters.csv
+visualization/         # Network / Sankey / Heatmap HTML + visualization_data/ inputs
+hemisphere_symmetry/...  # when Symmetry Analysis is on
+find_reciprocal/...      # when Find Reciprocal Connections is on</code></pre>
 
-  <h2>BodyId enrollment</h2>
-  <p>When type-level output is used, several exact bodyId pairs can collapse
-    to one type sequence. The run records this caveat in
-    <code>user_warning_notes.txt</code>. Check the root-level
-    <code>source_neurons.csv</code> (<code>isInPath</code>) and
-    <code>target_neurons.csv</code> (<code>Checked</code>, <code>Layer</code>).
-    <b>Skip BodyId ships on</b>; run Shortest Paths with <b>Skip BodyId</b> off
-    for specific bodyId pairs,
-    or use <b>Complete Paths</b> to enumerate all paths under a chosen depth.</p>
+<p><code>Lmax</code> records the exact bound used for the run; <code>L99</code> is simply a practical high bound. With <b>Skip BodyId</b> off, bodyId-level tables (<code>data_details/connection_info_bodyId.csv</code> and <code>..._allpaths_bodyId_paths.csv</code>) are written alongside the type-level ones. The full reference is in <code>docs/OUTPUT_FILES.md</code>.</p>
+<div class="callout info">
+  <b>Exported run guide:</b> every successful run also writes
+  <code>_UserGuide_please_read_me.html</code> into the run folder — a
+  self-contained explanation of every output file, every table column, and
+  any warnings recorded for the run. Format (html / txt / markdown /
+  disabled) is set in Settings → Default Settings → Run Guide Format.
+</div>
 
-  <h2>Advanced options</h2>
-  <ul>
-    <li><b>Keywords to Exclude from Paths</b> — same semantics as Complete
-      Paths. These, with <b>Filter By</b>, live in the Advanced Settings
-      expansion, together with <b>Use Cache</b> (reuse cached connection data,
-      on by default) and <b>Cache Only (Offline)</b>.</li>
-    <li><b>Custom source/target names</b> and <b>Save Folder Name</b> live in
-      the Output Options card.</li>
-    <li><b>Custom Grouping</b> — map neurons into custom groups before the
-      comparison; see the <a href="label_mapper.html">label-mapper guide</a>.</li>
-    <li><b>Hemisphere options</b>: separate L/R labels, hemisphere filter,
-      keep conserved edges, symmetry analysis — see
-      <a href="find_path.html#hemisphere-analysis">Hemisphere analysis</a>.</li>
-    <li><b>Find Reciprocal Connections</b> — enriches the path graph with
-      direct connections among its nodes.</li>
-  </ul>
-
-  <h2>Output</h2>
-  <p>Same layout as Complete Paths (see the Complete Paths guide):</p>
-  <pre><code>{output_dir}/find-paths-shortest_MCNS_aMe12_to_PPL101_L1w3_20260815_142717/
-  aMe12_to_PPL101_allpaths_type.csv  # shortest paths (same columns)
-  source_neurons.csv, target_neurons.csv  # enrollment/status details
-  all_attributes.json
-  parameters.txt, user_warning_notes.txt
-  data_details/          # matrices, connection_type.csv, parameters.csv
-  visualization/         # Network / Sankey / Heatmap HTML + visualization_data/ inputs
-  hemisphere_symmetry/...  # when Symmetry Analysis is on
-  find_reciprocal/...      # when Find Reciprocal Connections is on</code></pre>
-  <p><code>Lmax</code> records the exact bound used for the run; <code>L99</code>
-    is simply a practical high bound. With <b>Skip BodyId</b> off, bodyId-level tables
-    (<code>data_details/connection_info_bodyId.csv</code> and
-    <code>..._allpaths_bodyId_paths.csv</code>) are written alongside the
-    type-level ones. The full reference is in <code>docs/OUTPUT_FILES.md</code>.</p>
-  <div class="callout info">
-    <b>Exported run guide:</b> every successful run also writes
-    <code>_UserGuide_please_read_me.html</code> into the run folder — a
-    self-contained explanation of every output file, every table column, and
-    any warnings recorded for the run. Format (html / txt / markdown /
-    disabled) is set in Settings → Default Settings → Run Guide Format.
-  </div>
-  <div class="callout tip">
-    <b>Pair report (automatic):</b> the run writes
-    <code>path_report.html</code> + <code>paths_pair_breakdown/*.csv</code>
-    into its folder when it completes — capped top-paths tables with
-    Source/Target bodyId coverage columns and per-length network tabs,
-    top-paths tables, and interactive offline networks. Shortest is
-    minimum-hop per bodyId pair, so a type-level pair can still span
-    several lengths; the per-length cap applies normally (the report
-    states this).
-  </div>
+<div class="callout tip">
+  <b>Pair report (automatic):</b> the run writes
+  <code>path_report.html</code> + <code>paths_pair_breakdown/*.csv</code>
+  into its folder when it completes — capped top-paths tables with
+  Source/Target bodyId coverage columns and per-length network tabs,
+  top-paths tables, and interactive offline networks. Shortest is
+  minimum-hop per bodyId pair, so a type-level pair can still span
+  several lengths; the per-length cap applies normally (the report
+  states this).
+</div>
 </main>
 </body>
 </html>

@@ -14,562 +14,429 @@
     <span class="tag">3D Skeleton</span>
   </header>
   <h1>3D Skeleton (plot3dSkeleton)</h1>
-  <p class="lede">
-    The <b>3D Skeleton</b> tab renders neuron morphology, synapses and brain
-    region meshes from any configured dataset into an interactive HTML scene.
-    It runs <code>VisualizeSkeleton.plot_neurons()</code> in the background.
-    For pathway graphs see the separate
-    <a href="network.html">Network guide</a>.
-  </p>
+<p class="lede">The <b>3D Skeleton</b> tab renders neuron morphology, synapses and brain region meshes from any configured dataset into an interactive HTML scene. It runs <code>VisualizeSkeleton.plot_neurons()</code> in the background. For pathway graphs see the separate <a href="network.html">Network guide</a>.</p>
+<h2>Quick start</h2>
+<ol>
+<li>In the <b>Layer Structure</b> tree, three layer rows are ready by default — add neurons to them, or click <b>Add Layer</b> for more rows.</li>
+<li>Pick the dataset; keep <b>Brain Mesh = native</b> (each dataset draws its own template outline; for BANC scenes this is the brain portion of the whole-CNS outline). ROI meshes are optional and start unselected.</li>
+<li>Click <b>Generate 3D Skeleton</b>.</li>
+</ol>
+<h2>Inputs &amp; examples - the layer tree</h2>
+<p>The tree mirrors the script's nested-list layer model: each row is one layer and may hold several neurons (type, instance, bodyId or regex). Drag a row to reorder layers; drag a neuron chip onto another row to regroup it. Optional layer names feed the legend (unnamed layers are auto-named): the per-row name input is collapsed behind the small edit button so the rows stay compact.</p>
+<table>
+  <tr><th>Neuron value</th><th>Meaning</th></tr>
+  <tr><td><code>aMe12</code></td><td>All bodyIds of type aMe12</td></tr>
+  <tr><td><code>720575940610453042</code></td><td>Single bodyId</td></tr>
+  <tr><td><code>aMe12_R</code></td><td>Hemisphere-specific instance</td></tr>
+  <tr><td><code>KC.*</code></td><td>Regex pattern (with Match by = Regex)</td></tr>
+</table>
 
-  <h2>Quick start</h2>
-  <ol>
-    <li>In the <b>Layer Structure</b> tree, three layer rows are ready by
-      default — add neurons to them, or click <b>Add Layer</b> for more
-      rows.</li>
-    <li>Pick the dataset; keep <b>Brain Mesh = native</b> (each dataset
-      draws its own template outline; for BANC scenes this is the brain
-      portion of the whole-CNS outline). ROI meshes are
-      optional and start unselected.</li>
-    <li>Click <b>Generate 3D Skeleton</b>.</li>
-  </ol>
+<p>The <b>Match by</b> mode (exact / starts with / contains / ends with / regex) converts every neuron in the tree into a regex pattern, and the <b>Search Columns</b> selector (<code>auto</code> / <code>type</code> / <code>instance</code> / <code>bodyId</code>) scopes name resolution — the same neuron-search backend as Find All Paths. Upload formats for neuron lists are documented in <a href="input_formats.html">Input File Formats</a>.</p>
+<h2 id="layer-editor-modes">Layer editor modes</h2>
 
-  <h2>Inputs &amp; examples - the layer tree</h2>
-  <p>The tree mirrors the script's nested-list layer model: each row is one
-    layer and may hold several neurons (type, instance, bodyId or regex).
-    Drag a row to reorder layers; drag a neuron chip onto another row to
-    regroup it. Optional layer names feed the legend (unnamed layers are
-    auto-named): the per-row name input is collapsed behind the small edit
-    button so the rows stay compact.</p>
-  <table>
-    <tr><th>Neuron value</th><th>Meaning</th></tr>
-    <tr><td><code>aMe12</code></td><td>All bodyIds of type aMe12</td></tr>
-    <tr><td><code>720575940610453042</code></td><td>Single bodyId</td></tr>
-    <tr><td><code>aMe12_R</code></td><td>Hemisphere-specific instance</td></tr>
-    <tr><td><code>KC.*</code></td><td>Regex pattern (with Match by = Regex)</td></tr>
-  </table>
-  <p>The <b>Match by</b> mode (exact / starts with / contains / ends with /
-    regex) converts every neuron in the tree into a regex pattern, and the
-    <b>Search Columns</b> selector (<code>auto</code> / <code>type</code> /
-    <code>instance</code> / <code>bodyId</code>) scopes name resolution — the
-    same neuron-search backend as Find All Paths. Upload formats for neuron
-    lists are documented in
-    <a href="input_formats.html">Input File Formats</a>.</p>
+<p>Three segmented buttons on one row (<b>Standard</b>, <b>Advanced</b>, <b>File upload</b>) pick how the neuron layers and their colors are defined, and a <b>Synapse Mode</b> box plus <b>Synapse Threshold</b> sit directly below them. Only <b>Standard</b> mode uses the on-screen <b>Neuron Colors</b> / <b>Synapse Colors</b> palette editors; the other two modes take neuron/synapse colors from the in-file settings. The <b>Brain Region ROIs</b> panel (including <b>ROI Colors</b>) is independent of the layer editor — the editor defines neurons and synapses, never ROI meshes — and is identical in every mode.</p>
+<ul>
+<li><b>Standard</b> — the classic drag-and-drop layer rows (add neurons to a row, drag rows to reorder, drag chips between rows). An <b>Export CSV</b> button writes the current order to the layer-map CSV format (<code>layer,neuron</code>). The Neuron Colors / Synapse Colors palette editors are shown here.</li>
+<li><b>Advanced</b> — selecting it shows the editable layer editor table directly (it is not collapsed). Each row's <b>Layer</b> cell is a bare numeric input with up/down arrows; layer numbers are free integers &mdash; gaps are legitimate (a table of 1, 3, 4 is valid), and the renderer offsets by the lowest number. A numbering <i>jump</i> breaks the inter-layer synapse pair (see the CSV format below). Pressing <b>Enter</b> in a single-value cell commits it and moves to the same column of the next row; in the Neuron cell, Enter with text adds a chip and Enter on an empty field moves down. The colour columns follow the synapse mode: <b>Synapse color</b> for <code>synapse</code>, or <b>Pre-synaptic</b> + <b>Post-synaptic</b> colors for <code>pre-post sites</code> (and the exported/uploaded CSV matches that same column set). The single-color picker (alpha + Bokeh palette) is opened from a color cell's picker button or the palette button beside each colour input in the Add Row form. Empty color cells display <code>(auto)</code>. The <b>See available neurons</b> viewer appends one row per selected entry and assigns each entry its own next layer (consecutive numbers, e.g. a five-entry selection lands on layers 2&ndash;6); the Add Row neuron field also provides dataset-aware suggestions and, with an empty field, your Recent queries. Picking an entry adds the chip and keeps that query's rows on screen &mdash; in either list, a name you already added stays listed, tinted and ticked &mdash; so several neurons go into one cell without retyping and the rows never shift under the pointer. Clicking a ticked row takes that chip back out, the same as the chip's own <b>x</b>; the small <b>&times;</b> beside a Recent entry &mdash; shown only while that row is hovered, so it never competes with the tick &mdash; is a different action, which drops it from your query history and keeps the chip. A click on the field, an Escape or leaving the cell closes the list and resets it to Recent. Rows are auto-saved to disk as you edit — the debounced auto-save arms once the table holds <b>5 filled rows</b> and a <b>Draft Name</b> is entered (below those gates nothing is saved; export explicitly instead); use <b>Export CSV</b> to download, or <b>Upload CSV</b> to load a file into the table. The Neuron Colors / Synapse Colors palette editors are hidden (colors come from the file); the Brain Region ROIs panel stays available.</li>
+<li><b>File upload</b> — upload a custom-layer CSV directly. Its color columns are used as-is (no editable table; the Neuron Colors / Synapse Colors palette editors are hidden, ROI Colors stay available).</li>
+</ul>
+<p>The same custom-layer CSV can also be produced/edited by hand. It has a <code>layer</code> column (any whole numbers; they need not start at 0 or 1 and need not be continuous &mdash; the lowest value is treated as the first layer) and a <code>neuron</code> column (any legal query name, the legacy <code>id_type_instance</code> name also works). Optional color columns:</p>
+<table>
+  <tr><th>Column</th><th>Meaning</th></tr>
+  <tr><td><code>color</code></td><td>Per-neuron display color. <code>rgba(...)</code>
+    overrides the global <b>Neuron Opacity</b>; <code>rgb(...)</code> inherits it.</td></tr>
+  <tr><td><code>synapse_color</code></td><td>Color of the inter-layer (connector)
+    synapses whose pre-synaptic site is this neuron. Connector synapses are
+    drawn only between <i>consecutively numbered</i> layers: a numbering jump
+    breaks the pair (e.g. layers 1, 2, 4, 5 render as separate pairs
+    1&rarr;2 and 4&rarr;5 with no connector between 2 and 4).</td></tr>
+  <tr><td><code>pre_synaptic_color</code></td><td>Color of this neuron's pre-synaptic
+    <i>sites</i> (only used by the pre/post mode).</td></tr>
+  <tr><td><code>post_synaptic_color</code></td><td>Color of this neuron's post-synaptic
+    <i>sites</i> (only used by the pre/post mode).</td></tr>
+</table>
 
-  <h2 id="layer-editor-modes">Layer editor modes</h2>
-  <p>Three segmented buttons on one row (<b>Standard</b>, <b>Advanced</b>,
-    <b>File upload</b>) pick how the neuron layers and their colors are
-    defined, and a <b>Synapse Mode</b> box plus <b>Synapse Threshold</b> sit
-    directly below them. Only <b>Standard</b> mode uses the on-screen
-    <b>Neuron Colors</b> / <b>Synapse Colors</b> palette editors; the other
-    two modes take neuron/synapse colors from the in-file settings. The
-    <b>Brain Region ROIs</b> panel (including <b>ROI Colors</b>) is
-    independent of the layer editor — the editor defines neurons and
-    synapses, never ROI meshes — and is identical in every mode.</p>
-  <ul>
-    <li><b>Standard</b> — the classic drag-and-drop layer rows (add neurons to
-      a row, drag rows to reorder, drag chips between rows). An <b>Export
-      CSV</b> button writes the current order to the layer-map CSV format
-      (<code>layer,neuron</code>). The Neuron Colors / Synapse Colors palette
-      editors are shown here.</li>
-    <li><b>Advanced</b> — selecting it shows the editable layer editor table
-      directly (it is not collapsed). Each row's <b>Layer</b> cell is a bare
-      numeric input with up/down arrows; layer numbers are free integers
-      &mdash; gaps are legitimate (a table of 1, 3, 4 is valid), and the
-      renderer offsets by the lowest number. A numbering <i>jump</i> breaks the
-      inter-layer synapse pair (see the CSV format below). Pressing
-      <b>Enter</b> in a single-value cell commits it and moves to the same
-      column of the next row; in the Neuron cell, Enter with text adds a chip
-      and Enter on an empty field moves down. The
-      colour columns follow the synapse mode: <b>Synapse color</b> for
-      <code>synapse</code>, or <b>Pre-synaptic</b> + <b>Post-synaptic</b>
-      colors for <code>pre-post sites</code> (and the exported/uploaded CSV
-      matches that same column set). The single-color picker (alpha + Bokeh
-      palette) is opened from a color cell's picker button or the palette button
-      beside each colour input in the Add Row form. Empty color cells display
-      <code>(auto)</code>. The <b>See available neurons</b> viewer appends one
-      row per selected entry and assigns each entry its own next layer
-      (consecutive numbers, e.g. a five-entry selection lands on layers
-      2&ndash;6); the Add Row neuron field also provides dataset-aware
-      suggestions and, with an empty field, your Recent queries. Picking an
-      entry adds the chip and keeps that query's rows on screen &mdash; in either
-      list, a name you already added stays listed, tinted and ticked &mdash; so
-      several neurons go into one cell without retyping and the rows never shift
-      under the pointer. Clicking a ticked row takes that chip back out, the same
-      as the chip's own <b>x</b>; the small <b>&times;</b> beside a Recent entry
-      &mdash; shown only while that row is hovered, so it never competes with the
-      tick &mdash; is a different action, which drops it from your query history
-      and keeps the chip. A click on the field, an
-      Escape or leaving the cell closes the list and resets it to Recent.
-      Rows are auto-saved to
-      disk as you edit — the debounced auto-save arms once the table holds
-      <b>5 filled rows</b> and a <b>Draft Name</b> is entered (below those
-      gates nothing is saved; export explicitly instead); use
-      <b>Export CSV</b> to download, or
-      <b>Upload CSV</b> to load a file into the table. The Neuron Colors /
-      Synapse Colors palette editors are hidden (colors come from the file);
-      the Brain Region ROIs panel stays available.</li>
-    <li><b>File upload</b> — upload a custom-layer CSV directly. Its color
-      columns are used as-is (no editable table; the Neuron Colors / Synapse
-      Colors palette editors are hidden, ROI Colors stay available).</li>
-  </ul>
-  <p>The same custom-layer CSV can also be produced/edited by hand. It has a
-    <code>layer</code> column (any whole numbers; they need not start at 0 or 1
-    and need not be continuous &mdash; the lowest value is treated as the first
-    layer) and a <code>neuron</code> column (any
-    legal query name, the legacy <code>id_type_instance</code> name also
-    works). Optional color columns:</p>
-  <table>
-    <tr><th>Column</th><th>Meaning</th></tr>
-    <tr><td><code>color</code></td><td>Per-neuron display color. <code>rgba(...)</code>
-      overrides the global <b>Neuron Opacity</b>; <code>rgb(...)</code> inherits it.</td></tr>
-    <tr><td><code>synapse_color</code></td><td>Color of the inter-layer (connector)
-      synapses whose pre-synaptic site is this neuron. Connector synapses are
-      drawn only between <i>consecutively numbered</i> layers: a numbering jump
-      breaks the pair (e.g. layers 1, 2, 4, 5 render as separate pairs
-      1&rarr;2 and 4&rarr;5 with no connector between 2 and 4).</td></tr>
-    <tr><td><code>pre_synaptic_color</code></td><td>Color of this neuron's pre-synaptic
-      <i>sites</i> (only used by the pre/post mode).</td></tr>
-    <tr><td><code>post_synaptic_color</code></td><td>Color of this neuron's post-synaptic
-      <i>sites</i> (only used by the pre/post mode).</td></tr>
-  </table>
-  <p>Download an example:
-    <a href="examples/skeleton_custom_layers.csv">skeleton_custom_layers.csv</a>.</p>
+<p>Download an example: <a href="examples/skeleton_custom_layers.csv">skeleton_custom_layers.csv</a>.</p>
+<h2 id="hemisphere-analysis">Hemisphere analysis</h2>
 
-  <h2 id="hemisphere-analysis">Hemisphere analysis</h2>
-  <p>The <b>Hemisphere</b> selector (next to Search Columns) restricts the
-    plotted neurons to one side:</p>
-  <ul>
-    <li><b>both</b> (default): all neurons.</li>
-    <li><b>left</b>: only left-hemisphere neurons.</li>
-    <li><b>right</b>: only right-hemisphere neurons.</li>
-  </ul>
-  <p>Hemisphere assignment is automatic per neuron: the <b>Soma side</b> /
-    <b>hemisphere</b> column wins when present, otherwise the <b>instance</b>
-    suffix (<code>_R</code> → right, <code>_L</code> → left). Neurons with
-    neither are unclassified (<code>U</code>) and are <b>always included</b>
-    in every option — so datasets whose neurons lack hemisphere notation
-    (e.g. some non-NeuPrint tables) are never silently dropped.</p>
-  <div class="callout tip">
-    <b>Manual suffix search still works</b> — a chip like
-    <code>aMe12_R</code> or <code>.*_R</code> selects one side per type; the
-    Hemisphere selector applies the same rule to every neuron automatically,
-    including those without a suffix.
+<p>The <b>Hemisphere</b> selector (next to Search Columns) restricts the plotted neurons to one side:</p>
+<ul>
+<li><b>both</b> (default): all neurons.</li>
+<li><b>left</b>: only left-hemisphere neurons.</li>
+<li><b>right</b>: only right-hemisphere neurons.</li>
+</ul>
+<p>Hemisphere assignment is automatic per neuron: the <b>Soma side</b> / <b>hemisphere</b> column wins when present, otherwise the <b>instance</b> suffix (<code>_R</code> → right, <code>_L</code> → left). Neurons with neither are unclassified (<code>U</code>) and are <b>always included</b> in every option — so datasets whose neurons lack hemisphere notation (e.g. some non-NeuPrint tables) are never silently dropped.</p>
+<div class="callout tip">
+  <b>Manual suffix search still works</b> — a chip like
+  <code>aMe12_R</code> or <code>.*_R</code> selects one side per type; the
+  Hemisphere selector applies the same rule to every neuron automatically,
+  including those without a suffix.
+</div>
+
+<h2>Options</h2>
+<p>The render controls live in a <b>General Appearance</b> card with three expansions &mdash; <b>Neuron Skeleton Appearance</b>, <b>Synapse Appearance</b> and <b>Brain Region ROIs (independent)</b> &mdash; beside the <b>Export Video / GIF</b>, <b>Individual Profiles (PDF / PPTX)</b> and <b>Advanced Settings</b> cards; the re-export band sits below them all. The four blocks below mirror those expansions.</p>
+<div class="grid">
+  <div class="card">
+    <h3>General Appearance</h3>
+    <ul>
+      <li><b>Skeleton Mode</b>: tube (detailed) or line (fast). In line
+        mode every neuron shows a soma marker: the sphere sits at the SWC
+        <code>label==1</code> node, and skeletons without that marker
+        (about a third of male-cns) get the node nearest the NeuPrint
+        <code>somaLocation</code> annotation marked automatically — or the
+        fattest radius node when no annotation exists — before line
+        simplification; never on BANC, whose skeletons carry no soma
+        signal. Spheres below 0.55% of the scene's longest axis are grown
+        to that floor at save time, so the soma stays a visible dot at
+        whole-CNS overview; line soma sizes are display choices, not
+        measurements.</li>
+      <li><b>Normalized Tube Radius</b> (BANC datasets only): scale BANC
+        tube radii to a normalized diameter; <b>Radius Target (nm)</b>
+        (default 240, range 10–1000) sets the target diameter.</li>
+      <li><b>Neuron Legend Mode</b>: layer, type, tree, or single. ROI
+        meshes always keep independent legend entries and rank after every
+        neuron entry (brain mesh, then VNC mesh, last).</li>
+      <li><b>Expandable legend (tree)</b>: the exported interactive HTML
+        replaces the flat legend with a collapsible panel at the original
+        legend position (top-right). Without custom layer names the
+        hierarchy is <i>type → bodyId/instance</i>; with custom layer names
+        or a layer-map CSV it is <i>group → type → bodyId/instance</i>.
+        Each expandable row shows a color swatch and a count of unique
+        neuron items. A singleton custom bodyId group is rendered as one
+        direct row with count <code>1</code>, so a skeleton plus its soma
+        mesh does not become two neurons or a redundant child leaf.
+        Toggling a type hides its skeleton and
+        pre/post site traces, individual neurons toggle separately, and
+        synapse/mesh rows sit below the types (meshes last). Pre/post site
+        traces also appear as their own <i>pre sites</i> / <i>post sites</i>
+        leaves under their type (or group), and any item list longer than
+        10 rows expands into a mini scrollable area. Static exports
+        keep the plain type-level legend, and give each context envelope a
+        solid colour square for it: an envelope drawn nearly transparent would
+        otherwise name a row whose square is invisible on the page background.
+        Cross-dataset transformed query
+        overlays use the source neuron's native <code>type</code> label in
+        their bodyId row rather than a mapped <code>flywireType</code> value
+        (for example, MCNS <code>SMP227</code> remains <code>SMP227</code>).
+        The panel also shows the
+        double-click interval: a second click on the same row under 300 ms
+        isolates that row; repeat the double-click to bring back the rows the
+        page <i>opened</i> with — which excludes a template half the run
+        embedded hidden. The eye in the panel header is the other control: it
+        shows or hides <b>every</b> row, that embedded half included. A row's
+        eye reports what the scene actually draws, so a template half the page
+        embeds but keeps transparent opens as an empty circle on a grey row
+        from the first frame rather than looking shown. And because these
+        pages hand the legend to the panel, a panel that cannot build itself
+        puts the flat legend back and logs the reason, so a page is never left
+        with no legend at all.</li>
+      <li><b>Freeze 3D view when toggling the legend</b> (checkbox in
+        <b>Advanced</b> → Export, on by default): Plotly re-autoranges the
+        three scene axes over the <i>visible</i> traces on every redraw, so
+        hiding a legend row or a tree-panel eye moved the framing instead of
+        just the drawn traces. When checked, the exported viewer HTML (and its
+        <code>_simplified.html</code> copy) pins its axes on first render to
+        the extents of <b>every</b> trace — hidden layers included, each axis
+        padded by 1/32 of its span, which is Plotly's own 3D margin — so a
+        toggle only changes what is drawn. It also freezes the box's x:y:z
+        proportions at the ratio those extents imply, because Plotly's
+        <code>aspectmode='data'</code> otherwise re-derives them from the
+        <i>visible</i> traces and one hidden mesh reshapes the anatomy. A
+        🔒/⛶ <b>Freeze/Fit</b> button in
+        the page's top-left corner (or the <code>F</code> key) switches the
+        autoscaling back on, and the <b>⌖ Recenter</b> button just below it
+        (or the <code>C</code> key) moves the rotation pivot onto the traces
+        you can currently see — a frozen box keeps its pivot at the centre of
+        the <i>whole</i> scene, so after hiding the VNC outline the brain
+        would otherwise orbit around the empty space it left. Recentering
+        moves only the pivot; the box and its proportions stay pinned. It does
+        nothing in fit mode, where the pivot already follows the visible
+        traces — and pressing <b>Fit clears that pivot</b>, because the offset
+        is normalized against the pinned box and fit mode shrinks the box onto
+        what you can see, so a leftover number would leave the anatomy hanging
+        off the rotation centre. Freezing again restores the pivot you chose
+        while the visible traces are still the ones it was computed from;
+        reveal or hide a row in between and the pivot is recomputed on what
+        is visible now. A page that opens with a context
+        half embedded but hidden <b>runs this control itself at setup</b>, so
+        its orbit starts on the anatomy you can see rather than on the middle
+        of the gap between the two halves — measured on a male-cns brain-only
+        page, a 40° turn slid the brain 212&nbsp;px across the frame before and
+        2&nbsp;px after. Nothing else about the framing moves: the box, its
+        proportions and the zoom are exactly what they were. All three floating controls — the
+        two view buttons and the light/dark switch in the other corner —
+        carry a <b>hover hint</b> on <b>one row</b> that names the key and
+        states the current state ("View is frozen: legend toggles keep the
+        framing (F to fit)"; the switch says which theme the click selects),
+        drawn by the page's own stylesheet rather than a
+        native tooltip, which costs a second to appear. The freeze also
+        re-applies itself after the page's single
+        <i>reset camera</i> button, which restores a layout
+        snapshot taken before the freeze existed and would otherwise hand the
+        scaling back to the visible traces; the same click also lands the
+        camera back on the view the page opened with, so the
+        <b>rotation pivot is re-aimed on the visible traces</b> rather than
+        left at the centre of the whole-scene box. The same re-aim answers
+        every <b>View</b> dropdown entry (Front/Top/…): selecting a view
+        keeps the orbit on the anatomy you can see instead of the middle of
+        the box. The render <b>scale</b> is locked by construction: the
+        embedded context halves ship visible-but-transparent and their eyes
+        toggle opacity rather than visibility, so plotly's scene
+        normalization never re-derives around a toggle and the frozen
+        framing holds to the pixel for every reveal and hide. (A visibility
+        toggle would make plotly re-zoom the whole picture — hiding the
+        brain mesh used to rescale the remaining neurons ~2×.) Plotly's
+        second reset button is
+        removed from the toolbar: the two differ only by which snapshot they
+        restore, and the kept one returns the page to the framing it opened
+        with. The pin is injected page script
+        that exits early under
+        <code>navigator.webdriver</code>, so view PNGs, individual profiles
+        and video frames still autoscale exactly as before. A brain or VNC
+        envelope the run did not ask to show is still inside the pinned box,
+        because the page has one box and a half you can reveal has to be in
+        it — so a brain-only male-cns page opens framed to the whole CNS,
+        1.46× wider along its longest axis than the brain alone needs, and its
+        VNC eye then draws the nerve cord without moving the framing at all.
+        The hidden half costs the <i>orbit</i> nothing, though: the page opens
+        pivoted on the half it draws, so turning the scene keeps the brain
+        where it is instead of swinging it around the cord's empty space.
+        Nothing about a frozen view changes once you have it; <b>Fit</b>
+        (<code>F</code>) is the control that follows content. The frame you
+        open on is unchanged either way; untick the box to hand scaling back to Plotly.</li>
+      <li><b>Background</b>: white or black. The default neuron palette
+        follows it — <b>Category10</b> on white, <b>Set3</b> on black —
+        until you pick a palette manually.</li>
+      <li><b>Theme switch in the exported HTML</b>: the main viewer HTML
+        (and its <code>_simplified.html</code> copy) carries a floating
+        🌙/☀️ button (top-right, or press <code>T</code>) that flips the
+        page between light and dark for viewing — background, legend and
+        dropdown/hint text all follow.
+        It always opens with the configured Background; static exports
+        (view PNGs, per-neuron files, video) keep the fixed background, and
+        neuron/synapse colors stay as generated.</li>
+      <li><b>Brain Mesh</b>: <b>native</b> (dataset's own template),
+        <b>BANC</b> (explicit BANC whole-CNS outline), <b>FAFB</b>,
+        <b>male-cns</b>, or <b>none</b> — those five and nothing else;
+        the pre-rename <b>template</b>/<b>whole</b> names are retired.
+        <b>VNC Mesh</b>
+        toggle for male-cns/manc/BANC. Both pick what the page opens
+        <i>showing</i>: on <b>male-cns</b> and <b>BANC</b> the half you leave
+        off is still written into the exported HTML — hidden, and at reduced
+        detail — so whoever opens the page can reveal it from the legend tree
+        without re-running anything. Other datasets have a single native
+        template (FAFB the brain, hemibrain the half-brain outline), so
+        nothing extra is embedded. Neither hidden half is added to the
+        downloadable mesh model. <b>Brain Mesh Color</b> and <b>VNC Mesh
+        Color</b> each default to <b>Auto</b> — the fixed adaptive outline
+        <code>#74A8D6</code> at 4% opacity on any background; uncheck either
+        to pick a fixed
+        outline color and opacity for that half alone. The two halves sit as
+        <b>one row each</b>, columns aligned, so a trio cannot be read as
+        belonging to the wrong side — the left cell names the half, and for
+        the cord that cell <i>is</i> the <b>VNC Mesh</b> checkbox (the brain's
+        is the <b>Brain Mesh</b> menu above). Each applies to the
+        embedded hidden half as well, so a nerve cord the viewer reveals
+        arrives in the colour set for it, not the default blue.</li>
+    </ul>
   </div>
 
-  <h2>Options</h2>
-  <p>The render controls live in a <b>General Appearance</b> card with three
-    expansions &mdash; <b>Neuron Skeleton Appearance</b>, <b>Synapse
-    Appearance</b> and <b>Brain Region ROIs (independent)</b> &mdash; beside
-    the <b>Export Video / GIF</b>, <b>Individual Profiles (PDF / PPTX)</b> and
-    <b>Advanced Settings</b> cards; the re-export band sits below them all.
-    The four blocks below mirror those expansions.</p>
-  <div class="grid">
-    <div class="card">
-      <h3>General Appearance</h3>
-      <ul>
-        <li><b>Skeleton Mode</b>: tube (detailed) or line (fast). In line
-          mode every neuron shows a soma marker: the sphere sits at the SWC
-          <code>label==1</code> node, and skeletons without that marker
-          (about a third of male-cns) get the node nearest the NeuPrint
-          <code>somaLocation</code> annotation marked automatically — or the
-          fattest radius node when no annotation exists — before line
-          simplification; never on BANC, whose skeletons carry no soma
-          signal. Spheres below 0.55% of the scene's longest axis are grown
-          to that floor at save time, so the soma stays a visible dot at
-          whole-CNS overview; line soma sizes are display choices, not
-          measurements.</li>
-        <li><b>Normalized Tube Radius</b> (BANC datasets only): scale BANC
-          tube radii to a normalized diameter; <b>Radius Target (nm)</b>
-          (default 240, range 10–1000) sets the target diameter.</li>
-        <li><b>Neuron Legend Mode</b>: layer, type, tree, or single. ROI
-          meshes always keep independent legend entries and rank after every
-          neuron entry (brain mesh, then VNC mesh, last).</li>
-        <li><b>Expandable legend (tree)</b>: the exported interactive HTML
-          replaces the flat legend with a collapsible panel at the original
-          legend position (top-right). Without custom layer names the
-          hierarchy is <i>type → bodyId/instance</i>; with custom layer names
-          or a layer-map CSV it is <i>group → type → bodyId/instance</i>.
-          Each expandable row shows a color swatch and a count of unique
-          neuron items. A singleton custom bodyId group is rendered as one
-          direct row with count <code>1</code>, so a skeleton plus its soma
-          mesh does not become two neurons or a redundant child leaf.
-          Toggling a type hides its skeleton and
-          pre/post site traces, individual neurons toggle separately, and
-          synapse/mesh rows sit below the types (meshes last). Pre/post site
-          traces also appear as their own <i>pre sites</i> / <i>post sites</i>
-          leaves under their type (or group), and any item list longer than
-          10 rows expands into a mini scrollable area. Static exports
-          keep the plain type-level legend, and give each context envelope a
-          solid colour square for it: an envelope drawn nearly transparent would
-          otherwise name a row whose square is invisible on the page background.
-          Cross-dataset transformed query
-          overlays use the source neuron's native <code>type</code> label in
-          their bodyId row rather than a mapped <code>flywireType</code> value
-          (for example, MCNS <code>SMP227</code> remains <code>SMP227</code>).
-          The panel also shows the
-          double-click interval: a second click on the same row under 300 ms
-          isolates that row; repeat the double-click to bring back the rows the
-          page <i>opened</i> with — which excludes a template half the run
-          embedded hidden. The eye in the panel header is the other control: it
-          shows or hides <b>every</b> row, that embedded half included. A row's
-          eye reports what the scene actually draws, so a template half the page
-          embeds but keeps transparent opens as an empty circle on a grey row
-          from the first frame rather than looking shown. And because these
-          pages hand the legend to the panel, a panel that cannot build itself
-          puts the flat legend back and logs the reason, so a page is never left
-          with no legend at all.</li>
-        <li><b>Freeze 3D view when toggling the legend</b> (checkbox in
-          <b>Advanced</b> → Export, on by default): Plotly re-autoranges the
-          three scene axes over the <i>visible</i> traces on every redraw, so
-          hiding a legend row or a tree-panel eye moved the framing instead of
-          just the drawn traces. When checked, the exported viewer HTML (and its
-          <code>_simplified.html</code> copy) pins its axes on first render to
-          the extents of <b>every</b> trace — hidden layers included, each axis
-          padded by 1/32 of its span, which is Plotly's own 3D margin — so a
-          toggle only changes what is drawn. It also freezes the box's x:y:z
-          proportions at the ratio those extents imply, because Plotly's
-          <code>aspectmode='data'</code> otherwise re-derives them from the
-          <i>visible</i> traces and one hidden mesh reshapes the anatomy. A
-          🔒/⛶ <b>Freeze/Fit</b> button in
-          the page's top-left corner (or the <code>F</code> key) switches the
-          autoscaling back on, and the <b>⌖ Recenter</b> button just below it
-          (or the <code>C</code> key) moves the rotation pivot onto the traces
-          you can currently see — a frozen box keeps its pivot at the centre of
-          the <i>whole</i> scene, so after hiding the VNC outline the brain
-          would otherwise orbit around the empty space it left. Recentering
-          moves only the pivot; the box and its proportions stay pinned. It does
-          nothing in fit mode, where the pivot already follows the visible
-          traces — and pressing <b>Fit clears that pivot</b>, because the offset
-          is normalized against the pinned box and fit mode shrinks the box onto
-          what you can see, so a leftover number would leave the anatomy hanging
-          off the rotation centre. Freezing again restores the pivot you chose
-          while the visible traces are still the ones it was computed from;
-          reveal or hide a row in between and the pivot is recomputed on what
-          is visible now. A page that opens with a context
-          half embedded but hidden <b>runs this control itself at setup</b>, so
-          its orbit starts on the anatomy you can see rather than on the middle
-          of the gap between the two halves — measured on a male-cns brain-only
-          page, a 40° turn slid the brain 212&nbsp;px across the frame before and
-          2&nbsp;px after. Nothing else about the framing moves: the box, its
-          proportions and the zoom are exactly what they were. All three floating controls — the
-          two view buttons and the light/dark switch in the other corner —
-          carry a <b>hover hint</b> on <b>one row</b> that names the key and
-          states the current state ("View is frozen: legend toggles keep the
-          framing (F to fit)"; the switch says which theme the click selects),
-          drawn by the page's own stylesheet rather than a
-          native tooltip, which costs a second to appear. The freeze also
-          re-applies itself after the page's single
-          <i>reset camera</i> button, which restores a layout
-          snapshot taken before the freeze existed and would otherwise hand the
-          scaling back to the visible traces; the same click also lands the
-          camera back on the view the page opened with, so the
-          <b>rotation pivot is re-aimed on the visible traces</b> rather than
-          left at the centre of the whole-scene box. The same re-aim answers
-          every <b>View</b> dropdown entry (Front/Top/…): selecting a view
-          keeps the orbit on the anatomy you can see instead of the middle of
-          the box. The render <b>scale</b> is locked by construction: the
-          embedded context halves ship visible-but-transparent and their eyes
-          toggle opacity rather than visibility, so plotly's scene
-          normalization never re-derives around a toggle and the frozen
-          framing holds to the pixel for every reveal and hide. (A visibility
-          toggle would make plotly re-zoom the whole picture — hiding the
-          brain mesh used to rescale the remaining neurons ~2×.) Plotly's
-          second reset button is
-          removed from the toolbar: the two differ only by which snapshot they
-          restore, and the kept one returns the page to the framing it opened
-          with. The pin is injected page script
-          that exits early under
-          <code>navigator.webdriver</code>, so view PNGs, individual profiles
-          and video frames still autoscale exactly as before. A brain or VNC
-          envelope the run did not ask to show is still inside the pinned box,
-          because the page has one box and a half you can reveal has to be in
-          it — so a brain-only male-cns page opens framed to the whole CNS,
-          1.46× wider along its longest axis than the brain alone needs, and its
-          VNC eye then draws the nerve cord without moving the framing at all.
-          The hidden half costs the <i>orbit</i> nothing, though: the page opens
-          pivoted on the half it draws, so turning the scene keeps the brain
-          where it is instead of swinging it around the cord's empty space.
-          Nothing about a frozen view changes once you have it; <b>Fit</b>
-          (<code>F</code>) is the control that follows content. The frame you
-          open on is unchanged either way; untick the box to hand scaling back to Plotly.</li>
-        <li><b>Background</b>: white or black. The default neuron palette
-          follows it — <b>Category10</b> on white, <b>Set3</b> on black —
-          until you pick a palette manually.</li>
-        <li><b>Theme switch in the exported HTML</b>: the main viewer HTML
-          (and its <code>_simplified.html</code> copy) carries a floating
-          🌙/☀️ button (top-right, or press <code>T</code>) that flips the
-          page between light and dark for viewing — background, legend and
-          dropdown/hint text all follow.
-          It always opens with the configured Background; static exports
-          (view PNGs, per-neuron files, video) keep the fixed background, and
-          neuron/synapse colors stay as generated.</li>
-        <li><b>Brain Mesh</b>: <b>native</b> (dataset's own template),
-          <b>BANC</b> (explicit BANC whole-CNS outline), <b>FAFB</b>,
-          <b>male-cns</b>, or <b>none</b> — those five and nothing else;
-          the pre-rename <b>template</b>/<b>whole</b> names are retired.
-          <b>VNC Mesh</b>
-          toggle for male-cns/manc/BANC. Both pick what the page opens
-          <i>showing</i>: on <b>male-cns</b> and <b>BANC</b> the half you leave
-          off is still written into the exported HTML — hidden, and at reduced
-          detail — so whoever opens the page can reveal it from the legend tree
-          without re-running anything. Other datasets have a single native
-          template (FAFB the brain, hemibrain the half-brain outline), so
-          nothing extra is embedded. Neither hidden half is added to the
-          downloadable mesh model. <b>Brain Mesh Color</b> and <b>VNC Mesh
-          Color</b> each default to <b>Auto</b> — the fixed adaptive outline
-          <code>#74A8D6</code> at 4% opacity on any background; uncheck either
-          to pick a fixed
-          outline color and opacity for that half alone. The two halves sit as
-          <b>one row each</b>, columns aligned, so a trio cannot be read as
-          belonging to the wrong side — the left cell names the half, and for
-          the cord that cell <i>is</i> the <b>VNC Mesh</b> checkbox (the brain's
-          is the <b>Brain Mesh</b> menu above). Each applies to the
-          embedded hidden half as well, so a nerve cord the viewer reveals
-          arrives in the colour set for it, not the default blue.</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3>Neuron Colors</h3>
-      <ul>
-        <li><b>Neuron Opacity</b>: global fallback opacity for skeletons
-          (0=invisible, 1=solid).</li>
-        <li>Full bokeh palette catalog with custom editing. Preset palettes
-          are picked from a full-width name dropdown; every option in the
-          dropdown list shows the palette name with a strip preview filling
-          the row to its right (discrete palettes as distinct color blocks,
-          continuous palettes as a smooth gradient), so palettes are visible
-          before selection. The selected palette shows in the interactive
-          preview row, where swatches can be dragged to reorder discrete
-          palettes, a live range slider selects part of the palette, and
-          reset restores the original order and full range.</li>
-        <li><b>Custom colors</b>: starts empty — no preset palette is shown
-          until colors are added. Use the shared <b>Pick color</b> popup,
-          free-form color formats, or individual swatches of any Bokeh
-          palette (choose the palette in the dropdown, click a swatch to
-          select it, then press <b>Add color</b>). The popup's alpha slider
-          uses 0.05 steps and only embeds alpha when <b>Override alpha</b> is
-          checked; otherwise the renderer's global Neuron Opacity is
-          inherited. Added colors appear in the horizontal preview bar,
-          where they can be dragged to reorder or removed with their red
-          cross.</li>
-        <li>Default follows the background (Category10 / Set3) until a palette
-          is picked manually.</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3>Synapse Colors</h3>
-      <ul>
-        <li><b>Synapse Mode</b>: an outlined dropdown — <code>synapse</code>
-          (paired markers between consecutively numbered layers; a numbering
-          jump breaks the pair), <code>pre-post
-          sites</code> (the input/output <i>sites</i> of the queried neurons),
-          or <code>skip</code> (hide markers; the BANC default — the first
-          pre/post render there triggers a one-time ~3.9&nbsp;GB synapse
-          download, warned in-app). The cutoff <b>Synapse Threshold</b> sits
-          beside it.</li>
-        <li><b>Synapse Shape</b> (synapse mode): cone / scatter / sphere /
-          tetrahedron.</li>
-        <li><b>Pre/post shape</b> (pre-post sites mode): solid (post/input
-          sites as spheres, pre/output as cones) or scatter (post/input as
-          circles, pre/output as diamonds).</li>
-        <li><b>Synapse Threshold</b> (formerly Min Synapse Count): minimum
-          synapse weight for a marker to be shown; in pre-post site mode only
-          sites whose connection with a neighbour meets this threshold are
-          shown. It sits to the right of the Synapse Mode box, below the
-          layer-editor buttons.</li>
-        <li><b>Synapse Size</b> (an integer 1&ndash;12, a fold of the real
-          pre&rarr;post distance: 1 = the real distance; scatter mode defaults
-          to 1 and mesh renders to 3&times; real). In pre/post-site mode every
-          site is uniform and uses the
-          full mean real connector distance as its glyph size because each
-          sphere/cone is centered on its own pre- or post-synaptic site; a
-          one-layer view estimates it from sampled upstream/downstream pairs.
-          <b>Uniform Synapse Size</b> applies to paired markers, and
-          <b>Opacity</b> remains global.</li>
-        <li><b>pre-post (Pre/post-synaptic site mode)</b>: instead of the paired
-          synapses between adjacent layers (consecutively numbered layers only),
-          this renders the pre- and
-          post-synaptic <i>sites</i> of every queried neuron. Post-synaptic
-          (input) sites draw as spheres, pre-synaptic (output) sites as cones
-          (or circle/diamond scatter markers, see Pre/post shape), both colored
-          by the neuron's layer and given separate
-          <i>pre &lt;layer&gt;</i> / <i>post &lt;layer&gt;</i> legends. It is
-          not a paired-synapse view: the partner is not restricted to the
-          adjacent layer. An orange in-page banner and a note in
-          <code>user_warning_notes.txt</code> flag its behavior.</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3>Brain region ROIs</h3>
-      <ul>
-        <li>The Mesh ROIs suggestions start with the complete dataset primary-ROI
-          list from <code>datasets/&lt;dataset&gt;/*metadata*</code>. Type
-          <code>all</code> to request every locally available ROI.</li>
-        <li><b>Include L/R variants</b> keeps explicit <code>(L)</code>/<code>(R)</code>
-          entries in the primary list; otherwise bilateral pairs are shown once.</li>
-        <li><b>Include sub-primary ROIs</b> appends non-primary entries to the
-          primary list.</li>
-        <li>No ROI mesh is selected by default.</li>
-        <li><b>Mesh ROIs</b>: presets or regex (<code>ME.*</code>,
-          <code>all</code>, <code>primary</code>).</li>
-        <li><b>ROI Colors</b>: Auto gray, or any palette assigned in its exact
-          displayed order; custom and discrete-palette reordering is preserved.</li>
-        <li>Each resolved ROI mesh, including bilateral expansions, is a
-          separate trace and legend entry.</li>
-        <li><b>ROI Mesh Opacity</b>.</li>
-      </ul>
-    </div>
+<div class="card">
+    <h3>Neuron Colors</h3>
+    <ul>
+      <li><b>Neuron Opacity</b>: global fallback opacity for skeletons
+        (0=invisible, 1=solid).</li>
+      <li>Full bokeh palette catalog with custom editing. Preset palettes
+        are picked from a full-width name dropdown; every option in the
+        dropdown list shows the palette name with a strip preview filling
+        the row to its right (discrete palettes as distinct color blocks,
+        continuous palettes as a smooth gradient), so palettes are visible
+        before selection. The selected palette shows in the interactive
+        preview row, where swatches can be dragged to reorder discrete
+        palettes, a live range slider selects part of the palette, and
+        reset restores the original order and full range.</li>
+      <li><b>Custom colors</b>: starts empty — no preset palette is shown
+        until colors are added. Use the shared <b>Pick color</b> popup,
+        free-form color formats, or individual swatches of any Bokeh
+        palette (choose the palette in the dropdown, click a swatch to
+        select it, then press <b>Add color</b>). The popup's alpha slider
+        uses 0.05 steps and only embeds alpha when <b>Override alpha</b> is
+        checked; otherwise the renderer's global Neuron Opacity is
+        inherited. Added colors appear in the horizontal preview bar,
+        where they can be dragged to reorder or removed with their red
+        cross.</li>
+      <li>Default follows the background (Category10 / Set3) until a palette
+        is picked manually.</li>
+    </ul>
   </div>
 
-  <h2>Advanced</h2>
-  <p><b>Export Video / GIF</b> and <b>Individual Profiles (PDF / PPTX)</b>
-    are their own collapsible cards above Advanced Settings; the Advanced
-    Settings expansion holds:</p>
-  <ul>
-    <li><b>Cache Neurons/Synapses</b>: faster repeat renders.</li>
-    <li><b>Show Figure</b>: open the interactive page in the browser after
-      the render (on by default in this tab).</li>
-    <li><b>Simplification Method</b> (NeuPrint tube mode): <code>fast</code>
-      is the default direct path with render-time mesh simplification.
-      <code>fine</code> is the FAFB-style transform rebuilt from the shared raw
-      <code>.swc.zst</code> cache; fine meshes are not persisted. <code>artistic</code>
-      uses vertex-cluster mesh decimation. All methods
-      use batched parallel online skeleton fetching across layers. The selector is available
-      for NeuPrint and FAFB/BANC tube renders; line mode bypasses it.</li>
-    <li><b>Mesh Simplification</b>: defaults to 90% faces removed for fast and
-      95% for fine/artistic in this tab, including FAFB/FlyWire;
-      line mode does not apply mesh simplification. <b>Use Default Mesh
-      Simplification</b> reverts a custom value to those defaults.</li>
-    <li><b>Export Method</b>: webdriver (fast, needs Chrome 109+) or kaleido
-      (stable fallback). <b>Export Scale</b> and <b>Export Views</b>.</li>
-  </ul>
-  <p>The two cards above Advanced Settings:</p>
-  <ul>
-    <li><b>Individual Profiles (PDF / PPTX)</b>: the <b>Export Individual
-      Profiles</b> checkbox (off by default) gates the export, which writes
-      one profile per group — with <b>Summary Format</b> (pdf / pptx) and
-      <b>Images Per Page (cols/rows)</b> (3/2) setting the document layout,
-      plus camera views. <b>Profile Granularity</b> decides how far the legend
-      tree is walked to form one profile group: <i>Per legend entry</i>
-      (<code>legend</code>, the default and the historical behaviour) follows
-      the <b>Neuron Legend Mode</b>; <i>Per layer</i> (<code>layer</code>),
-      <i>Per neuron type</i> (<code>type</code>) and <i>Per bodyId</i>
-      (<code>body</code>) group by that tree level whatever the legend mode is,
-      because they read the identity every trace carries (<code>body</code>
-      gives one profile per neuron leaf, so it can be many files). Companion
-      soma meshes and pre/post sites always follow their owner's profile.</li>
-    <li><b>Export Video / GIF</b>: fps, degrees per frame, rotation axis,
-      GIF scale.</li>
-  </ul>
-
-  <h2 id="reexport">Re-export from a stored page</h2>
-  <p>The card at the bottom of the page re-renders the outputs of a page that is
-    already on disk — no dataset query, no skeleton cache, no original script.
-    It sits in a band of its own below the render controls, with the Skeleton
-    Re-export Output panel beside it.
-    It reads the figure back out of the page's own <code>Plotly.newPlot(...)</code>
-    payload and, when the run wrote one, takes its cameras and background from
-    <code>visualization_manifest.json</code>. Pages that predate the manifest
-    get the camera family their own frontal view was rendered under (matched
-    against the shared per-dataset table), so a stored BANC page re-exports
-    through BANC axes rather than the default family's. Pick a page from
-    <b>Stored 3D
-    Skeleton Page</b> (the viewer HTML of every <code>plot-3d_*</code> run folder
-    under the configured output directories and your recent runs, newest first;
-    the degraded <code>_simplified.html</code> copies are never offered), set
-    the knobs below, and press <b>Re-export from Page</b>. It runs as an ordinary
-    background job, so the progress steps, log and file list behave like a normal
-    render; internally that job is the <code>plot3d_reexport</code> tool, whose
-    two re-exporters are documented in the 3D Skeleton guide.</p>
-  <table>
-    <tr><th>Control</th><th>Effect</th></tr>
-    <tr><td><b>Re-export Profiles</b></td><td>One PNG per profile group into
-      <code>&lt;page stem&gt;_reexport/individual_profiles/</code>. Capped at
-      300 renders per run (groups × views): the groups that fit render first
-      and the log names the skipped ones.</td></tr>
-    <tr><td><b>Re-export Granularity</b></td><td>The same levels as
-      <b>Profile Granularity</b> above (<code>legend</code> / <code>layer</code>
-      / <code>type</code> / <code>body</code>). A page can only be split as
-      finely as its own legend identity allows — a page rendered in
-      <i>layer</i> legend mode has no finer types to separate.</td></tr>
-    <tr><td><b>Re-export Views</b></td><td>Camera views rendered for each
-      profile group.</td></tr>
-    <tr><td><b>Re-export Video</b></td><td>Adds a full turn: frames in
-      <code>&lt;stem&gt;_reexport/pics_&lt;fps&gt;fps_&lt;plane&gt;/</code>,
-      then forward and backward MP4s (plus GIFs). Frames already on disk are
-      reused when the settings match.</td></tr>
-    <tr><td><b>Video FPS / Degrees / Frame / Rotate / Also GIF / GIF Scale</b>
-      </td><td>Frame rate, rotation step per frame (2° = 180 frames per turn),
-      horizontal vs vertical orbit, GIF conversion and GIF downscale.</td></tr>
-    <tr><td><b>Frame Method</b></td><td><code>webdriver</code> (default) loads
-      the page once in one Chrome session and only moves the camera per frame —
-      also the only engine that handles a scene too large for kaleido;
-      <code>kaleido</code> renders frame by frame. If no browser can be started
-      it warns and falls back to kaleido on its own.</td></tr>
-    <tr><td><b>Frame Scale</b></td><td>Resolution multiplier for the profile
-      PNGs and the video frames.</td></tr>
-    <tr><td><b>Frame Auto-crop</b></td><td>Trims the background off profiles,
-      and applies one consistent crop across all video frames so the video does
-      not jitter.</td></tr>
-  </table>
-  <p>With a manifest, the video's horizontal orbit inherits the run's own
-    handedness (a MANC scene turns the other way), and the profile cameras are
-    the ones the run used. A page from <b>before</b>
-    <code>visualization_manifest.json</code> still re-exports — its profiles are
-    grouped from the identity stamped on its own traces — but its cameras then
-    come from the built-in default view set, and the orbit keeps the historical
-    handedness.</p>
-  <div class="callout info">
-    <b>Nothing in the source run is touched.</b> Every re-exported file is
-    written next to the chosen page in its own
-    <code>&lt;page stem&gt;_reexport/</code> folder, so re-running the same
-    settings with the same knobs reuses the frames already rendered instead of
-    recomputing them.
+<div class="card">
+    <h3>Synapse Colors</h3>
+    <ul>
+      <li><b>Synapse Mode</b>: an outlined dropdown — <code>synapse</code>
+        (paired markers between consecutively numbered layers; a numbering
+        jump breaks the pair), <code>pre-post
+        sites</code> (the input/output <i>sites</i> of the queried neurons),
+        or <code>skip</code> (hide markers; the BANC default — the first
+        pre/post render there triggers a one-time ~3.9&nbsp;GB synapse
+        download, warned in-app). The cutoff <b>Synapse Threshold</b> sits
+        beside it.</li>
+      <li><b>Synapse Shape</b> (synapse mode): cone / scatter / sphere /
+        tetrahedron.</li>
+      <li><b>Pre/post shape</b> (pre-post sites mode): solid (post/input
+        sites as spheres, pre/output as cones) or scatter (post/input as
+        circles, pre/output as diamonds).</li>
+      <li><b>Synapse Threshold</b> (formerly Min Synapse Count): minimum
+        synapse weight for a marker to be shown; in pre-post site mode only
+        sites whose connection with a neighbour meets this threshold are
+        shown. It sits to the right of the Synapse Mode box, below the
+        layer-editor buttons.</li>
+      <li><b>Synapse Size</b> (an integer 1&ndash;12, a fold of the real
+        pre&rarr;post distance: 1 = the real distance; scatter mode defaults
+        to 1 and mesh renders to 3&times; real). In pre/post-site mode every
+        site is uniform and uses the
+        full mean real connector distance as its glyph size because each
+        sphere/cone is centered on its own pre- or post-synaptic site; a
+        one-layer view estimates it from sampled upstream/downstream pairs.
+        <b>Uniform Synapse Size</b> applies to paired markers, and
+        <b>Opacity</b> remains global.</li>
+      <li><b>pre-post (Pre/post-synaptic site mode)</b>: instead of the paired
+        synapses between adjacent layers (consecutively numbered layers only),
+        this renders the pre- and
+        post-synaptic <i>sites</i> of every queried neuron. Post-synaptic
+        (input) sites draw as spheres, pre-synaptic (output) sites as cones
+        (or circle/diamond scatter markers, see Pre/post shape), both colored
+        by the neuron's layer and given separate
+        <i>pre &lt;layer&gt;</i> / <i>post &lt;layer&gt;</i> legends. It is
+        not a paired-synapse view: the partner is not restricted to the
+        adjacent layer. An orange in-page banner and a note in
+        <code>user_warning_notes.txt</code> flag its behavior.</li>
+    </ul>
   </div>
 
-  <h2>Output</h2>
-  <p>One timestamped folder per run, named after the dataset abbreviation
-    and the layer names:</p>
-  <pre><code>{output_dir}/plot-3d_MCNS_aMe12_SMP238_PPL101_20260815_151243/
-    aMe12_SMP238_PPL101.html            - interactive 3D scene
-    aMe12_SMP238_PPL101_neuron_info.csv - merged neuron metadata with a
-                                          numeric viz_layer column before
-                                          bodyId
-    viz_layer_info.csv                  - reusable input layer assignments and
-                                          readable colors; only the active
-                                          synapse color family is populated
-    visualization_manifest.json         - what the scene means (dataset, view
-                                          cameras, legend mode, freeze state,
-                                          per-trace roles), so the page can be
-                                          re-exported later without its source
-    parameters.txt                      - exact parameters of the run
-    user_warning_notes.txt              - notes/warnings of the run</code></pre>
-  <p class="small">With <b>Export Views</b> on, PNG screenshots
+<div class="card">
+    <h3>Brain region ROIs</h3>
+    <ul>
+      <li>The Mesh ROIs suggestions start with the complete dataset primary-ROI
+        list from <code>datasets/&lt;dataset&gt;/*metadata*</code>. Type
+        <code>all</code> to request every locally available ROI.</li>
+      <li><b>Include L/R variants</b> keeps explicit <code>(L)</code>/<code>(R)</code>
+        entries in the primary list; otherwise bilateral pairs are shown once.</li>
+      <li><b>Include sub-primary ROIs</b> appends non-primary entries to the
+        primary list.</li>
+      <li>No ROI mesh is selected by default.</li>
+      <li><b>Mesh ROIs</b>: presets or regex (<code>ME.*</code>,
+        <code>all</code>, <code>primary</code>).</li>
+      <li><b>ROI Colors</b>: Auto gray, or any palette assigned in its exact
+        displayed order; custom and discrete-palette reordering is preserved.</li>
+      <li>Each resolved ROI mesh, including bilateral expansions, is a
+        separate trace and legend entry.</li>
+      <li><b>ROI Mesh Opacity</b>.</li>
+    </ul>
+  </div>
+
+</div>
+
+<h2>Advanced</h2>
+<p><b>Export Video / GIF</b> and <b>Individual Profiles (PDF / PPTX)</b> are their own collapsible cards above Advanced Settings; the Advanced Settings expansion holds:</p>
+<ul>
+<li><b>Cache Neurons/Synapses</b>: faster repeat renders.</li>
+<li><b>Show Figure</b>: open the interactive page in the browser after the render (on by default in this tab).</li>
+<li><b>Simplification Method</b> (NeuPrint tube mode): <code>fast</code> is the default direct path with render-time mesh simplification. <code>fine</code> is the FAFB-style transform rebuilt from the shared raw <code>.swc.zst</code> cache; fine meshes are not persisted. <code>artistic</code> uses vertex-cluster mesh decimation. All methods use batched parallel online skeleton fetching across layers. The selector is available for NeuPrint and FAFB/BANC tube renders; line mode bypasses it.</li>
+<li><b>Mesh Simplification</b>: defaults to 90% faces removed for fast and 95% for fine/artistic in this tab, including FAFB/FlyWire; line mode does not apply mesh simplification. <b>Use Default Mesh Simplification</b> reverts a custom value to those defaults.</li>
+<li><b>Export Method</b>: webdriver (fast, needs Chrome 109+) or kaleido (stable fallback). <b>Export Scale</b> and <b>Export Views</b>.</li>
+</ul>
+<p>The two cards above Advanced Settings:</p>
+<ul>
+<li><b>Individual Profiles (PDF / PPTX)</b>: the <b>Export Individual Profiles</b> checkbox (off by default) gates the export, which writes one profile per group — with <b>Summary Format</b> (pdf / pptx) and <b>Images Per Page (cols/rows)</b> (3/2) setting the document layout, plus camera views. <b>Profile Granularity</b> decides how far the legend tree is walked to form one profile group: <i>Per legend entry</i> (<code>legend</code>, the default and the historical behaviour) follows the <b>Neuron Legend Mode</b>; <i>Per layer</i> (<code>layer</code>), <i>Per neuron type</i> (<code>type</code>) and <i>Per bodyId</i> (<code>body</code>) group by that tree level whatever the legend mode is, because they read the identity every trace carries (<code>body</code> gives one profile per neuron leaf, so it can be many files). Companion soma meshes and pre/post sites always follow their owner's profile.</li>
+<li><b>Export Video / GIF</b>: fps, degrees per frame, rotation axis, GIF scale.</li>
+</ul>
+<h2 id="reexport">Re-export from a stored page</h2>
+
+<p>The card at the bottom of the page re-renders the outputs of a page that is already on disk — no dataset query, no skeleton cache, no original script. It sits in a band of its own below the render controls, with the Skeleton Re-export Output panel beside it. It reads the figure back out of the page's own <code>Plotly.newPlot(...)</code> payload and, when the run wrote one, takes its cameras and background from <code>visualization_manifest.json</code>. Pages that predate the manifest get the camera family their own frontal view was rendered under (matched against the shared per-dataset table), so a stored BANC page re-exports through BANC axes rather than the default family's. Pick a page from <b>Stored 3D Skeleton Page</b> (the viewer HTML of every <code>plot-3d_*</code> run folder under the configured output directories and your recent runs, newest first; the degraded <code>_simplified.html</code> copies are never offered), set the knobs below, and press <b>Re-export from Page</b>. It runs as an ordinary background job, so the progress steps, log and file list behave like a normal render; internally that job is the <code>plot3d_reexport</code> tool, whose two re-exporters are documented in the 3D Skeleton guide.</p>
+<table>
+  <tr><th>Control</th><th>Effect</th></tr>
+  <tr><td><b>Re-export Profiles</b></td><td>One PNG per profile group into
+    <code>&lt;page stem&gt;_reexport/individual_profiles/</code>. Capped at
+    300 renders per run (groups × views): the groups that fit render first
+    and the log names the skipped ones.</td></tr>
+  <tr><td><b>Re-export Granularity</b></td><td>The same levels as
+    <b>Profile Granularity</b> above (<code>legend</code> / <code>layer</code>
+    / <code>type</code> / <code>body</code>). A page can only be split as
+    finely as its own legend identity allows — a page rendered in
+    <i>layer</i> legend mode has no finer types to separate.</td></tr>
+  <tr><td><b>Re-export Views</b></td><td>Camera views rendered for each
+    profile group.</td></tr>
+  <tr><td><b>Re-export Video</b></td><td>Adds a full turn: frames in
+    <code>&lt;stem&gt;_reexport/pics_&lt;fps&gt;fps_&lt;plane&gt;/</code>,
+    then forward and backward MP4s (plus GIFs). Frames already on disk are
+    reused when the settings match.</td></tr>
+  <tr><td><b>Video FPS / Degrees / Frame / Rotate / Also GIF / GIF Scale</b>
+    </td><td>Frame rate, rotation step per frame (2° = 180 frames per turn),
+    horizontal vs vertical orbit, GIF conversion and GIF downscale.</td></tr>
+  <tr><td><b>Frame Method</b></td><td><code>webdriver</code> (default) loads
+    the page once in one Chrome session and only moves the camera per frame —
+    also the only engine that handles a scene too large for kaleido;
+    <code>kaleido</code> renders frame by frame. If no browser can be started
+    it warns and falls back to kaleido on its own.</td></tr>
+  <tr><td><b>Frame Scale</b></td><td>Resolution multiplier for the profile
+    PNGs and the video frames.</td></tr>
+  <tr><td><b>Frame Auto-crop</b></td><td>Trims the background off profiles,
+    and applies one consistent crop across all video frames so the video does
+    not jitter.</td></tr>
+</table>
+
+<p>With a manifest, the video's horizontal orbit inherits the run's own handedness (a MANC scene turns the other way), and the profile cameras are the ones the run used. A page from <b>before</b> <code>visualization_manifest.json</code> still re-exports — its profiles are grouped from the identity stamped on its own traces — but its cameras then come from the built-in default view set, and the orbit keeps the historical handedness.</p>
+<div class="callout info">
+  <b>Nothing in the source run is touched.</b> Every re-exported file is
+  written next to the chosen page in its own
+  <code>&lt;page stem&gt;_reexport/</code> folder, so re-running the same
+  settings with the same knobs reuses the frames already rendered instead of
+  recomputing them.
+</div>
+
+<h2>Output</h2>
+<p>One timestamped folder per run, named after the dataset abbreviation and the layer names:</p>
+<pre><code>{output_dir}/plot-3d_MCNS_aMe12_SMP238_PPL101_20260815_151243/
+  aMe12_SMP238_PPL101.html            - interactive 3D scene
+  aMe12_SMP238_PPL101_neuron_info.csv - merged neuron metadata with a
+                                        numeric viz_layer column before
+                                        bodyId
+  viz_layer_info.csv                  - reusable input layer assignments and
+                                        readable colors; only the active
+                                        synapse color family is populated
+  visualization_manifest.json         - what the scene means (dataset, view
+                                        cameras, legend mode, freeze state,
+                                        per-trace roles), so the page can be
+                                        re-exported later without its source
+  parameters.txt                      - exact parameters of the run
+  user_warning_notes.txt              - notes/warnings of the run</code></pre>
+
+<p class="small">With <b>Export Views</b> on, PNG screenshots
     (<code>{name}_{view}.png</code> in <code>exported_views/</code>) are written
-    into the run folder; the
-    rotating <b>Export Video</b> adds videos/GIFs plus their
-    <code>pics_&lt;fps&gt;fps_&lt;plane&gt;/</code> frames, and <b>Individual
-    Profiles</b> adds <code>individual_profiles/</code> plus its PDF/PPTX
-    summary. In pre-post site mode the
-    merged synapse export (and the in-page banner, plus the
-    <code>user_warning_notes.txt</code> entry) describes the per-site rows
-    rather than paired inter-layer synapses. A
-    <a href="#reexport">re-export</a> never writes here: its results go into a
-    sibling <code>&lt;page stem&gt;_reexport/</code> folder.</p>
+into the run folder; the
+rotating <b>Export Video</b> adds videos/GIFs plus their
+<code>pics_&lt;fps&gt;fps_&lt;plane&gt;/</code> frames, and <b>Individual
+Profiles</b> adds <code>individual_profiles/</code> plus its PDF/PPTX
+summary. In pre-post site mode the
+merged synapse export (and the in-page banner, plus the
+<code>user_warning_notes.txt</code> entry) describes the per-site rows
+rather than paired inter-layer synapses. A
+<a href="#reexport">re-export</a> never writes here: its results go into a
+sibling <code>&lt;page stem&gt;_reexport/</code> folder.</p>
 
-  <div class="callout warn">
-    <b>3D export needs Chrome</b> when Export Method = webdriver and
-    Export Views is on; use kaleido if Chrome is unavailable.
-  </div>
+<div class="callout warn">
+  <b>3D export needs Chrome</b> when Export Method = webdriver and
+  Export Views is on; use kaleido if Chrome is unavailable.
+</div>
 
-  <div class="callout info">
-    <b>Exported run guide:</b> every successful run also writes
-    <code>_UserGuide_please_read_me.html</code> into the run folder — a
-    self-contained explanation of every output file, every table column, and
-    any warnings recorded for the run. Format (html / txt / markdown /
-    disabled) is set in Settings → Default Settings → Run Guide Format.
-  </div>
+<div class="callout info">
+  <b>Exported run guide:</b> every successful run also writes
+  <code>_UserGuide_please_read_me.html</code> into the run folder — a
+  self-contained explanation of every output file, every table column, and
+  any warnings recorded for the run. Format (html / txt / markdown /
+  disabled) is set in Settings → Default Settings → Run Guide Format.
+</div>
 </main>
 </body>
 </html>

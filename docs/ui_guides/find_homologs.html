@@ -14,201 +14,105 @@
     <span class="tag">Connectome</span>
   </header>
   <h1>Find Homolog <span class="tag">Connectivity tab</span></h1>
-  <p class="lede">
-    Find neurons similar to a source neuron via connectivity profile
-    similarity (formerly the <i>Find Similar</i> sub-tab — renamed to
-    reflect its purpose; the backend engine is unchanged). With different
-    <b>Source</b> and <b>Target</b> datasets this is the cross-dataset
-    <b>homolog search</b> (e.g. <code>aMe12</code> in
-    <code>male-cns</code> → candidates in <code>hemibrain</code>); setting
-    <b>Target = Source</b> gives the within-dataset (intra-dataset)
-    similar-neuron search. Both run the same engine
-    (<code>HomologFinder</code>).
-  </p>
+<p class="lede">Find neurons similar to a source neuron via connectivity profile similarity (formerly the <i>Find Similar</i> sub-tab — renamed to reflect its purpose; the backend engine is unchanged). With different <b>Source</b> and <b>Target</b> datasets this is the cross-dataset <b>homolog search</b> (e.g. <code>aMe12</code> in <code>male-cns</code> → candidates in <code>hemibrain</code>); setting <b>Target = Source</b> gives the within-dataset (intra-dataset) similar-neuron search. Both run the same engine (<code>HomologFinder</code>).</p>
+<h2>Quick start</h2>
+<ol>
+<li>Enter one or more <b>Source Neurons</b> (types or bodyIds). All inputs are expanded per type and aggregated into <b>one grouped output folder</b> for the run.</li>
+<li>Choose <b>Source Dataset</b> and <b>Target Dataset</b> (set Target = Source for a within-dataset search) and, if needed, an <b>Output Directory</b> (it inherits your saved default otherwise).</li>
+<li>Click <b>Find Homologs</b> (Fast Search is on by default).</li>
+</ol>
+<h2>Inputs &amp; examples</h2>
+<table>
+  <tr><th>Source</th><th>Datasets</th><th>Result</th></tr>
+  <tr><td><code>aMe12</code></td><td>male-cns:v0.9 → hemibrain:v1.2.1</td><td>Top hemibrain candidates ranked by profile similarity (default top 100)</td></tr>
+  <tr><td><code>720575940610453042</code></td><td>hemibrain:v1.2.1 → male-cns:v1.0</td><td>Candidates for one bodyId</td></tr>
+  <tr><td><code>KC.*</code></td><td>same dataset twice</td><td>Intra-dataset redundancy check</td></tr>
+</table>
 
-  <h2>Quick start</h2>
-  <ol>
-    <li>Enter one or more <b>Source Neurons</b> (types or bodyIds). All inputs
-      are expanded per type and aggregated into <b>one grouped output
-      folder</b> for the run.</li>
-    <li>Choose <b>Source Dataset</b> and <b>Target Dataset</b> (set Target =
-      Source for a within-dataset search) and, if needed, an <b>Output
-      Directory</b> (it inherits your saved default otherwise).</li>
-    <li>Click <b>Find Homologs</b> (Fast Search is on by default).</li>
-  </ol>
+<h2>Parameters</h2>
+<table>
+  <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td>Top N Candidates</td><td>100</td><td>Number of ranked candidates returned</td></tr>
+  <tr><td>Top K Partners</td><td>25</td><td>Partners per direction in the profile</td></tr>
+  <tr><td>Min Types (M)</td><td>5</td><td>Minimum unique partner types</td></tr>
+  <tr><td>Min Synapse Threshold</td><td>3</td><td>Connection weight cutoff</td></tr>
+  <tr><td>Sort By</td><td>jaccard</td><td>Ordering metric for the candidate list (top-N cut) — jaccard, rank_union, cosine (rank_corr is always computed but not selectable). Sorting only: ALL metrics are always computed (same metric set as the sibling Comparison sub-tab).</td></tr>
+</table>
 
-  <h2>Inputs &amp; examples</h2>
-  <table>
-    <tr><th>Source</th><th>Datasets</th><th>Result</th></tr>
-    <tr><td><code>aMe12</code></td><td>male-cns:v0.9 → hemibrain:v1.2.1</td><td>Top hemibrain candidates ranked by profile similarity (default top 100)</td></tr>
-    <tr><td><code>720575940610453042</code></td><td>hemibrain:v1.2.1 → male-cns:v1.0</td><td>Candidates for one bodyId</td></tr>
-    <tr><td><code>KC.*</code></td><td>same dataset twice</td><td>Intra-dataset redundancy check</td></tr>
-  </table>
+<h2>Similarity metric formulas</h2>
+<p>Each pair is scored with the same metrics (all are always computed; <b>Sort By</b> only picks the ranking cutoff). Let A and B be two connectivity profiles (partner type → weight, top-K per direction) and ρ the Spearman rank correlation of two weight vectors. Rank correlations are raw (−1 to 1); there is no normalized 0–1 variant and no <code>combined</code> score.</p>
+<table>
+  <tr><th>Metric</th><th>Formula</th><th>Range</th></tr>
+  <tr><td><code>jaccard</code></td><td>|A ∩ B| / |A ∪ B| (partner-type sets)</td><td>0–1</td></tr>
+  <tr><td><code>weighted_jaccard</code></td><td>Σ min(w_a, w_b) / Σ max(w_a, w_b) over the union (Ruzicka)</td><td>0–1</td></tr>
+  <tr><td><code>cosine</code></td><td>(A·B) / (‖A‖·‖B‖) over the union (missing = 0)</td><td>0–1</td></tr>
+  <tr><td><code>rank_corr</code></td><td>ρ = Spearman on <b>shared</b> partners (NaN if &lt; 3 shared)</td><td>−1 to 1</td></tr>
+  <tr><td><code>rank_union</code></td><td>ρ over the <b>union</b> of both partner sets (missing = 0)</td><td>−1 to 1</td></tr>
+  <tr><td><code>shared_type_count</code></td><td>|A ∩ B|</td><td>integer</td></tr>
+  <tr><td><code>union_type_count</code></td><td>|A ∪ B|</td><td>integer</td></tr>
+  <tr><td><code>adjacency_score</code></td><td>shared-partner count used for adjacency expansion</td><td>integer</td></tr>
+</table>
 
-  <h2>Parameters</h2>
-  <table>
-    <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-    <tr><td>Top N Candidates</td><td>100</td><td>Number of ranked candidates returned</td></tr>
-    <tr><td>Top K Partners</td><td>25</td><td>Partners per direction in the profile</td></tr>
-    <tr><td>Min Types (M)</td><td>5</td><td>Minimum unique partner types</td></tr>
-    <tr><td>Min Synapse Threshold</td><td>3</td><td>Connection weight cutoff</td></tr>
-    <tr><td>Sort By</td><td>jaccard</td><td>Ordering metric for the candidate list (top-N cut) — jaccard, rank_union, cosine (rank_corr is always computed but not selectable). Sorting only: ALL metrics are always computed (same metric set as the sibling Comparison sub-tab).</td></tr>
-  </table>
+<p>When <b>Auto Type Mapping</b> is on, partner type names are resolved through the shared validity-aware resolver (<code>comparison/type_resolver.py</code>): unique renames and bridge-derived targets, and every branch of a valid split, are standardized to canonical (male-cns v1.0) names before scoring, so equivalent types resolve across datasets. A <b>conflicted</b> type is excluded from automatic matching (fail closed — it is never matched by raw same-name). Unmapped types keep their raw name as the counted long-tail fallback. Rank metrics return <code>NaN</code> for pairs with fewer than 3 comparable partners. Each saved run writes an <code>auto_type_mapping.json</code> recording the mapper source/version, per-status resolution counts (basis <code>unique_type_resolutions</code>), and whether raw-name fallback occurred.</p>
+<h2>Options</h2>
+<ul>
+<li><b>Fast Search</b>: adjacency-expansion discovery (recommended).</li>
+<li><b>Vector Pre-filtering</b>: cosine pre-filter for speed.</li>
+<li><b>2-Hop Expansion</b>: include untyped partners via 2-hop typed partners.</li>
+<li><b>Use Cache</b>: reuse cached connection profiles (on by default; the Settings tab's skeleton-cache callout explains what is cached).</li>
+<li><b>Visualize Top N Candidates</b>: how many ranked matches to render (default 5) when visualization is on — render the queried neuron plus the top-N matches as 3D skeletons. For cross-dataset searches, the query is transformed into the target brain and rendered inside the target scenes as the <code>query_transformed_*</code> overlay layer (a standalone source-dataset scene is only drawn as a fallback when the transform is unavailable). In the interactive tree legend, the query uses its source-native <code>type</code> label rather than a mapped <code>flywireType</code> value; an MCNS <code>SMP227</code> query therefore stays labeled <code>SMP227</code> in FAFB.</li>
+<li><b>BodyId-level tree legend</b>: a custom group containing one neuron is shown as one direct row with count <code>1</code>. Skeleton and soma companion traces do not create a redundant child leaf or count as two neurons. Multi-neuron groups remain expandable.</li>
+<li>Analysis visualizations default to <b>Skeleton Mode = line</b> for speed. For high-quality morphology, use <b>Visualization → Skeleton</b>, or select <b>tube</b> with the <b>fine</b> method and 95% simplification in the advanced visualization settings.</li>
+<li><b>Auto Type Mapping</b>: resolve partner type names across datasets through the shared validity-aware resolver — licensed renames and valid splits resolve; conflicts fail closed (recommended for cross-dataset searches).</li>
+<li><b>Pre-build Full Dataset Cache</b>: leave OFF; the search fetches what it needs.</li>
+</ul>
+<h2>Morph qualification (cross- or intra-dataset, optional)</h2>
+<p><b>Morph Qualification</b> adds a morphological second opinion to the connectivity ranking. It runs only on the <b>visualized top-N</b> candidates, and needs a supported target among <b>FAFB / male-cns / BANC</b> — cross-dataset and same-dataset (intra) runs alike:</p>
+<ul>
+<li>The query skeleton is transformed into the target's render space (identity for same-dataset runs; their query bodyIds are excluded from the null sample) and scored with the production <b>vector_v2</b> scorer (no NBLAST cross-dataset).</li>
+<li><b>Qualification mode</b>: <ul> <li><b>Null bar</b> (default) — a per-query bar at the <code>null_p(level) + offset</code> of 200 seeded random target neurons. Cross-dataset morph scores have a high, query-dependent baseline, so only the distance above the noise floor is meaningful.</li>
+<li><b>Mapping-referenced floor</b> (floors v3) — when the queried type resolves in the cross-dataset type mapper, the bar comes from the mapper's target-side branch pools instead: the pool's mean self-similarity minus a margin (native, ≥ 2 references required) binds; otherwise the query's mean similarity to the pool minus the offset (<code>B_b − Δ</code>); sources without a mapping fall back to the null bar. Needs a cross-dataset pair — the option is disabled when Target = Source (same-dataset runs use the null bar).</li>
+</ul>
+</li>
+<li><b>Level</b> (percentile, default <b>p95</b>) — which percentile of
+the null distribution the bar sits at; p90/p75 loosen the bar for
+review, p99 tightens it.</li>
+<li>Candidates below the bar are <b>excluded from the 3D scene</b> and
+reported; the results tables keep every row and gain
+<code>morph_v2</code>, <code>morph_null_p95</code>, <code>morph_z</code>,
+<code>morph_bar_kind</code>, <code>morph_bar</code>,
+<code>morph_null_level</code> and <code>morph_qualified</code> columns
+on the scored rows.</li>
+<li>The <b>bar offset</b> slider raises the bar above the null level for
+a stricter confirmation. With the option off, output is byte-identical
+to the classic behavior.</li>
+</ul>
+<h2>Loose search (more candidates)</h2>
+<p>The loose-search knobs (<b>Min Shared Partners</b>, <b>Candidate Prune %</b>), formerly exposed by the removed "Connectivity similarity" mode of the old Find Similar tab, are no longer in the UI — the default discovery settings cover the intra-dataset search. The backend parameters (<code>min_shared_partners</code>, <code>vector_prune_fraction</code>) remain supported programmatically: lower the shared-partner threshold (1 = any shared partner) and raise the prune fraction (1.0 = keep all cosine-positive candidates) to widen the candidate pool while keeping the same adjacency-expansion hops.</p>
+<h2>Output</h2>
+<p>Each run is saved in its own timestamped folder named after the query and the dataset abbreviations (<code>MCNS</code> = male-cns, <code>FAFB</code> = flywire FAFB, ...); the <b>Save Folder Name</b> field overrides this:</p>
+<pre><code>{output_dir}/homologs_MCNS_to_FAFB_aMe12_20260815_143540/
+README.txt
+results/
+  homolog_results.csv          # full ranked results (all metrics)
+  bodyid_results.csv           # bodyId-level results
+  type_summary.csv             # type-level summary
+  type_level_results.csv       # pooled type-level ranking (top N per source type)
+  source_status_summary.json   # per-source-neuron status
+profiles/
+  query/{type}.csv, query/source_bodyids.csv
+  matches/{type}.csv, matches/top_target_bodyids.csv
+overlaps/{source}_vs_{target}.csv    # partner overlap details
+visualization/...            (when visualization enabled)</code></pre>
 
-  <h2>Similarity metric formulas</h2>
-  <p>Each pair is scored with the same metrics (all are always computed;
-    <b>Sort By</b> only picks the ranking cutoff). Let A and B be two
-    connectivity profiles (partner type → weight, top-K per direction) and ρ
-    the Spearman rank correlation of two weight vectors. Rank correlations are
-    raw (−1 to 1); there is no normalized 0–1 variant and no
-    <code>combined</code> score.</p>
-  <table>
-    <tr><th>Metric</th><th>Formula</th><th>Range</th></tr>
-    <tr><td><code>jaccard</code></td><td>|A ∩ B| / |A ∪ B| (partner-type sets)</td><td>0–1</td></tr>
-    <tr><td><code>weighted_jaccard</code></td><td>Σ min(w_a, w_b) / Σ max(w_a, w_b) over the union (Ruzicka)</td><td>0–1</td></tr>
-    <tr><td><code>cosine</code></td><td>(A·B) / (‖A‖·‖B‖) over the union (missing = 0)</td><td>0–1</td></tr>
-    <tr><td><code>rank_corr</code></td><td>ρ = Spearman on <b>shared</b> partners (NaN if &lt; 3 shared)</td><td>−1 to 1</td></tr>
-    <tr><td><code>rank_union</code></td><td>ρ over the <b>union</b> of both partner sets (missing = 0)</td><td>−1 to 1</td></tr>
-    <tr><td><code>shared_type_count</code></td><td>|A ∩ B|</td><td>integer</td></tr>
-    <tr><td><code>union_type_count</code></td><td>|A ∪ B|</td><td>integer</td></tr>
-    <tr><td><code>adjacency_score</code></td><td>shared-partner count used for adjacency expansion</td><td>integer</td></tr>
-  </table>
-  <p>When <b>Auto Type Mapping</b> is on, partner type names are resolved
-    through the shared validity-aware resolver
-    (<code>comparison/type_resolver.py</code>): unique renames and
-    bridge-derived targets, and every branch of a valid split, are
-    standardized to canonical (male-cns v1.0) names before scoring, so
-    equivalent types resolve across datasets. A <b>conflicted</b> type is
-    excluded from automatic matching (fail closed — it is never matched by
-    raw same-name). Unmapped types keep their raw name as the counted
-    long-tail fallback. Rank metrics return <code>NaN</code> for pairs with
-    fewer than 3 comparable partners. Each saved run writes an
-    <code>auto_type_mapping.json</code> recording the mapper source/version,
-    per-status resolution counts (basis <code>unique_type_resolutions</code>),
-    and whether raw-name fallback occurred.</p>
-
-  <h2>Options</h2>
-  <ul>
-    <li><b>Fast Search</b>: adjacency-expansion discovery (recommended).</li>
-    <li><b>Vector Pre-filtering</b>: cosine pre-filter for speed.</li>
-    <li><b>2-Hop Expansion</b>: include untyped partners via 2-hop typed
-      partners.</li>
-    <li><b>Use Cache</b>: reuse cached connection profiles (on by default;
-      the Settings tab's skeleton-cache callout explains what is cached).</li>
-    <li><b>Visualize Top N Candidates</b>: how many ranked matches to render
-      (default 5) when visualization is on — render the queried neuron plus
-      the top-N
-      matches as 3D skeletons. For cross-dataset searches, the query is
-      transformed into the target brain and rendered inside the target scenes
-      as the <code>query_transformed_*</code> overlay layer (a standalone
-      source-dataset scene is only drawn as a fallback when the transform is
-      unavailable). In the interactive tree legend, the query uses its
-      source-native <code>type</code> label rather than a mapped
-      <code>flywireType</code> value; an MCNS <code>SMP227</code> query therefore
-      stays labeled <code>SMP227</code> in FAFB.</li>
-    <li><b>BodyId-level tree legend</b>: a custom group containing one neuron
-      is shown as one direct row with count <code>1</code>. Skeleton and soma
-      companion traces do not create a redundant child leaf or count as two
-      neurons. Multi-neuron groups remain expandable.</li>
-    <li>Analysis visualizations default to <b>Skeleton Mode = line</b> for
-      speed. For high-quality morphology, use <b>Visualization → Skeleton</b>,
-      or select <b>tube</b> with the <b>fine</b> method and 95% simplification
-      in the advanced visualization settings.</li>
-    <li><b>Auto Type Mapping</b>: resolve partner type names across datasets
-      through the shared validity-aware resolver — licensed renames and valid
-      splits resolve; conflicts fail closed (recommended for cross-dataset
-      searches).</li>
-    <li><b>Pre-build Full Dataset Cache</b>: leave OFF; the search fetches
-      what it needs.</li>
-  </ul>
-
-  <h2>Morph qualification (cross- or intra-dataset, optional)</h2>
-  <p><b>Morph Qualification</b> adds a morphological second opinion to the
-    connectivity ranking. It runs only on the <b>visualized top-N</b>
-    candidates, and needs a supported target among
-    <b>FAFB / male-cns / BANC</b> — cross-dataset and same-dataset (intra)
-    runs alike:</p>
-  <ul>
-    <li>The query skeleton is transformed into the target's render space
-      (identity for same-dataset runs; their query bodyIds are excluded
-      from the null sample) and
-      scored with the production <b>vector_v2</b> scorer (no NBLAST
-      cross-dataset).</li>
-    <li><b>Qualification mode</b>:
-      <ul>
-        <li><b>Null bar</b> (default) — a per-query bar at the
-          <code>null_p(level) + offset</code> of 200 seeded random target
-          neurons. Cross-dataset morph scores have a high, query-dependent
-          baseline, so only the distance above the noise floor is
-          meaningful.</li>
-        <li><b>Mapping-referenced floor</b> (floors v3) — when the queried
-          type resolves in the cross-dataset type mapper, the bar comes from
-          the mapper's target-side branch pools instead: the pool's mean
-          self-similarity minus a margin (native, ≥ 2 references required)
-          binds; otherwise the query's mean similarity to the pool minus the
-          offset (<code>B_b − Δ</code>); sources without a mapping fall back
-          to the null bar. Needs a cross-dataset pair — the option is
-          disabled when Target = Source (same-dataset runs use the null
-          bar).</li>
-      </ul>
-    </li>
-    <li><b>Level</b> (percentile, default <b>p95</b>) — which percentile of
-      the null distribution the bar sits at; p90/p75 loosen the bar for
-      review, p99 tightens it.</li>
-    <li>Candidates below the bar are <b>excluded from the 3D scene</b> and
-      reported; the results tables keep every row and gain
-      <code>morph_v2</code>, <code>morph_null_p95</code>, <code>morph_z</code>,
-      <code>morph_bar_kind</code>, <code>morph_bar</code>,
-      <code>morph_null_level</code> and <code>morph_qualified</code> columns
-      on the scored rows.</li>
-    <li>The <b>bar offset</b> slider raises the bar above the null level for
-      a stricter confirmation. With the option off, output is byte-identical
-      to the classic behavior.</li>
-  </ul>
-
-  <h2>Loose search (more candidates)</h2>
-  <p>The loose-search knobs (<b>Min Shared Partners</b>, <b>Candidate
-    Prune %</b>), formerly exposed by the removed "Connectivity similarity"
-    mode of the old Find Similar tab, are no longer in the UI — the default
-    discovery settings cover the intra-dataset search. The backend parameters
-    (<code>min_shared_partners</code>, <code>vector_prune_fraction</code>)
-    remain supported programmatically: lower the shared-partner threshold
-    (1 = any shared partner) and raise the prune fraction (1.0 = keep all
-    cosine-positive candidates) to widen the candidate pool while keeping the
-    same adjacency-expansion hops.</p>
-
-  <h2>Output</h2>
-  <p>Each run is saved in its own timestamped folder named after the query
-  and the dataset abbreviations (<code>MCNS</code> = male-cns,
-  <code>FAFB</code> = flywire FAFB, ...); the <b>Save Folder Name</b> field
-  overrides this:</p>
-  <pre><code>{output_dir}/homologs_MCNS_to_FAFB_aMe12_20260815_143540/
-  README.txt
-  results/
-    homolog_results.csv          # full ranked results (all metrics)
-    bodyid_results.csv           # bodyId-level results
-    type_summary.csv             # type-level summary
-    type_level_results.csv       # pooled type-level ranking (top N per source type)
-    source_status_summary.json   # per-source-neuron status
-  profiles/
-    query/{type}.csv, query/source_bodyids.csv
-    matches/{type}.csv, matches/top_target_bodyids.csv
-  overlaps/{source}_vs_{target}.csv    # partner overlap details
-  visualization/...            (when visualization enabled)</code></pre>
-  <p>BodyId-level tables (<code>results/bodyid_results.csv</code>,
-    <code>profiles/query/source_bodyids.csv</code>,
-    <code>profiles/matches/top_target_bodyids.csv</code>) list the neuron's
-    <code>instance</code> next to its type, resolved from that row's dataset
-    neuron table (empty when the neuron is unknown to it) — no bodyId-level
-    export identifies a neuron by its bare numeric id alone.</p>
-
-  <div class="callout info">
-    <b>Exported run guide:</b> every successful run also writes
-    <code>_UserGuide_please_read_me.html</code> into the run folder — a
-    self-contained explanation of every output file, every table column, and
-    any warnings recorded for the run. Format (html / txt / markdown /
-    disabled) is set in Settings → Default Settings → Run Guide Format.
-  </div>
+<p>BodyId-level tables (<code>results/bodyid_results.csv</code>, <code>profiles/query/source_bodyids.csv</code>, <code>profiles/matches/top_target_bodyids.csv</code>) list the neuron's <code>instance</code> next to its type, resolved from that row's dataset neuron table (empty when the neuron is unknown to it) — no bodyId-level export identifies a neuron by its bare numeric id alone.</p>
+<div class="callout info">
+  <b>Exported run guide:</b> every successful run also writes
+  <code>_UserGuide_please_read_me.html</code> into the run folder — a
+  self-contained explanation of every output file, every table column, and
+  any warnings recorded for the run. Format (html / txt / markdown /
+  disabled) is set in Settings → Default Settings → Run Guide Format.
+</div>
 </main>
 </body>
 </html>
