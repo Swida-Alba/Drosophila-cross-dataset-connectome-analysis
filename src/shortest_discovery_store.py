@@ -27,11 +27,15 @@ monolithic pipeline produced them — one file per ``conn_layer`` — because
 the layer granularity is the audit surface for what was fetched (a post
 can sit at different reverse depths for two targets, so the same edge row
 is legitimately fetched into two layer frames). The frames are NOT the
-enumeration semantics, though: every fetch of a pair carries the same
-PHYSICAL weight, so the enumeration graph dedups (pre, post) to one row
-(see ``load_edge_weight_frame`` and coana's ``_graph_edge_frames``
-shortest gate) — summing the per-layer refetches multiplied weights by
-the fetch multiplicity (2.000x/3.000x measured on a real run). 'all'
+enumeration semantics, though: the per-layer physical pair weight is the
+pair's ROI-SLICE SUM within that layer (the fetched rows are per-ROI
+slices whose weights differ), and the enumeration graph dedups (pre,
+post) to one row keep-first across layers — the layers agree exactly
+after summation (see ``load_edge_weight_frame`` and coana's
+``_graph_edge_frames`` shortest gate). Summing ACROSS layers multiplied
+weights by the fetch multiplicity (2.000x/3.000x measured on a real
+run); keep-one-row dedup sampled a different slice per layer (adjudicated
+against the original data 2026-10-12). 'all'
 mode keeps the documented cross-layer summation; the store preserves
 ``conn_layer`` granularity end to end either way.
 """
@@ -690,41 +694,56 @@ def load_target_dag_edges(store_dir, targets):
 def load_edge_weight_frame(store_dir, warn=None):
     """Compact polars frame of ``{(pre, post): PHYSICAL weight}``.
 
-    Engine issue 2026-10-05 (I1): the per-layer duplicates in
+    Engine issue 2026-10-05 (I1), REFINED by the original-data
+    adjudication (2026-10-12, plan §9): the per-layer duplicates in
     ``connections_L{d}.parquet`` are per-target-BFS REFETCHES of the same
-    physical edge — a post can sit at different reverse depths for two
-    targets, so the same edge row legitimately lands in two layer frames —
-    and every fetch carries the same physical weight. The former
-    cross-layer SUM therefore multiplied the enumeration weight by the
-    fetch multiplicity (real run: one bodyId path exported weights
-    [52, 129] for physical edges of [26, 43] — exactly 2x/3x the number of
-    backward layers each edge was fetched in). The frame now keeps ONE row
-    per pair, the first fetch's weight; duplicate fetches that DISAGREE on
-    weight are counted and surfaced through ``warn(n)`` (a fetch
-    inconsistency, not biology — the on-disk frames stay verbatim as the
-    audit surface). One polars row per unique pair (hundreds of MB at L4
-    scale, versus gigabytes for an equivalent Python dict); per-batch
-    slices come from ``weights_for_pairs``.
-    """
-    scans = [
-        pl.scan_parquet(path).select(
-            ['bodyId_pre', 'bodyId_post', 'weight'])
-        for _layer, path in _conn_layer_files(store_dir)
-    ]
-    if not scans:
+    physical edge (a post can sit at different reverse depths for two
+    targets), and the fetched frames carry per-ROI SLICE rows — a pair
+    can hold several rows per layer with DIFFERENT weights (each a
+    distinct roi). The physical weight is the pair's ROI-SLICE SUM
+    within a layer; layers are then deduplicated keep-first (after
+    summation the layers agree exactly — 0 conflicts measured on the
+    MCNS store). The former cross-layer SUM multiplied the enumeration
+    weight by the fetch multiplicity ([52, 129] for physical [26, 43]);
+    the I1 keep-one-row fix sampled a different slice per layer.
+    ``warn(n)`` now counts pairs whose PER-LAYER SUMMED weights still
+    disagree — a genuine fetch inconsistency, not biology (the on-disk
+    frames stay verbatim as the audit surface). One polars row per
+    unique pair; per-batch slices come from ``weights_for_pairs``."""
+    layer_frames = []
+    for _layer, path in _conn_layer_files(store_dir):
+        f = pl.read_parquet(path)
+        keep = ['bodyId_pre', 'bodyId_post', 'weight']
+        if 'roi' in f.columns:
+            keep.append('roi')
+        layer_frames.append(
+            f.select(keep).with_columns(
+                pl.lit(str(_layer)).alias('_layer')))
+    if not layer_frames:
         return pl.DataFrame(schema={'bodyId_pre': pl.Utf8,
                                     'bodyId_post': pl.Utf8,
                                     'weight': pl.Int64})
-    frame = (pl.concat(scans)
-             .group_by(['bodyId_pre', 'bodyId_post'])
-             .agg([pl.col('weight').first().alias('weight'),
-                   pl.col('weight').min().alias('_w_min'),
-                   pl.col('weight').max().alias('_w_max')])
-             .sort(['bodyId_pre', 'bodyId_post'])
-             .collect())
-    mismatched = frame.filter(
-        pl.col('_w_min') != pl.col('_w_max')).height
-    frame = frame.drop('_w_min', '_w_max')
+    sample_cols = layer_frames[0].columns
+    aligned = []
+    for f in layer_frames:
+        if f.columns != sample_cols:
+            missing = [c for c in sample_cols if c not in f.columns]
+            if missing:
+                f = f.with_columns(
+                    [pl.lit('').alias(c) for c in missing])
+        aligned.append(f.select(sample_cols))
+    per_layer = (pl.concat(aligned)
+                 .unique(subset=sample_cols, keep='any')
+                 .group_by(['_layer', 'bodyId_pre', 'bodyId_post'])
+                 .agg(pl.col('weight').sum().alias('weight')))
+    mismatched = (per_layer.group_by(['bodyId_pre', 'bodyId_post'])
+                  .agg(pl.col('weight').n_unique().alias('wv'))
+                  .filter(pl.col('wv') > 1).height)
+    frame = (per_layer.sort('_layer')
+             .unique(subset=['bodyId_pre', 'bodyId_post'], keep='first',
+                     maintain_order=True)
+             .select(['bodyId_pre', 'bodyId_post', 'weight'])
+             .sort(['bodyId_pre', 'bodyId_post']))
     if mismatched and warn is not None:
         warn(mismatched)
     return frame
@@ -951,9 +970,11 @@ def batched_shortest_paths(fc, store_dir, meta, sources, cutoff, budget,
 
     def _weight_mismatch_note(n):
         fc._warn_notes.append(
-            f'- [shortest weights] {n} edge pair(s) were fetched with '
-            'DIFFERENT weights across backward layers — the first fetch '
-            'was kept for enumeration. The on-disk '
+            f'- [shortest weights] {n} edge pair(s) carried DIFFERENT '
+            'summed weights across backward layers — the first layer '
+            'was kept for enumeration (per-pair weights are the ROI-'
+            'slice sums; agreement across layers is the norm — real-'
+            'store measurement: 0). The on-disk '
             'shortest_discovery_store/connections/ frames retain every '
             'row for audit.')
 

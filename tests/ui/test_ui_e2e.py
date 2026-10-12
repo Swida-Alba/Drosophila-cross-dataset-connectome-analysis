@@ -4938,13 +4938,15 @@ class TestTabs:
         assert multi_ds[0]._props.get("multiple") is True
         assert multi_ds[0].value == ["male-cns:v1.0"]
 
-        # the custom-group card is hidden until the level is chosen
+        # the custom-group card is ALWAYS visible (LabelMapper-round UX
+        # fix: hiding it until a mode/preset made custom grouping
+        # effectively undiscoverable)
         card = [
             el for el in elements
             if getattr(el, "_props", {}).get("id") == "card-custom-group"
         ]
         assert card, "custom-group card missing"
-        assert card[0].visible is False
+        assert card[0].visible is True
         agg_sel.value = "custom group"
         assert card[0].visible is True
         # the card hosts the Custom Grouping button that opens the panel

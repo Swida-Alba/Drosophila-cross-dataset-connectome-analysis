@@ -78,26 +78,37 @@ def _write_synthetic_cache(tmp_path, n_conns=2000, n_neurons=50, seed=7):
 
 
 def _reference_type_incoming(db_path, index_path, min_weight, post_types):
-    """Reference implementation of the old row-group Python-loop logic."""
+    """Reference implementation — PER-PAIR PHYSICAL semantics (plan §12,
+    2026-10-12): the cache stores per-ROI slices, so each pair's weight
+    is the SUM of its rows and the tier filter applies to that sum (a
+    sub-threshold slice of a supra-threshold pair contributes; the old
+    row-group loop filtered per row and under-counted)."""
     import pyarrow.parquet as pq
 
     neuron_index = pl.read_parquet(index_path, columns=["bodyId", "type"])
-    bodyid_to_type = dict(zip(neuron_index["bodyId"].to_list(), neuron_index["type"].to_list()))
+    bodyid_to_type = dict(zip(neuron_index["bodyId"].to_list(),
+                              neuron_index["type"].to_list()))
     post_types_set = set(post_types)
     target = {b for b, t in bodyid_to_type.items() if t in post_types_set}
 
-    type_weights = {}
+    pair_weights = {}
     pf = pq.ParquetFile(db_path)
     for i in range(pf.metadata.num_row_groups):
-        table = pf.read_row_group(i, columns=["bodyId_post", "weight"])
+        table = pf.read_row_group(
+            i, columns=["bodyId_pre", "bodyId_post", "weight"])
         chunk = pl.from_arrow(table)
-        if min_weight > 1:
-            chunk = chunk.filter(pl.col("weight") >= min_weight)
-        for bid, w in zip(chunk["bodyId_post"].to_list(), chunk["weight"].to_list()):
+        for pre, bid, w in zip(chunk["bodyId_pre"].to_list(),
+                               chunk["bodyId_post"].to_list(),
+                               chunk["weight"].to_list()):
             if bid in target:
-                t = bodyid_to_type.get(bid)
-                if t:
-                    type_weights[t] = type_weights.get(t, 0) + w
+                key = (pre, bid)
+                pair_weights[key] = pair_weights.get(key, 0) + w
+    type_weights = {}
+    for (pre, bid), total in pair_weights.items():
+        if total >= min_weight:
+            t = bodyid_to_type.get(bid)
+            if t:
+                type_weights[t] = type_weights.get(t, 0) + total
     return type_weights
 
 
@@ -279,11 +290,11 @@ class TestEnrichConnectionTablePolars:
         )
         assert ab["weight"] == 10  # 5 + 3 + 2
         assert ab["connection_ratio"] == pytest.approx(10 / 200)
-        # Default aggregate_method='product': type-level traversal_probability
-        # compounds the per-pair block probabilities (reliability/OR model).
-        # A1->B1 (5/8) and A2->B1 (3/8) both cap at p=1, A2->B2 (2/2) caps at
-        # p=1, so 1 - (1-1)*(1-1)*(1-1) = 1.0.
-        assert ab["traversal_probability"] == pytest.approx(1.0)
+        # PROBABILITY SUSPENSION (2026-10-06): traversal_probability is
+        # no longer exported (the former product-compounded column rode
+        # an unverifiable reliability model) — the surviving pair mass
+        # and the global-denominator ratio carry the semantics.
+        assert "traversal_probability" not in ab
 
         cb = next(
             r
@@ -548,3 +559,45 @@ class TestInteropEdgeCases:
             assert df3 is not df1
         finally:
             _PL_NEURON_DF_CACHE.clear()
+
+
+class TestPerPairCollapseBeforeTier:
+    """Per-ROI ordering fix (2026-10-12, plan §12): the cache stores
+    per-ROI slices, so D_t's tier filter must see the pair's PHYSICAL
+    (summed) weight — a sub-threshold slice of a supra-threshold pair
+    must not drop, and a pair whose every slice is sub-threshold must
+    not vanish."""
+
+    def _per_roi_cache(self, tmp_path):
+        conn = tmp_path / "connections.parquet"
+        idx = tmp_path / "neuron_index.parquet"
+        pl.DataFrame({
+            "bodyId_pre": ["A", "A", "B", "B"],
+            "bodyId_post": ["B", "B", "C", "C"],
+            "roi": ["R1", "R2", "R1", "R2"],
+            "weight": [2, 5, 1, 2]}).write_parquet(conn)
+        pl.DataFrame({"bodyId": ["A", "B", "C"],
+                      "type": ["TA", "TB", "TC"]}).write_parquet(idx)
+        return conn, idx
+
+    def test_totals_use_physical_pair_weight(self, tmp_path):
+        conn, idx = self._per_roi_cache(tmp_path)
+        obj = _stub_fnc(
+            _get_connection_db_path=lambda: str(conn),
+            _get_neuron_index_path=lambda: str(idx),
+        )
+        table = obj._get_total_incoming_by_bodyid_table(min_weight=3)
+        got = dict(zip(table["bodyId_post"].to_list(),
+                       table["total_incoming_weight"].to_list()))
+        assert got == {"B": 7, "C": 3}
+
+    def test_type_totals_use_physical_pair_weight(self, tmp_path):
+        conn, idx = self._per_roi_cache(tmp_path)
+        obj = _stub_fnc(
+            _get_connection_db_path=lambda: str(conn),
+            _get_neuron_index_path=lambda: str(idx),
+        )
+        table = obj._get_total_incoming_by_type_table(min_weight=3)
+        got = dict(zip(table["type_post"].to_list(),
+                       table["total_incoming_weight"].to_list()))
+        assert got == {"TB": 7, "TC": 3}

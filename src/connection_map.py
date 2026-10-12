@@ -87,7 +87,24 @@ class ThresholdedConnectionMap:
             paths = []
             if self._db_path and os.path.exists(self._db_path):
                 paths.append(self._db_path)
-            if self._db_path:
+            # LAYOUT-AWARE batch scoping (2026-10-12, plan §12.3): a
+            # pair-collapsed main cache (marked by the connections_by_roi
+            # sidecar) already CONTAINS every consolidated batch's rows
+            # (summed) — batches coexisting with it are stale
+            # consolidation leftovers whose per-ROI slices would
+            # double-count after the per-pair sum, so they are skipped.
+            # Legacy per-ROI caches keep the exact-row crash-window
+            # dedup below (batches re-list the main rows verbatim there).
+            # Batches WITHOUT a main file (a fetch interrupted before the
+            # first consolidation) are per-fetch disjoint — they are the
+            # only data and are always included.
+            pair_level = (
+                self._db_path
+                and (Path(self._db_path).parent
+                     / "connections_by_roi.parquet").exists()
+            )
+            include_batches = not (paths and pair_level)
+            if self._db_path and include_batches:
                 batch_dir = Path(self._db_path).parent / "_batch_files"
                 paths.extend(str(path) for path in sorted(batch_dir.glob("batch_*.parquet")))
             if not paths:
@@ -127,17 +144,24 @@ class ThresholdedConnectionMap:
                     "weight": pl.Series([], dtype=pl.Int64),
                 })
             lazy = pl.concat(lazy_frames, how="vertical_relaxed")
-            # Crash-window guard: consolidation writes the main parquet
-            # BEFORE removing _batch_files — an interrupted rmtree leaves
-            # the batches duplicating the main file, which would double
-            # every D_t denominator. Collapse on the CONSOLIDATION KEY
-            # (pre/post/roi — what the writer itself dedups on), so an
-            # exact re-listing collapses while genuinely distinct rows
-            # (different ROI slices, or legacy-generation rows without
-            # ROI info) survive exactly as consolidation would keep them.
-            lazy = pl.concat(lazy_frames, how="vertical_relaxed").unique(
-                subset=["bodyId_pre", "bodyId_post", "_roi"]
-            ).drop("_roi")
+            # Crash-window guard, SCOPED to the crash window (2026-10-12
+            # fix of an f7df023 regression): consolidation writes the
+            # main parquet BEFORE removing _batch_files — an interrupted
+            # rmtree leaves the batches re-listing the main file's rows,
+            # which would double every D_t denominator. That matters
+            # ONLY when main and batches coexist; and the collapse must
+            # be EXACT-ROW (the batches re-list verbatim), not
+            # (pre, post, roi) — a keep-one-row dedup silently dropped
+            # legitimate same-pair rows in roi-less caches (the
+            # T_DUP/T0 under-counts in test_performance_fixes). A
+            # single consolidated file is one row per (pre, post, roi)
+            # by construction, so plain summation is already exact.
+            if (not pair_level and len(paths) > 1
+                    and os.path.exists(self._db_path)):
+                lazy = lazy.unique(
+                    subset=["bodyId_pre", "bodyId_post", "_roi", "weight"],
+                    keep="any")
+            lazy = lazy.drop("_roi")
 
         # Normalize IDs at the read boundary.  This covers both the on-disk
         # cache and callers that provide an in-memory pandas frame.
@@ -146,6 +170,20 @@ class ThresholdedConnectionMap:
             pl.col("bodyId_post").cast(pl.Utf8, strict=False).alias("bodyId_post"),
             pl.col("weight").cast(pl.Int64, strict=False).alias("weight"),
         ])
+        # PER-PAIR COLLAPSE BEFORE THE TIER FILTER (2026-10-12, plan §12 —
+        # the same doctrine as the refill's 2026-10-10 collapse): the
+        # cache stores per-ROI slices, so the PHYSICAL pair weight is the
+        # sum of its slices and D_t's tier filter must see that sum. The
+        # previous row-level filter dropped sub-threshold SLICES of
+        # supra-threshold pairs (a 2+5 pair at t=3 counted 5) and made a
+        # pair whose every slice is sub-threshold vanish (1+2 at t=3)
+        # — on hemibrain-scale caches (9% of pairs multi-slice) that
+        # under-counted every ratio denominator. Sum per pair first,
+        # then apply the cutoff to the pair's physical weight.
+        lazy = (
+            lazy.group_by(["bodyId_pre", "bodyId_post"])
+            .agg(pl.col("weight").sum().alias("weight"))
+        )
         if self._min_weight > 1:
             lazy = lazy.filter(pl.col("weight") >= self._min_weight)
         return lazy

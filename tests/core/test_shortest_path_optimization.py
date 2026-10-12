@@ -439,6 +439,9 @@ def test_type_path_ratios_share_conn_table_denominator(
     type_csv = os.path.join(
         fc.allpath_folder, "src_to_tgt_allpaths_type.csv")
     type_df = pl.read_csv(type_csv)
+    # the realized patch re-adds the coverage column (lost as suspension
+    # collateral) — pin it beside the named-access ratios
+    assert "coverage" in type_df.columns
     # column NAME, not position — the schema shed the suspended
     # probability column (2026-10-06) and positional indexing broke
     ratio_i = type_df.columns.index("ratios")

@@ -3713,13 +3713,16 @@ class FindNeuronConnection:
     '''
 
     corridor_mode: str = 'auto'
-    '''Corridor lane (plan-corridor-lane.md §23.2): 'off' | 'auto' | 'on'.
-    The lane is a standalone post-materialization pass that re-enumerates
-    pathfinding at the ASKED threshold restricted to validated top-M*
-    type-level corridors (per source-target type pair), writing its own
-    route_scope_paths/ mirror folder. 'auto' enables it iff
-    max_interlayer >= 4. Never modifies the main run's outputs; failures
-    are contained to one user_warning_notes entry.'''
+    '''Two-mode switch (plan-corridor-lane.md §23.2): 'complete' | 'auto'
+    | 'both' — legacy 'off'/'on' normalize on read. Every run is COMPLETE
+    mode (all intact paths >= the applied threshold; the run itself).
+    FAST mode is the standalone post-materialization pass that
+    re-enumerates pathfinding at the ASKED threshold restricted to
+    validated top-M* type-level corridors (per source-target type pair),
+    writing its own route_scope_paths/ mirror folder: 'complete' never
+    runs Fast, 'auto' runs it iff max_interlayer >= 4, 'both' always.
+    Fast never modifies the main run's outputs; failures are contained
+    to one user_warning_notes entry.'''
 
     route_top_m_base: int = 10
     '''Provisional candidate quota at h=1; grows geometrically with hop
@@ -5016,6 +5019,11 @@ class FindNeuronConnection:
         db_path = os.path.join(cache_folder, 'connections.parquet')
         batch_dir = os.path.join(cache_folder, '_batch_files')
         paths = [db_path] if os.path.exists(db_path) else []
+        # the by-ROI sidecar is part of the cache state (its appearance
+        # marks the pair-collapsed layout — plan §12.3)
+        by_roi = os.path.join(cache_folder, 'connections_by_roi.parquet')
+        if os.path.exists(by_roi):
+            paths.append(by_roi)
         if os.path.isdir(batch_dir):
             paths.extend(
                 os.path.join(batch_dir, name)
@@ -6336,11 +6344,52 @@ class FindNeuronConnection:
             except ImportError:
                 from utils.parquet_utils import write_file_atomic
 
-            def _write_consolidated(tmp_path):
-                combined.collect().write_parquet(tmp_path, compression='gzip')
+            # PAIR-COLLAPSED MAIN CACHE (2026-10-12, plan §12.3 — root fix
+            # for the per-ROI slice-count defect class): the consolidated
+            # main file carries ONE row per (pre, post) at the pair's
+            # PHYSICAL weight (the sum of its per-ROI slices); the dedup'd
+            # per-ROI rows move verbatim to the
+            # connections_by_roi.parquet sidecar (the audit surface — its
+            # presence also marks the layout for readers). Every consumer
+            # collapses per pair anyway; here the collapse happens once,
+            # at the source, so tier filters can no longer meet per-slice
+            # rows.
+            combined_cached = combined.collect()
+            pair_keys = [c for c in ('bodyId_pre', 'bodyId_post')
+                         if c in combined_cached.columns]
+            by_roi_path = os.path.join(os.path.dirname(db_path),
+                                       'connections_by_roi.parquet')
+            if pair_keys:
+                others = [c for c in combined_cached.columns
+                          if c not in pair_keys + ['weight']]
+                main_frame = combined_cached.group_by(pair_keys).agg(
+                    [pl.col('weight').sum().alias('weight')]
+                    + [pl.col(c).first().alias(c) for c in others]
+                ).sort(pair_keys)
 
-            write_file_atomic(db_path, _write_consolidated, kind='consolidation')
-            total_count = pl.scan_parquet(db_path).select(pl.len()).collect().item()
+                def _write_by_roi(tmp_path):
+                    combined_cached.write_parquet(
+                        tmp_path, compression='gzip')
+
+                write_file_atomic(by_roi_path, _write_by_roi,
+                                  kind='consolidation')
+
+                def _write_consolidated(tmp_path):
+                    main_frame.write_parquet(
+                        tmp_path, compression='gzip')
+
+                write_file_atomic(db_path, _write_consolidated,
+                                  kind='consolidation')
+                total_count = main_frame.height
+            else:
+                def _write_consolidated(tmp_path):
+                    combined_cached.write_parquet(tmp_path,
+                                                  compression='gzip')
+
+                write_file_atomic(db_path, _write_consolidated,
+                                  kind='consolidation')
+                total_count = pl.scan_parquet(db_path).select(
+                    pl.len()).collect().item()
             
             # Clean up batch files
             import shutil
@@ -8973,6 +9022,17 @@ class FindNeuronConnection:
                 combined['type_pre'] != combined['type_post']
             ].copy()
 
+        # PER-PAIR SLICE COLLAPSE (2026-10-12, plan §12): the fetch frames
+        # carry per-ROI slice rows; the physical pair weight is their SUM,
+        # and the tier filters below must see that sum (a sub-threshold
+        # slice of a supra-threshold pair must not drop, and a pair whose
+        # every slice is sub-threshold must not vanish). Exact-duplicate
+        # rows (overlapping fetch sources) collapse first; enriched
+        # columns (types, nt, roi) ride along from the pair's first slice.
+        if len(combined) > 0:
+            combined = self._dedup_physical_edge_rows(
+                combined, 'per-ROI slice collapse')
+
         if self.filter_by == 'type':
             combined = self._apply_type_level_filters(
                 combined,
@@ -9945,6 +10005,15 @@ class FindNeuronConnection:
             if before_count > after_count:
                 self._vprint(f'  ⚠️  Excluded {before_count - after_count:,} intra-type connections (type_pre == type_post)', level='full')
         
+        # PER-PAIR SLICE COLLAPSE (2026-10-12, plan §12): see
+        # _finalize_path_connection_frame — the tier filters below must
+        # see the pair's PHYSICAL (slice-summed) weight; the graph's own
+        # add_edge already sums duplicate pairs, so filtering per row was
+        # the incoherent step.
+        if len(combined) > 0:
+            combined = self._dedup_physical_edge_rows(
+                combined, 'per-ROI slice collapse')
+
         # Apply filters at the specified level
         self._vprint(f'  ⏳ Applying filters to {len(combined):,} connections...', level='full')
         if self.filter_by == 'type':
@@ -14667,15 +14736,18 @@ class FindNeuronConnection:
             if not (c.is_empty() if hasattr(c, 'is_empty') else c.empty)
         ]
         if path_mode == 'shortest' and frames_out:
-            # Engine issue 2026-10-05 (I1): shortest mode's per-layer
-            # frames carry per-target-BFS REFETCHES of the same physical
-            # edge (a post can sit at different reverse depths for two
-            # targets), and build_from_dataframe/add_edge SUMS duplicate
-            # pairs across frames — the enumeration graph multiplied each
-            # recurring edge's weight by its fetch multiplicity (real
-            # run: [26, 43] exported as [52, 129]). Feed the graph ONE
-            # row per pair (the first fetch's weight). 'all' mode keeps
-            # the documented cross-layer summation (docs/OUTPUT_FILES.md).
+            # Engine issue 2026-10-05 (I1), refined 2026-10-12 (plan §9):
+            # shortest mode's per-layer frames carry per-target-BFS
+            # REFETCHES of the same physical edge (a post can sit at
+            # different reverse depths for two targets), and
+            # build_from_dataframe/add_edge SUMS duplicate pairs across
+            # frames — the enumeration graph multiplied each recurring
+            # edge's weight by its fetch multiplicity (real run: [26, 43]
+            # exported as [52, 129]). Feed the graph ONE row per pair at
+            # the PHYSICAL weight = the pair's ROI-SLICE SUM (the fetch
+            # frames carry per-ROI slices whose weights differ; layers
+            # agree exactly after summation). 'all' mode keeps the
+            # documented cross-layer summation (docs/OUTPUT_FILES.md).
             # Only the columns the graph build and the ratio cone read
             # survive the merge.
             import polars as _pl_sd
@@ -14683,6 +14755,12 @@ class FindNeuronConnection:
                 (t if hasattr(t, 'iter_rows') else _pl_sd.from_pandas(t))
                 for t in frames_out]
             _keep = ['bodyId_pre', 'bodyId_post', 'weight']
+            if all('roi' in t.columns for t in _sd_frames):
+                # ROI slices: the physical weight is the per-pair slice
+                # SUM (original-data adjudication 2026-10-12) — the roi
+                # column must survive the select so the dedup can tell
+                # slices apart
+                _keep.append('roi')
             if all('weight_ratio' in t.columns for t in _sd_frames):
                 _keep.append('weight_ratio')
             frames_out = [self._dedup_physical_edge_rows(
@@ -14691,39 +14769,90 @@ class FindNeuronConnection:
         return frames_out
 
     def _dedup_physical_edge_rows(self, frame, note_label):
-        """One row per (bodyId_pre, bodyId_post) — the PHYSICAL edge.
+        """One row per (bodyId_pre, bodyId_post) — the PHYSICAL edge,
+        weight = the pair's ROI-SLICE SUM.
 
-        Engine issue 2026-10-05 (I1): in shortest mode the same (pre,
-        post) edge is fetched once per backward BFS layer it recurs in,
-        and every fetch carries the same physical weight. Aggregations
-        that SUM those rows — FastGraph.add_edge across layer frames, the
-        path tables' per-pair join — multiplied the weight by the fetch
-        multiplicity. Keep the first fetch's row; duplicate fetches that
-        disagree on weight are disclosed through a warning note (they
-        should not exist — same physical edge, same connection table).
-        The input frame is never mutated."""
+        Engine issue 2026-10-05 (I1), REFINED 2026-10-12 by the
+        original-data adjudication (plan §9): in shortest mode the same
+        (pre, post) edge is fetched once per backward BFS layer it
+        recurs in, and the fetched frames carry per-ROI SLICE rows —
+        a pair can hold several rows per layer whose weights DIFFER
+        (measured: L0 717/77,571 pairs, every one a distinct roi). The
+        physical per-layer weight is the SUM of the slices; keep-one-row
+        dedup sampled a different slice per layer (the I1 keep-first
+        premise that disagreeing weights 'should not exist' is false —
+        they are slices). The frame is deduplicated on its slice-
+        defining columns (all columns when roi is present, else the
+        exact-row identity), summed per pair, and any pair whose summed
+        weight then differs ACROSS fetch layers is disclosed as a real
+        fetch inconsistency (measured 0 on the MCNS store). The input
+        frame is never mutated. ``weight_ratio`` (when present) is
+        recomputed from the summed weight over the rows' shared
+        denominator (estimated as the mean of w/r per slice — exact up
+        to rounding, since every slice of a pair shares the pair's
+        all-post incoming). Every OTHER column rides along from the
+        pair's first slice, preserving the enriched frame's shape for
+        the downstream joins (ratios, types, nt, roi)."""
+        provenance_cols = [c for c in ('conn_layer', 'layer')
+                           if c in getattr(frame, 'columns', [])]
         if hasattr(frame, 'iter_rows'):   # polars
-            mismatched = (frame.group_by(['bodyId_pre', 'bodyId_post'])
-                          .agg([pl.col('weight').min().alias('_w_min'),
-                                pl.col('weight').max().alias('_w_max')])
-                          .filter(pl.col('_w_min') != pl.col('_w_max'))
-                          .height)
-            dedup = frame.unique(
-                subset=['bodyId_pre', 'bodyId_post'], keep='first',
-                maintain_order=True)
-        else:                             # pandas
-            _agg = frame.groupby(
-                ['bodyId_pre', 'bodyId_post'])['weight'].agg(['min', 'max'])
-            mismatched = int((_agg['min'] != _agg['max']).sum())
-            dedup = frame.drop_duplicates(
-                subset=['bodyId_pre', 'bodyId_post'], keep='first')
-        if mismatched:
-            note = (f'- [{note_label}] {mismatched:,} edge pair(s) carried '
-                    'DIFFERENT weights across fetch layers — the first '
-                    'fetch was kept.')
-            if note not in self._warn_notes:
-                self._warn_notes.append(note)
-        return dedup
+            drop = [c for c in provenance_cols
+                    if c in frame.columns]
+            work = frame.drop(drop) if drop else frame
+            # weight SUMS across slices; every OTHER column rides along
+            # from the pair's first slice, in the frame's OWN column
+            # order (downstream exports are position-sensitive)
+            keys = ['bodyId_pre', 'bodyId_post']
+            agg = []
+            for col in work.columns:
+                if col == 'weight':
+                    agg.append(pl.col('weight').sum().alias('weight'))
+                elif col not in keys:
+                    agg.append(pl.col(col).first().alias(col))
+            deduped = (work.unique(subset=[c for c in work.columns],
+                                   keep='any')
+                       .group_by(keys).agg(agg))
+            if 'weight_ratio' in deduped.columns:
+                # recompute the pair ratio from the summed weight: every
+                # slice shares the pair's denominator (w/r is constant
+                # modulo rounding), so its mean estimates it exactly
+                denoms = (work.filter(pl.col('weight_ratio') > 0)
+                          .group_by(keys)
+                          .agg(((pl.col('weight') / pl.col('weight_ratio'))
+                                .mean()).alias('_denom')))
+                deduped = (deduped.join(denoms, on=keys, how='left')
+                           .with_columns(pl.when(
+                               pl.col('_denom') > 0)
+                               .then(pl.col('weight')
+                                     / pl.col('_denom'))
+                               .otherwise(None)
+                               .alias('weight_ratio'))
+                           .drop('_denom'))
+            return deduped.sort(keys)
+        # pandas
+        drop = [c for c in provenance_cols if c in frame.columns]
+        work = frame.drop(columns=drop) if drop else frame
+        keys = ['bodyId_pre', 'bodyId_post']
+        agg = {}
+        for col in work.columns:
+            if col == 'weight':
+                agg[col] = 'sum'
+            elif col not in keys:
+                agg[col] = 'first'
+        dedup = work.drop_duplicates().groupby(
+            keys, as_index=False).agg(agg)
+        if 'weight_ratio' in dedup.columns:
+            den = (work[work['weight_ratio'] > 0]
+                   .assign(_d=lambda x: x['weight'] / x['weight_ratio'])
+                   .groupby(keys, as_index=False)
+                   .agg({'_d': 'mean'}))
+            dedup = dedup.merge(den, on=keys,
+                                how='left')
+            dedup['weight_ratio'] = (dedup['weight']
+                                     / dedup['_d']).where(
+                dedup['_d'] > 0)
+            dedup = dedup.drop(columns=['_d'])
+        return dedup.sort_values(['bodyId_pre', 'bodyId_post'])
 
     def _attach_weight_ratio_columns(self, conn_layers):
         """Ratio lane switch point 2 (§16.2): join the F9 all-post
@@ -16707,7 +16836,9 @@ class FindNeuronConnection:
                     paths_to_visualize['traversal_probabilities'] = paths_to_visualize['probabilities']
                 paths_to_visualize, _pair_extra = \
                     self._attach_viz_extra_metrics(
-                        paths_to_visualize, self.path_folder)
+                        paths_to_visualize,
+                        getattr(self, 'allpath_folder', None)
+                        or getattr(self, 'path_folder', None))
 
                 vp = VisualizePath(
                     path_file=paths_to_visualize,
@@ -17816,7 +17947,16 @@ class FindNeuronConnection:
         in-hook anchor). The child resolves connection/neuron tables from
         the run's own parameters.txt (dataset key)."""
         mode = getattr(self, 'corridor_mode', 'auto')
-        if mode not in ('auto', 'on'):
+        # NAME UNIFICATION (2026-10-11): canonical values are
+        # 'complete' (Complete mode only), 'auto' (Fast on deep runs,
+        # max_interlayer >= 4), 'both' (Complete + Fast always). Legacy
+        # 'off'/'on' payloads normalize to the new names (saved settings
+        # and older scripts keep working).
+        if mode == 'off':
+            mode = 'complete'
+        elif mode == 'on':
+            mode = 'both'
+        if mode not in ('auto', 'both'):
             return False
         if (mode == 'auto'
                 and int(getattr(self, 'max_interlayer', 0) or 0) < 4):
@@ -17841,6 +17981,7 @@ class FindNeuronConnection:
                 return True
             cmd = [
                 _sys.executable, cli, str(run_dir), '--quiet',
+                '--trigger', 'in-run (subprocess)',
                 '--top-m-base',
                 str(int(getattr(self, 'route_top_m_base', 10))),
                 '--length-decay',
@@ -21755,6 +21896,14 @@ class FindNeuronConnection:
                         return df.with_columns(cols)
 
                     df_paths = _patch_weights(df_paths)
+                    # WRITE-BACK RESTORE (2026-10-12): the realized patch
+                    # (I2) computed the corrected columns but the main CSV
+                    # was never re-written — only the excluded-paths twin
+                    # was — so the exported Ratios kept the streaming
+                    # join's cross-layer mean (plan §11 item 8: 8/77
+                    # instead of the realized 9/77). Coverage (added by
+                    # the same block) returns with the write.
+                    df_paths.write_csv(output_path_type_csv)
                     if (os.path.exists(output_path_type_excluded_csv)
                             and output_path_type_excluded_csv
                             != output_path_type_csv):
@@ -22403,7 +22552,9 @@ class FindNeuronConnection:
                     paths_to_visualize['traversal_probabilities'] = paths_to_visualize['probabilities']
                 paths_to_visualize, _pair_extra = \
                     self._attach_viz_extra_metrics(
-                        paths_to_visualize, self.path_folder)
+                        paths_to_visualize,
+                        getattr(self, 'allpath_folder', None)
+                        or getattr(self, 'path_folder', None))
 
                 # If find_reciprocal is enabled, override visualization with reciprocal edges
                 if find_reciprocal and hasattr(self, '_reciprocal_types'):

@@ -335,8 +335,10 @@ def test_pipeline_layer_recurred_edge_exports_physical_weight(
         monkeypatch, tmp_path)
 
     def s1_rows(fc):
+        # column NAME access — the schema shed the suspended probability
+        # columns (2026-10-06) and probability-era positions shifted
         df = pl.read_csv(_paths_csv(fc))
-        return {row[0]: row for row in df.iter_rows()}
+        return {row["path"]: row for row in df.iter_rows(named=True)}
 
     mono_rows = s1_rows(fc_mono)
     batch_rows = s1_rows(fc_batch)
@@ -344,9 +346,9 @@ def test_pipeline_layer_recurred_edge_exports_physical_weight(
     assert s1_a_t1 in mono_rows and s1_a_t1 in batch_rows
     assert mono_rows[s1_a_t1] == batch_rows[s1_a_t1]
     # weight column carries the PHYSICAL S1->A weight exactly once
-    weights = batch_rows[s1_a_t1][1]
+    weights = batch_rows[s1_a_t1]["weights"]
     assert weights == '[7, 12]', weights
-    assert batch_rows[s1_a_t1][4] == 7   # min_weight = physical too
+    assert batch_rows[s1_a_t1]["min_weight"] == 7   # min_weight = physical too
     # and the store itself kept both layer rows
     store = os.path.join(fc_batch.allpath_folder,
                          'shortest_discovery_store', 'connections')
@@ -436,9 +438,11 @@ def test_pipeline_type_paths_equal(monkeypatch, tmp_path, synth_types):
     batch = pl.read_csv(os.path.join(fc_batch.allpath_folder, type_csv))
     assert mono.rows() == batch.rows()
     # the min-hop contract survives batching: no 2-hop S1->T2 row exists
+    # (column NAME access — the schema shed the suspended probability
+    # columns (2026-10-06) and probability-era positions shifted)
     assert not any(
-        row[0].startswith('TS1->') and row[0].endswith('->TT2')
-        and row[7] == 2 for row in batch.iter_rows())
+        row["path"].startswith('TS1->') and row["path"].endswith('->TT2')
+        and row["length"] == 2 for row in batch.iter_rows(named=True))
 
 
 def test_saveas_rerun_wipes_stale_store(monkeypatch, tmp_path, synth_types):

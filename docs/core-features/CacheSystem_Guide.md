@@ -205,6 +205,17 @@ Actual connection data with stable hash-based filenames.
 }
 ```
 
+**Pair-collapsed layout (2026-10-12):** consolidations emit the main
+`connections.parquet` with **one row per (pre, post) pair** at the
+pair's PHYSICAL weight (the sum of its per-ROI slices — slice rows are
+how per-ROI caches record one connection). The per-ROI detail moves
+verbatim to `connections_by_roi.parquet` beside it (the audit surface;
+its presence marks the layout). Every consumer — D_t ratio
+denominators, threshold filters, aggregation — reads the pair's
+physical weight directly; legacy per-ROI caches remain readable (all
+readers collapse per pair before thresholding). Re-consolidating an
+existing cache (Settings → pull to completion) converts it.
+
 **Note:** Type and instance are NOT stored in cache - joined from local datasets when loading!
 
 ---

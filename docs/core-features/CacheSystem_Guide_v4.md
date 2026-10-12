@@ -110,8 +110,8 @@ cache/
 |--------|------|-------------|
 | bodyId_pre | str | Upstream neuron ID |
 | bodyId_post | str | Downstream neuron ID |
-| weight | int64 | Synapse count |
-| roi | str | Brain region (optional) |
+| weight | int64 | Synapse count (per-pair physical: the sum of the pair's per-ROI slices) |
+| roi | str | First-slice rider on the pair-collapsed layout; per-ROI detail lives in `connections_by_roi.parquet` |
 | type_pre | str | Pre-synaptic neuron type |
 | type_post | str | Post-synaptic neuron type |
 | cached_date | datetime | When connection was cached |
