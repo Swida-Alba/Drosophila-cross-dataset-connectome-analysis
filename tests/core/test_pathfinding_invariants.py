@@ -422,3 +422,63 @@ class TestRealDataDt:
         ref = dict(zip(ref_pairs["bodyId_post"].to_list(),
                        ref_pairs["tot"].to_list()))
         assert got == ref
+
+
+class TestRealizedRatioCustomLabels:
+    """Custom-label posts (label-mapper groups) have no native-type rows,
+    so the F9 by-type fetch cannot resolve them — the realized-ratio type
+    mass must fall back to the group's member bodyIds (via the run's
+    label mapper) and sum their per-neuron F9 totals (plan §13)."""
+
+    def test_type_mass_resolves_custom_label_via_mapper(self):
+        import coana
+        from comparison.label_mapper import LabelMapper
+        import pandas as pd
+
+        mapper_json = (ROOT / "clock-production/data/"
+                       "clock_validated_expanded/"
+                       "LabelMapper_clock_FAFB-MCNS-BANC.json")
+        if not mapper_json.exists():
+            pytest.skip("clock LabelMapper JSON not present")
+        lm = LabelMapper(overall_mapping_json=str(mapper_json))
+        members = lm.get_neurons_for_label(
+            "5th-LNv", "male-cns:v1.0", "target")
+        assert members, "mapper returned no members for 5th-LNv"
+
+        fc = coana.FindNeuronConnection.__new__(
+            coana.FindNeuronConnection)
+        fc.dataset = "male-cns:v1.0"
+        fc.label_mapper = lm
+        fc._ratio_lane_type_members = {}
+        wanted = ["5th-LNv"]
+
+        # by-type fetch: custom labels have no native rows (empty)
+        fc._fetch_total_incoming_weight_by_type = (
+            lambda types, min_weight=1: pd.DataFrame(
+                columns=["type_post", "total_incoming_weight"]))
+        # per-neuron F9 fetch: the members' physical incoming
+        per_neuron = {str(b): float(30 + 5 * i)
+                      for i, b in enumerate(members)}
+        fc._fetch_total_incoming_weight = (
+            lambda posts, min_weight=1: pd.DataFrame({
+                "bodyId_post": [str(p) for p in posts],
+                "total_incoming_weight": [
+                    per_neuron.get(str(p), 0.0) for p in posts]}))
+
+        mass = fc._realized_ratio_type_mass(wanted)
+        assert mass.get("5th-LNv") == pytest.approx(
+            sum(per_neuron.values()))
+
+    def test_readout_whole_path_none_on_unresolvable(self):
+        # the standing whole-path None contract: one unresolvable hop
+        # post nullifies the path's realized ratios (the caller labels
+        # the row None per the 2026-10-10 directive)
+        import coana
+        out = coana.FindNeuronConnection._realized_ratio_readout(
+            [9.0, 12.0], ("TS", "TA", "TT"),
+            {"TA": 77.0, "TT": None})   # TT unresolvable
+        assert out is None
+        res = coana.FindNeuronConnection._realized_ratio_readout(
+            [9.0, 12.0], ("TS", "TA", "TT"),
+            {"TA": 77.0, "TT": 154.0})
+        assert res[0] == pytest.approx([9 / 77, 12 / 154])

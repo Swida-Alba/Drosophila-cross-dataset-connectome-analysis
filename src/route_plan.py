@@ -639,6 +639,31 @@ def read_run_params(run_dir) -> dict:
     return out
 
 
+def _parse_query_tokens(v):
+    """Parse a run's source/target token record into (mode, tokens).
+
+    The engine records dict filters verbatim (e.g. a UI wildcard query
+    writes ``{'startswith': ['R7', 'R8']}``) — return ('startswith',
+    tokens) for those; plain lists/CSVs return ('equal', tokens)."""
+    import ast
+    v = (v or "").strip()
+    if not v:
+        return "equal", []
+    try:
+        parsed = ast.literal_eval(v)
+    except (ValueError, SyntaxError):
+        parsed = None
+    if isinstance(parsed, dict):
+        tokens = []
+        for token_list in parsed.values():
+            tokens.extend(str(t).strip() for t in token_list
+                          if str(t).strip())
+        return "startswith", tokens
+    if isinstance(parsed, (list, tuple)):
+        return "equal", [str(t).strip() for t in parsed if str(t).strip()]
+    return "equal", [t.strip() for t in v.split(",") if t.strip()]
+
+
 def _parse_list(v):
     import ast
     v = (v or "").strip()
@@ -671,23 +696,34 @@ def _parse_bool(v, default=False):
     return default
 
 
-def _match_type_labels(labels, tokens, body2type=None):
+def _match_type_labels(labels, tokens, body2type=None, prefix=False):
     """Enroll run-query tokens against effective labels. A token matches a
     label on equality, on a hemisphere-suffix strip (separate_hemispheres
-    runs enroll both 'X_L' and 'X_R' for token 'X'), or as a bodyId."""
+    runs enroll both 'X_L' and 'X_R' for token 'X'), as a bodyId, or —
+    prefix mode (a recorded dict-filter query) — as a startswith match."""
     tokens = [str(t).strip() for t in tokens if str(t).strip()]
     label_set = set(labels)
     matched = set()
-    for tok in tokens:
+
+    def _enroll(tok):
         if tok in label_set:
             matched.add(tok)
-            continue
+            return
         for lab in labels:
             if (lab.endswith(_HEMI_SUFFIXES)
                     and lab[: lab.rfind("_")] == tok):
                 matched.add(lab)
         if body2type and tok in body2type:
             matched.add(body2type[tok])
+
+    for tok in tokens:
+        _enroll(tok)
+    if prefix:
+        # UI wildcard query: {'startswith': ['R7', 'R8']} recorded in
+        # parameters.txt — enroll every effective label with the prefix
+        for lab in labels:
+            if any(lab.startswith(tok) for tok in tokens):
+                matched.add(lab)
     return matched
 
 
@@ -793,10 +829,14 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                   (getattr(fnc, "dataset", "") if fnc is not None else "")
                   or "").strip()
 
-    src_tokens = list(source_types) if source_types is not None else \
-        _parse_list(kv.get("source neurons"))
+    query_prefix = False
+    if source_types is not None:
+        src_tokens = list(source_types)
+    else:
+        query_prefix, src_tokens = _parse_query_tokens(
+            kv.get("source neurons"))
     tgt_tokens = list(target_types) if target_types is not None else \
-        _parse_list(kv.get("target neurons"))
+        _parse_query_tokens(kv.get("target neurons"))[1]
     if not src_tokens or not tgt_tokens:
         _refuse("source/target neurons could not be read from the run")
 
@@ -926,6 +966,18 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         keep_code = hemi_filter[0].upper()
         frame = frame[codes.isin([keep_code, "U"])]
     label_mapper = getattr(fnc, "label_mapper", None) if fnc else None
+    if label_mapper is None:
+        # subprocess mode: the run's recorded mapping file expands
+        # custom-label query tokens (e.g. '5th-LNv') into the type map
+        _mf = (kv.get("custom mapping file")
+               or "").strip()
+        if _mf and Path(_mf).exists():
+            try:
+                from comparison.label_mapper import LabelMapper
+                label_mapper = LabelMapper(overall_mapping_json=_mf)
+            except Exception as _lm_exc:
+                _refuse(f"recorded mapping file not loadable "
+                        f"({_lm_exc})")
     type_map = build_effective_type_map(
         frame, dataset=dataset or "unknown",
         label_mapper=label_mapper, separate_hemispheres=separate_hemi)
@@ -937,7 +989,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     body2type = dict(type_map)
 
     src_labels = _match_type_labels(tmap["t"].to_list(), src_tokens,
-                                    body2type)
+                                    body2type, prefix=query_prefix)
     tgt_labels = _match_type_labels(tmap["t"].to_list(), tgt_tokens,
                                     body2type)
     if not src_labels or not tgt_labels:
