@@ -73,6 +73,10 @@ class FakeLabelMapper:
     def get_all_std_labels(self, role):
         return list(self._labels.get(role, []))
 
+    @property
+    def is_empty(self):
+        return not any(self._labels.values())
+
 
 def _aligned_df():
     return pd.DataFrame(
@@ -1471,6 +1475,11 @@ def test_conservation_network_type_mapper(tmp_path):
         source_neurons=("A", "NEW", "DUPA", "BALT", "PAT*"),
         target_neurons=("B", "NEWT", "DUPT", "TALT", "TPAT*"),
     )
+    # Keep the mapper's settled labels disjoint from the decorated tokens:
+    # a tier-0 label passes verbatim through the isolated-node display
+    # chain (label-mapper display compatibility, 2026-10-10) and would
+    # suppress the "CAN (F:N…)" auto-mapper decoration asserted below.
+    fa.label_mapper = FakeLabelMapper(("A",), ("B",))
     fa.parameters._auto_type_mapper = FakeAutoTypeMapper()
     df = _aligned_df()
     df.loc["GNG588(CB0038) -> B"] = [3.0, 2.0]

@@ -79,6 +79,12 @@ class QueryResolution:
     confidence: int = 0
     note: str = ''
     evidence: str = ''
+    # Report display name (label-mapper compatibility): set by the
+    # analyzer's enrichment so render layers never re-derive policy —
+    # a bodyId token governed by the user label mapper displays as its
+    # settled label (tier 0).  ``None`` = display the token unchanged.
+    display_name: Optional[str] = None
+    display_role: str = ''          # '' | 'label' | 'type' | 'hidden'
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -93,6 +99,8 @@ class QueryResolution:
             'confidence': self.confidence,
             'note': self.note,
             'evidence': self.evidence,
+            'display_name': self.display_name,
+            'display_role': self.display_role,
         }
 
 

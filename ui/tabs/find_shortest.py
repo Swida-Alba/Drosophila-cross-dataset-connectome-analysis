@@ -143,6 +143,15 @@ def create_find_shortest_tab():
                          "kept and tau is reported. Filters the emitted PATHS "
                          "only — the graph is not trimmed. 0 = auto (1M budget).",
                 )
+                corridor_mode = select_input(
+                    "Fast Mode (corridor lane)",
+                    {"complete": "Complete only",
+                     "auto": "Auto (deep runs)",
+                     "both": "Complete + Fast"},
+                    default=get_user_default("corridor_mode"),
+                    hint="Values — complete: run COMPLETE mode only (all intact paths >= the applied threshold; the run itself). auto: also run FAST mode (the corridor lane: strongest type-level routes at the ASKED threshold) after deep searches (max intermediate layers >= 4). both: always run FAST after the run. Fast writes its own route_scope_paths/ beside the run and never modifies this run's outputs. Full guide via the book icon.",
+                    help_doc="pathfinding_algorithms",
+                )
                 edge_limit = number_input(
                     "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
                     hint="Drawing-only cap: at most this many unique edges are "
@@ -513,6 +522,11 @@ def create_find_shortest_tab():
             # plan-shortest-batched-discovery: batched discovery +
             # budgeted enumeration (0 = legacy monolithic path).
             "discovery_batch_budget": int(discovery_batch_budget.value) or 0,
+            # Corridor lane: standalone route-scoped pass (auto at L>=4).
+            # NOTE (plan-corridor-lane.md §24): validation currently runs
+            # against a fresh lossless prune at the asked threshold, not
+            # yet the run's shortest-DAG store — refinement pending.
+            "corridor_mode": corridor_mode.value,
             "target_batch_size": int(target_batch_size.value) or 0,
             # plan-shortest-store-retention: post-run store handling.
             "discovery_store_retention": store_retention.value,

@@ -561,6 +561,219 @@ def _enumerate_paths(edges, sources, targets, bound, budget=None):
     return paths, info, stats
 
 
+def _dp_chain_structures(chain, pair_edges, sources, targets, type_map,
+                         cut_keys):
+    """EXACT layered DP for ONE emitted chain at the full scope: forward
+    path counts from the sources, backward counts to the targets — every
+    edge/body on >= 1 realization is identified by f[i][u] * b[i+1][v]
+    (or f[i][u] * b[i][u] for bodies), with EXACT per-edge traversal
+    counts. No path materialization: cost is O(chain subgraph), and
+    nothing truncates (2026-10-11: replaces the DFS collector whose
+    200k cap under-counted the fat MCNS chains — 108/249 truncated).
+
+    Returns None when the chain has no realization; else a dict with
+    edges_cls_at (per-hop {'emitted'/'refill': {(u,v): w}}), edges_at
+    (per-hop {(u,v): w} all classes), nodes_at (per-hop body sets),
+    path_count, traversals {(u,v): count}."""
+    h = len(chain) - 1
+    if h < 1:
+        return None
+    start = {str(s) for s in sources
+             if type_map.get(str(s)) == chain[0]}
+    goal = {str(t) for t in targets
+            if type_map.get(str(t)) == chain[-1]}
+    if not start or not goal:
+        return None
+    hop_dicts = []
+    for i in range(h):
+        d = pair_edges.get((chain[i], chain[i + 1]))
+        if not d:
+            return None
+        hop_dicts.append(d)
+    # forward: f[i][body] = # realizations source -> body at layer i
+    f = [defaultdict(int) for _ in range(h + 1)]
+    for s in start:
+        f[0][s] = 1
+    for i in range(h):
+        d = hop_dicts[i]
+        for u, cnt in f[i].items():
+            for v, _w in d.get(u, ()):
+                f[i + 1][v] += cnt
+    # backward: b[i][body] = # realizations body at layer i -> target
+    b = [defaultdict(int) for _ in range(h + 1)]
+    for t in goal:
+        if f[h].get(t):
+            b[h][t] = 1
+    for i in range(h - 1, -1, -1):
+        d = hop_dicts[i]
+        for u, _cnt in f[i].items():
+            acc = 0
+            for v, _w in d.get(u, ()):
+                acc += b[i + 1].get(v, 0)
+            if acc:
+                b[i][u] = acc
+    path_count = sum(f[h].get(t, 0) for t in goal)
+    if path_count == 0:
+        return None
+    edges_cls_at = [{} for _ in range(h)]
+    edges_at = [{} for _ in range(h)]
+    nodes_at = []
+    traversals: Dict[Tuple[str, str], int] = {}
+    for i in range(h):
+        d = hop_dicts[i]
+        wmap = {(u, v): w for u, v, w in
+                ((u, v, wv) for u, vs in d.items() for v, wv in vs)}
+        cls_i = edges_cls_at[i]
+        all_i = edges_at[i]
+        for u, cnt in f[i].items():
+            for v, _w in d.get(u, ()):
+                g = b[i + 1].get(v, 0)
+                if not g:
+                    continue  # never reaches a target on this chain
+                key = (u, v)
+                w = wmap[key]
+                cls = 'emitted' if key in cut_keys else 'refill'
+                cls_i.setdefault(cls, {})[key] = w
+                all_i[key] = w
+                traversals[key] = cnt * g
+        edges_at[i] = all_i
+    for i in range(h + 1):
+        nodes_at.append({u for u, cnt in f[i].items()
+                         if cnt and b[i].get(u)})
+    return {'edges_cls_at': edges_cls_at, 'edges_at': edges_at,
+            'nodes_at': nodes_at, 'path_count': path_count,
+            'traversals': traversals}
+
+
+def _dfs_chain_structures(chain, pair_edges, sources, targets, type_map,
+                          cut_keys, cap=2_000_000):
+    """SIMPLE-path structures for ONE MULTI-VISIT chain (a type appears
+    twice in the chain, so body-level simplicity is NOT automatic): a
+    visited-set DFS collecting the same per-chain structures the DP
+    builds — classed per-hop edges, per-layer body sets, exact
+    traversals — recorded ON COMPLETION so only edges/bodies on >= 1
+    collected realization enter the structures. Walk-level alive
+    pruning strips dead-end branches first (lossless: a simple path is
+    a walk, so its prefixes/suffixes always satisfy walk reachability).
+    Capped at `cap` paths (truncated=True discloses under-counted
+    masses; the DP cannot serve these chains because layered walks may
+    revisit a body across layers, which the engine's simple-path
+    semantics excludes).
+    Returns None when the chain has no realization; else a dict with
+    edges_cls_at / edges_at / nodes_at / path_count / traversals /
+    truncated."""
+    h = len(chain) - 1
+    if h < 1:
+        return None
+    start = {str(s) for s in sources
+             if type_map.get(str(s)) == chain[0]}
+    goal = {str(t) for t in targets
+            if type_map.get(str(t)) == chain[-1]}
+    if not start or not goal:
+        return None
+    hop_dicts = []
+    for i in range(h):
+        d = pair_edges.get((chain[i], chain[i + 1]))
+        if not d:
+            return None
+        hop_dicts.append(d)
+    # ALIVE PRUNING (2026-10-11, plan F6): walk-level forward/backward
+    # counts identify the edges/starts on >= 1 layered WALK. A simple
+    # path is a walk, so pruning is LOSSLESS for the DFS — the dead-end
+    # branches it strips otherwise burn the 2M path cap before real
+    # paths are reached (the MCNS replay truncated 29/77 multi-visit
+    # chains exactly there).
+    fwd = [defaultdict(int) for _ in range(h + 1)]
+    for s in start:
+        fwd[0][s] = 1
+    for i in range(h):
+        d = hop_dicts[i]
+        nxt = fwd[i + 1]
+        for u, cnt in fwd[i].items():
+            for v, _w in d.get(u, ()):
+                nxt[v] += cnt
+    bwd = [defaultdict(int) for _ in range(h + 1)]
+    for t in goal:
+        if fwd[h].get(t):
+            bwd[h][t] = 1
+    for i in range(h - 1, -1, -1):
+        d = hop_dicts[i]
+        for u in fwd[i]:
+            acc = 0
+            for v, _w in d.get(u, ()):
+                acc += bwd[i + 1].get(v, 0)
+            if acc:
+                bwd[i][u] = acc
+    hop_dicts = [
+        {u: sorted((v, w) for v, w in vs if bwd[i + 1].get(v))
+         for u, vs in d.items() if fwd[i].get(u) and bwd[i].get(u)}
+        for i, d in enumerate(hop_dicts)]
+    # sorted() per adjacency list pins the DFS COLLECTION order: the raw
+    # lists inherit pair_edges_full's e_u_full iteration order, and polars
+    # collect row order varies run to run. Complete chains are immune
+    # (every simple path is collected regardless of order), but TRUNCATED
+    # chains keep whichever paths the cap reached FIRST — without the
+    # sort, the disclosed lower-bound edge set (and the full-scope mass)
+    # wiggled ±0.005% between replays.
+    start = {s for s in start if bwd[0].get(s)}
+    if not start or not all(hop_dicts):
+        return None
+    edges_cls_at = [{} for _ in range(h)]
+    edges_at = [{} for _ in range(h)]
+    nodes_at = [set() for _ in range(h + 1)]
+    traversals: Dict[Tuple[str, str], int] = defaultdict(int)
+    state = {'count': 0, 'truncated': False}
+    n = h
+
+    def dfs(i, body, visited, path, wts):
+        # ON-COMPLETION recording (2026-10-11, with the F6 pruning): the
+        # structures must match the DP contract — edges/nodes/bodies on
+        # >= 1 COLLECTED realization. The previous explore-time recording
+        # also captured dead partial branches (edges whose subtree
+        # completed nothing), inflating multi-visit chain masses with
+        # mass that realized no path.
+        if state['truncated']:
+            return
+        if i == n:
+            if body in goal:
+                state['count'] += 1
+                if state['count'] >= cap:
+                    state['truncated'] = True
+                for j in range(n):
+                    key = (path[j], path[j + 1])
+                    cls = 'emitted' if key in cut_keys else 'refill'
+                    edges_cls_at[j].setdefault(cls, {})[key] = wts[j]
+                    edges_at[j][key] = wts[j]
+                    traversals[key] += 1
+                    nodes_at[j].add(path[j])
+                nodes_at[n].add(path[n])
+            return
+        for v, w in hop_dicts[i].get(body, ()):
+            if v in visited:
+                continue
+            visited.add(v)
+            path.append(v)
+            wts.append(w)
+            dfs(i + 1, v, visited, path, wts)
+            path.pop()
+            wts.pop()
+            visited.discard(v)
+            if state['truncated']:
+                return
+
+    for s in sorted(start):
+        if state['truncated']:
+            break
+        visited = {s}
+        dfs(0, s, visited, [s], [])
+    if state['count'] == 0:
+        return None
+    return {'edges_cls_at': edges_cls_at, 'edges_at': edges_at,
+            'nodes_at': nodes_at, 'path_count': state['count'],
+            'traversals': dict(traversals),
+            'truncated': state['truncated']}
+
+
 def build_effective_type_map(neuron_frame, *, dataset,
                              mapping_file=None, label_mapper=None,
                              separate_hemispheres=False) -> dict:
@@ -683,11 +896,15 @@ def filter_edges_by_hemisphere(edges, type_map, hemi_filter):
 # ---------------------------------------------------------------------------
 def _load_shortest_store(run_dir: Path):
     """Load the shortest discovery store's structural pieces: per-layer
-    connection frames (pair -> per-layer weights; the per-edge values
-    are the PHYSICAL weight in every layer — enumeration over them is
-    multiplicity-insensitive, and anchor masses dedup via ``syn_of``),
-    the store meta (targets found + hop limits) and the per-target
-    distance maps."""
+    connection frames (pair -> PER-LAYER PHYSICAL weight; the per-edge
+    values are the pair's ROI-SLICE SUM within that layer — the fetch
+    frames are verbatim per-ROI slices, and keep-one-row policies
+    sampled a different slice per layer, manufacturing fake cross-layer
+    conflicts; original-data adjudication 2026-10-12, plan §9), the
+    store meta (targets found + hop limits) and the per-target distance
+    maps. Cross-layer recurring edges dedup keep-first at consumption
+    (``_enumerate_shortest``'s I1 physical dict) — after summation the
+    layers agree exactly (measured 0 conflicts on the MCNS store)."""
     store_dir = run_dir / 'shortest_discovery_store'
     meta_file = store_dir / 'meta.json'
     if not meta_file.exists():
@@ -702,26 +919,32 @@ def _load_shortest_store(run_dir: Path):
         layer_weights = []      # [(layer, {(pre, post): w})]
         conn_dir = store_dir / 'connections'
         merged = conn_dir / 'connections_all.parquet'
+
+        def _layer_dict(frame: 'pl.DataFrame') -> dict:
+            has_roi = 'roi' in frame.columns
+            dedup_subset = (['bodyId_pre', 'bodyId_post', 'roi', 'weight']
+                            if has_roi
+                            else ['bodyId_pre', 'bodyId_post', 'weight'])
+            sums = (frame.unique(subset=dedup_subset, keep='any')
+                    .group_by(['bodyId_pre', 'bodyId_post'])
+                    .agg(pl.col('weight').sum()))
+            return {(str(pre), str(post)): float(w)
+                    for pre, post, w in sums.iter_rows()}
+
         if merged.exists():
             frame = pl.read_parquet(merged)
-            for (layer,), group in frame.group_by(
-                    ['conn_layer'] if 'conn_layer' in frame.columns
-                    else ['layer']):
-                weights = {}
-                for pre, post, w in zip(group['bodyId_pre'],
-                                        group['bodyId_post'],
-                                        group['weight']):
-                    weights[(str(pre), str(post))] = float(w)
-                layer_weights.append((str(layer), weights))
+            layer_col = ('conn_layer' if 'conn_layer' in frame.columns
+                         else 'layer')
+            groups = []
+            for (layer,), group in frame.group_by([layer_col]):
+                groups.append((str(layer), group))
+            groups.sort(key=lambda kv: kv[0])   # deterministic keep-first
+            for layer, group in groups:
+                layer_weights.append((layer, _layer_dict(group)))
         else:
             for path in sorted(conn_dir.glob('*.parquet')):
-                frame = pl.read_parquet(path)
-                weights = {}
-                for pre, post, w in zip(frame['bodyId_pre'],
-                                        frame['bodyId_post'],
-                                        frame['weight']):
-                    weights[(str(pre), str(post))] = float(w)
-                layer_weights.append((path.stem, weights))
+                layer_weights.append(
+                    (path.stem, _layer_dict(pl.read_parquet(path))))
         if not layer_weights:
             return None
         targets = list(meta.get('targets_found') or [])
@@ -740,12 +963,14 @@ def _load_shortest_store(run_dir: Path):
 def _enumerate_shortest(layer_weights, node_set, sources, targets, bound,
                         budget, distances, hop_limits):
     """Shortest-mode re-exploration on the induced subgraph: per-layer
-    weights DEDUPED to the PHYSICAL per-edge weight (keep-first), the
-    exact parity ``load_edge_weight_frame`` has had since engine fix
-    2026-10-05 (I1) — summing the per-layer refetches multiplied weights
-    by the fetch multiplicity, which re-ordered the StrongestFirst drain
-    against the fixed engine and broke the cut anchor on runs with
-    cross-layer recurring edges. Enumeration is seeded with the store's
+    weights are the pair's ROI-SLICE SUM (the loader collapses the
+    fetched slices), deduped keep-first ACROSS layers — the I1 rule
+    (2026-10-05) that summing the per-layer refetches multiplied
+    weights by the fetch multiplicity, which re-ordered the
+    StrongestFirst drain against the fixed engine and broke the cut
+    anchor on runs with cross-layer recurring edges. After the slice
+    summation the layers agree exactly (0 conflicts measured), so the
+    keep-first choice is exact. Enumeration is seeded with the store's
     full-graph distance maps so per-pair min-hop semantics match the
     run."""
     FastGraph = _load_fast_graph()
@@ -802,8 +1027,13 @@ def compute_type_level_refill(
       SYNAPSE >= 1 only — no ratio tier, no synapse tier — re-valuing the
       SAME emitted chain sequences (value change, zero structural
       change). Produced for EVERY all-mode run with emitted rows,
-      enumerated UNBUDGETED so the weak sub-threshold tail is never
-      lost. Writes refill_full_type_pairs.csv + the mirror's
+      enumerated per chain (2026-10-11: restricted to the emitted
+      chains — bounded cost, no path budget, so the weak sub-threshold
+      tail is never lost; DISTINCT-type chains via an exact layered DP
+      (no truncation), multi-visit chains via an alive-pruned
+      simple-path DFS whose 2M path cap is disclosed as
+      ``chains_truncated`` with the ``chains`` denominator).
+      Writes refill_full_type_pairs.csv + the mirror's
       refill_full_paths_type.csv / refill_full_carrying_paths_type.csv /
       refilled_full_connection_type.csv.
 
@@ -1045,43 +1275,109 @@ def compute_type_level_refill(
         provenance block (the pair table is written alongside)."""
         if not e_u_full:
             return None
-        e_pref_full, full_drop = hop_prefilter(
-            e_u_full, sources, targets, bound)
-            # UNBUDGETED (fix 2026-10-09): a strongest-first budget drains
-            # at the tau of the N-th strongest path — exactly the weak
-            # sub-threshold paths the full scope exists to capture were
-            # being cut, collapsing the full tables onto the asked ones
-            # (user-caught on the L3w3 run). The route scope bounds the
-            # universe; memory scales with the materialized paths.
-        _paths_full, estar_full, full_stats = _enumerate_paths(
-            e_pref_full, sources, targets, bound, budget=None)
-        weight_full = {(u, v): w for (u, v, w) in e_pref_full}
+        # (the lossless hop prefilter is retired here: the per-chain
+        # enumeration walks only the chains' own hop pairs, so a
+        # whole-graph prefilter pass would be pure overhead)
+        full_drop = 0
+        weight_full = {(u, v): w for (u, v, w) in e_u_full}
         anchor_full = (
             (lambda uv: syn_of.get(uv, weight_full[uv]))
             if ratio_mode else (lambda uv: weight_full[uv]))
-        # chain scope: the emitted chains. The asked flow passes its
-        # own; the no-asked-refill branch derives them from the
-        # asked-tier graph (cut == asked there, so the tier
-        # enumeration IS the run's own chain set).
+        # PER-CHAIN ENUMERATION (2026-10-11, user directive: the refill
+        # is restricted to per-path chain and is budgeted): the full
+        # scope re-values the EMITTED chains — enumerate each chain's
+        # layered realizations exactly instead of walking the whole >=1
+        # cone unbudgeted (the 2026-10-09 plain-budget rejection stands:
+        # a count budget would cut the weak paths the scope exists for;
+        # chain SCOPING bounds the cost without cutting them). The
+        # collected set IS the chain scope the tables always filtered
+        # to; off-chain mass stays disclosed via pair_offchain_mass.
+        # (The earlier 10h+ CPU profile was this unbudgeted enumeration
+        # on a fat MCNS query.)
+        pair_edges_full: Dict[Tuple[str, str], Dict[str, list]] = {}
+        for u, v, w in e_u_full:
+            pair_edges_full.setdefault(
+                (type_map.get(u, '~' + u), type_map.get(v, '~' + v)),
+                {}).setdefault(u, []).append((v, w))
         if chain_keys is None:
-            cut_tier = max(asked, w0 or asked)
-            e_cut_full = [(u, v, w) for (u, v, w) in e_pref_full
-                          if w >= cut_tier]
-            _cut_paths_f, cut_info_f, _cs = _enumerate_paths(
-                e_cut_full, sources, targets, bound, budget=None)
+            # no-asked-refill branch: the emitted paths ARE the chains
+            # (cut == asked there; the re-derivation above already
+            # produced them — no second enumeration). The cut-edge keys
+            # come from the same re-derivation (refill_full_keys must
+            # exclude the emitted edges or the emitted mass would be
+            # double-counted as refill).
             chain_keys = {tuple(type_map[n] for n in nodes)
-                          for _bn, nodes in _cut_paths_f}
-            cut_edge_keys = set(cut_info_f)
+                          for _bn, nodes in (_emitted_paths or [])}
+            cut_edge_keys = set(cut_info or ())
+        # HYBRID per-chain enumeration: distinct-type chains via an
+        # exact layered DP (no path materialization, no truncation);
+        # multi-visit chains via the alive-pruned visited DFS (cap 2M,
+        # disclosed). Forward/backward layered counts identify every
+        # edge/body on >= 1 realization of the chain, with exact
+        # per-edge traversals.
+        cut_keys_f = set(cut_edge_keys or ())
+        seq_edges_full: Dict[Tuple[str, ...], List[Dict]] = {}
+        seq_nodes_full: Dict[Tuple[str, ...], List[set]] = {}
+        seq_cls_full: Dict[Tuple[str, ...], List[Dict]] = {}
+        bodyid_paths_full = 0
+        dp_traversals: Dict[Tuple[str, str], int] = {}
+        chains_truncated = 0
+        for chain in sorted(chain_keys):
+            # HYBRID (2026-10-11 review): distinct-type chains -> the DP
+            # is EXACT (a body has one type, so layered walks cannot
+            # revisit a body; simplicity is automatic). MULTI-VISIT
+            # chains -> the visited DFS (layered walks may revisit a
+            # body across layers, which the engine's simple-path
+            # semantics excludes; the DP would silently over-count).
+            if len(set(chain)) == len(chain):
+                dp = _dp_chain_structures(
+                    chain, pair_edges_full, sources, targets, type_map,
+                    cut_keys_f)
+                c_trunc = False
+            else:
+                dp = _dfs_chain_structures(
+                    chain, pair_edges_full, sources, targets, type_map,
+                    cut_keys_f)
+                c_trunc = bool(dp and dp['truncated'])
+            chains_truncated += 1 if c_trunc else 0
+            if dp is None:
+                continue
+            bodyid_paths_full += dp['path_count']
+            for k2, cnt2 in dp['traversals'].items():
+                dp_traversals[k2] = dp_traversals.get(k2, 0) + cnt2
+            # classed structures (complete view): ALL chains
+            seq_cls_full[chain] = dp['edges_cls_at']
+            seq_nodes_full[chain] = dp['nodes_at']
+            # carrying structures (refill view): chains with >= 1
+            # refill-class (non-cut) edge on a realization
+            has_refill = any(
+                'refill' in cls_at and cls_at['refill']
+                for cls_at in dp['edges_cls_at'])
+            if has_refill:
+                seq_edges_full[chain] = dp['edges_at']
+        # estar_full edge info from the structures (exact traversals)
+        hops: Dict[Tuple[str, str], set] = defaultdict(set)
+        for chain in seq_cls_full:
+            for i, cls_at in enumerate(seq_cls_full[chain]):
+                for _cls, edges in cls_at.items():
+                    for (u, v) in edges:
+                        hops[(u, v)].add(i)
+        estar_full = {k: {'w': weight_full[k],
+                          'traversals': dp_traversals.get(k, 0),
+                          'hops': sorted(hops[k])}
+                      for k in hops}
         refill_full_keys = set(estar_full) - set(cut_edge_keys or ())
         full_totals: Dict[Tuple[str, str], float] = defaultdict(float)
         for uv in refill_full_keys:
             full_totals[(type_map[uv[0]], type_map[uv[1]])] += \
                 anchor_full(uv)
-        # OFF-CHAIN disclosure (2026-10-10, user-approved): the
-        # full-scope admitted mass on the pair whose edges fired on NO
-        # enumerated full-scope path (chain scope excludes them by
-        # design) — refilled_total is a chain-scoped lower bound of the
-        # raw pair total, and this column makes the gap self-describing:
+        # OFF-CHAIN disclosure (2026-10-10 user-approved; 2026-10-11
+        # wording per the per-chain enumeration): the full-scope
+        # admitted (>= 1) mass on the pair whose edges fired on NO
+        # CHAIN realization (per-path chain scope excludes them by
+        # design — both never-fired edges and off-chain-fired edges)
+        # — refilled_total is a chain-scoped value and this column
+        # makes the gap self-describing:
         # raw_pair_total ~= emitted + refill + pair_offchain_mass
         # (+ edges outside the involved-types node set / hop bound).
         full_edge_keys = set(estar_full)
@@ -1108,26 +1404,36 @@ def compute_type_level_refill(
                     round(ratio, 6) if ratio is not None else None),
                 'pair_offchain_mass': int(offchain.get(pair, 0.0)),
             })
-        carrying_rows, _carrying_bodyid = _aggregate_refill_paths(
-            _paths_full, refill_full_keys, chain_keys, type_map,
-            node_set, anchor_full, type_in)
+        # DP-fed row assembly (same helpers the path-fed asked view
+        # uses; type_n mirrors the aggregators' induced-membership N)
+        type_n_full: Dict[str, int] = defaultdict(int)
+        for b in node_set:
+            label = type_map.get(str(b))
+            if label is not None:
+                type_n_full[label] += 1
+        carrying_rows = _refill_rows_from_structures(
+            seq_edges_full, seq_nodes_full, type_n_full, type_in)
         complete_rows_full, complete_stats_full = \
-            _aggregate_complete_paths(
-                _paths_full, set(cut_edge_keys or ()),
-                refill_full_keys, chain_keys, type_map, node_set,
-                anchor_full, type_in)
+            _complete_rows_from_structures(
+                seq_cls_full, seq_nodes_full, type_n_full, type_in)
         block = {
-            'status': 'ok',   # unbudgeted: never truncated
+            'status': 'ok',   # per-chain enumeration (chain-scoped)
+            'enumeration': ('per-chain: layered DP for distinct-type '
+                            'chains (exact) + alive-pruned visited DFS '
+                            'for multi-visit chains (cap 2M paths, '
+                            'disclosed)'),
+            'chains': len(chain_keys),
+            'chains_truncated': chains_truncated,
             'induced_edges': len(e_u_full),
             'prefilter_dropped': full_drop,
-            'paths': len(_paths_full),
+            'paths': bodyid_paths_full,
             'chains_carrying': len(carrying_rows),
             'chains_complete': complete_stats_full['chains'],
-            'bodyid_paths': complete_stats_full['bodyid_paths'],
+            'bodyid_paths': bodyid_paths_full,
             'refill_edges': len(refill_full_keys),
             'refill_weight_total': int(sum(
                 full_totals.get(p, 0.0) for p in emitted)),
-            'truncated': False,
+            'truncated': chains_truncated > 0,
         }
         # FULL-SCOPE CACHE GUARD (2026-10-10, user-approved): the asked
         # scope is anchored by table_reproduced, but the full scope had
@@ -1244,10 +1550,13 @@ def compute_type_level_refill(
                     denom = post_tot.get(v, 0.0)
                     conv_layer[(u, v)] = (
                         float(w) / denom if denom > 0 else 0.0)
-                    # PHYSICAL anchor mass: keep the first fetch's weight.
-                    # A pair recurring across BFS layers is one edge; the
-                    # anchor must reproduce read_emitted_pairs' deduped
-                    # mass, not the fetch multiplicity (2026-10-06).
+                    # PHYSICAL anchor mass: keep the first LAYER's
+                    # (slice-summed) weight. A pair recurring across BFS
+                    # layers is one edge; the anchor must reproduce
+                    # read_emitted_pairs' deduped mass, not the fetch
+                    # multiplicity (2026-10-06). After the loader's
+                    # slice summation the layers agree exactly, so the
+                    # keep-first is exact.
                     if (u, v) not in syn_of:
                         syn_of[(u, v)] = float(w)
                 converted.append((_layer, conv_layer))
@@ -1309,8 +1618,9 @@ def compute_type_level_refill(
             # pair's physical weight BEFORE any tier check (a
             # sub-threshold slice of a supra-threshold pair must not
             # drop). Shortest mode never reaches this branch (its
-            # per-layer stream is multiplicity-sensitive — dedupe
-            # keep-first per engine I1, never sum). Totals (Pass A
+            # per-layer stream is slice-summed by the loader; the
+            # cross-layer refetches dedup keep-first per engine I1,
+            # never summed). Totals (Pass A
             # denominators) are collapse-order-invariant.
             if edges is not None:
                 edges = _collapse_pair_weights(edges)
@@ -1373,7 +1683,17 @@ def compute_type_level_refill(
         # the full scope runs regardless and rides on the record.
         if applied <= asked and not ratio_mode:
             rec['status'] = STATUS_NO_REFILL
-            full_block = _produce_full_scope()
+            # BUDGETED chain derivation (2026-10-11): the full scope
+            # needs the emitted chains — one asked-tier enumeration with
+            # the refill path budget (an UNBITTEN run's own set is
+            # complete well under it; the old unbudgeted derivation is
+            # what made the full scope unbounded on fat queries).
+            _cut_paths_nr, cut_info_nr, _cut_stats_nr = _enumerate_paths(
+                e_pref, sources, targets, bound, budget=path_budget)
+            full_block = _produce_full_scope(
+                chain_keys={tuple(type_map[n] for n in nodes)
+                            for _bn, nodes in _cut_paths_nr},
+                cut_edge_keys=set(cut_info_nr))
             if full_block is not None:
                 rec['full'] = full_block
             if write:
@@ -1797,8 +2117,10 @@ Refill-full (DUAL REFILL, 2026-10-08)
 The second kind: the second round admitted at SYNAPSE >= 1 ONLY (no
 ratio tier, no synapse tier) — the full-connection view of the SAME
 emitted chain sequences, produced for EVERY all-mode run with emitted
-rows and enumerated UNBUDGETED (a strongest-first budget drains exactly
-the weak sub-threshold paths this scope exists for). Files:
+rows and enumerated as an EXACT per-chain layered DP (a strongest-first
+count budget would drain exactly the weak sub-threshold paths this
+scope exists for — chain SCOPING bounds the cost without cutting
+them). Files:
 - `refill_full_type_pairs.csv` (this folder) — per emitted pair:
   emitted / refill-full (sub-threshold mass) / refilled_total +
   `refilled_connection_ratio` (the plain full ratio; at floor 1 it is
@@ -1951,6 +2273,90 @@ def _fmt_mass(value) -> str:
         float(value))
 
 
+def _refill_rows_from_structures(seq_edges, seq_nodes, type_n, type_in):
+    """Row assembly for the REFILLED path tables from per-chain
+    structures ({seq: per-hop {(u,v): anchor weight}}, {seq: per-hop
+    body sets}) — shared by the path-fed asked view and the DP-fed
+    full scope (2026-10-11)."""
+    rows = []
+    for seq in sorted(seq_edges,
+                      key=lambda s: (s[0], s[-1], len(s), s)):
+        edges_at = seq_edges[seq]
+        nodes_at = seq_nodes[seq]
+        weights = [sum(edge.values()) for edge in edges_at]
+        ratios = []
+        for i, post in enumerate(seq[1:]):
+            denom = type_in.get(post, 0.0)
+            ratios.append((weights[i] / denom) if denom > 0 else None)
+        finite = [r for r in ratios if r is not None]
+        coverage = '[' + ', '.join(
+            f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
+            for i, label in enumerate(seq)) + ']'
+        ratios_txt = ('[' + ', '.join(
+            'None' if r is None else repr(r) for r in ratios) + ']'
+            if ratios else '')
+        rows.append({
+            'path': '->'.join(seq),
+            'weights': '[' + ', '.join(
+                _fmt_mass(w) for w in weights) + ']',
+            'ratios': ratios_txt,
+            'min_weight': min(weights) if weights else 0,
+            'min_ratio': (min(finite) if finite else None),
+            'length': len(seq) - 1,
+            'nt_types': '',
+            'coverage': coverage,
+        })
+    rows.sort(key=lambda r: (-r['min_weight'], r['path']))
+    return rows
+
+
+def _complete_rows_from_structures(seq_cls, seq_nodes, type_n, type_in):
+    """Row assembly for the COMPLETE-AT-ASKED path tables from per-chain
+    classed structures — shared by the path-fed asked view and the
+    DP-fed full scope (2026-10-11)."""
+    rows = []
+    for seq in sorted(seq_cls,
+                      key=lambda s: (s[0], s[-1], len(s), s)):
+        classes_at = seq_cls[seq]
+        nodes_at = seq_nodes[seq]
+        weights, emitted_w, refill_w = [], [], []
+        ratios = []
+        for i, post in enumerate(seq[1:]):
+            per_cls = {cls: sum(edge.values())
+                       for cls, edge in classes_at[i].items()}
+            weights.append(sum(per_cls.values()))
+            emitted_w.append(per_cls.get('emitted', 0.0))
+            refill_w.append(per_cls.get('refill', 0.0))
+            denom = type_in.get(post, 0.0)
+            ratios.append((weights[-1] / denom) if denom > 0 else None)
+        finite = [r for r in ratios if r is not None]
+        coverage = '[' + ', '.join(
+            f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
+            for i, label in enumerate(seq)) + ']'
+        ratios_txt = ('[' + ', '.join(
+            'None' if r is None else repr(r) for r in ratios) + ']'
+            if ratios else '')
+
+        def _arr(vals):
+            return '[' + ', '.join(_fmt_mass(v) for v in vals) + ']'
+
+        rows.append({
+            'path': '->'.join(seq),
+            'weights': _arr(weights),
+            'ratios': ratios_txt,
+            'min_weight': min(weights) if weights else 0,
+            'min_ratio': (min(finite) if finite else None),
+            'length': len(seq) - 1,
+            'nt_types': '',
+            'coverage': coverage,
+            'emitted_weights': _arr(emitted_w),
+            'refill_weights': _arr(refill_w),
+        })
+    rows.sort(key=lambda r: (-r['min_weight'], r['path']))
+    stats = {'chains': len(rows), 'bodyid_paths': 0}
+    return rows, stats
+
+
 def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
                             type_map, node_set, anchor_w, type_in):
     """Aggregate the REFILLED bodyId paths — the asked-threshold
@@ -2008,41 +2414,8 @@ def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
             edges_at[i][key] = anchor_w(key)
         for i, n in enumerate(nodes):
             nodes_at[i].add(n)
-    rows = []
-    for seq in sorted(seq_edges,
-                      key=lambda s: (s[0], s[-1], len(s), s)):
-        edges_at = seq_edges[seq]
-        nodes_at = seq_nodes[seq]
-        weights = [sum(edge.values()) for edge in edges_at]
-        ratios = []
-        probs = []
-        for i, post in enumerate(seq[1:]):
-            denom = type_in.get(post, 0.0)
-            ratios.append((weights[i] / denom) if denom > 0 else None)
-        finite = [r for r in ratios if r is not None]
-        coverage = '[' + ', '.join(
-            f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
-            for i, label in enumerate(seq)) + ']'
-        # UNRESOLVABLE hops (2026-10-10): a None hop (post-type F9
-        # mass unknown) is kept explicitly as a None entry — the report
-        # renders it as a dash — instead of silently dropping the whole
-        # list (which erased the resolved hops' record too).
-        ratios_txt = ('[' + ', '.join(
-            'None' if r is None else repr(r) for r in ratios) + ']'
-            if ratios else '')
-        rows.append({
-            'path': '->'.join(seq),
-            'weights': '[' + ', '.join(
-                _fmt_mass(w) for w in weights) + ']',
-            'ratios': ratios_txt,
-            'min_weight': min(weights) if weights else 0,
-            'min_ratio': (min(finite) if finite else None),
-            'length': len(seq) - 1,
-            'nt_types': '',
-            'coverage': coverage,
-        })
-    # strongest-first order, mirroring the run's own allpaths files
-    rows.sort(key=lambda r: (-r['min_weight'], r['path']))
+    rows = _refill_rows_from_structures(seq_edges, seq_nodes, type_n,
+                                        type_in)
     return rows, bodyid_count
 
 
@@ -2111,50 +2484,10 @@ def _aggregate_complete_paths(paths_asked, cut_keys, refill_keys,
             classes_at[i][cls][key] = w
         for i, n in enumerate(nodes):
             nodes_at[i].add(n)
-    rows = []
-    for seq in sorted(seq_cls,
-                      key=lambda s: (s[0], s[-1], len(s), s)):
-        classes_at = seq_cls[seq]
-        nodes_at = seq_nodes[seq]
-        weights, emitted_w, refill_w = [], [], []
-        ratios = []
-        for i, post in enumerate(seq[1:]):
-            per_cls = {cls: sum(edge.values())
-                       for cls, edge in classes_at[i].items()}
-            weights.append(sum(per_cls.values()))
-            emitted_w.append(per_cls.get('emitted', 0.0))
-            refill_w.append(per_cls.get('refill', 0.0))
-            denom = type_in.get(post, 0.0)
-            ratios.append((weights[-1] / denom) if denom > 0 else None)
-        finite = [r for r in ratios if r is not None]
-        coverage = '[' + ', '.join(
-            f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
-            for i, label in enumerate(seq)) + ']'
-        # UNRESOLVABLE hops (2026-10-10): a None hop (post-type F9
-        # mass unknown) is kept explicitly as a None entry — the report
-        # renders it as a dash — instead of silently dropping the whole
-        # list (which erased the resolved hops' record too).
-        ratios_txt = ('[' + ', '.join(
-            'None' if r is None else repr(r) for r in ratios) + ']'
-            if ratios else '')
-
-        def _arr(vals):
-            return '[' + ', '.join(_fmt_mass(v) for v in vals) + ']'
-
-        rows.append({
-            'path': '->'.join(seq),
-            'weights': _arr(weights),
-            'ratios': ratios_txt,
-            'min_weight': min(weights) if weights else 0,
-            'min_ratio': (min(finite) if finite else None),
-            'length': len(seq) - 1,
-            'nt_types': '',
-            'coverage': coverage,
-            'emitted_weights': _arr(emitted_w),
-            'refill_weights': _arr(refill_w),
-        })
-    rows.sort(key=lambda r: (-r['min_weight'], r['path']))
-    stats = {'chains': len(rows), 'bodyid_paths': bodyid_count}
+    rows, _stats = _complete_rows_from_structures(seq_cls, seq_nodes,
+                                                  type_n, type_in)
+    stats = {'chains': _stats['chains'],
+             'bodyid_paths': bodyid_count}
     return rows, stats
 
 

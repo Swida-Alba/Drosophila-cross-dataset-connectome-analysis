@@ -99,6 +99,14 @@ def matches_patterns(label: str, patterns: set) -> bool:
     return False
 
 
+from comparison.corridor_report_section import (
+    generate_corridor_section as _generate_corridor_section,
+)
+from comparison.strength_report_section import (
+    generate_strength_section as _generate_strength_section,
+)
+
+
 def generate_html_report(
     analyzer,
     dataset_names: List[str],
@@ -213,6 +221,17 @@ def generate_html_report(
     # 7. Statistics Section
     html_parts.append(_generate_statistics_section(analyzer, dataset_names, thresholds, nickname_map))
     
+    # Corridor lane section (plan-corridor-lane.md §8) — presence-driven:
+    # returns '' when no compared run has route_scope_paths/, so absence
+    # changes no existing section's bytes
+    html_parts.append(_generate_corridor_section(
+        analyzer, dataset_names, thresholds, nickname_map))
+
+    # Connection-strength section (2026-10-11: ratios + adj + refill per
+    # delegate) — presence-driven, same discipline
+    html_parts.append(_generate_strength_section(
+        analyzer, dataset_names, thresholds, nickname_map))
+
     # Footer
     html_parts.append(_generate_footer())
     
@@ -1605,6 +1624,7 @@ def _generate_html_header() -> str:
             transition: all 0.2s;
         }
         .toc a:hover { background: var(--primary-color); color: white; }
+        body { padding-bottom: 72px; } /* clearance for the fixed print button */
         .print-btn {
             position: fixed;
             bottom: 20px;
@@ -2690,16 +2710,25 @@ def _generate_query_resolution_section(analyzer, dataset_names,
              'membership and no relation — remains the lowest-confidence '
              'pairing and should be reviewed.</p>']
     _mapper = getattr(analyzer, 'label_mapper', None)
-    if _mapper is not None and not _mapper.is_empty:
+    _lm_active = _mapper is not None and not _mapper.is_empty
+    if _lm_active:
         # User directive 2026-10-08: the label mapper retypes its enrolled
         # neurons (tier 0) — the resolution records below scope the AUTO
-        # mapper's remainder only.
+        # mapper's remainder only.  Display compatibility directive
+        # 2026-10-10: bodyId-level resolution never appears in the HTML —
+        # enrolled inputs collapse to their settled labels (the equivalent
+        # typing); unresolvable bodyId inputs are omitted here and kept in
+        # query_resolution.csv.
         parts.insert(3, (
             '<p style="color: var(--secondary-color); font-size: 0.9em;">'
             '🔖 <strong>Label mapper active:</strong> enrolled neurons are '
-            'retyped to their settled labels (tier 0) — the resolution '
-            'records below describe the AUTO type mapper and apply to the '
-            'remainder (intermediates, unlabeled neurons) only.</p>'))
+            'retyped to their settled labels (tier 0) — bodyId inputs are '
+            'displayed as their labels, one grouped row per label with its '
+            'per-dataset enrollment. The resolution records below describe '
+            'the AUTO type mapper and apply to the remainder (intermediates, '
+            'unlabeled neurons) only. BodyId inputs with no label and no '
+            'recoverable type are omitted from this page (retained in '
+            '<code>query_resolution.csv</code>).</p>'))
 
     if same_name:
         tokens = ', '.join(sorted({r['token'] for r in same_name}))
@@ -2746,15 +2775,79 @@ def _generate_query_resolution_section(analyzer, dataset_names,
             + '. Datasets without the counterpart cannot contribute to that '
             'row.</div>')
 
+    # Display grouping (label-mapper compatibility, user directive
+    # 2026-10-10): bodyId inputs governed by the label mapper collapse to
+    # ONE row per settled label (the equivalent typing) with a per-dataset
+    # enrollment breakdown; a settled label that is ALSO queried as a
+    # plain type token merges into that token's rows (badge appended);
+    # unresolvable bodyId inputs are hidden from the HTML — the CSV keeps
+    # every input verbatim.
+    label_groups: Dict[tuple, dict] = {}
+    for r in records:
+        if str(r.get('display_role') or '') != 'label':
+            continue
+        key = (str(r.get('display_name')), str(r.get('role') or 'source'))
+        label_groups.setdefault(key, {'tokens': set()})['tokens'].add(
+            str(r.get('token')))
+    type_token_keys = {
+        (str(r.get('display_name')), str(r.get('role') or 'source'))
+        for r in records
+        if str(r.get('display_role') or '') == 'type'}
+    merged_groups = {k for k in label_groups if k in type_token_keys}
+
+    def _enrolled_counts(label, role):
+        counts = []
+        for ds in dataset_names:
+            n = 0
+            if _lm_active:
+                try:
+                    n = len(_mapper.get_neurons_for_label(label, ds, role))
+                except Exception:  # noqa: BLE001 — dataset simply absent
+                    n = 0
+            counts.append((nickname_map.get(ds, str(ds)), n))
+        return counts
+
+    def _enrolled_badge(n_tokens, label, role):
+        counts = _enrolled_counts(label, role)
+        breakdown = ' · '.join(
+            f'{ds} {n}' if n else f'{ds} —' for ds, n in counts)
+        tip = (f'{n_tokens} bodyId input(s) retyped to this label '
+               '(tier 0). Enrollment by dataset: ' + breakdown
+               + '. Per-input detail in query_resolution.csv.')
+        return (' <span style="background:#ecfdf5;color:#15803d;'
+                'border:1px solid #15803d;border-radius:10px;'
+                'padding:1px 8px;font-size:0.8em;white-space:nowrap;" '
+                f'title="{html.escape(tip)}">{n_tokens} enrolled</span>')
+
+    def _group_note(n_tokens):
+        return (f'{n_tokens} bodyId input(s) retyped to this label '
+                '(tier 0); per-input detail in query_resolution.csv.')
+
     parts.append('<div style="overflow-x:auto;"><table><thead><tr>'
                  '<th>Token</th><th>Role</th><th>Dataset</th><th>Method</th>'
                  '<th>Status</th><th>Evidence</th><th>Confidence</th>'
                  '<th>Resolved</th><th>Note</th></tr></thead><tbody>')
+    badge_by_key = {}
     for r in records:
+        # Hidden inputs (ungoverned, untyped bodyIds) never render; label
+        # records (mapper-governed bodyIds) are represented by the ONE
+        # collapsed row per settled label below — never one row per
+        # bodyId x dataset (user directive 2026-10-10: the card shows the
+        # equivalent typing, not the per-bodyId enrollment).
+        if str(r.get('display_role') or '') in ('hidden', 'label'):
+            continue
+        token = str(r.get('token'))
+        display = str(r.get('display_name') or token)
+        role = str(r.get('role') or 'source')
+        badge = ''
+        key = (display, role)
+        if key in merged_groups:
+            badge = _enrolled_badge(
+                len(label_groups[key]['tokens']), display, role)
         parts.append(
             '<tr>'
-            f'<td><strong>{html.escape(str(r.get("token")))}</strong></td>'
-            f'<td>{html.escape(str(r.get("role")))}</td>'
+            f'<td><strong>{html.escape(display)}</strong>{badge}</td>'
+            f'<td>{html.escape(role)}</td>'
             f'<td>{html.escape(nickname_map.get(r.get("dataset"), str(r.get("dataset"))))}</td>'
             f'<td>{html.escape(str(r.get("method")))}</td>'
             f'<td>{_query_resolution_badge(str(r.get("status")), str(r.get("evidence") or ""))}</td>'
@@ -2762,6 +2855,39 @@ def _generate_query_resolution_section(analyzer, dataset_names,
             f'<td>{html.escape(str(r.get("confidence")))}</td>'
             f'<td>{_query_resolution_targets(r.get("target_types"))}</td>'
             f'<td style="font-size:0.9em;color:#666;">{html.escape(str(r.get("note") or ""))}</td>'
+            '</tr>')
+    # Collapsed label rows: one per settled label x role, with the
+    # per-dataset enrollment breakdown in the Dataset column.
+    for (label, role) in sorted(k for k in label_groups
+                                if k not in merged_groups):
+        info = label_groups[(label, role)]
+        counts = _enrolled_counts(label, role)
+        breakdown = ' · '.join(
+            f'{ds} {n}' if n else f'{ds} —' for ds, n in counts)
+        badge = _enrolled_badge(len(info['tokens']), label, role)
+        confidences = [
+            r.get('confidence') for r in records
+            if str(r.get('display_role') or '') == 'label'
+            and str(r.get('display_name')) == label
+            and str(r.get('role') or 'source') == role
+            and r.get('confidence') is not None]
+        confidence = max(confidences) if confidences else '—'
+        parts.append(
+            '<tr>'
+            f'<td><strong>{html.escape(label)}</strong>{badge}</td>'
+            f'<td>{html.escape(role)}</td>'
+            f'<td>{html.escape(breakdown)}</td>'
+            f'<td>label_mapper</td>'
+            f'<td><span style="background:#ecfdf5;color:#15803d;'
+            'border:1px solid #15803d;border-radius:10px;padding:1px 8px;'
+            'font-size:0.85em;white-space:nowrap;" title="settled label '
+            '(tier 0) — the user label mapper retyped its enrolled '
+            'bodyId inputs to this name">🔖 tier 0</span></td>'
+            '<td>—</td>'
+            f'<td>{html.escape(str(confidence))}</td>'
+            f'<td>{_query_resolution_targets([label])}</td>'
+            f'<td style="font-size:0.9em;color:#666;">'
+            f'{html.escape(_group_note(len(info["tokens"])))}</td>'
             '</tr>')
     parts.append('</tbody></table></div></div></div>')
     return ''.join(parts)
@@ -3196,7 +3322,23 @@ def _generate_neuron_counts_section(analyzer, dataset_names: List[str],
         # below).  ``get_display_type_name`` routes through the mapper's
         # display-name alternatives, so licensed renames still coalesce
         # while a CONFLICTED type keeps a dataset-scoped label.
+        # Label-mapper display compatibility (user directive 2026-10-10):
+        # a name the USER label mapper governs keeps its settled label
+        # verbatim — the alternatives decoration is the AUTO mapper's
+        # display of its own remainder, which keeps the style.
+        _tier0_counts = set()
+        _lm_counts = getattr(analyzer, 'label_mapper', None)
+        if _lm_counts is not None and not getattr(_lm_counts, 'is_empty', True):
+            for _r in ('source', 'target', 'intermediate'):
+                try:
+                    _tier0_counts.update(
+                        str(x) for x in _lm_counts.get_all_std_labels(_r))
+                except Exception:  # noqa: BLE001 — role simply absent
+                    pass
+
         def get_display_type_name(type_name: str) -> str:
+            if str(type_name) in _tier0_counts:
+                return type_name
             if not has_type_mapper or type_mapper is None:
                 return type_name
             try:
@@ -5157,8 +5299,23 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
     
     # Apply additional display name transformation if type_mapper available
     # This handles any nodes that might not have been transformed by metrics.py
+    # Label-mapper display compatibility (user directive 2026-10-10): a node
+    # the USER label mapper governs keeps its settled label verbatim — the
+    # {canonical}({variants}) decoration is the AUTO mapper's display of its
+    # own remainder, which keeps the style.
+    _tier0_labels = set()
+    _lm_net = getattr(analyzer, 'label_mapper', None)
+    if _lm_net is not None and not getattr(_lm_net, 'is_empty', True):
+        for _r in ('source', 'target', 'intermediate'):
+            try:
+                _tier0_labels.update(
+                    str(x) for x in _lm_net.get_all_std_labels(_r))
+            except Exception:  # noqa: BLE001 — role simply absent
+                pass
     if type_mapper:
         for node in all_nodes_raw:
+            if node in _tier0_labels:
+                continue
             # Skip nodes that already have display names
             if display_name_pattern.match(node):
                 # Already has display name, but get dataset mappings for hover
@@ -5459,9 +5616,48 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
             return next(iter(labels))
         return sorted(labels)[0]
 
+    # Label-mapper display compatibility (user directive 2026-10-10):
+    # the isolated-node pass walks the RAW query tokens — with bodyId
+    # queries that rendered one red bodyId node per enrolled neuron.
+    # Resolve each token through the query-resolution display chain
+    # (tier 1 settled label / tier 2 native type / tier 3 hidden) so the
+    # pass walks display names: a governed bodyId collapses into its
+    # label's node, an unresolvable bodyId never renders at all.
+    _token_display = {}
+    try:
+        for rec in analyzer.resolve_query_inputs() or []:
+            _role = str(rec.get('role') or '')
+            _tok = str(rec.get('token') or '')
+            if not _tok:
+                continue
+            _dname = str(rec.get('display_name') or '')
+            _drole = str(rec.get('display_role') or '')
+            # None = hidden (skip the node); a display name = render it;
+            # tokens without enrichment fall through unchanged below.
+            _token_display[(_role, _tok)] = (
+                _dname if _dname and _drole != 'hidden' else None)
+    except Exception:
+        _token_display = {}
+
+    def _display_token(role: str, label: str):
+        """(keep, resolved) — keep=False hides the node (unresolvable
+        bodyId); resolved is the display name (label/native type), or
+        the token itself when no enrichment covers it."""
+        key = (role, str(label))
+        if key not in _token_display:
+            return True, label
+        resolved = _token_display[key]
+        if not resolved:
+            return False, label
+        return True, resolved
+
     for label in source_neurons:
         # Skip patterns - they're not actual neuron names
         if '*' in label or '.*' in label:
+            continue
+        # Label-mapper display compatibility: walk display names.
+        _keep, label = _display_token('source', label)
+        if not _keep:
             continue
         # When separate_hemispheres is True, skip adding isolated nodes for base names
         # (without _L/_R/_U suffix). The actual hemisphere-suffixed nodes will be added
@@ -5495,7 +5691,11 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
             # This ensures CB0038 and GNG588 become one node: GNG588(CB0038)
             display_label = label
             dataset_info = {}
-            if _group_is_family:
+            if label in _tier0_labels:
+                # Tier-0 identity passes verbatim — the label mapper's
+                # retyping overwrites the auto mapper's display scope.
+                pass
+            elif _group_is_family:
                 display_label = _group_label
                 dataset_info = {
                     ds: '/'.join(names)
@@ -5550,6 +5750,10 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
         # Skip patterns - they're not actual neuron names
         if '*' in label or '.*' in label:
             continue
+        # Label-mapper display compatibility: walk display names.
+        _keep, label = _display_token('target', label)
+        if not _keep:
+            continue
         # When separate_hemispheres is True, skip adding isolated nodes for base names
         # (without _L/_R/_U suffix). The actual hemisphere-suffixed nodes will be added
         # from edge data if they have connections.
@@ -5581,7 +5785,11 @@ def _generate_conservation_network(analyzer, dataset_names: List[str], threshold
             # Get the merged display name if type_mapper is available
             display_label = label
             dataset_info = {}
-            if _group_is_family:
+            if label in _tier0_labels:
+                # Tier-0 identity passes verbatim — the label mapper's
+                # retyping overwrites the auto mapper's display scope.
+                pass
+            elif _group_is_family:
                 display_label = _group_label
                 dataset_info = {
                     ds: '/'.join(names)
@@ -6833,31 +7041,24 @@ def _generate_type_mapping_section_inner(analyzer,
         A fresh run's ``raw_results`` also holds the auto-bootstrap probe
         (t=floor, density capture only — no compared matrix uses it); a
         later re-export never loads it.  Restricting the type universe to
-        the schedule keeps the grid identical between the two."""
+        the schedule keeps the grid identical between the two.  Values
+        pass through ``threshold_cell_value``: a bare ``int()`` would
+        truncate every sub-1 ratio tier to 0, empty the type universe and
+        silently drop the whole Type Mapping section on the
+        connection-ratio basis (caught by the 2026-10-10 ratio run)."""
+        try:
+            from comparison.comparison_parameters import (
+                threshold_cell_value)
+        except ImportError:  # pragma: no cover - direct package imports
+            from .comparison_parameters import threshold_cell_value
         try:
             combos = getattr(params, 'threshold_combinations', None)
             if combos:
-                return {int(v) for q in combos
+                return {threshold_cell_value(v) for q in combos
                         for v in (q.get('thresholds') or {}).values()}
             thresholds = getattr(params, 'thresholds', None)
-            return {int(t) for t in (thresholds or [])} or None
-        except Exception:
-            return None
-
-    def _compared_threshold_set():
-        """Per-dataset thresholds the compared queries actually read.
-
-        A fresh run's ``raw_results`` also holds the auto-bootstrap probe
-        (t=floor, density capture only — no compared matrix uses it); a
-        later re-export never loads it.  Restricting the type universe to
-        the schedule keeps the grid identical between the two."""
-        try:
-            combos = getattr(params, 'threshold_combinations', None)
-            if combos:
-                return {int(v) for q in combos
-                        for v in (q.get('thresholds') or {}).values()}
-            thresholds = getattr(params, 'thresholds', None)
-            return {int(t) for t in (thresholds or [])} or None
+            return {threshold_cell_value(t)
+                    for t in (thresholds or [])} or None
         except Exception:
             return None
 
@@ -7257,67 +7458,140 @@ def _generate_type_mapping_section_inner(analyzer,
             + ''.join(chip(color, label) for color, label in entries)
             + muted + dash + '</div>')
 
-    def _tokens_for(role):
-        toks, seen = [], set()
+    _lm2 = getattr(analyzer, 'label_mapper', None)
+    _lm2_active = _lm2 is not None and not _lm2.is_empty
+
+    def _display_keys_for(role):
+        """Distinct DISPLAY keys for one query role, first-appearance
+        order (label-mapper compatibility, user directive 2026-10-10):
+        bodyId tokens governed by the label mapper collapse to their
+        settled label (the equivalent typing), unresolvable bodyId tokens
+        are omitted — the report never displays bodyIds."""
+        keys, seen = [], set()
         for rec in records:
             if str(rec.get('role') or '') != role:
                 continue
-            token = str(rec.get('token') or '')
-            if token and token not in seen:
-                seen.add(token)
-                toks.append(token)
-        return toks
+            if str(rec.get('display_role') or '') == 'hidden':
+                continue
+            key = str(rec.get('display_name') or rec.get('token') or '')
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
+        return keys
 
-    def _record_row(token, role, present_datasets):
-        """One queried token's per-dataset resolved names + status.
+    def _label_records(key, role):
+        return [r for r in records
+                if str(r.get('role') or '') == role
+                and str(r.get('display_role') or '') == 'label'
+                and str(r.get('display_name')) == key]
 
+    def _enrolled_count(key, d, role):
+        if not _lm2_active:
+            return 0
+        try:
+            return len(_lm2.get_neurons_for_label(key, d, role))
+        except Exception:  # noqa: BLE001 — dataset simply absent
+            return 0
+
+    def _enrolled_badge_part(key, role):
+        n = len({str(r.get('token')) for r in _label_records(key, role)})
+        breakdown = ' · '.join(
+            f'{section_nicks.get(d, d)} {_enrolled_count(key, d, role)}'
+            for d in dataset_names)
+        tip = (f'{n} bodyId input(s) retyped to this label (tier 0). '
+               'Enrollment by dataset: ' + breakdown
+               + '. Per-input detail in query_resolution.csv.')
+        return (' <span style="background:#ecfdf5;color:#15803d;'
+                'border:1px solid #15803d;border-radius:10px;'
+                'padding:1px 8px;font-size:0.78em;white-space:nowrap;" '
+                f'title="{html_module.escape(tip)}">{n} enrolled</span>')
+
+    def _record_row(key, role, present_datasets):
+        """One display key's per-dataset resolved names + status.
+
+        Keys are DISPLAY names (label-mapper compatibility, 2026-10-10):
+        a settled label renders in every dataset where the mapper
+        enrolled members (tier 0) — hop stats and muting key on the same
+        label, which is what path keys use; ordinary keys keep the
+        per-record resolution lanes, deduplicated per dataset when
+        several inputs collapsed onto one display name.
         ``present_datasets`` is the set of datasets whose paths start
-        (source) / end (target) at the type; a dataset that resolves the
-        token but never participates renders muted — the same semantics
+        (source) / end (target) at the name; a dataset that resolves the
+        name but never participates renders muted — the same semantics
         the intermediates table always had (Item 5). ``None`` = no path
         data at all, so nothing is muted."""
-        cells = []
-        for d in dataset_names:
-            recs = [r for r in records
-                    if str(r.get('token')) == token
-                    and str(r.get('dataset')) == d
-                    and str(r.get('role')) == role]
-            if not recs:
-                cells.append('<td>—</td>')
-                continue
+        label_recs = _label_records(key, role)
+        plain_type = any(
+            str(r.get('display_role') or '') == 'type'
+            and str(r.get('token')) == key
+            for r in records if str(r.get('role') or '') == role)
+
+        def _cell(entries, d):
             parts_cell = []
-            for rec in recs:
-                status = str(rec.get('status') or '')
-                color = status_colors.get(status, '#6b7280')
-                _targets = rec.get('target_types')
-                targets = ('; '.join(str(t) for t in _targets)
-                           if isinstance(_targets, (list, tuple, set))
-                           else str(_targets or '—'))
+            for targets, status, extra_tip in entries:
+                color = status_colors.get(status, '#15803d')
+                tip = status if not extra_tip else f'{status}; {extra_tip}'
                 if present_datasets is not None and \
                         d not in present_datasets:
-                    tip = (html_module.escape(status) + '; '
-                           + _not_traversed_tip)
+                    tip = tip + '; ' + _not_traversed_tip
                     parts_cell.append(
                         f'<div><span style="color:{_muted_color};" '
-                        f'title="{tip}">'
+                        f'title="{html_module.escape(tip)}">'
                         f'{html_module.escape(targets)}</span></div>')
                 else:
                     parts_cell.append(
                         f'<div><span style="color:{color};" '
-                        f'title="{html_module.escape(status)}">'
+                        f'title="{html_module.escape(tip)}">'
                         f'{html_module.escape(targets)}</span></div>')
-            cells.append('<td>' + ''.join(parts_cell) + '</td>')
-        return ('<tr><td><strong>' + html_module.escape(token)
-                + '</strong></td>' + ''.join(cells))
+            return '<td>' + ''.join(parts_cell) + '</td>'
 
-    def _token_row(token, role, hop_stats):
-        present = hop_stats.get(token, {}).get('datasets')
-        n_paths = hop_stats.get(token, {}).get('paths', 0)
-        return (_record_row(token, role, present)
+        cells = []
+        if label_recs and not plain_type:
+            # Collapsed settled label: present wherever the mapper
+            # enrolled members; per-dataset enrollment in the tooltip.
+            for d in dataset_names:
+                n = _enrolled_count(key, d, role)
+                if not n:
+                    cells.append('<td>—</td>')
+                    continue
+                cells.append(_cell(
+                    [(key, 'tier-0 label (label mapper)',
+                      f'{n} enrolled member(s)')], d))
+        else:
+            for d in dataset_names:
+                recs = [r for r in records
+                        if str(r.get('display_name') or
+                               r.get('token')) == key
+                        and str(r.get('dataset')) == d
+                        and str(r.get('role')) == role]
+                entries, seen_entries = [], set()
+                for rec in recs:
+                    status = str(rec.get('status') or '')
+                    _targets = rec.get('target_types')
+                    targets = ('; '.join(str(t) for t in _targets)
+                               if isinstance(_targets, (list, tuple, set))
+                               else str(_targets or '—'))
+                    sig = (targets, status)
+                    if sig in seen_entries:
+                        continue
+                    seen_entries.add(sig)
+                    entries.append((targets, status, ''))
+                if not entries:
+                    cells.append('<td>—</td>')
+                    continue
+                cells.append(_cell(entries, d))
+        badge = _enrolled_badge_part(key, role) if label_recs else ''
+        return ('<tr><td><strong>' + html_module.escape(key)
+                + '</strong>' + badge + '</td>' + ''.join(cells))
+
+    def _token_row(key, role, hop_stats):
+        present = hop_stats.get(key, {}).get('datasets')
+        n_paths = hop_stats.get(key, {}).get('paths', 0)
+        return (_record_row(key, role, present)
                 + f'<td>{n_paths}</td></tr>')
 
-    src_toks = _tokens_for('source')
-    tgt_toks = _tokens_for('target')
+    src_toks = _display_keys_for('source')
+    tgt_toks = _display_keys_for('target')
 
     # ---- Path participation: distinct types INSIDE paths (intermediates)
     # plus first/last hops — the queried sources' and targets' #paths and
@@ -7458,7 +7732,10 @@ def _generate_type_mapping_section_inner(analyzer,
             'muted = resolves here but was not traversed in this '
             'run&#39;s paths; &#8212; = no resolution. #paths = paths '
             'starting at a source, ending at a target, or traversing an '
-            'intermediate, summed over all query points.</p>'
+            'intermediate, summed over all query points. When a label '
+            'mapper governs the run, bodyId inputs display as their '
+            'settled labels (tier 0, with the enrollment badge); '
+            '#paths keys on the same label.</p>'
             '<div class="sticky-table-container" style="overflow-x: auto;">'
             '<table><thead><tr><th>Type</th>' + head_cells
             + '<th>#paths</th></tr></thead><tbody>'

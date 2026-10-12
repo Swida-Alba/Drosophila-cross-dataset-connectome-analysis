@@ -110,6 +110,8 @@
     <tr><td>Path Enumeration</td><td>all</td><td><code>all</code>: every path within the layer limit (FindAllPath). <code>shortest</code>: only the per-(source bodyId, target bodyId) minimum-hop paths (FindShortestPath), using target-rooted incoming discovery. Switching to <code>shortest</code> resets <b>Max Intermediate Layers to 8</b>, forces <b>Edge Budget to 0</b> (and disables it) with a notice; switching back to <code>all</code> restores the defaults (2 / 1,000,000) — user-entered values are not kept.</td></tr>
     <tr><td>Source / Target Coverage (shortest)</td><td>Any / Full</td><td>Shortest mode only (per delegate, <code>shortest_source_coverage</code> / <code>shortest_target_coverage</code>): coverage early-stop measured per queried TYPE at every backward discovery layer — Any = >=1 enrolled bodyId per type, a % = each type individually reaches that share, Full = all. Deepening stops once both sides are satisfied; under a target requirement a covered target closes its frontier immediately (early-covered targets keep the pairs found up to their own closure layer — exact hops). The stop is disclosed per delegate (<code>[shortest coverage stop]</code> note + diagnostics + the pair report's per-delegate Coverage stop column). Ignored (sent <code>None</code>) in <code>all</code> mode</td></tr>
     <tr><td>Max Intermediate Layers</td><td>2</td><td>Path depth for path mode. In shortest mode, 0 = direct connections only; a positive value caps paths at layers + 1 hops. A capped result is shortest only within the explored graph.</td></tr>
+    <tr><td>Fast Mode (corridor lane)</td><td>auto</td><td>The second of the two analysis modes, per dataset: <b>Complete mode</b> (the run) finds all intact paths &ge; the applied threshold; <b>Fast mode</b> is the route-scoped deep pass: after each per-dataset path run at the sweep's <strong>lowest threshold</strong> (corridors at the lowest tier are supersets for higher tiers), a separate lane re-enumerates at the ASKED threshold restricted to validated top-M* type corridors, writing <code>route_scope_paths/</code> (both ratio flavors — plain + adjusted, like the Refill tab) beside that run folder. The comparison report gains a presence-driven Corridor Lane section (per-dataset plan summary, canonical-type corridor comparison, gap partition vs each run's own paths) when any compared run has lane artifacts; absence changes nothing. <code>auto</code> = fires for datasets whose Max Intermediate Layers &ge; 4. Values: <code>complete</code> / <code>auto</code> / <code>both</code> (legacy <code>off</code>/<code>on</code> normalized). Fast also runs standalone on any existing run folder: <code>python scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>.</td><td><code>complete</code> to skip</td></tr>
+
     <tr><td>Top Edges in Analysis Reports</td><td>500</td><td>Limits top-edge comparison/overlap results, edge/path presence-matrix rows, and path-presence data used by comparison summary plots; it does not trim pathfinding or set the per-visualization drawn-edge cap</td></tr>
     <tr><td>Edge Budget</td><td>1,000,000</td><td>Fix D (budget-fit search): after the lossless prunes, discovery cones exceeding this many bodyId edges are floored at the weakest weight tier whose lossless-closed cone still fits the cap — exactly equivalent to raising the threshold; the applied floor is reported as <code>edge_weight_floor</code> with the residual slack and probe trace. 0 = off; shortest mode never floors</td></tr>
     <tr><td>Visualization Edge Limit</td><td>500</td><td>Caps edges drawn in each network/Sankey/heatmap visualization; it does not alter fetched connections or pathfinding</td></tr>
@@ -759,11 +761,12 @@
                                         # same-name identity, evidence only)
   comparison_report_used_data/            # CSVs backing the report
   comparison_results/
-    edge_presence_matrix.csv, edge_presence_matrix_minsyn_{N}.csv
-    path_presence_matrix.csv, path_presence_matrix_minsyn_{N}.csv
+    edge_presence_matrix.csv, edge_presence_matrix_{minsyn|minratio}_{N}.csv
+    path_presence_matrix.csv, path_presence_matrix_{minsyn|minratio}_{N}.csv
     edge_weight_comparison.csv, path_count_comparison.csv
     unified_edge_comparison.csv, unified_summary.csv
     unique_to_{dataset}.csv               # edges unique per dataset
+    # per-threshold tier token: minsyn_{N} synapse basis, minratio_{decimal} ratio basis
     top_edges_comparison.csv, top_edges_overlap.csv
     degree_in.csv, degree_out.csv, degree_statistics.csv
     neuron_counts_by_type.csv, neuron_counts_summary.csv

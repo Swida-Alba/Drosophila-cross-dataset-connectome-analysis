@@ -1696,7 +1696,8 @@ def test_export_neuron_counts_comparison(tmp_path):
     assert any("neuron_counts" in f for f in files)
 
 
-def _write_path_files(params, threshold, fmt="source_target"):
+def _write_path_files(params, threshold, fmt="source_target",
+                      basis="synapse"):
     safe1 = params._sanitize_name(DS1)
     safe2 = params._sanitize_name(DS2)
     base = params.full_output_path
@@ -1705,11 +1706,14 @@ def _write_path_files(params, threshold, fmt="source_target"):
     d2 = params.get_dataset_output_path(DS2, threshold)
     os.makedirs(d1, exist_ok=True)
     os.makedirs(d2, exist_ok=True)
+    # Delegate-grammar tier token for the inner filename (minsyn_/minratio_).
+    from comparison.comparison_parameters import threshold_folder_token
+    token = threshold_folder_token(threshold, basis)
     if fmt == "source_target":
         pd.DataFrame({"source": ["Src", "Src"], "target": ["Tgt", "Mid"],
                       "weight": [10, 4], "weights": ["[10, 5]", "4,2"]}
                      ).to_csv(os.path.join(
-                         d1, f"minsyn_{threshold}_data_original_paths.csv"),
+                         d1, f"{token}_data_original_paths.csv"),
                          index=False)
     else:
         pd.DataFrame({"path": ["A -> B -> C", "['X', 'Y']", "bad"],
@@ -1789,6 +1793,43 @@ def test_export_path_presence_matrix(tmp_path):
     outdir.mkdir()
     a._export_path_presence_matrix(str(outdir), 3)
     assert (outdir / "path_presence_matrix_minsyn_3.csv").exists()
+
+
+def test_export_presence_matrix_ratio_basis_naming(tmp_path):
+    """Per-threshold matrix names follow the basis-aware tier token
+    (2026-10-10): ``minsyn_{int}`` on the synapse basis (byte-identical
+    to the historical name), ``minratio_{decimal}`` on the
+    connection-ratio basis — no more ``minsyn_0.05``."""
+    import pandas as pd
+
+    outdir = tmp_path / "res"
+    outdir.mkdir()
+
+    def _run(threshold, basis):
+        params = _params(output_folder=str(tmp_path / basis))
+        params.weight_basis = basis
+        a = ComparisonAnalyzer(params, verbose=False)
+        # Frames keyed at THIS leg's tier (float keys on the ratio basis).
+        a.raw_results = {
+            DS1: {threshold: _edge_df([("Src", "Tgt", 10), ("Src", "X", 5)])},
+            DS2: {threshold: _edge_df([("Src", "Tgt", 2), ("Y", "Tgt", 7)])},
+        }
+        _write_path_files(params, threshold, fmt="source_target",
+                          basis=basis)
+        a._export_presence_matrix(str(outdir), threshold)
+        a._export_path_presence_matrix(str(outdir), threshold)
+
+    _run(3, "synapse")
+    assert (outdir / "edge_presence_matrix_minsyn_3.csv").exists()
+    assert (outdir / "path_presence_matrix_minsyn_3.csv").exists()
+    # A pre-rename leftover under the legacy name is removed on re-export.
+    (outdir / "edge_presence_matrix_minsyn_0.05.csv").write_text("stale")
+    (outdir / "path_presence_matrix_minsyn_0.05.csv").write_text("stale")
+    _run(0.05, "connection_ratio")
+    assert (outdir / "edge_presence_matrix_minratio_0_05.csv").exists()
+    assert (outdir / "path_presence_matrix_minratio_0_05.csv").exists()
+    assert not (outdir / "edge_presence_matrix_minsyn_0.05.csv").exists()
+    assert not (outdir / "path_presence_matrix_minsyn_0.05.csv").exists()
 
 
 def test_export_motif_analysis_no_data(tmp_path):

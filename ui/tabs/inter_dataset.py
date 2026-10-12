@@ -118,6 +118,15 @@ def create_inter_dataset_tab():
                          "and a high unreachable number (e.g. 99) gives an effectively "
                          "unlimited search.",
                 )
+                corridor_mode = select_input(
+                    "Fast Mode (corridor lane)",
+                    {"complete": "Complete only",
+                     "auto": "Auto (deep runs)",
+                     "both": "Complete + Fast"},
+                    default=get_user_default("corridor_mode"),
+                    hint="Values — complete: run COMPLETE mode only (all intact paths >= the applied threshold; the run itself). auto: also run FAST mode per dataset after deep searches (max intermediate layers >= 4). both: always run FAST after each per-dataset run. Fast writes route_scope_paths/ beside each delegate run folder and never modifies the compared runs' outputs. Full guide via the book icon.",
+                    help_doc="pathfinding_algorithms",
+                )
                 threshold_basis = select_input(
                     "Threshold Basis", ["Synapse count", "Connection ratio"],
                     "Synapse count",
@@ -892,6 +901,7 @@ def create_inter_dataset_tab():
             "comparison_mode": comparison_mode.value,
             "path_mode": path_mode.value,
             "max_interlayer": int(max_interlayer.value),
+            "corridor_mode": corridor_mode.value,
             "thresholds": thresholds,
             "threshold_mode": threshold_mode,
             "threshold_dataset_order": list(datasets),

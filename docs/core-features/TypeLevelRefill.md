@@ -40,9 +40,25 @@ re-enumerated slices carry their own fresh provenance.
   `refill_full_type_pairs.csv` (data_details) and
   `refill_full_paths_type.csv` / `refill_full_carrying_paths_type.csv`
   / `refilled_full_connection_type.csv` (mirror). The report's Refill
-  tab carries a Refill-asked | Refill-full scope switch. Big queries
-  may honestly stamp `truncated` when the 2M-path guard bites (the
-  full scope enumerates a larger graph than the asked tier).
+  tab carries a Refill-asked | Refill-full scope switch. Enumeration
+  is per-chain and bounded (2026-10-11): distinct-type chains use an
+  EXACT layered DP (a body has one type, so layered walks cannot
+  revisit a body — simplicity is automatic; no path budget, no
+  truncation); MULTI-VISIT chains (a repeated type) use an
+  alive-pruned visited simple-path DFS (walk-level dead-end pruning,
+  lossless) capped at 2M paths with honest `chains_truncated`
+  disclosure beside the `chains` denominator — the DP would silently
+  over-count those (layered walks
+  may revisit a body across layers, which the engine's simple-path
+  semantics excludes), and the DFS records structures ON COMPLETION so
+  only edges on ≥ 1 collected realization enter the masses. The old
+  unbudgeted whole-cone walk was
+  unbounded on fat queries (10h+ observed); the per-chain approach
+  bounds the cost to the chains' own subgraphs (the MCNS R1-R6→Tm3 L4
+  anchor: 10h+ → ~190-220s, 523,418,263 simple realizations, 29/77
+  multi-visit chains disclosed as truncated). The pair tables'
+  `refilled_total` is chain-scoped; `pair_offchain_mass` discloses
+  the ≥1 admitted mass the chain scope excludes.
 - shortest mode: asked view only (no second-round paths table to
   re-value).
 

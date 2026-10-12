@@ -2506,9 +2506,9 @@ def _render_corridor_tab(payload: dict, run_dir: Path) -> str:
     if not found_any:
         return ('<div class="card"><h3>Fast mode (corridor lane)</h3>'
                 '<p style="color:var(--secondary-color);">No corridor '
-                'artifacts under this run. The lane writes '
+                'artifacts under this run. Fast mode writes '
                 '<code>route_scope_paths/</code> after deep runs '
-                '(Corridor Lane = on, or auto with Max Intermediate '
+                '(Fast Mode = both, or auto with Max Intermediate '
                 'Layers &ge; 4); regenerate any run folder post-hoc with '
                 '<code>scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>.'
                 '</p></div>')

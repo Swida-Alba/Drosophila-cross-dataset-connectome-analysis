@@ -353,6 +353,7 @@ class VisualizePath:
         node_colors=None,  # NEW: Custom node colors
         network_layout='hierarchical',
         showfig=False,
+        pair_extra_metrics=None,  # {(src,dst): {metric_name: value}} merged onto conn_df edges (V1: 'refilled' etc.)
         edge_width_scale='log',  # NEW: Edge width scaling method
         edge_width_factor=1.0,   # NEW: Edge width multiplier
         edge_width_log_base=None, # NEW: Log base for logarithmic scaling (None = natural log e)
@@ -794,6 +795,7 @@ class VisualizePath:
         # Data storage
         self.path_df = None
         self.conn_df = None
+        self.pair_extra_metrics = pair_extra_metrics or None
         self.G_network = None
         
         # Skip data loading for empty network generation
@@ -2307,6 +2309,11 @@ class VisualizePath:
             'conn_ratio': 'connection_ratios',
             # already-normalized names (renamed by _normalize_column_names)
             'connection_ratios': 'connection_ratios',
+            # V1: adjusted-ratio flavor (per-hop >= threshold shares)
+            'ratio_adj': 'connection_ratios_adj',
+            'ratios_adj': 'connection_ratios_adj',
+            'connection_ratio_adj': 'connection_ratios_adj',
+            'connection_ratios_adj': 'connection_ratios_adj',
             'probability': 'traversal_probabilities',
             'prob': 'traversal_probabilities',
             'traversal_probability': 'traversal_probabilities',
@@ -2487,6 +2494,7 @@ class VisualizePath:
         
         # Check which optional columns are available
         has_ratios = 'connection_ratios' in self.path_df.columns
+        has_ratios_adj = 'connection_ratios_adj' in self.path_df.columns
         has_probs = 'traversal_probabilities' in self.path_df.columns
         has_nt = 'nt_types' in self.path_df.columns
         short_nt_rows = 0  # rows whose nt_types list is shorter than the hop count
@@ -2497,6 +2505,7 @@ class VisualizePath:
 
             # Optional columns - only if they exist
             ratios = self._safe_eval_list(row.get('connection_ratios', [])) if has_ratios else []
+            ratios_adj = self._safe_eval_list(row.get('connection_ratios_adj', [])) if has_ratios_adj else []
             probs = self._safe_eval_list(row.get('traversal_probabilities', [])) if has_probs else []
             nt_types = self._safe_eval_list(row.get('nt_types', [])) if has_nt else []
 
@@ -2523,6 +2532,8 @@ class VisualizePath:
                 # Only add optional columns if they exist in source data
                 if has_ratios:
                     conn_data['ratio'] = ratio
+                if has_ratios_adj:
+                    conn_data['ratio_adj'] = ratios_adj[i] if i < len(ratios_adj) else np.nan
                 if has_probs:
                     conn_data['probability'] = prob
                 if has_nt:
@@ -2560,6 +2571,8 @@ class VisualizePath:
             agg_dict = {'weight': 'max'}
             if has_ratios:
                 agg_dict['ratio'] = 'mean'
+            if 'ratio_adj' in conn_df.columns:
+                agg_dict['ratio_adj'] = 'mean'
             if has_probs:
                 agg_dict['probability'] = 'mean'
             if has_nt:
@@ -2591,6 +2604,10 @@ class VisualizePath:
             edge_attrs = {'weight': row['weight']}
             if 'ratio' in row:
                 edge_attrs['ratio'] = row['ratio']
+            if 'ratio_adj' in row:
+                edge_attrs['ratio_adj'] = row['ratio_adj']
+            if 'refilled' in row:
+                edge_attrs['refilled'] = row['refilled']
             if 'probability' in row:
                 edge_attrs['probability'] = row['probability']
             
@@ -2732,6 +2749,18 @@ class VisualizePath:
                      f"{final_counts['intermediate']} intermediate, "
                      f"{final_counts['target']} target nodes")
         
+        # V1: pair-level extra metrics (e.g. Refilled totals) merge onto
+        # the aggregated edges — same topology, parallel metric columns.
+        if self.pair_extra_metrics:
+            import numpy as _np
+            for metric_name, pair_values in self.pair_extra_metrics.items():
+                vals = []
+                for _, r in conn_df.iterrows():
+                    m = pair_values.get((r['source'], r['target']))
+                    if m is None:
+                        m = pair_values.get((r['target'], r['source']))
+                    vals.append(_np.nan if m is None else float(m))
+                conn_df[metric_name] = vals
         self.conn_df = conn_df
         self.G_network = G
         
@@ -2791,6 +2820,7 @@ class VisualizePath:
         
         # Check which optional columns are available
         has_ratios = 'connection_ratios' in self.path_df.columns
+        has_ratios_adj = 'connection_ratios_adj' in self.path_df.columns
         has_probs = 'traversal_probabilities' in self.path_df.columns
         has_nt = 'nt_types' in self.path_df.columns
         
@@ -2817,6 +2847,7 @@ class VisualizePath:
             path_block = row['path_block']
             weights = self._safe_eval_list(row['weights'])
             ratios = self._safe_eval_list(row.get('connection_ratios', [])) if has_ratios else []
+            ratios_adj = self._safe_eval_list(row.get('connection_ratios_adj', [])) if has_ratios_adj else []
             probs = self._safe_eval_list(row.get('traversal_probabilities', [])) if has_probs else []
             nt_types = self._safe_eval_list(row.get('nt_types', [])) if has_nt else []
             
@@ -2840,11 +2871,14 @@ class VisualizePath:
                 edge_key = (source, target)
                 weight = weights[i] if i < len(weights) else 0
                 ratio = ratios[i] if i < len(ratios) else 0
+                ratio_adj_i = ratios_adj[i] if i < len(ratios_adj) else None
                 prob = probs[i] if i < len(probs) else 0
                 nt = normalize_nt_value(nt_types[i]) if i < len(nt_types) else None
 
                 if edge_key not in edge_data:
                     edge_data[edge_key] = {'weight': weight, 'ratio': ratio, 'prob': prob, 'nt': nt}
+                    if ratio_adj_i is not None:
+                        edge_data[edge_key]['ratio_adj'] = ratio_adj_i
                 else:
                     # Same edge in different paths (possibly at different
                     # hop depths): use max since it's the same biological
@@ -2852,11 +2886,25 @@ class VisualizePath:
                     # to be safe)
                     edge_data[edge_key]['weight'] = max(edge_data[edge_key]['weight'], weight)
                     edge_data[edge_key]['ratio'] = max(edge_data[edge_key]['ratio'], ratio)
+                    if ratio_adj_i is not None:
+                        prev_adj = edge_data[edge_key].get('ratio_adj')
+                        edge_data[edge_key]['ratio_adj'] = (
+                            ratio_adj_i if prev_adj is None
+                            else max(prev_adj, ratio_adj_i))
                     edge_data[edge_key]['prob'] = max(edge_data[edge_key]['prob'], prob)
                     # Keep first NT type found (they should be the same for same edge)
                     if edge_data[edge_key]['nt'] is None:
                         edge_data[edge_key]['nt'] = nt
         
+        # V1: pair-level extra metrics (Refilled totals) onto sankey edges
+        if getattr(self, 'pair_extra_metrics', None):
+            for metric_name, pair_values in self.pair_extra_metrics.items():
+                for key, data in edge_data.items():
+                    m = pair_values.get(key)
+                    if m is None:
+                        m = pair_values.get((key[1], key[0]))
+                    if m is not None:
+                        data[metric_name] = float(m)
         # Remove zero-weight layer edges (user preference: drop zero-weight edges)
         edge_data = {k: v for k, v in edge_data.items() if v.get('weight', 0) != 0}
 
@@ -2945,6 +2993,8 @@ class VisualizePath:
         weights = []
         original_weights = []  # Store original weights (including negatives) for hover
         ratios = []
+        ratios_adj = []
+        refilled = []
         probs = []
         nt_types_list = []  # Store NT types for edges
         edge_colors = []  # Custom edge colors
@@ -2964,7 +3014,9 @@ class VisualizePath:
             
             weights.append(abs_weight)
             original_weights.append(weight)  # Keep original for hover label
-            ratios.append(data['ratio'])
+            ratios.append(data.get('ratio'))
+            ratios_adj.append(data.get('ratio_adj'))
+            refilled.append(data.get('refilled'))
             probs.append(data['prob'])
             
             # Get NT type
@@ -3172,7 +3224,9 @@ class VisualizePath:
             simplification_applied,
             original_edge_count,
             nt_types_list=nt_types_list,
-            edge_colors=edge_colors_updated
+            edge_colors=edge_colors_updated,
+            ratios_adj=ratios_adj,
+            refilled=refilled
         )
         
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -3189,7 +3243,8 @@ class VisualizePath:
     
     def _create_sankey_html_with_controls(self, plotly_div, node_list, node_labels, node_colors_list, 
                                           source_indices, target_indices, weights, ratios=None, probs=None, original_weights=None,
-                                          simplification_applied=False, original_edge_count=0, nt_types_list=None, edge_colors=None):
+                                          simplification_applied=False, original_edge_count=0, nt_types_list=None, edge_colors=None,
+                                          ratios_adj=None, refilled=None):
         """
         Create HTML with interactive controls for Sankey diagram.
         
@@ -3229,6 +3284,10 @@ class VisualizePath:
         
         # Check which metrics are available
         has_ratios = ratios is not None and len(ratios) > 0 and any(r > 0 for r in ratios)
+        has_ratios_adj = (ratios_adj is not None and len(ratios_adj) > 0
+                          and any(r is not None and r > 0 for r in ratios_adj))
+        has_refilled = (refilled is not None and len(refilled) > 0
+                        and any(r is not None and r > 0 for r in refilled))
         has_probs = probs is not None and len(probs) > 0 and any(p > 0 for p in probs)
         
         # Default to empty lists if not provided
@@ -3515,9 +3574,11 @@ class VisualizePath:
                 <div class="control-group">
                     <label class="control-label">Connection Metric</label>
                     <div class="color-input-group">
-                        <select id="metricSelect" style="padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 12px;">
+                        <select id="metricSelect" style="padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 12px;" title="Link width/color basis; full metrics on hover">
                             <option value="weight">{self.metric_option_label}</option>
                             <option value="ratio" {"disabled" if not has_ratios else ""}>Connection Ratio{" (N/A)" if not has_ratios else ""}</option>
+                            <option value="ratio_adj" {"disabled" if not has_ratios_adj else ""}>Ratio (&ge; N){" (N/A)" if not has_ratios_adj else ""}</option>
+                            <option value="refilled" {"disabled" if not has_refilled else ""}>Refilled{" (N/A)" if not has_refilled else ""}</option>
                             <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
                         </select>
                     </div>
@@ -3656,10 +3717,14 @@ class VisualizePath:
         const targetIndices = {json_safe(target_indices)};
         const weights = {json_safe(weights)};
         const ratios = {json_safe(ratios)};
+        const ratiosAdj = {json_safe(ratios_adj)};
+        const refilledVals = {json_safe(refilled)};
         // PROBABILITY SUSPENSION (2026-10-06): per-edge probability values
         // are no longer shipped to the page (internal Python plumbing only).
         const originalWeights = {json_safe(original_weights)};  // Original (possibly negative) weights
         const hasRatios = {str(has_ratios).lower()};
+        const hasRatiosAdj = {str(has_ratios_adj).lower()};
+        const hasRefilled = {str(has_refilled).lower()};
         
         // NT type data for edge coloring
         const ntTypes = {json_safe(nt_types_list)};  // NT type for each edge
@@ -3963,17 +4028,24 @@ class VisualizePath:
             let metricValues;
             if (currentMetric === 'ratio') {{
                 metricValues = ratios;
+            }} else if (currentMetric === 'ratio_adj') {{
+                metricValues = ratiosAdj;
+            }} else if (currentMetric === 'refilled') {{
+                metricValues = refilledVals;
             }} else {{
                 metricValues = weights;
             }}
             
             // Metric display name for hover text
-            const metricDisplayName = (currentMetric === 'ratio') ? 'Ratio' : '{self._sankey_weight_name}';
+            const metricDisplayName = (currentMetric === 'ratio') ? 'Ratio'
+                : (currentMetric === 'ratio_adj') ? 'Ratio (>= N)'
+                : (currentMetric === 'refilled') ? 'Refilled'
+                : '{self._sankey_weight_name}';
             
             // Ratio is 0..1; normalize it to the synapse-weight
             // scale so link widths stay comparable without a magic ×1000 factor.
             const maxAbsWeight = Math.max(...weights.map(Math.abs), 0);
-            const metricScaleFactor = currentMetric === 'ratio' && maxAbsWeight > 0 ? maxAbsWeight : 1;
+            const metricScaleFactor = (currentMetric === 'ratio' || currentMetric === 'ratio_adj') && maxAbsWeight > 0 ? maxAbsWeight : 1;
             
             sourceIndices.forEach((src, idx) => {{
                 const tgt = targetIndices[idx];
@@ -4637,6 +4709,7 @@ class VisualizePath:
     def _plot_cytoscape_network(self, G, output_path, layout='hierarchical', open_browser=True):
         """
         Create Cytoscape.js network visualization (internal method).
+        (V1: has_ratio_adj/has_refilled computed from the graph edges.)
 
         Parameters
         ----------
@@ -4899,6 +4972,8 @@ class VisualizePath:
         def _fmt_weight(w):
             return f"{int(w):,}" if float(w).is_integer() else f"{w:,}"
 
+        has_ratio_adj_network = False
+        has_refilled_network = False
         merge_pairs = set()  # canonical (u, v) with str(u) < str(v)
         for (s, t) in directed_edges:
             if s == t:
@@ -4920,6 +4995,8 @@ class VisualizePath:
             if is_negative:
                 has_negative = True
             ratio = data.get('ratio', np.nan)
+            ratio_adj = data.get('ratio_adj', np.nan)
+            refilled = data.get('refilled', np.nan)
             prob = data.get('probability', np.nan)
             nt_type = nt_lookup.get((source, target), None)
             if self.color_edges_by_nt and nt_type is not None:
@@ -4933,6 +5010,10 @@ class VisualizePath:
                 # as low as ~5e-4 on real data, where a fixed .3f would
                 # render 0.000.
                 tooltip_parts.append(f"Ratio: {ratio:.4g}")
+            if not np.isnan(ratio_adj):
+                tooltip_parts.append(f"Ratio (adj): {ratio_adj:.4g}")
+            if not np.isnan(refilled):
+                tooltip_parts.append(f"Refilled: {refilled:,.0f}")
             # PROBABILITY SUSPENSION (2026-10-06): probability is no longer
             # shown in tooltips (the payload keeps carrying it inertly).
             if nt_type:
@@ -4961,6 +5042,8 @@ class VisualizePath:
                 'nt_type': nt_type if nt_type else '',
                 'color': edge_color,
                 'ratio': ratio if not np.isnan(ratio) else 0,
+                'ratio_adj': (ratio_adj if not np.isnan(ratio_adj) else None),
+                'refilled': (refilled if not np.isnan(refilled) else None),
                 'probability': prob if not np.isnan(prob) else 0,
                 'tooltip': "\n".join(tooltip_parts),
                 'custom_labels': custom_labels_json,
@@ -4973,6 +5056,11 @@ class VisualizePath:
 
             payload = _edge_payload(source, target, data)
             weight = data.get('weight', 0)
+
+            if payload.get('ratio_adj') is not None:
+                has_ratio_adj_network = True
+            if payload.get('refilled') is not None:
+                has_refilled_network = True
 
             if is_pair_half:
                 u, v = pair
@@ -5251,6 +5339,14 @@ class VisualizePath:
         })
         
         # Create HTML content
+        # V1: metric availability flags for the selector options (any
+        # edge carrying a non-null value enables the option)
+        has_ratio_adj = any(
+            e[2].get('ratio_adj') is not None
+            for e in G.edges(data=True))
+        has_refilled = any(
+            e[2].get('refilled') is not None
+            for e in G.edges(data=True))
         cytoscape_scripts = _cytoscape_bundle_scripts()
         html_content = f"""<!DOCTYPE html>
 <html>
@@ -6369,9 +6465,12 @@ class VisualizePath:
         <div class="vp-ribbon-page" id="pageFilter">
             <div class="vp-ribbon-group" style="min-width: 150px;">
             <label class="vp-group-title">Connection Metric</label>
-            <select id="metricSelect" onchange="updateMetric()" title="Value used by the edge filter below AND by the edge widths: {self.metric_option_label.lower()} or connection ratio" style="width: 100%; padding: 5px;">
+            <!-- has_ratio_adj/has_refilled are bound below the template assembly -->
+            <select id="metricSelect" onchange="updateMetric()" title="Value used by the edge filter below AND by the edge widths: {self.metric_option_label.lower()} / connection ratio / adjusted ratio (>= threshold) / refilled. Hover always lists every available metric; NT coloring (when enabled) overrides edge COLORS only — widths/hover keep following this metric." style="width: 100%; padding: 5px;">
                 <option value="weight">{self.metric_option_label}</option>
                 <option value="ratio">Connection Ratio</option>
+                <option value="ratio_adj" {"disabled" if not has_ratio_adj else ""}>Ratio (&ge; N){" (N/A)" if not has_ratio_adj else ""}</option>
+                <option value="refilled" {"disabled" if not has_refilled else ""}>Refilled{" (N/A)" if not has_refilled else ""}</option>
                 <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
             </select>
             </div>
@@ -7603,6 +7702,20 @@ class VisualizePath:
                     html += `<br><b>Ratio:</b> <span style="color: #4CAF50; font-weight: bold;">${{data.ratio.toFixed(4)}} ⬅ Current</span>`;
                 }} else {{
                     html += `<br><b>Ratio:</b> ${{data.ratio.toFixed(4)}}`;
+                }}
+            }}
+            if (data.ratio_adj !== undefined && data.ratio_adj !== null && !isNaN(data.ratio_adj)) {{
+                if (currentMetric === 'ratio_adj') {{
+                    html += `<br><b>Ratio (&ge; N):</b> <span style="color: #4CAF50; font-weight: bold;">${{data.ratio_adj.toFixed(4)}} ⬅ Current</span>`;
+                }} else {{
+                    html += `<br><b>Ratio (&ge; N):</b> ${{data.ratio_adj.toFixed(4)}}`;
+                }}
+            }}
+            if (data.refilled !== undefined && data.refilled !== null && !isNaN(data.refilled)) {{
+                if (currentMetric === 'refilled') {{
+                    html += `<br><b>Refilled:</b> <span style="color: #4CAF50; font-weight: bold;">${{Math.round(data.refilled).toLocaleString()}} ⬅ Current</span>`;
+                }} else {{
+                    html += `<br><b>Refilled:</b> ${{Math.round(data.refilled).toLocaleString()}}`;
                 }}
             }}
             // PROBABILITY SUSPENSION (2026-10-06): probability is no longer
@@ -10972,7 +11085,9 @@ class VisualizePath:
             if (!input) return;
             const examples = {{
                 weight: 'OR: <5, >100 | AND: (>=5, <=10)',
-                ratio: 'OR: <0.2, >0.8 | AND: (>=0.1, <=0.5)'
+                ratio: 'OR: <0.2, >0.8 | AND: (>=0.1, <=0.5)',
+                ratio_adj: 'OR: <0.2, >0.8 | AND: (>=0.1, <=0.5)',
+                refilled: 'OR: <5, >100 | AND: (>=5, <=10)'
             }};
             input.placeholder = examples[currentMetric] || examples.weight;
         }}
@@ -10992,6 +11107,10 @@ class VisualizePath:
             
             if (currentMetric === 'ratio') {{
                 values = edges.map(e => e.data('ratio'));
+            }} else if (currentMetric === 'ratio_adj') {{
+                values = edges.map(e => (e.data('ratio_adj') === null || e.data('ratio_adj') === undefined) ? NaN : e.data('ratio_adj'));
+            }} else if (currentMetric === 'refilled') {{
+                values = edges.map(e => (e.data('refilled') === null || e.data('refilled') === undefined) ? 0 : e.data('refilled'));
             }} else {{
                 values = edges.map(e => e.data('weight'));
             }}
@@ -11005,7 +11124,7 @@ class VisualizePath:
             
             // For ratio, scale it up for better visualization
             // (PROBABILITY SUSPENSION 2026-10-06: probability no longer a metric.)
-            const scaleFactor = currentMetric === 'ratio' ? 1000 : 1;
+            const scaleFactor = (currentMetric === 'ratio' || currentMetric === 'ratio_adj') ? 1000 : 1;
             values = values.map(v => v * scaleFactor);
             
             // Calculate scaled widths based on EXACT method string
@@ -15460,6 +15579,27 @@ class VisualizePath:
             ratio_matrix = ratio_matrix.reindex(index=row_nodes, columns=col_nodes, fill_value=0)
             matrices_dict['ratio'] = ratio_matrix
         
+        # V1: adjusted-ratio and refilled matrices — parallel metrics on
+        # the same topology (probability stays suspended).
+        if 'ratio_adj' in conn_df_to_use.columns and \
+                conn_df_to_use['ratio_adj'].notna().any():
+            self._vprint("  Creating adjusted-ratio matrix...")
+            adj_matrix = conn_df_to_use.pivot_table(
+                index='source', columns='target', values='ratio_adj',
+                fill_value=0)
+            adj_matrix = adj_matrix.reindex(index=row_nodes,
+                                            columns=col_nodes, fill_value=0)
+            matrices_dict['ratio_adj'] = adj_matrix
+        if 'refilled' in conn_df_to_use.columns and \
+                conn_df_to_use['refilled'].notna().any():
+            self._vprint("  Creating refilled matrix...")
+            ref_matrix = conn_df_to_use.pivot_table(
+                index='source', columns='target', values='refilled',
+                fill_value=0)
+            ref_matrix = ref_matrix.reindex(index=row_nodes,
+                                            columns=col_nodes, fill_value=0)
+            matrices_dict['refilled'] = ref_matrix
+        
         # Generate filename
         heatmap_file = os.path.join(self.output_folder, f'{self.base_filename}_heatmap.html')
         
@@ -16135,6 +16275,19 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             available_metrics.append('ratio')
             matrices_data['ratio'] = matrices_dict['ratio'].values.copy()
         
+        # V1: adjusted-ratio and refilled matrices join the toggle when
+        # provided (probability stays suspended — deliberately ignored).
+        if 'ratio_adj' in matrices_dict and \
+                matrices_dict['ratio_adj'] is not None:
+            available_metrics.append('ratio_adj')
+            matrices_data['ratio_adj'] = \
+                matrices_dict['ratio_adj'].values.copy()
+        if 'refilled' in matrices_dict and \
+                matrices_dict['refilled'] is not None:
+            available_metrics.append('refilled')
+            matrices_data['refilled'] = \
+                matrices_dict['refilled'].values.copy()
+        
         # Probability is suspended: a 'probability' entry in matrices_dict
         # is deliberately ignored (never toggled, never rendered).
         
@@ -16686,6 +16839,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     </style>
 </head>
 <body>
+    <!-- visible page heading (V1 review 2026-10-11: the title used to exist only in the browser tab) -->
+    <div style="font: 600 16px/1.3 -apple-system, 'Segoe UI', sans-serif; padding: 10px 16px 0;">{html_escape(title)}</div>
     <div class="main-container">
         <div class="controls">
             <div class="controls-grid">
@@ -17106,6 +17261,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             const metricNames = {{
                 'weight': 'Synapses',
                 'ratio': 'Ratio',
+                'ratio_adj': 'Ratio (\u2265 N)',
+                'refilled': 'Refilled',
                 'probability': 'Probability'
             }};
             const currentMetricName = metricNames[currentMetric] || currentMetric;
@@ -17617,6 +17774,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             const metricDisplayNames = {{
                 'weight': 'Synapses',
                 'ratio': 'Ratio',
+                'ratio_adj': 'Ratio (\u2265 N)',
+                'refilled': 'Refilled',
                 'probability': 'Probability'
             }};
             const metricNameOverride = '{js_escape(metric_name or '')}';

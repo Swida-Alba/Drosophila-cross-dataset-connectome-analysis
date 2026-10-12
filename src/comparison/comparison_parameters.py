@@ -290,6 +290,13 @@ class ComparisonParameters:
     shortest route and inflate reported distances. None uses the per-mode
     default; 0 disables the Edge Budget."""
 
+    corridor_mode: str = "auto"
+    """Corridor lane mode forwarded to every per-dataset path run
+    (plan-corridor-lane.md §8/§23.4): 'off' | 'auto' | 'on'. 'auto' runs
+    the standalone route-scoped pass after deep runs (max intermediate
+    layers >= 4), per dataset, writing route_scope_paths/ beside each
+    run folder. The lane never modifies the compared runs' own outputs."""
+
     max_paths_bodyid: Optional[int] = None
     """Path budget for the StrongestFirst enumerator (the default
     pathfinding): enumeration emits intact paths strongest-first and stops
@@ -2078,6 +2085,7 @@ class ComparisonParameters:
             'top_edges': self.top_edges,
             'graph_edge_limit_bodyid': self.graph_edge_limit_bodyid,
             'max_paths_bodyid': self.max_paths_bodyid,
+            'corridor_mode': self.corridor_mode,
             'replay_paths': self.replay_paths,
             # F7: auto-extend collapsed thresholds (k x tau_ref, capped at
             # 2x the max asked threshold) after the run reveals a collapse.
@@ -2356,6 +2364,7 @@ class ComparisonParameters:
             top_edges=data.get('top_edges', 50),
             graph_edge_limit_bodyid=data.get('graph_edge_limit_bodyid', None),
             max_paths_bodyid=data.get('max_paths_bodyid', None),
+            corridor_mode=data.get('corridor_mode', 'auto'),
             replay_paths=data.get('replay_paths', True),
             auto_extend_thresholds=data.get('auto_extend_thresholds', False),
             capture_density=data.get('capture_density', False),

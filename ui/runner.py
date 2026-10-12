@@ -367,10 +367,20 @@ def _maybe_generate_pair_report(scan_dir, log, progress) -> None:
     try:
         if not scan_dir or not has_paths_tables(scan_dir):
             return
+        # Cross-dataset layout (2026-10-11 user directive): the cross
+        # root keeps only comparison_report.html — the per-delegate pair
+        # reports live beside each delegate under dataset_data/.
+        is_cross_root = (Path(scan_dir) / 'dataset_data').is_dir()
         progress("pair-report", "Generating pair report")
         log("Generating paths pair report...", "system")
-        generate_paths_pair_report(scan_dir, log=lambda *args, **kwargs: None)
-        log("Pair report written: path_report.html", "system")
+        generate_paths_pair_report(
+            scan_dir, log=lambda *args, **kwargs: None,
+            root_report=not is_cross_root)
+        if is_cross_root:
+            log("Pair reports written into dataset_data delegate folders",
+                "system")
+        else:
+            log("Pair report written: path_report.html", "system")
     except Exception as exc:  # noqa: BLE001 - reporting must never fail the run
         try:
             log(f"Pair report generation skipped: {exc}", "warning")

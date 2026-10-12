@@ -96,6 +96,18 @@ confidence and evidence for every pair.
   nothing outside its home dataset.
 - **bodyIds** stay dataset-scoped; **patterns** pass through to each
   dataset's identity search.
+- **bodyId display (label-mapper runs)**: the label mapper retypes its
+  enrolled neurons at the bodyId level, and the settled label IS the
+  equivalent typing — so the report HTML never displays bodyIds. Enrolled
+  bodyId inputs collapse to one grouped row per settled label (with a
+  "N enrolled" badge and the per-dataset enrollment breakdown) in the
+  Query Resolution section and the "Queried types & path participation"
+  table, whose `#paths` column keys on the same label. Ungoverned bodyId
+  inputs first try to recover their native type from the run's own
+  connection data (`T*` residuals included); a bodyId with no label and
+  no recoverable type is omitted from the HTML and retained verbatim in
+  `query_resolution.csv` (`display_name` / `display_role` columns carry
+  the display decision for every record).
 
 ### Type coverage: the union resolved into every dataset
 
@@ -765,9 +777,12 @@ Shows neuron count per type in each dataset. Useful for understanding which neur
 | `{dataset}_source` | Count of this type as source in dataset       |
 | `{dataset}_target` | Count of this type as target in dataset       |
 
-#### `edge_presence_matrix_minsyn_{threshold}.csv`
+#### `edge_presence_matrix_{tier-token}.csv`
 
 Shows edge presence and weight across all datasets at a specific threshold.
+The tier token follows the delegate-folder grammar: `minsyn_{N}` on the
+synapse basis, `minratio_{decimal}` on the connection-ratio basis
+(2026-10-10 — previously a hard-coded `minsyn_` prefix on ratio tiers too).
 
 | Column               | Description                              |
 | -------------------- | ---------------------------------------- |
@@ -781,9 +796,10 @@ Shows edge presence and weight across all datasets at a specific threshold.
 | `avg_weight`         | Average weight across present datasets   |
 | `weight_cv`          | Coefficient of variation (std/mean)      |
 
-#### `path_presence_matrix_minsyn_{threshold}.csv`
+#### `path_presence_matrix_{tier-token}.csv`
 
-Shows multi-hop path presence across all datasets.
+Shows multi-hop path presence across all datasets (tier token:
+`minsyn_{N}` synapse basis, `minratio_{decimal}` ratio basis).
 
 | Column                                  | Description                           |
 | --------------------------------------- | ------------------------------------- |

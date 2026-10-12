@@ -112,19 +112,25 @@ class DataLoader:
     # Dataset Results I/O
     # =========================================================================
     
-    def get_dataset_path(self, dataset: str, threshold: int) -> str:
+    def get_dataset_path(self, dataset: str, threshold) -> str:
         """
         Get path to dataset output folder.
-        
+
         Args:
             dataset: Dataset identifier
-            threshold: Synapse threshold
-            
+            threshold: Synapse threshold (int) or float connection-ratio
+                tier
+
         Returns:
-            Path to dataset/threshold folder
+            Path to dataset/threshold folder (``minsyn_{int}`` synapse,
+            ``minratio_{decimal}`` ratio — the delegate-folder grammar)
         """
         safe_name = self._sanitize_name(dataset)
-        return os.path.join(self.dataset_data_path, safe_name, f'minsyn_{threshold}')
+        number = float(threshold)
+        token = (f'minratio_{str(number).replace("-", "neg").replace(".", "_")}'
+                 if not number.is_integer()
+                 else f'minsyn_{int(number)}')
+        return os.path.join(self.dataset_data_path, safe_name, token)
     
     def dataset_results_exist(self, dataset: str, threshold: int) -> bool:
         """

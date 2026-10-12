@@ -112,7 +112,10 @@ def build_type_map(neuron_table: Path, separate_hemispheres: bool,
     """bodyId -> EFFECTIVE label via the shared module builder (label
     mapping with the same semantics as the run's type-level aggregation,
     hemisphere suffixes, untyped drop)."""
-    frame = pd.read_csv(neuron_table, dtype=str, low_memory=False)
+    if str(neuron_table).lower().endswith('.parquet'):
+        frame = pd.read_parquet(neuron_table)
+    else:
+        frame = pd.read_csv(neuron_table, dtype=str, low_memory=False)
     if 'bodyId' not in frame.columns or 'type' not in frame.columns:
         raise SystemExit(
             f'--neuron-table {neuron_table}: needs bodyId and type '

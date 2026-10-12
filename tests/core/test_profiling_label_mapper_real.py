@@ -1,7 +1,7 @@
 """Real-data validation of the tier-0 label mapper on the profiling lane.
 
 Loads the actual settled clock label map
-(``_clock_production/data/clock_validated_expanded/
+(``clock-production/data/clock_validated_expanded/
 clock_settled_type_label_map.json`` — 21 labels x FAFB/MCNS/BANC bodyIds,
 built by ``local_data/drive_clock_label_mapper.py``) and runs small real
 ``ConnectivityProfileComparer`` campaigns against the LOCAL connection
@@ -33,7 +33,7 @@ from comparison.type_resolver import get_mapper_snapshot  # noqa: E402
 MCNS = 'male-cns:v1.0'
 FAFB = 'flywire_FAFB_v783'
 
-CLOCK_MAP = (PROJECT_ROOT / '_clock_production' / 'data'
+CLOCK_MAP = (PROJECT_ROOT / 'clock-production' / 'data'
              / 'clock_validated_expanded' / 'clock_settled_type_label_map.json')
 
 # Small label subset: keeps the conn-cache-backed run minutes, not tens of

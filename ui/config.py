@@ -386,6 +386,11 @@ def get_user_default(key: str):
     if key in overrides:
         coerced = _coerce_user_default(key, overrides[key])
         if coerced is not None:
+            if key == 'corridor_mode':
+                # NAME UNIFICATION (2026-10-11): legacy saved values
+                # normalize to the canonical 'complete'/'auto'/'both'.
+                coerced = {'off': 'complete', 'on': 'both'}.get(
+                    coerced, coerced)
             return coerced
     return DEFAULTS[key]
 
@@ -491,6 +496,10 @@ DEFAULTS = {
     # many bodyId edges are floored just above the N-th strongest edge's
     # weight (w0 = w1 + 1). 0 = off.
     "graph_edge_limit_bodyid": 1000000,
+    "corridor_mode": "auto",
+    "route_top_m_base": 10,
+    "route_length_decay": 1.5,
+    "route_path_budget_per_pair_length": 100,
     "network_layout": "distributed",
     "use_cache": True,
     "cache_only": False,

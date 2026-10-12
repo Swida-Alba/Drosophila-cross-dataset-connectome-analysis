@@ -166,6 +166,7 @@ def create_find_path_tab():
             )
             def _on_max_interlayer_change(e):
                 interlayer_warning.set_visibility((e.value or 0) >= 4)
+                _refresh_corridor_note()
 
             max_interlayer.on_value_change(_on_max_interlayer_change)
 
@@ -296,6 +297,36 @@ def create_find_path_tab():
                                  "graph is not trimmed. "
                                  "0 = auto (StrongestFirst: 1M budget).",
                         )
+                        corridor_mode = select_input(
+                            "Fast Mode (corridor lane)",
+                            {"complete": "Complete only",
+                             "auto": "Auto (deep runs)",
+                             "both": "Complete + Fast"},
+                            default=get_user_default("corridor_mode"),
+                            hint="Values — complete: run COMPLETE mode only (all intact paths >= the applied threshold; the run itself). auto: also run FAST mode (the corridor lane: strongest type-level routes at the ASKED threshold) after deep searches (max intermediate layers >= 4). both: always run FAST after the run. Fast writes its own route_scope_paths/ beside the run and never modifies this run's outputs. Full guide via the book icon.",
+                            help_doc="pathfinding_algorithms",
+                        )
+                        corridor_note = ui.label("").classes(
+                            "text-caption text-blue-8")
+
+                        def _corridor_note_text():
+                            mode = corridor_mode.value
+                            depth = int(max_interlayer.value or 0)
+                            will = (mode == "on"
+                                    or (mode == "auto" and depth >= 4))
+                            if mode == "off":
+                                return "Corridor lane: off (never runs)."
+                            return (f"Corridor lane: {'WILL' if will else 'will NOT'} "
+                                    f"run after this search (mode {mode}, "
+                                    f"depth {depth}; auto needs >= 4).")
+
+                        def _refresh_corridor_note():
+                            # Label.set_text (NOT set_value — house rule)
+                            corridor_note.set_text(_corridor_note_text())
+
+                        _refresh_corridor_note()
+                        corridor_mode.on_value_change(
+                            lambda _e: _refresh_corridor_note())
                     with ui.column().classes("gap-0"):
                         edge_budget = number_input(
                             "Edge Budget", get_user_default("graph_edge_limit_bodyid"),
@@ -408,6 +439,9 @@ def create_find_path_tab():
             # F1: StrongestFirst is the only 'all'-mode algorithm; the
             # selector was removed.
             "pathfinding": "StrongestFirst",
+            # Corridor lane (plan-corridor-lane.md): off/auto/on; auto
+            # runs the standalone route-scoped pass after deep runs.
+            "corridor_mode": corridor_mode.value,
             # Fix D: the Edge Budget (lossy floor above the N-th strongest
             # edge, w0 = w1 + 1). 0 = off.
             "graph_edge_limit_bodyid": int(edge_budget.value),

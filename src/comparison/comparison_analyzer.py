@@ -200,6 +200,33 @@ class _UserFirstLabelMapper:
         return df
 
 
+def _corridor_mode_for_threshold(dataset_name, threshold, parameters) -> str:
+    """Resolve the Fast-mode lane switch for ONE per-dataset path run
+    (plan-corridor-lane.md §8): threshold sweeps fire the lane at the
+    dataset's LOWEST threshold only — corridors at the lowest threshold
+    are supersets for higher ones (ratified superset property), so higher
+    tiers would pay the lane enumeration for identical scope. The gate is
+    absolute (explicit 'both' included): a higher-tier run's corridors
+    are a strict subset of the lowest tier's. Canonical values
+    complete/auto/both; legacy 'off'/'on' normalize here so every
+    downstream surface sees the canonical names."""
+    mode = getattr(parameters, 'corridor_mode', 'auto')
+    if mode == 'off':
+        mode = 'complete'
+    elif mode == 'on':
+        mode = 'both'
+    if mode != 'both' and mode != 'auto':
+        return mode
+    try:
+        tiers = sorted(float(t) for t in
+                       parameters.get_thresholds_for_dataset(dataset_name))
+    except Exception:
+        return mode
+    if not tiers or float(threshold) == tiers[0]:
+        return mode
+    return 'complete'
+
+
 class ComparisonAnalyzer:
     """
     Main orchestrator for cross-dataset comparison analysis.
@@ -1850,7 +1877,7 @@ class ComparisonAnalyzer:
         max_interlayer = self.parameters.max_interlayer
         
         # Set up output path to redirect FNC output into comparison folder structure
-        # Output goes to: {comparison_output}/dataset_data/{dataset}/minsyn_{threshold}/
+        # Output goes to: {comparison_output}/dataset_data/{dataset}/{minsyn|minratio}_{threshold}/
         safe_dataset_name = self.parameters._sanitize_name(dataset_name)
         fnc_output_path = self.parameters.get_dataset_output_path(dataset_name, threshold)
         
@@ -1894,7 +1921,7 @@ class ComparisonAnalyzer:
             label_mapper=self.label_mapper,  # Pass label mapper for standardization
             pathfinding=self.parameters.pathfinding,  # Pass pathfinding algorithm
             graph_edge_limit_bodyid=self.parameters.graph_edge_limit_bodyid,  # bodyId edge limit (deep searches)
-            corridor_mode=getattr(self.parameters, 'corridor_mode', 'auto'),  # corridor lane (plan-corridor-lane.md §8)
+            corridor_mode=_corridor_mode_for_threshold(dataset_name, threshold, self.parameters),
             max_paths_bodyid=self.parameters.max_paths_bodyid,  # StrongestFirst path budget (None = per-mode default)
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),
@@ -3208,44 +3235,137 @@ class ComparisonAnalyzer:
             role='target', source_dataset=self.parameters.source_dataset,
             taxonomy_resolver=taxonomy_resolver))
 
-        # Label-mapper retyping (user directive 2026-10-09): bodyId query
-        # tokens governed by the user label mapper resolve to their
-        # settled label — the standalone body_id record gains the mapped
-        # label as its target so the type-resolver results show the
-        # retyping instead of a bare bodyId.  ``resolve_query_inputs``
-        # returns plain dicts; read through .get with attribute fallback
-        # so both dict and dataclass records enrich.
+        # Label-mapper display compatibility (user directives 2026-10-09
+        # and 2026-10-10): the label mapper retypes its enrolled neurons
+        # at the bodyId level, and the settled label IS the equivalent
+        # typing — the report displays these inputs as their labels,
+        # never as bodyIds.  Every record gains ``display_name`` /
+        # ``display_role``:
+        #   'label'  — token governed by the user label mapper (tier 0):
+        #              display the settled label
+        #   'type'   — ordinary token, or an ungoverned bodyId whose
+        #              native type (T* residuals included) is recoverable
+        #              from the run's own bodyId-level frames
+        #   'hidden' — ungoverned, untyped bodyId: kept in
+        #              query_resolution.csv, omitted from the report HTML
+        # ``resolve_query_inputs`` returns plain dicts; read through
+        # .get with attribute fallback so both dict and dataclass
+        # records enrich.
         lm = self.label_mapper
-        if lm is not None and not lm.is_empty:
-            for rec in records:
-                if isinstance(rec, dict):
-                    status = rec.get('status', '')
-                    token = str(rec.get('token', ''))
-                    ds = str(rec.get('dataset', ''))
-                else:
-                    status = getattr(rec, 'status', '')
-                    token = str(getattr(rec, 'token', ''))
-                    ds = str(getattr(rec, 'dataset', ''))
-                if status != 'body_id':
-                    continue
-                try:
-                    cand = lm.get_label(ds, token)
-                except Exception:  # noqa: BLE001 — disclosure enrichment
-                    cand = None
-                if cand and cand != token:
-                    if isinstance(rec, dict):
-                        rec['target_types'] = [cand]
-                        rec['note'] = (str(rec.get('note', '')).rstrip('.')
-                                       + f". Retyped to '{cand}' by the user "
-                                       'label mapper (tier 0).')
-                    else:
-                        rec.target_types = [cand]
-                        rec.note = (str(rec.note).rstrip('.') +
-                                    f". Retyped to '{cand}' by the user label "
-                                    'mapper (tier 0).')
+
+        def _set_display(rec, key, value):
+            if isinstance(rec, dict):
+                rec[key] = value
+            else:
+                setattr(rec, key, value)
+
+        def _get_field(rec, key, default=''):
+            if isinstance(rec, dict):
+                return rec.get(key, default)
+            return getattr(rec, key, default)
+
+        bodyid_type_map = None
+        for rec in records:
+            status = str(_get_field(rec, 'status', ''))
+            token = str(_get_field(rec, 'token', ''))
+            ds = str(_get_field(rec, 'dataset', ''))
+
+            if status != 'body_id':
+                _set_display(rec, 'display_name', token)
+                _set_display(rec, 'display_role', 'type')
+                continue
+
+            # Tier 1 — the settled label: a tier-0 identity, dataset
+            # independent.  bodyIds are disjoint across datasets, so the
+            # first dataset whose reverse lookup adopts the token is
+            # unambiguous (the per-record dataset may be a non-home
+            # dataset: body_id records exist for every dataset).
+            label = None
+            home_ds = None
+            if lm is not None and not lm.is_empty:
+                for cand_ds in datasets:
+                    try:
+                        cand = lm.get_label(cand_ds, token)
+                    except Exception:  # noqa: BLE001 — disclosure enrichment
+                        cand = None
+                    if cand and cand != token:
+                        label = cand
+                        home_ds = cand_ds
+                        break
+            if label:
+                _set_display(rec, 'display_name', label)
+                _set_display(rec, 'display_role', 'label')
+                # Per-dataset target/note enrichment (2026-10-09): only
+                # the record against the token's home dataset resolves.
+                if ds == home_ds:
+                    _set_display(rec, 'target_types', [label])
+                    note = str(_get_field(rec, 'note', '')).rstrip('.')
+                    _set_display(
+                        rec, 'note',
+                        note + f". Retyped to '{label}' by the user label "
+                               'mapper (tier 0).')
+                continue
+
+            # Tier 2 — native type from the run's bodyId-level frames
+            # (built once per run; T* residuals pass through naturally
+            # because the delegate writes them into the type columns).
+            if bodyid_type_map is None:
+                bodyid_type_map = self._query_bodyid_type_map()
+            native = bodyid_type_map.get(token)
+            if native and not self._is_untyped_type_value(native[0]):
+                _set_display(rec, 'display_name', str(native[0]))
+                _set_display(rec, 'display_role', 'type')
+                if ds == native[1]:
+                    _set_display(rec, 'target_types', [str(native[0])])
+                    note = str(_get_field(rec, 'note', '')).rstrip('.')
+                    _set_display(
+                        rec, 'note',
+                        note + ". Native type recovered from this run's "
+                               'connection data (display tier 2).')
+                continue
+
+            # Tier 3 — ungoverned and untyped: hidden from the HTML,
+            # retained verbatim in query_resolution.csv.
+            _set_display(rec, 'display_name', '')
+            _set_display(rec, 'display_role', 'hidden')
 
         self._query_resolution_records = records
         return records
+
+    def _query_bodyid_type_map(self) -> Dict[str, tuple]:
+        """bodyId → (type label, dataset) map over the run's loaded frames
+        (display tier 2 for ungoverned bodyId query tokens).
+
+        Walks ``raw_results`` once (cached; cleared with the results) and
+        keys every ``bodyId_pre``/``bodyId_post`` by its ``type_*`` value
+        plus the dataset whose frame carried it, preferring a real type
+        over an untyped bodyId-fallback value when a neuron appears with
+        both across threshold frames."""
+        cached = getattr(self, '_bodyid_type_map_cache', None)
+        if cached is not None:
+            return cached
+        mapping: Dict[str, tuple] = {}
+        raw = getattr(self, 'raw_results', None) or {}
+        for ds, thr_map in raw.items():
+            for _thr, df in (thr_map or {}).items():
+                if df is None or len(df) == 0:
+                    continue
+                for side in ('pre', 'post'):
+                    id_col, type_col = f'bodyId_{side}', f'type_{side}'
+                    if id_col not in getattr(df, 'columns', []) \
+                            or type_col not in df.columns:
+                        continue
+                    sub = df[[id_col, type_col]].dropna().drop_duplicates()
+                    for bid, tval in zip(sub[id_col].astype(str),
+                                         sub[type_col].astype(str)):
+                        entry = (str(tval), str(ds))
+                        prev = mapping.get(bid)
+                        if prev is None or (
+                                self._is_untyped_type_value(prev[0])
+                                and not self._is_untyped_type_value(tval)):
+                            mapping[bid] = entry
+        self._bodyid_type_map_cache = mapping
+        return mapping
 
     # ------------------------------------------------------------------
     # Query-anchored merge policy (plan:
@@ -4657,7 +4777,7 @@ class ComparisonAnalyzer:
             label_mapper=self.label_mapper,
             pathfinding=self.parameters.pathfinding,
             graph_edge_limit_bodyid=self.parameters.graph_edge_limit_bodyid,
-            corridor_mode=getattr(self.parameters, 'corridor_mode', 'auto'),
+            corridor_mode=_corridor_mode_for_threshold(dataset_name, threshold, self.parameters),
             max_paths_bodyid=self.parameters.max_paths_bodyid,
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),
@@ -6659,13 +6779,13 @@ class ComparisonAnalyzer:
             │       ├── similarity_matrix.csv
             │       └── ...
             ├── dataset_data/               # Raw FindNeuronConnection outputs (created by FNC)
-            │   ├── {dataset_1}/minsyn_{threshold}/
-            │   └── {dataset_2}/minsyn_{threshold}/
+            │   ├── {dataset_1}/{minsyn|minratio}_{tier}/
+            │   └── {dataset_2}/{minsyn|minratio}_{tier}/
             └── comparison_results/         # Cross-dataset comparison outputs
                 ├── path_count_comparison.csv
                 ├── edge_weight_comparison.csv
-                ├── edge_presence_matrix_minsyn_{threshold}.csv
-                ├── path_presence_matrix_minsyn_{threshold}.csv
+                ├── edge_presence_matrix_{minsyn|minratio}_{tier}.csv
+                ├── path_presence_matrix_{minsyn|minratio}_{tier}.csv
                 └── ...
         
         Args:
@@ -9305,7 +9425,16 @@ class ComparisonAnalyzer:
         # Get top edges per dataset
         top_edges = self.metrics.get_top_edges_per_dataset(aligned, dataset_names, top_n)
         if not top_edges.empty:
-            self._save_csv(top_edges, os.path.join(comparison_results_dir, "top_edges_comparison.csv"))
+            # X1.2: attach the adjusted-ratio flavor per dataset when the
+            # alignment carried it (<dataset>__adj columns) — the same
+            # rows, both ratio flavors like the other exports.
+            renamed = top_edges.copy()
+            for ds in dataset_names:
+                adj_col = f'{ds}__adj'
+                if adj_col in renamed.columns:
+                    renamed[f'adj_in_{ds}'] = renamed[adj_col]
+                    renamed = renamed.drop(columns=[adj_col])
+            self._save_csv(renamed, os.path.join(comparison_results_dir, "top_edges_comparison.csv"))
             self._log("Saved: top_edges_comparison.csv")
         
         # Get overlap statistics
@@ -10263,7 +10392,7 @@ class ComparisonAnalyzer:
                 dataset_output_path = self._resolve_dataset_output_path(dataset, threshold)
                 
                 path_files_to_try = [
-                    os.path.join(dataset_output_path, f"minsyn_{threshold}_data_original_paths.csv"),
+                    os.path.join(dataset_output_path, f"{self._tier_token(threshold)}_data_original_paths.csv"),
                 ]
                 
                 if os.path.exists(dataset_output_path):
@@ -10685,7 +10814,21 @@ class ComparisonAnalyzer:
             safe_query_id = self._safe_query_filename_id(query_id)
             output_name = f"edge_presence_matrix_query_{safe_query_id}.csv"
         else:
-            output_name = f"edge_presence_matrix_minsyn_{threshold}.csv"
+            # Basis-aware tier token (2026-10-10): minsyn_{int} on the
+            # synapse basis (byte-identical to the historical name),
+            # minratio_{decimal} on the connection-ratio basis — the same
+            # grammar as the delegate folders, instead of a hard-coded
+            # minsyn_ prefix on a float tier (minsyn_0.05).
+            output_name = (
+                f"edge_presence_matrix_"
+                f"{threshold_folder_token(threshold, self.parameters.weight_basis)}"
+                ".csv")
+            # Drop a pre-rename leftover (edge_presence_matrix_minsyn_0.05)
+            # when re-exporting into an existing ratio-basis run folder.
+            _legacy = f"edge_presence_matrix_minsyn_{threshold}.csv"
+            if _legacy != output_name and \
+                    os.path.exists(os.path.join(comparison_results_dir, _legacy)):
+                os.remove(os.path.join(comparison_results_dir, _legacy))
 
         # Save edge presence matrix
         self._save_csv(presence_df, os.path.join(comparison_results_dir, output_name))
@@ -10740,8 +10883,8 @@ class ComparisonAnalyzer:
             if dataset_threshold is None:
                 continue
             
-            # Find path data file: minsyn_X_data_original_paths.csv or
-            # {source}_to_{target}_allpaths_type.csv (disk-aware resolution)
+            # Find path data file: {minsyn|minratio}_{tier}_data_original_paths.csv
+            # or {source}_to_{target}_allpaths_type.csv (disk-aware resolution)
             dataset_output_path = self._resolve_dataset_output_path(
                 dataset, dataset_threshold)
             
@@ -10749,7 +10892,7 @@ class ComparisonAnalyzer:
             path_files_to_try = [
                 os.path.join(
                     dataset_output_path,
-                    f"minsyn_{dataset_threshold}_data_original_paths.csv",
+                    f"{self._tier_token(dataset_threshold)}_data_original_paths.csv",
                 ),
             ]
             
@@ -11090,7 +11233,16 @@ class ComparisonAnalyzer:
             safe_query_id = self._safe_query_filename_id(query_id)
             output_name = f"path_presence_matrix_query_{safe_query_id}.csv"
         else:
-            output_name = f"path_presence_matrix_minsyn_{threshold}.csv"
+            # Basis-aware tier token — see the edge-presence twin above.
+            output_name = (
+                f"path_presence_matrix_"
+                f"{threshold_folder_token(threshold, self.parameters.weight_basis)}"
+                ".csv")
+            # Drop a pre-rename leftover — see the edge-presence twin.
+            _legacy = f"path_presence_matrix_minsyn_{threshold}.csv"
+            if _legacy != output_name and \
+                    os.path.exists(os.path.join(comparison_results_dir, _legacy)):
+                os.remove(os.path.join(comparison_results_dir, _legacy))
 
         # Save
         self._save_csv(path_presence_df, os.path.join(comparison_results_dir, output_name))
@@ -11444,11 +11596,19 @@ class ComparisonAnalyzer:
             except Exception as e:
                 self._log(f"Warning: Failed to generate conserved reciprocal graphs: {e}")
     
+    def _tier_token(self, threshold) -> str:
+        """Basis-aware tier token (``minsyn_{int}`` synapse /
+        ``minratio_{decimal}`` ratio — the delegate-folder grammar) for
+        per-threshold artifact names inside a resolved delegate folder."""
+        return threshold_folder_token(
+            threshold,
+            getattr(self.parameters, 'weight_basis', 'synapse'))
+
     def _get_path_data_for_threshold(self, threshold: Any) -> pd.DataFrame:
         """
         Get path min_weight data aligned across all datasets for a given threshold.
         
-        Reads from dataset_data/{dataset}/minsyn_{threshold}/*_original_paths.csv
+        Reads from dataset_data/{dataset}/{minsyn|minratio}_{threshold}/*_original_paths.csv
         or *_allpaths_type.csv and extracts min_weight values, aligning paths across datasets.
         
         Args:
@@ -11477,7 +11637,7 @@ class ComparisonAnalyzer:
             path_files_to_try = [
                 os.path.join(
                     dataset_output_path,
-                    f'minsyn_{dataset_threshold}_data_original_paths.csv',
+                    f'{self._tier_token(dataset_threshold)}_data_original_paths.csv',
                 ),
             ]
             
@@ -11633,7 +11793,7 @@ class ComparisonAnalyzer:
             path_files_to_try = [
                 os.path.join(
                     dataset_output_path,
-                    f'minsyn_{dataset_threshold}_data_original_paths.csv'),
+                    f'{self._tier_token(dataset_threshold)}_data_original_paths.csv'),
             ]
             if os.path.exists(dataset_output_path):
                 for filename in os.listdir(dataset_output_path):
@@ -11703,7 +11863,7 @@ class ComparisonAnalyzer:
         """
         Get min_ratio data aligned across all datasets for a given threshold.
         
-        Reads from dataset_data/{dataset}/minsyn_{threshold}/*_original_paths.csv
+        Reads from dataset_data/{dataset}/{minsyn|minratio}_{threshold}/*_original_paths.csv
         or *_allpaths_type.csv and extracts min_ratio values.
         
         Args:
@@ -11721,7 +11881,7 @@ class ComparisonAnalyzer:
             
             # Try multiple path file patterns
             path_files_to_try = [
-                os.path.join(dataset_output_path, f'minsyn_{threshold}_data_original_paths.csv'),
+                os.path.join(dataset_output_path, f'{self._tier_token(threshold)}_data_original_paths.csv'),
             ]
             
             # Also check for source_to_target_allpaths_type.csv pattern
@@ -11792,7 +11952,7 @@ class ComparisonAnalyzer:
         Get edge-level connection_ratio data aligned across datasets for a threshold.
         
         Reads from:
-        1. dataset_data/{dataset}/minsyn_{threshold}/connections_edge.csv (edge mode)
+        1. dataset_data/{dataset}/{minsyn|minratio}_{threshold}/connections_edge.csv (edge mode)
         2. dataset_data/{dataset}/minsyn_{threshold}/data_details/connection_type.csv (path mode fallback)
         
         connection_ratio = w_ij / W_j (edge weight / total post-synaptic sites)
@@ -13103,14 +13263,29 @@ class ComparisonAnalyzer:
         # Transform node labels to display format with dataset-specific names
         # Format: {canonical}({alt1}/{alt2}) for types that differ across datasets
         type_mapper = self.parameters._auto_type_mapper if self.parameters.auto_type_mapping else None
+        # Label-mapper display compatibility (user directive 2026-10-10): a
+        # node the USER label mapper governs keeps its settled label
+        # verbatim — the {canonical}({variants}) decoration is the AUTO
+        # mapper's display of its own remainder, which keeps the style.
+        tier0_labels = set()
+        _lm_cons = getattr(self, 'label_mapper', None)
+        if _lm_cons is not None and not getattr(_lm_cons, 'is_empty', True):
+            for _role in ('source', 'target', 'intermediate'):
+                try:
+                    tier0_labels.update(
+                        str(x) for x in _lm_cons.get_all_std_labels(_role))
+                except Exception:  # noqa: BLE001 — role simply absent
+                    pass
         display_name_map = {}  # {canonical_name: display_name}
         node_dataset_info = {}  # {display_name: {code: name_in_that_dataset}} for hover labels
         dataset_legend = {}  # {short_code: full_dataset_name} for legend
-        
+
         if type_mapper:
             # Get all unique nodes and compute display names + dataset info for hover
             all_unique_nodes = set(edges_df['source'].unique()) | set(edges_df['target'].unique())
             for node in all_unique_nodes:
+                if node in tier0_labels:
+                    continue
                 display_name, ds_info = type_mapper.get_display_name_with_dataset_info(node, dataset_names)
                 if display_name != node:
                     display_name_map[node] = display_name
@@ -13681,6 +13856,7 @@ class ComparisonAnalyzer:
         self.query_aligned_results.clear()
         self._network_aligned_cache.clear()
         self._similarity_cache.clear()
+        self._bodyid_type_map_cache = None
         self.comparison_report = None
         self._log("Results cleared")
     

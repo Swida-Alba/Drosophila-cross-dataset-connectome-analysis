@@ -952,12 +952,21 @@ class ComparisonMetrics:
             
             # Aggregate by edge
             weight_col = 'weight' if 'weight' in df.columns else 'path_weight'
+            # X1.2: the adjusted-ratio flavor rides the alignment as a
+            # second value column (present when the delegate frame was
+            # enriched — the engine attaches it to every export; absent
+            # for counts fallbacks).
+            adj_col = ('connection_ratio_adj'
+                       if 'connection_ratio_adj' in df.columns else None)
             
             if weight_col in df.columns:
                 agg_df = df.groupby([pre_col, post_col])[weight_col].sum().reset_index()
             else:
                 agg_df = df.groupby([pre_col, post_col]).size().reset_index(name='count')
                 weight_col = 'count'
+            if adj_col:
+                agg_df[adj_col] = (df.groupby([pre_col, post_col])[adj_col]
+                                   .mean().reset_index(drop=True))
             
             # Apply type mapping if provided - standardize edge names to canonical form
             # Using vectorized operations instead of slow iterrows
@@ -1070,13 +1079,22 @@ class ComparisonMetrics:
                     entry.setdefault(original, set()).add(dataset)
                 
                 # Re-aggregate by canonical edge (in case multiple original edges map to same canonical)
-                agg_df = agg_df.groupby(['canonical_pre', 'canonical_post'])[weight_col].sum().reset_index()
+                if adj_col:
+                    agg_df = (agg_df
+                              .groupby(['canonical_pre', 'canonical_post'])
+                              .agg({weight_col: 'sum', adj_col: 'mean'})
+                              .reset_index())
+                else:
+                    agg_df = agg_df.groupby(['canonical_pre', 'canonical_post'])[weight_col].sum().reset_index()
                 pre_col, post_col = 'canonical_pre', 'canonical_post'
             
             # Create edge index
             agg_df['edge'] = agg_df[pre_col].astype(str) + ' -> ' + agg_df[post_col].astype(str)
             agg_df = agg_df.set_index('edge')
-            agg_df = agg_df[[weight_col]].rename(columns={weight_col: dataset})
+            keep_cols = [weight_col] + ([adj_col] if adj_col else [])
+            agg_df = agg_df[keep_cols].rename(
+                columns={weight_col: dataset,
+                         **({adj_col: f'{dataset}__adj'} if adj_col else {})})
             
             dfs.append(agg_df)
         

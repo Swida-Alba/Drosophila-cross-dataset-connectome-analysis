@@ -171,6 +171,21 @@ vp.visualize()
   `bodyId_visualization/visualization_data/bodyId_paths_visualized.csv`
   (bodyId level). Missing artifact types stay absent.
 
+## Metric bases (V1, 2026-10-10)
+
+Edges carry up to four parallel metrics on the same topology:
+`weight` (Synapses), `ratio` (all-inputs share), `ratio_adj`
+(adjusted — weight over the post type's >= THRESHOLD incoming; equals
+`ratio` when the threshold is 1), and `refilled` (pair-level refill
+totals, present only when the run's refill mirror exists). The heatmap
+metric toggle and the network/Sankey Connection-Metric selectors expose
+whichever of these the input provides; hover always lists every metric;
+Sankey labels stay weight-based (metrics on hover); NT coloring, when
+enabled, overrides edge COLORS only. Feed pair-level metrics via
+`VisualizePath(pair_extra_metrics={metric: {(src, dst): value}})`;
+per-hop adjusted ratios ride the path frame's `connection_ratios_adj`
+list column (positional, like `connection_ratios`).
+
 ## Notes
 
 - The input may be CSV or Excel; for Excel use `sheet_name="path_type"` /

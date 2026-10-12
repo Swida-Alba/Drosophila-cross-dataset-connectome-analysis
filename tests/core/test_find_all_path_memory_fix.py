@@ -291,10 +291,13 @@ class TestPolarsFetchEquivalence:
         )
         _assert_equivalent(pd_result, pl_result)
         assert "connection_ratio" in pl_result.columns
-        assert "traversal_probability" in pl_result.columns
-        # ratio = weight/total; prob = ratio/0.3 capped at 1. Rows from
-        # post=2: 5/10=0.5 -> prob 1.0 kept; 6/10=0.6 -> 1.0 kept.
-        # post=3: 2/4=0.5 -> 1.0 kept; 8/4=2 -> capped 1.0 kept; 1/4=0.25
+        # PROBABILITY SUSPENSION (2026-10-06): traversal_probability is
+        # no longer exported; min_traversal_probability filters degrade
+        # to no-ops on the suspended column.
+        assert "traversal_probability" not in pl_result.columns
+        # ratio = weight/total. Rows from
+        # post=2: 5/10=0.5; 6/10=0.6.
+        # post=3: 2/4=0.5; 8/4=2; 1/4=0.25
         # -> 0.83 kept.  A 0.5 prob floor keeps everything here, so make it
         # stricter and compare against the pandas outcome explicitly.
         _, _, pd_strict, pl_strict = self._run_both(
