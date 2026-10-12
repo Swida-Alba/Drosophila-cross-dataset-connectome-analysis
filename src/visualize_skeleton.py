@@ -1195,6 +1195,23 @@ def _timeout_handler(signum, frame):
     raise PNGExportTimeout("PNG export timed out")
 
 
+# A legend-mode-tree page hides the native plotly legend by stylesheet because
+# its own panel replaces it, and that panel early-returns under WebDriver
+# (``navigator.webdriver`` is true there), so a screenshot taken from a saved
+# tree page would carry no legend at all. A headless render therefore puts the
+# native legend back. Pages without the panel hide nothing, so this leaves
+# them untouched.
+REEXPORT_LEGEND_RESTORE_JS = """
+if (!document.getElementById('drocat-legend-tree')
+    || document.getElementById('drocat-reexport-legend')) { return; }
+var st = document.createElement('style');
+st.id = 'drocat-reexport-legend';
+st.textContent = '.js-plotly-plot .legend{display:block !important;}'
+  + '#drocat-legend-tree{display:none !important;}';
+document.head.appendChild(st);
+"""
+
+
 class WebDriverExportSession:
     """
     Context manager for WebDriver-based exports that keeps the browser open
@@ -1421,6 +1438,9 @@ class WebDriverExportSession:
         # This prevents white margins around the plot
         js_bg = f"document.body.style.margin = '0'; document.body.style.padding = '0'; document.body.style.backgroundColor = '{background_color}';"
         self.driver.execute_script(js_bg)
+        # Before any layout is measured: a saved tree page hides the legend
+        # this session would otherwise screenshot empty.
+        self.driver.execute_script(REEXPORT_LEGEND_RESTORE_JS)
         
         self._loaded_url = os.path.abspath(html_path)
         

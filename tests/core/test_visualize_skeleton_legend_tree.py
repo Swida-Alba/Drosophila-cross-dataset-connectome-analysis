@@ -485,7 +485,8 @@ panel.style.display = 'none';
 var DOCUMENT_ELEMENT = new El('html');
 var HEAD = new El('head');
 DOCUMENT_ELEMENT.appendChild(HEAD);
-var ROOTS = [panel, DOCUMENT_ELEMENT];
+var PANEL_IN_PAGE = __PANEL__;
+var ROOTS = PANEL_IN_PAGE ? [panel, DOCUMENT_ELEMENT] : [DOCUMENT_ELEMENT];
 var TIMERS = [];
 var LOGS = [];
 var RESTYLE_CALLS = [];
@@ -584,20 +585,25 @@ def _emitted_tree_html_part(visualizer, start_tag, end_tag):
     return html[start:html.index(end_tag, start)]
 
 
-def run_tree_js(expression, fig=None, *, script=None, prelude=''):
+def run_tree_js(expression, fig=None, *, script=None, prelude='',
+                tree_panel=True):
     """Evaluate ``expression`` in node after the emitted tree script boots.
 
     ``script`` overrides the emitted body so a test can break the page the way
     the field broke it; ``prelude`` runs *before* the script, for globals the
-    break needs (a countdown, a missing API).
+    break needs (a countdown, a missing API). ``tree_panel`` toggles whether
+    the page carries the panel div at all.
     """
     if shutil.which('node') is None:
         pytest.skip('node is not installed')
     fig = _tagged_figure() if fig is None else fig
     body = (_emitted_tree_script(fig) if script is None else script)
+    stub = (_NODE_STUB
+            .replace('__TRACES__', json.dumps(_page_traces(fig)))
+            .replace('__PANEL__', 'true' if tree_panel else 'false'))
     program = (
         '(function(){\n'
-        + _NODE_STUB.replace('__TRACES__', json.dumps(_page_traces(fig)))
+        + stub
         + '\n' + prelude
         + '\n' + body
         + '\nconsole.log(JSON.stringify({value: (' + expression + '), '
@@ -826,3 +832,40 @@ class TestTreeRowGlyphs:
         assert run.value['onBrain'] == pytest.approx(0.04)
         assert run.value['onVnc'] == pytest.approx(0.04)
 
+
+
+def _restore_js_function():
+    """The WebDriver restore script, callable, so a top-level ``return`` in it
+    does not end the harness program."""
+    return ('function drocatRestoreLegend() {'
+            + visualize_skeleton.REEXPORT_LEGEND_RESTORE_JS
+            + '\n}')
+
+
+_RESTORE_PROBE = (
+    '(function(){ drocatRestoreLegend(); drocatRestoreLegend(); return {'
+    'styles: HEAD.children.length, '
+    'rule: (document.getElementById("drocat-reexport-legend")'
+    ' || {textContent: ""}).textContent}; })()')
+
+
+class TestReexportLegendRestore:
+    """Issue E: a WebDriver session screenshots a saved tree page whose panel
+    never boots there (``navigator.webdriver`` guards it), so the native
+    legend has to be put back or the PNG comes out with no legend at all."""
+
+    def test_a_tree_page_gets_its_native_legend_back_once(self):
+        run = run_tree_js(_RESTORE_PROBE, script=_restore_js_function())
+        assert run.code == 0, run.stderr
+        assert run.value['styles'] == 1, 'the restore is not idempotent'
+        assert ('.js-plotly-plot .legend{display:block !important;}'
+                in run.value['rule'])
+        assert ('#drocat-legend-tree{display:none !important;}'
+                in run.value['rule'])
+
+    def test_a_page_without_the_panel_is_left_alone(self):
+        run = run_tree_js(_RESTORE_PROBE, script=_restore_js_function(),
+                          tree_panel=False)
+        assert run.code == 0, run.stderr
+        assert run.value['styles'] == 0
+        assert run.value['rule'] == ''

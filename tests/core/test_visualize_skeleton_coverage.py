@@ -6021,6 +6021,25 @@ class TestWebDriverExportSessionLifecycle:
             session.screenshot(str(png_out))
             assert png_out.exists()
 
+    def test_load_html_sends_the_tree_page_its_legend_restore(
+            self, tmp_path, monkeypatch):
+        """A saved legend-mode-tree page shows a WebDriver browser no legend
+        at all: its panel early-returns on ``navigator.webdriver`` and its
+        stylesheet has hidden the native one. Which page needs the restore is
+        the page's decision, so the script carries that guard and every load
+        sends it once, before any layout gets measured."""
+        created = patch_selenium_session(monkeypatch)
+        html = make_plotly_html(tmp_path / 'plot.html')
+        with vs_module.WebDriverExportSession(
+                width=300, height=250, scale=1, timeout=10) as session:
+            session.load_html(str(html), wait_for_render=False)
+            sent = [script for script, _ in created[0].script_calls]
+            assert sent.count(
+                vs_module.REEXPORT_LEGEND_RESTORE_JS) == 1
+            assert sent.index(vs_module.REEXPORT_LEGEND_RESTORE_JS) > next(
+                i for i, s in enumerate(sent)
+                if 'document.body.style.margin' in s)
+
     def test_viewport_cdp_failure_flag(self, tmp_path, monkeypatch):
         created = patch_selenium_session(monkeypatch, emulation_raises=True)
         with vs_module.WebDriverExportSession(
