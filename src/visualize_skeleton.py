@@ -6717,6 +6717,75 @@ class VisualizeSkeleton:
         """Decimate a FAFB mesh with the shared accelerated fine path."""
         return simplify_mesh_fine(trimesh_obj, target_faces)
 
+    def _add_static_mesh_legend_swatches(self, fig):
+        """Give the context envelopes a swatch a static export can show.
+
+        A trace's legend symbol is drawn with the trace's own opacity, and the
+        frozen-view envelopes are drawn at 0.04 -- the half a page embeds but
+        does not show at 0 -- so ``exported_views/*.png`` shipped a
+        white-on-white ``BANC (brain)`` row and an invisible ``BANC (VNC)``
+        one. Hand each envelope's legend entry to a coordinate-less scatter3d
+        carrying the same name, legendgroup and legendrank in the mesh's
+        opaque color, which is what the neuron and synapse legends already do.
+
+        Static exports only, and transiently: the interactive page writes its
+        own legend through the tree panel and must keep the real traces, so
+        every caller pairs this with
+        ``_remove_static_mesh_legend_swatches`` once the bytes are written.
+
+        Returns the undo token, or None when the figure holds no envelope
+        this can help.
+        """
+        data = list(fig.data)
+        carriers = []
+        silenced = []
+        for index, trace in enumerate(data):
+            rank = _trace_field(trace, 'legendrank')
+            if not isinstance(rank, (int, float)) or isinstance(rank, bool):
+                continue
+            if rank < BRAIN_MESH_LEGEND_RANK:
+                continue
+            if not _trace_field(trace, 'showlegend'):
+                continue
+            color = _trace_field(trace, 'color')
+            name = _trace_field(trace, 'name')
+            if not isinstance(color, str) or not name:
+                # No single display color or label to promise the row; leave
+                # that envelope's legend entry as plotly draws it today.
+                continue
+            carrier = go.Scatter3d(
+                x=[None], y=[None], z=[None],
+                mode='markers',
+                marker=dict(size=10, color=self._get_opaque_color(color),
+                            opacity=1.0),
+                name=name,
+                legendgroup=_trace_field(trace, 'legendgroup') or '',
+                showlegend=True,
+                hoverinfo='skip',
+            )
+            carrier.legendrank = rank
+            carriers.append(carrier)
+            silenced.append((index, _trace_field(trace, 'showlegend')))
+        if not carriers:
+            return None
+        for index, _ in silenced:
+            fig.data[index].showlegend = False
+        fig.add_traces(carriers)
+        return {'count': len(data), 'silenced': silenced}
+
+    @staticmethod
+    def _remove_static_mesh_legend_swatches(fig, token):
+        """Undo :meth:`_add_static_mesh_legend_swatches` on the same figure.
+
+        Truncating ``fig.data`` keeps the trace objects it holds, so the
+        silenced envelopes below the cut are still the ones to restore.
+        """
+        if not token:
+            return
+        fig.data = tuple(fig.data[:token['count']])
+        for index, showlegend in token['silenced']:
+            fig.data[index].showlegend = showlegend
+
     def _export_png_with_timeout(self, fig, output_path, width=1200, height=900, scale=3, timeout=120,
                                    auto_crop=False, crop_margin=30):
         """
@@ -6762,9 +6831,14 @@ class VisualizeSkeleton:
         except (AttributeError, ValueError):
             has_alarm_support = False
         
+        mesh_swatches = None
         try:
             if has_alarm_support:
                 signal.alarm(actual_timeout)
+
+            # Envelope rows need their opaque swatch carriers only for the
+            # render; see _add_static_mesh_legend_swatches.
+            mesh_swatches = self._add_static_mesh_legend_swatches(fig)
 
             fig.write_image(output_path, width=width, height=height, scale=scale, validate=False)
 
@@ -6803,6 +6877,7 @@ class VisualizeSkeleton:
         except Exception as e:
             return (False, str(e), scale)
         finally:
+            self._remove_static_mesh_legend_swatches(fig, mesh_swatches)
             if has_alarm_support:
                 try:
                     signal.alarm(0)
@@ -6840,13 +6915,20 @@ class VisualizeSkeleton:
         
         # Save figure to temporary HTML
         temp_html = os.path.join(output_folder, "_temp_export.html")
-        self._write_plotly_html(
-            export_fig,
-            temp_html, 
-            auto_open=False, 
-            include_plotlyjs=True,
-            config={'displayModeBar': False}
-        )
+        # The opaque envelope swatch carriers belong to this render only: the
+        # page is written from the figure, then the figure goes back to its
+        # interactive shape. See _add_static_mesh_legend_swatches.
+        mesh_swatches = self._add_static_mesh_legend_swatches(export_fig)
+        try:
+            self._write_plotly_html(
+                export_fig,
+                temp_html,
+                auto_open=False,
+                include_plotlyjs=True,
+                config={'displayModeBar': False}
+            )
+        finally:
+            self._remove_static_mesh_legend_swatches(export_fig, mesh_swatches)
         
         try:
             self._vprint(f'     Using WebDriver session for {len(views_to_export)} views...')

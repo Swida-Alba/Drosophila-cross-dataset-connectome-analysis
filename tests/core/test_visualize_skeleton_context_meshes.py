@@ -616,3 +616,190 @@ class TestParametersTxtRecordsTheHiddenHalf:
         vis._note_hidden_context_meshes()
         assert any('hidden context meshes' in c
                    for c in vis._vprint_calls)
+
+
+def static_export_figure():
+    """A scene as ``save_figure`` leaves it: a skeleton plus both context
+    envelopes, each pinned last with its frozen-view opacity."""
+    return figure(
+        scatter([0, 1], [0, 1], [0, 1], name='l-LNv', showlegend=True),
+        mesh([0, 1, 0], [0, 0, 1], [0, 0, 0], color='#c8e6f0', opacity=0.04,
+             name='BANC (brain)', showlegend=True,
+             legendrank=BRAIN_MESH_LEGEND_RANK),
+        mesh([0, 1, 0], [0, 0, 1], [0, 0, 0], color='#9fd3c0', opacity=0.0,
+             name='BANC (VNC)', showlegend=True,
+             legendrank=VNC_MESH_LEGEND_RANK),
+    )
+
+
+def write_placeholder_png(path):
+    """A noise PNG big enough to clear the blank-image size gate."""
+    import os
+    from PIL import Image
+    Image.frombytes('RGB', (120, 120), os.urandom(120 * 120 * 3)).save(
+        str(path), 'PNG')
+
+
+class TestStaticMeshLegendSwatches:
+    """A static export has to show the envelope rows it names.
+
+    A plotly legend symbol inherits the trace's opacity, so the envelopes a
+    frozen page draws at 0.04 (and the half it draws at 0) reached
+    ``exported_views/*.png`` as a white-on-white square and a missing square.
+    The render therefore swaps each envelope's legend entry for an opaque
+    carrier; the interactive page keeps the real traces and its own swatch
+    pipeline, so the swap has to be undone on the same figure.
+    """
+
+    def test_envelopes_hand_their_rows_to_opaque_carriers(self):
+        vis = make_vis()
+        fig = static_export_figure()
+        token = vis._add_static_mesh_legend_swatches(fig)
+
+        assert token['count'] == 3
+        carriers = list(fig.data[3:])
+        assert [t.name for t in carriers] == ['BANC (brain)', 'BANC (VNC)']
+        assert [t.legendrank for t in carriers] == [BRAIN_MESH_LEGEND_RANK,
+                                                    VNC_MESH_LEGEND_RANK]
+        assert [t.legendgroup for t in carriers] == ['', '']
+        # no coordinates: the carrier holds a legend row, not geometry
+        assert [list(t.x) for t in carriers] == [[None], [None]]
+        assert [t.marker.color for t in carriers] == [
+            'rgba(200, 230, 240, 1.0)', 'rgba(159, 211, 192, 1.0)']
+        assert [t.marker.opacity for t in carriers] == [1.0, 1.0]
+        assert [t.showlegend for t in carriers] == [True, True]
+        assert [fig.data[i].showlegend for i in (1, 2)] == [False, False]
+        assert fig.data[0].showlegend is True
+
+    def test_undo_leaves_the_figure_exactly_as_found(self):
+        vis = make_vis()
+        fig = static_export_figure()
+        before = [t.to_plotly_json() for t in fig.data]
+        identities = [id(t) for t in fig.data]
+        token = vis._add_static_mesh_legend_swatches(fig)
+        vis._remove_static_mesh_legend_swatches(fig, token)
+
+        assert [t.to_plotly_json() for t in fig.data] == before
+        # truncated, not rebuilt: the caller's trace objects survive
+        assert [id(t) for t in fig.data] == identities
+
+    def test_the_render_sees_carriers_and_the_caller_keeps_its_figure(
+            self, tmp_path, monkeypatch):
+        vis = make_vis()
+        fig = static_export_figure()
+        captured = []
+
+        def fake_write_image(self, file=None, **kwargs):
+            captured.append([t.to_plotly_json() for t in self.data])
+            write_placeholder_png(file)
+
+        monkeypatch.setattr(go.Figure, 'write_image', fake_write_image)
+        ok, _msg, _scale = vis._export_png_with_timeout(
+            fig, str(tmp_path / 'front.png'))
+
+        assert ok is True
+        rendered = captured[0]
+        legend_rows = [t['name'] for t in rendered if t.get('showlegend')]
+        # one row per name, and the one that renders is the opaque carrier
+        assert legend_rows == ['l-LNv', 'BANC (brain)', 'BANC (VNC)']
+        by_name = {}
+        for trace in rendered:
+            if trace.get('showlegend'):
+                by_name[trace['name']] = trace
+        assert by_name['BANC (VNC)']['mode'] == 'markers'
+        assert by_name['BANC (VNC)']['marker']['color'] == (
+            'rgba(159, 211, 192, 1.0)')
+        assert len(fig.data) == 3
+        assert [t.showlegend for t in fig.data] == [True, True, True]
+
+    def test_a_failed_render_still_returns_the_figure(self, tmp_path,
+                                                      monkeypatch):
+        vis = make_vis()
+        fig = static_export_figure()
+
+        def exploding_write_image(self, file=None, **kwargs):
+            raise RuntimeError('kaleido exploded')
+
+        monkeypatch.setattr(go.Figure, 'write_image', exploding_write_image)
+        ok, msg, _scale = vis._export_png_with_timeout(
+            fig, str(tmp_path / 'front.png'))
+
+        assert ok is False
+        assert 'exploded' in msg
+        assert len(fig.data) == 3
+        assert [t.showlegend for t in fig.data] == [True, True, True]
+
+    def test_only_the_context_envelopes_are_rewritten(self):
+        """An ROI mesh, and an envelope with no single display color, keep
+        the legend entry plotly gives them today."""
+        vis = make_vis()
+        fig = figure(
+            mesh([0, 1, 0], [0, 0, 1], [0, 0, 0], color='#c8e6f0',
+                 opacity=0.3, name='AL(R)', showlegend=True,
+                 legendrank=ROI_MESH_LEGEND_RANK_BASE),
+            mesh([0, 1, 0], [0, 0, 1], [0, 0, 0], intensity=[0.0, 0.5, 1.0],
+                 opacity=0.04, name='No flat color', showlegend=True,
+                 legendrank=BRAIN_MESH_LEGEND_RANK),
+        )
+
+        assert vis._add_static_mesh_legend_swatches(fig) is None
+        assert len(fig.data) == 2
+        assert [t.showlegend for t in fig.data] == [True, True]
+
+    def test_the_temp_export_page_is_written_with_carriers(self, tmp_path,
+                                                           monkeypatch):
+        """The webdriver view export screenshots a temp page it writes from
+        the figure, so the carriers have to be on the figure at the write and
+        off it afterwards."""
+        import visualize_skeleton as vis_module
+        vis = make_vis(saveas='l-LNv', export_scale=2,
+                       background_color='white')
+        fig = static_export_figure()
+        pages = []
+
+        def capture_page(figure, path, **kwargs):
+            pages.append(([t.to_plotly_json() for t in figure.data], path))
+
+        monkeypatch.setattr(vis, '_write_plotly_html', capture_page)
+
+        class _Session:
+            def __init__(self, **kwargs):
+                self._render_wait = 0.0
+                self.shots = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def load_html(self, path, wait_for_render=False,
+                          render_wait=0, background_color=None):
+                self.loaded = path
+
+            def set_camera(self, **kwargs):
+                pass
+
+            def screenshot(self, path):
+                self.shots.append(path)
+                write_placeholder_png(path)
+
+        sessions = []
+
+        class _Factory(_Session):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                sessions.append(self)
+
+        monkeypatch.setattr(vis_module, 'WebDriverExportSession', _Factory)
+        exported = vis._export_views_with_webdriver_session(
+            fig, ['front'], {'front': {'eye': {'x': 1, 'y': 1, 'z': 1}}},
+            str(tmp_path))
+
+        assert exported == ['front']
+        rows = [t['name'] for t in pages[0][0] if t.get('showlegend')]
+        assert rows == ['l-LNv', 'BANC (brain)', 'BANC (VNC)']
+        # the screenshots come from that page, written before the session ran
+        assert sessions[0].loaded == pages[0][1]
+        assert len(fig.data) == 3
+        assert [t.showlegend for t in fig.data] == [True, True, True]
