@@ -207,7 +207,7 @@ extend-exclude = '''
   # the article's codebase is a separate repository with its own tooling; it is
   # excluded from DROCAT's .gitignore by .git/info/exclude only, so black would
   # otherwise reformat it from the app root
-  | _clock_production
+  | clock-production
 )/
 '''
 
