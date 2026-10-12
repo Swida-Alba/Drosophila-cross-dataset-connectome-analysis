@@ -6027,7 +6027,9 @@ class TestWebDriverExportSessionLifecycle:
         at all: its panel early-returns on ``navigator.webdriver`` and its
         stylesheet has hidden the native one. Which page needs the restore is
         the page's decision, so the script carries that guard and every load
-        sends it once, before any layout gets measured."""
+        sends it once, before any layout gets measured. Renders that ask plotly
+        for no legend (the profile exporters set ``showlegend: False``) are
+        unaffected by it either way."""
         created = patch_selenium_session(monkeypatch)
         html = make_plotly_html(tmp_path / 'plot.html')
         with vs_module.WebDriverExportSession(

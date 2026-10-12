@@ -1197,18 +1197,23 @@ def _timeout_handler(signum, frame):
 
 # A legend-mode-tree page hides the native plotly legend by stylesheet because
 # its own panel replaces it, and that panel early-returns under WebDriver
-# (``navigator.webdriver`` is true there), so a screenshot taken from a saved
-# tree page would carry no legend at all. A headless render therefore puts the
-# native legend back. Pages without the panel hide nothing, so this leaves
-# them untouched.
+# (``navigator.webdriver`` is true there). Any WebDriver render of such a page
+# therefore screenshots without a legend: today that is the view export's
+# ``_simplified.html`` reuse fallback, which loads a saved page rather than a
+# freshly written temp one. Pages without the panel hide nothing, so this
+# leaves them untouched, and a render that asks plotly for no legend (the
+# profile exporters set ``showlegend: False`` in the layout) is unaffected --
+# the stylesheet is not what hides those. The hiding rule lives in the body, so
+# the override is html/body-prefixed to beat it on specificity and appended to
+# the body to win on document order as well; either alone is a coin flip.
 REEXPORT_LEGEND_RESTORE_JS = """
 if (!document.getElementById('drocat-legend-tree')
     || document.getElementById('drocat-reexport-legend')) { return; }
 var st = document.createElement('style');
 st.id = 'drocat-reexport-legend';
-st.textContent = '.js-plotly-plot .legend{display:block !important;}'
-  + '#drocat-legend-tree{display:none !important;}';
-document.head.appendChild(st);
+st.textContent = 'html body .js-plotly-plot .legend{display:block !important;}'
+  + 'html body #drocat-legend-tree{display:none !important;}';
+(document.body || document.head || document.documentElement).appendChild(st);
 """
 
 
@@ -6219,12 +6224,17 @@ class VisualizeSkeleton:
   }
   function showLegendFallback() {
     if (fallbackStyleEl()) { return; }
-    var host = document.head || document.documentElement;
+    /* html/body-prefixed and appended to the body: the panel's own stylesheet
+       sits in the body and hides the native legend with an !important rule of
+       the same shape, so an equal-specificity override in the head loses
+       whichever way the cascade reads it. Both halves of that guard are
+       needed -- the prefix wins on specificity, the position wins on order. */
+    var host = document.body || document.head || document.documentElement;
     if (!host) { return; }
     var st = document.createElement('style');
     st.id = 'drocat-legend-fallback';
-    st.textContent = '.js-plotly-plot .legend{display:block !important;}'
-      + '#drocat-legend-tree{display:none !important;}';
+    st.textContent = 'html body .js-plotly-plot .legend{display:block !important;}'
+      + 'html body #drocat-legend-tree{display:none !important;}';
     host.appendChild(st);
   }
   function clearLegendFallback() {

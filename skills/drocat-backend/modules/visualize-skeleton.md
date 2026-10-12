@@ -178,7 +178,35 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   fallback). Use `skeleton_mode="line"` and no exports for a first smoke test.
 - `legend_mode="tree"` renders like `"type"` for static exports and adds the
   collapsible group/type/bodyId panel to the permanent HTML pages only; counts
-  are unique neuron items, not Plotly traces.
+  are unique neuron items, not Plotly traces. Those pages hide the native
+  Plotly legend by stylesheet, so the panel *is* their legend: a boot that
+  throws, or a poll that never finds the plotly div, appends
+  `#drocat-legend-fallback` to put the native legend back and logs
+  `[drocat] legend tree failed to boot (<treeScriptVersion>: <reason>)`, and a
+  poll that later succeeds removes it. Row eyes, group greying and the header
+  eye read `isDrawn` -- opacity for a context envelope, `visible` for everything
+  else -- because an envelope a page ships transparent keeps `visible:true` and
+  would otherwise report as drawn. The panel early-returns while
+  `navigator.webdriver` is true, so Selenium/CDP harnesses never see it; that
+  is a guard, not a break. A WebDriver render of a saved tree page therefore
+  gets the native legend back from `REEXPORT_LEGEND_RESTORE_JS`, sent once per
+  `WebDriverExportSession.load_html` -- the consumer is the view export's
+  `_simplified.html` reuse fallback, which screenshots a saved page instead of
+  a freshly written temp one. Profile PNGs are not: `export_individuals_webdriver`
+  sets `showlegend: False` in the layout, so their missing legend is the
+  exporter's choice, and no stylesheet override changes it. Because the hiding
+  rule ships inside the page's *body* stylesheet with `!important`, both
+  overrides prefix `html body` and append to the body; an equal-specificity rule
+  in the head loses the cascade, which is how the first fallback shipped a
+  legend-less page even with its rule in the DOM.
+- Static PNG exports give each context envelope an opaque legend swatch. A
+  Plotly legend symbol inherits its trace's opacity, so the 0.04 and 0
+  envelopes render white-on-white and invisible.
+  `_add_static_mesh_legend_swatches` borrows the neuron and synapse carrier
+  pattern for the render only (both static renderers undo it on the same
+  figure), because the interactive page keeps its own swatch pipeline and the
+  figure is reused by the profile and video exporters, whose trace identities
+  resolve positionally.
 - `brain_mesh`/`vnc_mesh` choose what a page opens *showing*, not what it
   contains, and not the scene's coordinate space either: `_needs_skeleton_transform`
   answers from the dataset's source→render pair, so a `male-cns`/`hemibrain`
@@ -200,8 +228,8 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   `CONTEXT_MESH_EMBEDDED_TARGET_FACES` (20,000 faces; measured halves: native
   VNC 36,670 faces / 0.871 MB of page → 20,001 / 0.471 MB, BANC VNC
   38,200 → 19,999 / 0.481 MB), and absent from `exportable_meshes` so it never
-  reaches the GLB/OBJ. It uses `visible=False`, not `'legendonly'`, because the
-  tree reads legendonly as shown. Only these two datasets have a second half;
+  reaches the GLB/OBJ. It never uses `visible:'legendonly'`, which the tree
+  reads as shown. Only these two datasets have a second half;
   FAFB, hemibrain, optic-lobe and MANC embed nothing extra (verified on a real
   FAFB page: 11 traces, one shown envelope, no hidden half). A cross-template
   scene never falls back to the native split — wrong coordinates.

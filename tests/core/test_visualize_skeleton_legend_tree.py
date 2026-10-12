@@ -9,6 +9,7 @@ collapsible type -> neuron legend panel built client-side.
 from collections import namedtuple
 from pathlib import Path
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -484,7 +485,9 @@ panel.id = 'drocat-legend-tree';
 panel.style.display = 'none';
 var DOCUMENT_ELEMENT = new El('html');
 var HEAD = new El('head');
+var BODY = new El('body');
 DOCUMENT_ELEMENT.appendChild(HEAD);
+DOCUMENT_ELEMENT.appendChild(BODY);
 var PANEL_IN_PAGE = __PANEL__;
 var ROOTS = PANEL_IN_PAGE ? [panel, DOCUMENT_ELEMENT] : [DOCUMENT_ELEMENT];
 var TIMERS = [];
@@ -503,6 +506,7 @@ function flushTimers(limit) {
 }
 var document = {
   head: HEAD,
+  body: BODY,
   documentElement: DOCUMENT_ELEMENT,
   createElement: function (tag) { return new El(tag); },
   getElementById: function (id) {
@@ -731,6 +735,8 @@ class TestTreeBoot:
             'fallback: !!document.getElementById("drocat-legend-fallback"), '
             'fallbackRule: (document.getElementById("drocat-legend-fallback")'
             ' || {textContent: ""}).textContent, '
+            'fallbackInBody: BODY.children.indexOf('
+            'document.getElementById("drocat-legend-fallback")) >= 0, '
             'error: window.__drocatLegendTreeError || null})',
             fig=fig, script=broken)
         assert run.code == 0, (
@@ -740,6 +746,9 @@ class TestTreeBoot:
             'nothing re-enabled the native legend')
         assert '.js-plotly-plot .legend{display:block !important' \
             in run.value['fallbackRule']
+        # the page's own hiding rule ships in the body stylesheet; an override
+        # placed before it in document order simply loses.
+        assert run.value['fallbackInBody'] is True
         assert run.value['error']
         assert any('[drocat]' in line and 'error' in line for line in run.logs)
 
@@ -844,15 +853,22 @@ def _restore_js_function():
 
 _RESTORE_PROBE = (
     '(function(){ drocatRestoreLegend(); drocatRestoreLegend(); return {'
-    'styles: HEAD.children.length, '
+    'styles: BODY.children.length, '
     'rule: (document.getElementById("drocat-reexport-legend")'
     ' || {textContent: ""}).textContent}; })()')
 
 
 class TestReexportLegendRestore:
-    """Issue E: a WebDriver session screenshots a saved tree page whose panel
-    never boots there (``navigator.webdriver`` guards it), so the native
-    legend has to be put back or the PNG comes out with no legend at all."""
+    """Issue E: a WebDriver render of a saved tree page shows no legend.
+
+    The panel early-returns on ``navigator.webdriver`` and the page's own
+    stylesheet has hidden the native legend, so a screenshot of it comes out
+    legend-less -- measured on the real session: 581 dark legend-text pixels
+    with the restore, zero without, and every differing pixel inside the
+    legend box. The profile exporters are not such a consumer: they ask plotly
+    for no legend at all (``showlegend: False`` in the layout), which the
+    stylesheet does not override.
+    """
 
     def test_a_tree_page_gets_its_native_legend_back_once(self):
         run = run_tree_js(_RESTORE_PROBE, script=_restore_js_function())
@@ -869,3 +885,58 @@ class TestReexportLegendRestore:
         assert run.code == 0, run.stderr
         assert run.value['styles'] == 0
         assert run.value['rule'] == ''
+
+
+def _specificity(selector):
+    """CSS's (ids, classes/attributes/pseudo-classes, elements) triple."""
+    ids = classes = elements = 0
+    for part in re.split(r'[\s>+~]+', selector.strip()):
+        if not part:
+            continue
+        ids += part.count('#')
+        classes += part.count('.') + part.count('[') + part.count(':')
+        if re.match(r'^[a-zA-Z]', part):
+            elements += 1
+    return (ids, classes, elements)
+
+
+def _block_override_selectors(source):
+    """Selectors in ``source`` that force ``display:block !important``."""
+    return [selector.strip()
+            for selector, declaration
+            in re.findall(r"([^'\"{}\n]+)\{([^}\n]*)\}", source)
+            if 'display:block !important' in declaration]
+
+
+class TestLegendOverrideWinsTheCascade:
+    """An override of the panel's hiding rule has to win on arithmetic.
+
+    The hide ships as ``!important`` inside the *body* stylesheet, so an equal
+    specificity override in the head loses whichever way the cascade is read.
+    That is how the first break-glass fallback failed in a live browser: the
+    rule was in the DOM, the legend stayed hidden, and every node assertion
+    still passed. These tests compare the selectors the page really emits.
+    """
+
+    HIDE_SELECTOR = '.js-plotly-plot .legend'
+
+    def test_the_tree_page_does_hide_the_native_legend(self):
+        html = _make_visualizer()._legend_tree_html()
+        assert self.HIDE_SELECTOR + '{display:none !important;}' in html
+        # ... and that stylesheet is in the body, after the head.
+        assert html.index('<style>') > 0
+
+    def test_every_legend_reveal_beats_the_rule_it_has_to_override(self):
+        sources = {
+            'boot fallback': _make_visualizer()._legend_tree_html(),
+            're-export restore': visualize_skeleton.REEXPORT_LEGEND_RESTORE_JS,
+        }
+        for label, source in sources.items():
+            overrides = _block_override_selectors(source)
+            assert overrides, 'no display:block override in ' + label
+            for selector in overrides:
+                assert self.HIDE_SELECTOR in selector, selector
+                assert _specificity(selector) > _specificity(
+                    self.HIDE_SELECTOR), (
+                    '%s: %r only ties %r, so the body stylesheet wins'
+                    % (label, selector, self.HIDE_SELECTOR))
