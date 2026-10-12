@@ -521,6 +521,31 @@ def _mesh_name_hit(trace_name, roi_names=()):
     return False
 
 
+def _canonical_body_id(value):
+    """``'12254.0'`` -> ``'12254'``: the text form of an integral bodyId.
+
+    Connector tables and CSV round-trips hand back float-dtype ids, while a
+    neuron's identity is the leading digits of its ``{bodyId}_{type}`` leaf
+    label. Both sides of the profile plan have to agree on one spelling or a
+    neuron's sites silently stop following it, so the conversion stays on text
+    and never goes through a float: FlyWire ids exceed float integer precision
+    and must retain their original decimal digits -- the same rule
+    ``_normalize_neuron_lookup_keys`` states for lookup keys.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.fullmatch(r'([+-]?\d+)(?:\.0+)?', text)
+    if not match:
+        return text
+    try:
+        return str(int(match.group(1)))
+    except ValueError:
+        return text
+
+
 def _identity_from_meta(trace):
     """Legend identity stamped by the renderer (``drocatTrace`` wins).
 
@@ -20836,10 +20861,14 @@ class VisualizeSkeleton:
                 continue
             entries.setdefault(key, []).append(role.index)
             if role.body_id is not None:
-                key_by_body.setdefault(str(role.body_id), key)
+                key_by_body.setdefault(_canonical_body_id(role.body_id), key)
 
         for site in sites:
-            key = key_by_body.get(str(site.owner_body_id)) \
+            # Both sides go through _canonical_body_id: a connector frame that
+            # arrived as float dtype spells the same neuron '12254.0', and an
+            # unmatchable key silently drops that neuron's sites into the
+            # background of every bodyId-level profile.
+            key = key_by_body.get(_canonical_body_id(site.owner_body_id)) \
                 if site.owner_body_id is not None else None
             if key is None:
                 for candidate in (site.owner, site.type, site.group, site.label):

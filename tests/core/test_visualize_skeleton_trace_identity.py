@@ -20,6 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from visualize_skeleton import (  # noqa: E402
     PROFILE_GRANULARITIES,
     VisualizeSkeleton,
+    _canonical_body_id,
     classify_traces,
 )
 
@@ -243,6 +244,36 @@ class TestGranularityPlans:
             classify_traces(traces), 'body')
         assert background == [1]
         assert all(1 not in v for v in entries.values())
+
+    def test_a_float_dtype_owner_id_still_finds_its_neuron(self):
+        """Measured on the only real pre_post page in the data cache: at ``body``
+        granularity 0 of 8 site traces followed their owner, because the
+        connector frame spells the neuron ``'12254.0'`` while the leaf label
+        yields ``'12254'``. Every coarser granularity kept all 8 through the
+        label fallback, so nothing else reported it.
+        """
+        vis = make_vis()
+        traces = [neuron_trace('KC1a', body_id='256', item='256_a'),
+                  site_trace('KC1a', owner_body_id='256.0')]
+        entries, background, _ = vis._build_profile_plan(
+            classify_traces(traces), 'body')
+        assert background == []
+        assert list(entries.values()) == [[0, 1]]
+
+    def test_the_canonicaliser_never_rounds_a_long_id(self):
+        """FlyWire ids exceed float precision, so the conversion stays on text.
+
+        ``str(int(float(...)))`` is the tempting one-liner and it silently
+        renames the neuron: 1234567890123456789 becomes ...768.
+        """
+        big = '1234567890123456789'
+        assert _canonical_body_id(big + '.0') == big
+        assert str(int(float(big))) != big  # the trap this avoids
+        assert _canonical_body_id(256) == '256'
+        assert _canonical_body_id('256.00') == '256'
+        assert _canonical_body_id('aMe4') == 'aMe4'
+        assert _canonical_body_id(None) is None
+        assert _canonical_body_id('') is None
 
 
 def test_neuron_leaf_without_stamped_body_id_reads_it_off_the_item():
