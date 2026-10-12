@@ -4493,14 +4493,16 @@ class VisualizeSkeleton:
         reset gesture (the modebar's "reset camera to last save", the only
         reset a 3D scene keeps) restores the layout snapshot taken before this
         script ran and silently drops that pin, so any relayout or restyle
-        that drifted away from the freeze re-applies it; camera-only
-        changes never drift, so orbiting and zooming stay untouched. The one
+        that drifted away from the box **in force** re-applies it -- the baked
+        pin while frozen, the recomputed fit box while not; camera-only changes
+        never drift, so orbiting and zooming stay untouched. The one
         camera write the script does answer is a view preset or the modebar's
         reset handing the pivot back to the box default: a preset click and
         the reset both land the camera on a known frontal orientation (the
         reset restores the page's opening camera), and that pivot is re-aimed
         on the currently visible traces -- the same rule the page opens with
-        under ``hidden_half``. Ordinary orbit drags end on an eye no preset
+        under ``hidden_half``, and the preset's own radius is what re-anchors
+        the ⌖ dolly. Ordinary orbit drags end on an eye no preset
         owns, so they are never "corrected".
 
         Holding the box is only half of "the framing does not move", because
@@ -4533,29 +4535,52 @@ class VisualizeSkeleton:
         pivoted on the half it shows rather than on the middle of the gap
         between the two.
 
-        A frozen box also fixes the rotation pivot at the centre of the whole
-        scene, which is where the second control comes in: its button (also the
-        'C' key) moves ``scene.camera.center`` onto the midpoint of the
-        currently visible traces, so hiding a long mesh lets you orbit the
-        brain instead of the empty space it left behind. That offset is
-        normalized against the *pinned* box, so handing the framing back to
-        Fit clears it -- an autoscaled box is already centred on the visible
-        traces, and carrying the old number over would leave the anatomy
-        hanging off the pivot. Re-freezing restores it while the visible
-        traces are still the ones it was computed from; after a reveal or a
-        hide it is recomputed on what is visible now. A pan always wins --
-        its moved centre is left exactly where the user left it.
-        That same control is what the page opens on whenever ``hidden_half``
+        Two controls sit on that split and they are independent. **Freeze/Fit owns
+        the box**: frozen it is the baked union of every trace, so no toggle can
+        move it; unfrozen it is recomputed from the *drawn* traces on every toggle
+        with the same 1/32 padding the writer used, the per-trace extents cached
+        so a toggle never re-scans the page. Fit cannot simply hand the
+        axes back to Plotly's autorange, because Plotly counts a trace that draws
+        nothing -- the embedded context halves ship visible with opacity 0 -- and
+        measured on a male-cns-shaped page that left the "Fit" box at 191.2 where
+        the drawn half wanted ~40. **Recenter owns the camera**: in either state it
+        moves ``scene.camera.center`` onto the midpoint of the drawn content and
+        pulls ``scene.camera.eye`` to the radius at which that content fills the
+        frame, so it re-aims and re-frames while writing no range at all. The
+        pivot's denominator is the box the scene is *using* rather than the baked
+        one, which is what lets one computation serve both states.
+
+        Two measured rules keep that honest. The dolly scales the radius that
+        frames the whole box at the **current orientation** -- Front sits at 1.25
+        where the default diagonal camera sits at 2.1651, a cube's face against
+        its corner -- so that anchor is captured at boot and refreshed when a view
+        preset lands, and ⌖'s own write never updates it: a second press
+        reproduces the first instead of compounding the zoom. And eye and centre
+        travel together, because writing the centre alone changes the radius with
+        the pivot (measured 2.1651 -> 2.4286, an unintended 12% zoom-out on every
+        press). Against a page whose box *is* the content, ⌖-while-frozen draws
+        the anatomy within ~7% of that fitted framing on three shapes and two
+        orientations, with the pinned ranges byte-identical before and after.
+
+        Freezing therefore re-decides nothing about the camera: the pivot and the
+        zoom the viewer is looking through survive a Freeze, and a pan survives
+        whatever else moves -- ``centerOf()`` applied to the camera the write
+        asked for is how the two are told apart.
+        Leaving freeze does frame, once and immediately: the new fit box plus one
+        fitted camera write, rather than waiting for the next toggle.
+
+        That same recenter math is what the page opens on whenever ``hidden_half``
         says the run embedded an envelope the page does not show. A box is
         built around its content's midpoint, and here the content is the union
         of two halves while only one is drawn, so the default pivot sits in the
         gap between them and a brain-only page opens with the brain pushed to
         the top of the frame. Re-centering once at setup moves the pivot onto
         what is actually visible without touching the box, which is the one
-        framing rule the reveal contract leaves available: the reveal itself
-        still draws without moving anything.
-        A Freeze/Fit button (also the 'F' key) hands the autoscaling back for
-        anyone who wants the framing to follow the visible traces again. Both
+        framing rule the reveal contract leaves available -- and it is the pivot
+        half of the control only, no dolly: the documented opening frame is the
+        whole box.
+        A Freeze/Fit button (also the 'F' key) and a ⌖ button (also 'C') are the
+        two axes above, either usable from the other's state. Both
         carry a hover hint rendered from their own ``data-drocat-tip``
         attribute rather than a native ``title``, because the hint states which
         way the button currently points and a native tooltip costs a second to
@@ -4580,8 +4605,8 @@ class VisualizeSkeleton:
             ' toggles (F)">'
             '</button>'
             '<button id="drocat-recenter" type="button"'
-            ' aria-label="Recenter the orbit on the visible traces"'
-            ' data-drocat-tip="Recenter the rotation on the visible'
+            ' aria-label="Recenter and zoom to the visible traces"'
+            ' data-drocat-tip="Recenter and zoom to the visible'
             ' traces (C)">'
             '</button>'
         )
@@ -4636,7 +4661,18 @@ class VisualizeSkeleton:
   var button = document.getElementById('drocat-freeze-toggle');
   var centerButton = document.getElementById('drocat-recenter');
   var frozen = false;
-  var pinnedCenter = null;
+  // The radius that frames the WHOLE box at the camera's current orientation.
+  // It belongs to the orientation, not the box (measured: Front sits at 1.25
+  // where the default diagonal camera sits at 2.1651 -- a cube's face against
+  // its corner -- on a fitted page and on a nine-times-taller pinned page
+  // alike), so it is captured at boot and refreshed when a view preset lands.
+  // Recenter scales it and never writes it, which is what keeps a second press
+  // from compounding the zoom.
+  var frameRadius = 0;
+  // Per-trace vertex bounds, computed once per trace. The fit box is rebuilt on
+  // every legend toggle, and re-scanning every coordinate array each time would
+  // cost more than the toggle it is answering for.
+  var extentCache = {};
 
   function graphDiv() {
     return document.querySelector('.js-plotly-plot')
@@ -4650,19 +4686,17 @@ class VisualizeSkeleton:
       return true;
     } catch (err) { return false; }
   }
-  function ratio() {
+  function ratioFor(r) {
     // 'data' re-derives the box from the *visible* traces on every restyle, so
     // pinned ranges alone still let one hidden trace rescale the other two
     // axes. 'manual' plus the ratio those ranges imply holds it trace-invariant.
-    var r = CONFIG.ranges;
     var s = {x: Math.abs(r.x[1] - r.x[0]), y: Math.abs(r.y[1] - r.y[0]),
              z: Math.abs(r.z[1] - r.z[0])};
     var m = Math.max(s.x, s.y, s.z) || 1;
     return {x: s.x / m, y: s.y / m, z: s.z / m};
   }
-  function pinUpdate() {
-    var r = CONFIG.ranges;
-    var q = ratio();
+  function boxUpdate(r) {
+    var q = ratioFor(r);
     var updateObj = {
       'scene.xaxis.autorange': false, 'scene.xaxis.range': r.x,
       'scene.yaxis.autorange': false, 'scene.yaxis.range': r.y,
@@ -4673,17 +4707,82 @@ class VisualizeSkeleton:
     };
     return updateObj;
   }
-  function fitUpdate() {
-    // Switching autorange back on is not enough: a 3D axis keeps honouring a
-    // manual range until the range itself is cleared. The pivot has to travel
-    // with them -- camera.center is normalized to the *pinned* box, and fit
-    // mode shrinks the box onto the visible traces, so a leftover offset would
-    // leave the anatomy hanging off the rotation centre instead of at it.
-    return {'scene.xaxis.autorange': true, 'scene.xaxis.range': null,
-            'scene.yaxis.autorange': true, 'scene.yaxis.range': null,
-            'scene.zaxis.autorange': true, 'scene.zaxis.range': null,
-            'scene.aspectmode': 'data', 'scene.aspectratio': null,
-            'scene.camera.center': null};
+  function pinUpdate() {
+    return boxUpdate(CONFIG.ranges);
+  }
+  function fitBox() {
+    // The box Fit would draw, built the same way the writer built the pinned
+    // one: the drawn content's extents, each axis padded by 1/32 of its own
+    // span. Same padding rule in both states, so freezing is the only thing
+    // that can change what the box is made of.
+    var b = visibleBounds();
+    if (!b) { return null; }
+    var box = {};
+    for (var a = 0; a < AXES.length; a++) {
+      var name = AXES[a];
+      var span = b.hi[name] - b.lo[name];
+      var pad = span > 0 ? span / 32.0 : 1.0;
+      box[name] = [b.lo[name] - pad, b.hi[name] + pad];
+    }
+    return box;
+  }
+  function currentBox() {
+    return frozen ? CONFIG.ranges : (fitBox() || CONFIG.ranges);
+  }
+  function fitUpdate(box) {
+    // Fit used to hand the axes back to Plotly's autorange, and that is exactly
+    // the symptom this replaces: Plotly counts a trace that draws nothing, and
+    // the embedded context halves ship visible with opacity 0 so a reveal can
+    // never re-normalise a frozen scene. Measured on a male-cns-shaped page,
+    // Fit then held the box at 191.2 instead of the drawn half's ~40 -- the one
+    // button that promises to follow the content could not see it. So Fit
+    // computes its own box over the DRAWN traces and keeps autorange off, in
+    // both states, by one rule.
+    return boxUpdate(box || currentBox());
+  }
+  function traceExtent(index, trace) {
+    // Cached per trace index. A page's coordinates never change and only its
+    // visibility does, while the fit box is rebuilt on every legend toggle --
+    // without the cache every toggle re-scans every coordinate array on the
+    // page, which costs more than the toggle it is answering for.
+    if (Object.prototype.hasOwnProperty.call(extentCache, index)) {
+      return extentCache[index];
+    }
+    var r = CONFIG.ranges;
+    var lo = {x: Infinity, y: Infinity, z: Infinity};
+    var hi = {x: -Infinity, y: -Infinity, z: -Infinity};
+    var seen = false;
+    for (var a = 0; a < AXES.length; a++) {
+      var name = AXES[a];
+      var values = trace[name];
+      if (!values || !values.length) { continue; }
+      var low = Math.min(r[name][0], r[name][1]);
+      var high = Math.max(r[name][0], r[name][1]);
+      for (var j = 0; j < values.length; j++) {
+        var raw = values[j];
+        // Number(null) is 0, and the gd.data fallback keeps the raw
+        // [null] coordinates of legend swatches.
+        if (raw === null || raw === undefined || raw === '') { continue; }
+        var v = Number(raw);
+        // Outside the pinned box is a placeholder the renderer never meant
+        // to draw -- some traces carry one point at the dataset origin, and
+        // letting it in would drag the pivot toward that corner.
+        if (!isFinite(v) || v < low || v > high) { continue; }
+        seen = true;
+        if (v < lo[name]) { lo[name] = v; }
+        if (v > hi[name]) { hi[name] = v; }
+      }
+    }
+    extentCache[index] = seen ? {lo: lo, hi: hi} : null;
+    return extentCache[index];
+  }
+  function isDrawn(trace) {
+    // "Drawn" = visible and not fully transparent: the embedded context halves
+    // ship visible with opacity 0, so both the fit box and the pivot read the
+    // anatomy that is actually on screen.
+    return !!trace && trace.visible !== false
+        && trace.visible !== 'legendonly'
+        && Number(trace.opacity) !== 0;
   }
   function visibleBounds() {
     var gd = graphDiv();
@@ -4691,100 +4790,174 @@ class VisualizeSkeleton:
     // .length; the resolved _fullData is where the coordinates live, as typed
     // arrays whose nulls have become NaN.
     var traces = (gd && (gd._fullData || gd.data)) || [];
-    var r = CONFIG.ranges;
     var lo = {x: Infinity, y: Infinity, z: Infinity};
     var hi = {x: -Infinity, y: -Infinity, z: -Infinity};
     var seen = false;
     for (var i = 0; i < traces.length; i++) {
-      var trace = traces[i];
-      // "Drawn" = visible and not fully transparent: the embedded context
-      // halves ship visible with opacity 0, and the pivot reads the anatomy
-      // that is actually on screen.
-      if (!trace || trace.visible === false
-          || trace.visible === 'legendonly'
-          || Number(trace.opacity) === 0) { continue; }
+      if (!isDrawn(traces[i])) { continue; }
+      var extent = traceExtent(i, traces[i]);
+      if (!extent) { continue; }
       for (var a = 0; a < AXES.length; a++) {
         var name = AXES[a];
-        var values = trace[name];
-        if (!values || !values.length) { continue; }
-        var low = Math.min(r[name][0], r[name][1]);
-        var high = Math.max(r[name][0], r[name][1]);
-        for (var j = 0; j < values.length; j++) {
-          var raw = values[j];
-          // Number(null) is 0, and the gd.data fallback keeps the raw
-          // [null] coordinates of legend swatches.
-          if (raw === null || raw === undefined || raw === '') { continue; }
-          var v = Number(raw);
-          // Outside the pinned box is a placeholder the renderer never meant
-          // to draw -- some traces carry one point at the dataset origin, and
-          // letting it in would drag the pivot toward that corner.
-          if (!isFinite(v) || v < low || v > high) { continue; }
-          seen = true;
-          if (v < lo[name]) { lo[name] = v; }
-          if (v > hi[name]) { hi[name] = v; }
-        }
+        if (extent.lo[name] < lo[name]) { lo[name] = extent.lo[name]; }
+        if (extent.hi[name] > hi[name]) { hi[name] = extent.hi[name]; }
       }
+      seen = true;
     }
     return seen ? {lo: lo, hi: hi} : null;
   }
-  function centerUpdate() {
-    // A frozen box keeps its rotation pivot at the centre of the whole scene,
-    // so hiding the ventral nerve cord leaves the brain orbiting around empty
-    // space. camera.center is in normalized scene units -- 0 at the middle of
-    // the pinned range, +/-0.5 at its ends -- so the visible content's
-    // midpoint converts straight into a pivot, without touching the box.
+  function sceneBox() {
+    // The box the scene is USING. camera.center is normalized to that box, so
+    // reading it off the scene is what makes one pivot computation valid in
+    // both states -- and in fit mode it is the same pair of numbers, because
+    // fit's box is this script's own write.
+    var gd = graphDiv();
+    var scene = gd && gd._fullLayout && gd._fullLayout.scene;
+    var r = {};
+    for (var a = 0; a < AXES.length; a++) {
+      var name = AXES[a];
+      var axis = scene && scene[name + 'axis'];
+      var range = axis && (axis._range || axis.range);
+      r[name] = (range && range.length === 2 && isFinite(range[0])
+                 && isFinite(range[1])) ? range : CONFIG.ranges[name];
+    }
+    return r;
+  }
+  function pivotAndSpans(box) {
+    // A frozen box keeps its rotation pivot at the centre of the whole scene, so
+    // hiding the ventral nerve cord leaves the brain orbiting around empty space.
+    // camera.center is in normalized scene units -- 0 at the middle of the box,
+    // +/-0.5 at its ends -- so the drawn content's midpoint converts straight
+    // into a pivot without touching the box, and the same pair of numbers is
+    // what makes one computation serve both freeze states. Also returns the
+    // dimensionless span ratio the ⌖ dolly scales the camera radius by.
     var bounds = visibleBounds();
     if (!bounds) { return null; }
-    var r = CONFIG.ranges;
-    var updateObj = {};
+    var r = box || sceneBox();
+    var centre = {}, drawnMax = 0, boxMax = 0;
     for (var a = 0; a < AXES.length; a++) {
       var name = AXES[a];
       var span = Math.abs(r[name][1] - r[name][0]) || 1;
       var mid = (bounds.lo[name] + bounds.hi[name]) / 2;
       var offset = (mid - (r[name][0] + r[name][1]) / 2) / span;
-      updateObj['scene.camera.center.' + name] =
-          Math.max(-0.5, Math.min(0.5, offset));
+      centre[name] = Math.max(-0.5, Math.min(0.5, offset));
+      drawnMax = Math.max(drawnMax, bounds.hi[name] - bounds.lo[name]);
+      boxMax = Math.max(boxMax, span);
     }
-    return updateObj;
+    return {centre: centre, ratio: boxMax ? drawnMax / boxMax : 1};
   }
-  function recenter() {
-    // Fit mode already re-fits the box to the visible traces, so its pivot is
-    // already right and the pinned ranges this math reads are stale.
-    if (!frozen) { return; }
-    var updateObj = centerUpdate();
-    if (!updateObj) { return; }
-    // Always issued, even when the visible midpoint IS the box centre and the
-    // values read ~0: a dotted centre write is also what syncs plotly's
-    // internal orbit camera, and skipping it lets the next view click re-sync
-    // the layout back from the stale internal pivot. The write's own echo
-    // carries dotted keys, so the view-reset hook never reads it as a reset.
-    if (!update(updateObj)) { return; }
-    // Remember the pivot the user asked for: fitUpdate() clears the centre on
-    // the way out, and without this a Fit/Freeze round trip would silently
-    // discard it.
-    pinnedCenter = {};
+  function radiusOf(cam) {
+    if (!cam || !cam.eye || !cam.center) { return 0; }
+    var sum = 0;
     for (var a = 0; a < AXES.length; a++) {
-      pinnedCenter[AXES[a]] = updateObj['scene.camera.center.' + AXES[a]];
+      var d = (Number(cam.eye[AXES[a]]) || 0)
+            - (Number(cam.center[AXES[a]]) || 0);
+      sum += d * d;
     }
+    return Math.sqrt(sum);
   }
-  function centerIsDefault() {
+  function cameraParts() {
+    // The shadow below keeps layout and _fullLayout on the live camera, so this
+    // holder is a safe read of where the eye sits relative to the pivot.
     var gd = graphDiv();
     var scene = gd && gd._fullLayout && gd._fullLayout.scene;
-    var c = (scene && scene.camera && scene.camera.center) || {};
+    var cam = scene && scene.camera;
+    var radius = cam ? radiusOf(cam) : 0;
+    if (!radius) { return null; }
+    var dir = {};
+    for (var a = 0; a < AXES.length; a++) {
+      var name = AXES[a];
+      dir[name] = ((Number(cam.eye[name]) || 0)
+                   - (Number(cam.center[name]) || 0)) / radius;
+    }
+    return {dir: dir, radius: radius};
+  }
+  function recenter(dolly, box) {
+    // ⌖ owns the camera and writes no range, so nothing about the box -- frozen
+    // or fitted -- is a precondition for it. It is the same computation in both
+    // states because the pivot's denominator is the box in use, not the baked
+    // one.
+    var pivot = pivotAndSpans(box);
+    var cam = cameraParts();
+    if (!pivot || !cam) { return; }
+    // dolly pulls the eye in until the drawn content spans the frame the way a
+    // fitted page draws it, measured as the ratio of the largest data spans:
+    // within ~7% of a fitted page's ink box on three shapes and two
+    // orientations, and always the same answer twice in a row, because the
+    // anchor is frameRadius and not the radius in hand.
+    // Without dolly the radius is held exactly, because eye and centre travel
+    // together. Writing the centre alone used to change the radius with the
+    // pivot -- measured 2.1651 -> 2.4286, a 12% zoom-out on every press.
+    var want = dolly ? (frameRadius || cam.radius) * pivot.ratio : cam.radius;
+    var updateObj = {};
+    for (var a = 0; a < AXES.length; a++) {
+      var name = AXES[a];
+      updateObj['scene.camera.center.' + name] = pivot.centre[name];
+      updateObj['scene.camera.eye.' + name]
+          = pivot.centre[name] + want * cam.dir[name];
+    }
+    // Always issued, even when the visible midpoint IS the box centre and the
+    // values read ~0: a dotted write is also what syncs plotly's internal orbit
+    // camera, and skipping it lets the next view click re-sync the layout back
+    // from the stale internal pivot. The write's own echo carries dotted keys,
+    // so the view-reset hook never reads it as a reset.
+    update(updateObj);
+  }
+  function centerOf(cam) {
+    // True when a camera still looks at the middle of the box. Plotly's own pan
+    // writes camera.center, and a pivot the viewer moved beats one we would
+    // recompute -- that is what makes a pan win over a later reset.
+    var c = (cam && cam.center) || {};
     for (var a = 0; a < AXES.length; a++) {
       if (Math.abs(Number(c[AXES[a]]) || 0) > 1e-6) { return false; }
     }
     return true;
   }
-  function restoreCenter() {
-    // Only while nothing else has moved it: Plotly's own pan writes
-    // camera.center, and a pivot the user dragged beats one we remembered.
-    if (!pinnedCenter || !centerIsDefault()) { return; }
-    var updateObj = {};
-    for (var a = 0; a < AXES.length; a++) {
-      updateObj['scene.camera.center.' + AXES[a]] = pinnedCenter[AXES[a]];
+  function targetCamera(event) {
+    // The camera a relayout ASKED FOR. A preset click arrives as a whole
+    // 'scene.camera' object and the modebar's reset as dotted scene.camera.eye/
+    // up/center keys; both are still easing in the scene when the handler runs,
+    // and the shadow below has just copied that mid-animation value into the
+    // holders -- so judging the holder misses every preset. The event's own
+    // values win, and anything they do not carry is taken from the holder.
+    var gd = graphDiv();
+    var scene = gd && gd._fullLayout && gd._fullLayout.scene;
+    var held = (scene && scene.camera) || {};
+    var cam = {};
+    var merged = {};
+    for (var p = 0; p < CAM_PARTS.length; p++) {
+      var part = CAM_PARTS[p];
+      var base = held[part] || {};
+      cam[part] = {};
+      for (var a = 0; a < AXES.length; a++) {
+        cam[part][AXES[a]] = Number(base[AXES[a]]) || 0;
+      }
+      var fromObject = (event['scene.camera'] || {})[part];
+      var fromDotted = event['scene.camera.' + part];
+      if (fromObject) { merged[part] = fromObject; }
+      if (fromDotted) { merged[part] = fromDotted; }
     }
-    update(updateObj);
+    for (var m = 0; m < CAM_PARTS.length; m++) {
+      var name = CAM_PARTS[m];
+      var src = merged[name];
+      if (!src) { continue; }
+      for (var a2 = 0; a2 < AXES.length; a2++) {
+        var v = src[AXES[a2]];
+        if (v !== null && v !== undefined) {
+          cam[name][AXES[a2]] = Number(v) || 0;
+        }
+      }
+    }
+    for (var p2 = 0; p2 < CAM_PARTS.length; p2++) {
+      for (var a3 = 0; a3 < AXES.length; a3++) {
+        var key = 'scene.camera.' + CAM_PARTS[p2] + '.' + AXES[a3];
+        if (key in event && event[key] !== null
+            && event[key] !== undefined) {
+          cam[CAM_PARTS[p2]][AXES[a3]] = Number(event[key]) || 0;
+        }
+      }
+    }
+    return cam;
   }
   /* plotly's 3D dolly keeps easing the scene camera after the last camera
      relayout it emits, so gd.layout.scene.camera holds a mid-animation value
@@ -4872,7 +5045,7 @@ class VisualizeSkeleton:
     var scene = gd && gd._fullLayout && gd._fullLayout.scene;
     if (!scene) { return false; }
     if (scene.aspectmode !== 'manual') { return true; }
-    var r = CONFIG.ranges;
+    var r = currentBox();
     for (var a = 0; a < AXES.length; a++) {
       var axis = scene[AXES[a] + 'axis'];
       var range = axis && (axis._range || axis.range);
@@ -4901,18 +5074,6 @@ class VisualizeSkeleton:
     }
     return false;
   }
-  function pinnedPivotMatchesCurrent() {
-    // True while the remembered pivot is still the pivot the CURRENT visible
-    // traces want; a reveal or a hide since it was computed makes this false.
-    if (!pinnedCenter) { return false; }
-    var updateObj = centerUpdate();
-    if (!updateObj) { return false; }
-    for (var a = 0; a < AXES.length; a++) {
-      if (Math.abs(updateObj['scene.camera.center.' + AXES[a]]
-                   - pinnedCenter[AXES[a]]) > 1e-6) { return false; }
-    }
-    return true;
-  }
   function decorate() {
     if (button) {
       button.style.display = 'flex';
@@ -4926,25 +5087,31 @@ class VisualizeSkeleton:
     if (centerButton) {
       centerButton.style.display = 'flex';
       centerButton.textContent = '\\u2316';
-      var centerTip = frozen
-        ? 'Recenter the rotation on the visible traces (C)'
-        : 'Freeze the view first: in fit mode the rotation already follows'
-          + ' the visible traces';
+      // One sentence in both states. ⌖ reads and writes the camera only, so it
+      // has no precondition to advertise -- and it now visibly zooms as well as
+      // re-aims, which the hint has to say.
+      var centerTip = 'Recenter and zoom to the visible traces (C)';
       centerButton.setAttribute('data-drocat-tip', centerTip);
       centerButton.setAttribute('aria-label', centerTip);
     }
   }
   function setFrozen(next) {
-    var applied = update(next ? pinUpdate() : fitUpdate());
-    if (!applied) { return; }
-    frozen = next;
-    if (frozen) {
-      // A pivot remembered from earlier only applies while the visible
-      // traces are the ones it was computed from; after a reveal or a hide
-      // it is recomputed on what is visible now. A pan always wins -- its
-      // moved centre skips both branches.
-      if (pinnedPivotMatchesCurrent()) { restoreCenter(); }
-      else { recenter(); }
+    if (!next) {
+      // The viewer just asked the framing to follow the content, so it gets the
+      // frame they asked for right now rather than on the next toggle: one box
+      // write, then one camera write fitted to the same box. The box is handed
+      // to recenter() explicitly instead of being read back off the layout, so
+      // the dolly cannot scale by a box the relayout has not landed yet.
+      var box = fitBox() || CONFIG.ranges;
+      if (!update(fitUpdate(box))) { return; }
+      frozen = false;
+      recenter(true, box);
+    } else {
+      if (!update(pinUpdate())) { return; }
+      frozen = true;
+      // Freezing owns the box and nothing else. The pivot and the zoom the
+      // viewer is looking through stay exactly where they are; a frozen view is
+      // one that stops moving, not one that re-decides the camera.
     }
     decorate();
   }
@@ -4954,26 +5121,32 @@ class VisualizeSkeleton:
   (function whenPlotly() {
     var gd = graphDiv();
     if (gd && window.Plotly && gd._fullLayout && gd._fullLayout.scene) {
+      // The camera the page is born with is the camera that frames the whole
+      // box at the opening orientation; every later ⌖ dolly is a scale of it.
+      var opening = cameraParts();
+      frameRadius = opening ? opening.radius : 0;
       setFrozen(true);
       if (CONFIG.hiddenHalf) {
         // The box spans a half this page does not draw, so its centre is the
         // middle of the gap between the two and the anatomy sits pinned to one
-        // side of the frame. Same math the ⌖ button runs, so the page opens
-        // where the viewer would have put it -- a pivot, not a box, so the
-        // reveal later still has nowhere to move.
-        recenter();
+        // side of the frame. Same pivot math the ⌖ button runs -- and
+        // deliberately without its dolly, because the documented opening frame
+        // is the whole box: a page that also zoomed onto the drawn half would
+        // be changing the framing the viewer never asked for.
+        recenter(false);
       }
       if (button) {
         button.addEventListener('click', toggle);
       }
       if (centerButton) {
-        centerButton.addEventListener('click', recenter);
+        // Wrapped, so the click's event object never arrives as `dolly`.
+        centerButton.addEventListener('click', function() { recenter(true); });
       }
       document.addEventListener('keydown', function(e){
         var tag = (e.target && e.target.tagName) || '';
         if (/input|textarea|select/i.test(tag)) { return; }
         if (e.key === 'f' || e.key === 'F') { toggle(); }
-        if (e.key === 'c' || e.key === 'C') { recenter(); }
+        if (e.key === 'c' || e.key === 'C') { recenter(true); }
       });
       // Warning banners sit above the plot in normal flow, so a fixed corner
       // widget has to move down with them.
@@ -4997,15 +5170,16 @@ class VisualizeSkeleton:
       // drifted; camera drags never touch these keys, so orbiting is untouched.
       var repinning = false;
       function repaint() {
-        if (!frozen || repinning) { return; }
-        // A lost pin only. There is one box and it never changes, so nothing
-        // that arrives here is a framing decision -- revealing an embedded
-        // envelope is a restyle like any other legend toggle, and the earlier
-        // version of this listener grew the box on it, which is how a frozen
-        // page ended up jumping.
+        if (repinning) { return; }
+        // Whichever box is in force gets re-asserted: frozen, the pin that
+        // Plotly's reset gestures drop; unfrozen, the fit box a legend toggle
+        // just moved. Nothing here touches the camera -- revealing an embedded
+        // envelope is a restyle like any other legend toggle, and a box that
+        // answers it with a camera move is a page that jumps.
         if (!drifted()) { return; }
         repinning = true;
-        try { update(pinUpdate()); } finally { repinning = false; }
+        try { update(frozen ? pinUpdate() : fitUpdate()); }
+        finally { repinning = false; }
       }
       try {
         // Both events, because they can both drop the pin: Plotly's reset
@@ -5036,12 +5210,17 @@ class VisualizeSkeleton:
           // plotly emits the camera while it is still easing, so this is the
           // point where layout and scene are known to disagree.
           startCameraShadow();
-          if (!centerIsDefault()) { return; }
-          var gdNow = graphDiv();
-          var scene = gdNow && gdNow._fullLayout && gdNow._fullLayout.scene;
-          var cam = scene && scene.camera;
-          if (!cam || !cameraMatchesViewPreset(cam)) { return; }
-          recenter();
+          // Judge the write by what it asked for, not by what the scene is
+          // holding mid-animation.
+          var cam = targetCamera(event);
+          if (!centerOf(cam)) { return; }
+          if (!cameraMatchesViewPreset(cam)) { return; }
+          // A preset (and the reset, which lands on the page's opening camera)
+          // is by construction the camera that frames the WHOLE box at this
+          // orientation, so it re-anchors the dolly before the pivot moves.
+          // Recenter's own write is not a preset eye, so this cannot loop.
+          frameRadius = radiusOf(cam);
+          recenter(false);
         });
       } catch (err) { /* older plotly builds expose no such hook */ }
       try {

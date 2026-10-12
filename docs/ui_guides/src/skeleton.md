@@ -159,21 +159,32 @@ The render controls live in a <b>General Appearance</b> card with three expansio
         <i>visible</i> traces and one hidden mesh reshapes the anatomy. A
         🔒/⛶ <b>Freeze/Fit</b> button in
         the page's top-left corner (or the <code>F</code> key) switches the
-        autoscaling back on, and the <b>⌖ Recenter</b> button just below it
-        (or the <code>C</code> key) moves the rotation pivot onto the traces
-        you can currently see — a frozen box keeps its pivot at the centre of
-        the <i>whole</i> scene, so after hiding the VNC outline the brain
-        would otherwise orbit around the empty space it left. Recentering
-        moves only the pivot; the box and its proportions stay pinned. It does
-        nothing in fit mode, where the pivot already follows the visible
-        traces — and pressing <b>Fit clears that pivot</b>, because the offset
-        is normalized against the pinned box and fit mode shrinks the box onto
-        what you can see, so a leftover number would leave the anatomy hanging
-        off the rotation centre. Freezing again restores the pivot you chose
-        while the visible traces are still the ones it was computed from;
-        reveal or hide a row in between and the pivot is recomputed on what
-        is visible now. A page that opens with a context
-        half embedded but hidden <b>runs this control itself at setup</b>, so
+        framing back to following the content, and the <b>⌖ Recenter</b> button
+        just below it (or the <code>C</code> key) puts the traces you can
+        currently see in the middle of the view. The two are
+        <b>independent</b>: each works whatever the other is doing, and neither
+        one is the other's precondition. <b>Freeze/Fit decides the box.</b>
+        Frozen, it is the box above and nothing moves it. Unfrozen, it is
+        rebuilt from what is <i>drawn</i> on every toggle — drawn means visible
+        <b>and</b> not fully transparent, so the context half the page carries
+        invisible does not hold the frame open the way Plotly's own autorange
+        would (measured: 191 units of box for 40 units of anatomy). Leaving
+        freeze re-frames once, immediately, rather than waiting for the next
+        toggle. <b>⌖ decides the camera.</b> It moves the rotation pivot onto
+        the visible traces <i>and</i> pulls the view in until they fill the
+        frame, and it never writes a single axis range — which is exactly why a
+        frozen view can be re-centred without ceasing to be frozen. Press it
+        twice and you get the same view twice: the zoom is a scale of the
+        distance the page opened at for that orientation, not of wherever the
+        last press left the camera. In fit mode the same press is what undoes a
+        manual zoom-out. What a frozen box does cost you is the orbit: it keeps
+        its pivot at the centre of the <i>whole</i> scene, so after hiding the
+        VNC outline the brain would orbit around the empty space it left — that
+        is what ⌖ is for. A pan you made yourself beats any of this
+        recomputation, and freezing again leaves your view exactly as you left
+        it. A page that opens with a context
+        half embedded but hidden <b>runs the pivot half of this control itself at
+        setup</b>, so
         its orbit starts on the anatomy you can see rather than on the middle
         of the gap between the two halves — measured on a male-cns brain-only
         page, a 40° turn slid the brain 212&nbsp;px across the frame before and
@@ -182,7 +193,9 @@ The render controls live in a <b>General Appearance</b> card with three expansio
         two view buttons and the light/dark switch in the other corner —
         carry a <b>hover hint</b> on <b>one row</b> that names the key and
         states the current state ("View is frozen: legend toggles keep the
-        framing (F to fit)"; the switch says which theme the click selects),
+        framing (F to fit)"; ⌖ says "Recenter and zoom to the visible traces
+        (C)" in both states, because it has no state to wait for; the switch
+        says which theme the click selects),
         drawn by the page's own stylesheet rather than a
         native tooltip, which costs a second to appear. The freeze also
         re-applies itself after the page's single
@@ -191,7 +204,8 @@ The render controls live in a <b>General Appearance</b> card with three expansio
         scaling back to the visible traces; the same click also lands the
         camera back on the view the page opened with, so the
         <b>rotation pivot is re-aimed on the visible traces</b> rather than
-        left at the centre of the whole-scene box. The same re-aim answers
+        left at the centre of the whole-scene box, and that preset's own
+        distance becomes the reference for the next ⌖. The same re-aim answers
         every <b>View</b> dropdown entry (Front/Top/…): selecting a view
         keeps the orbit on the anatomy you can see instead of the middle of
         the box. The render <b>scale</b> is locked by construction: the

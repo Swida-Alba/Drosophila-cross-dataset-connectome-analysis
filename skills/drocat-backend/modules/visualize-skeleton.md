@@ -245,23 +245,53 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   tree toggles cannot rescale the scene, and pins `aspectmode='manual'` at the
   ratio those ranges imply — `aspectmode='data'` recomputes the x:y:z box from
   the visible traces on every redraw, so ranges alone let one hidden mesh change
-  the anatomy's shape. A relayout/restyle listener re-applies the pin after the
-  page's
+  the anatomy's shape. A relayout/restyle listener re-applies whichever box is in
+  force after the page's
   reset-camera button or a double-click, which restore the pre-script layout
   snapshot and silently drop it; Plotly's second reset button is removed from
   the toolbar (`VIEWER_MODEBAR_BUTTONS_TO_REMOVE`, keyed by Plotly's
-  button-registry name `resetCameraDefault3d`, not the rendered `data-attr`). A
-  second ⌖ control (and the
-  `C` key) moves `scene.camera.center` onto the visible traces, because a frozen
-  box keeps its pivot at the centre of the whole scene; it is inert in fit mode,
-  and Fit itself clears that center (the offset is normalized to the pinned box)
-  while re-freezing restores it unless the user panned. A page that opens with a
-  context half embedded but hidden runs that same control at setup -- the writer
+  button-registry name `resetCameraDefault3d`, not the rendered `data-attr`).
+  The two top-left controls are independent axes. **Freeze/Fit owns the box**:
+  frozen it is the baked union of every trace; unfrozen it is recomputed from the
+  *drawn* traces (`visible !== false && opacity !== 0`, per-trace extents cached
+  so a toggle does not re-scan the page) and padded span/32 exactly like the
+  writer's own, with `autorange` kept off in both states. Fit cannot hand the
+  axes back to Plotly: autorange counts a trace that draws nothing, and the
+  embedded halves ship visible-but-transparent, so on a male-cns-shaped page
+  autorange held the "Fit" box at 191.2 where the drawn half wanted ~40.
+  **⌖ (and the `C` key) owns the camera**: in either state it moves
+  `scene.camera.center` onto the drawn midpoint and pulls `scene.camera.eye` to
+  `frameRadius * maxSpan(drawn) / maxSpan(box)`, so it re-aims *and* re-frames
+  while writing no range at all. Two measured rules make that safe.
+  `frameRadius` — the radius that frames the whole box — belongs to the
+  *orientation*, not the box (Front sits at 1.25, the default diagonal at
+  2.1651 = 1.25·√3: a cube's face against its corner), so it is captured at boot,
+  refreshed when a write lands on a baked `CONFIG.viewCameras` preset, and never
+  by ⌖'s own write — a second press reproduces the first instead of compounding
+  the zoom. And eye and centre always travel together, because writing the centre
+  alone changes the radius with the pivot (measured 2.1651 → 2.4286, a 12%
+  zoom-out per press). Against a page whose box *is* the content, ⌖-while-frozen
+  draws within ~7% of that framing on three shapes and two orientations with the
+  axis ranges byte-identical, which is why freezing can re-decide nothing about
+  the camera. A pan wins over any recompute: `centerOf()` is applied to the
+  camera the *write asked for*, never the holder — the scene is still easing when
+  the watcher runs and the shadow has just copied that mid-animation value into
+  both holders, so judging the holder missed every preset (measured live: the
+  modebar reset left the pivot at zero). A page that opens with a
+  context half embedded but hidden runs the pivot half of that control at setup -- the writer
   passes `hidden_half` from `_unshown_context_mesh_indices`, and the script reads
   it as `CONFIG.hiddenHalf` -- so the orbit starts on the half it draws instead
   of on the gap between the two: a 40-degree turn slid the brain 212 px across a
-  male-cns frame before, 2 px after. With nothing hidden the flag is false and
-  the pivot is left where Plotly puts it.
+  male-cns frame before, 2 px after. The dolly is deliberately not part of the
+  opening: the documented first frame is the whole box. With nothing hidden the
+  flag is false and
+  the pivot is left where Plotly puts it. Pinned by
+  `tests/core/test_visualize_skeleton_view_controls.py` (`requires_chrome`),
+  which measures every framing number against its *own* fitted reference page —
+  the same content written alone with `freeze_view=True`, so its pinned box is
+  that content and its boot camera is Plotly's own idea of a filled frame — and
+  by `tests/core/test_visualize_skeleton_freeze_view.py` for the box and pivot
+  maths under node.
   Pinning the box is not the whole contract, because Plotly's own 3D dolly leaves
   the camera holders disagreeing: a wheel zoom keeps easing the scene camera after
   the last camera relayout it emits, so `gd.layout.scene.camera` holds a
@@ -287,12 +317,15 @@ vs.export_video(html_file="/abs/output/skeleton/<run>/scene.html")  # re-export 
   which asserts the guarded page moves by <= 1e-9 and that the same harness
   without the guard still moves -- the assertion that gives the gate its teeth.
   A Freeze/Fit button and the `F` key
-  hand autoscaling back. All three floating controls -- those two and the
+  switch the box, and leaving freeze frames once, immediately — the new fit box
+  plus one fitted camera write — rather than waiting for the next toggle. All
+  three floating controls -- those two and the
   light/dark switch -- show a hover hint naming the key and the current state,
   drawn from `data-drocat-tip` by page CSS rather than a native `title`, one row
   per hint (`width:max-content` under a `min(560px,88vw)` cap: the 36 px button
   is the tip's containing block, so shrink-to-fit otherwise stacks a word per
-  line); the
+  line); ⌖'s hint is the same sentence in both states ("Recenter and zoom to the
+  visible traces (C)") because neither button is the other's precondition; the
   switch's copy names the theme the click selects ("Switch to the dark theme
   (T)") and is drawn to its left, since that button owns the top-right corner. The pin is injected page JS that exits early under
   `navigator.webdriver`, so PNG/video/profile exports keep autoscaling and draw

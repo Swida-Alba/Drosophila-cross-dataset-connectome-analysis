@@ -468,12 +468,37 @@ def test_freeze_view_ui_entrance_and_fit_behaviour():
     assert "freeze_view" in _read(UI_CONFIG), "no freeze_view setting"
     assert "freeze_view" in _read(SKELETON_TAB), "the tab does not send freeze_view"
     assert _mentions(UI_GUIDE, "Freeze/Fit"), UI_GUIDE
-    # Fit has to clear the range, not merely re-enable autorange.
     script = inspect.getsource(VISUALIZE_SKELETON._freeze_view_html)
-    assert "'scene.xaxis.range': null" in script, "Fit no longer releases the pin"
+    # The two top-left controls are independent axes: Freeze/Fit owns the box and
+    # ⌖ owns the camera. Fit therefore keeps autorange *off* and writes its own
+    # box -- handing the axes back to Plotly would count the traces that draw
+    # nothing, and the embedded context halves ship visible-but-transparent, so
+    # "Fit" would hold the frame open around anatomy the page does not draw.
+    assert "'scene.xaxis.autorange': false" in script
+    assert "'scene.xaxis.range': null" not in script, \
+        "Fit went back to Plotly's autorange, which cannot see opacity 0"
+    assert "visibleBounds()" in script[script.index("function fitBox()"):
+                                       script.index("function traceExtent(")], \
+        "Fit must size its box from the drawn content"
+    # Recenter writes eye and centre together (a centre-only write changes the
+    # radius with the pivot) and never a range (that would be Freeze's job).
+    recenter = script[script.index("function recenter(dolly, box)"):
+                      script.index("function centerOf(cam)")]
+    assert "'scene.camera.eye.' + name" in recenter
+    assert "'scene.camera.center.' + name" in recenter
+    for range_key in ("xaxis.range", "aspectmode", "autorange"):
+        assert range_key not in recenter, f"{range_key} moves the box, not the view"
     assert "navigator.webdriver" in script, "freeze reached the export path"
+    assert _mentions(GUIDE, "independent"), GUIDE
+    assert _mentions(UI_GUIDE, "independent"), UI_GUIDE
+    assert _mentions(UI_GUIDE, "Recenter and zoom"), UI_GUIDE
+    assert _mentions(SKILL, "frameRadius"), SKILL
     assert _mentions(GUIDE, "Freeze/Fit"), GUIDE
     assert _mentions(UI_GUIDE, "navigator.webdriver"), UI_GUIDE
+    # The old coupling, if it ever comes back, must not be re-documented.
+    for stale in ("inert in fit mode", "Freeze the view first"):
+        assert stale not in _read(UI_GUIDE), stale
+        assert stale not in _read(GUIDE), stale
 
 
 def test_manifest_api_is_on_the_class_and_documented():

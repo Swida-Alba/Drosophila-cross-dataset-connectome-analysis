@@ -424,21 +424,30 @@ ratio the unfrozen first frame picks — the page looks the same, and stops
 reacting to what is hidden.
 
 - **Freeze/Fit button** in the page's top-left corner, or the **`F`** key,
-  switches between the frozen framing and Plotly's autoscaling.
+  decides whether the box follows the content. Frozen, it is the pinned box and
+  no toggle can move it; unfrozen, it is rebuilt on every toggle from the traces
+  that are actually *drawn* — visible **and** not fully transparent, so the
+  context half the page carries invisible does not hold the frame open the way
+  Plotly's own autorange would leave it. Leaving freeze also re-frames once,
+  immediately.
 - **Recenter button** (⌖, directly below the freeze one), or the **`C`** key,
-  moves the rotation pivot onto the traces that are currently visible. A frozen
-  box keeps its pivot at the centre of the *whole* scene, so after hiding the
-  VNC outline the brain would otherwise orbit around the empty space it left.
-  The control rewrites `scene.camera.center` only — the box and its proportions
-  stay pinned — and is inert in fit mode, where the pivot already follows the
-  visible content. Pressing **Fit hands the pivot back** (`camera.center` is
-  cleared): that offset is normalized against the *pinned* box, and fit mode
-  shrinks the box onto the visible traces, so carrying the number over left the
-  anatomy hanging 12% of the y-span and 35% of the z-span off the rotation
-  centre. Freezing again restores the pivot you chose — unless you panned in the
-  meantime, because a pivot you moved yourself beats one we remembered.
-  A page that opens with a context half embedded but hidden runs this control
-  itself at setup, so the orbit starts on the anatomy you can see rather than on
+  owns the camera and works in either state — the two buttons are independent
+  axes, neither one the other's precondition. It moves the rotation pivot onto
+  the traces you can see *and* pulls the view in until they fill the frame, so
+  after hiding the VNC outline the brain both orbits on itself and comes back to
+  the middle of the picture. It never writes an axis range, which is exactly why
+  a frozen view can be re-centred without stopping being frozen: measured against
+  a page whose box *is* that content, one press draws within ~7% of its framing
+  with every range byte-identical. The zoom is a scale of the distance the page
+  opened at for the current orientation, not of wherever the last press left the
+  camera, so pressing it twice gives the same view twice — and eye and centre are
+  always written together, because a centre-only write changes the radius with
+  the pivot (measured: 2.1651 → 2.4286, a 12% zoom-out on every press).
+  Freezing again re-decides nothing about the camera, and a pivot you panned
+  yourself beats any recompute — only an explicit ⌖ or a view preset moves it.
+  A page that opens with a context half embedded but hidden runs the *pivot* half
+  of this control at setup (never the dolly: the documented first frame is the
+  whole box), so the orbit starts on the anatomy you can see rather than on
   the middle of the gap between the two halves: on a male-cns brain-only page a
   40° turn slid the brain 212 px across the frame before, and 2 px after. It
   fires only in that case — with nothing hidden the box is already its content,
