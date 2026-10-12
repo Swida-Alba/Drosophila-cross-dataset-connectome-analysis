@@ -200,7 +200,10 @@
           traces also appear as their own <i>pre sites</i> / <i>post sites</i>
           leaves under their type (or group), and any item list longer than
           10 rows expands into a mini scrollable area. Static exports
-          keep the plain type-level legend. Cross-dataset transformed query
+          keep the plain type-level legend, and give each context envelope a
+          solid colour square for it: an envelope drawn nearly transparent would
+          otherwise name a row whose square is invisible on the page background.
+          Cross-dataset transformed query
           overlays use the source neuron's native <code>type</code> label in
           their bodyId row rather than a mapped <code>flywireType</code> value
           (for example, MCNS <code>SMP227</code> remains <code>SMP227</code>).
@@ -209,7 +212,13 @@
           isolates that row; repeat the double-click to bring back the rows the
           page <i>opened</i> with — which excludes a template half the run
           embedded hidden. The eye in the panel header is the other control: it
-          shows or hides <b>every</b> row, that embedded half included.</li>
+          shows or hides <b>every</b> row, that embedded half included. A row's
+          eye reports what the scene actually draws, so a template half the page
+          embeds but keeps transparent opens as an empty circle on a grey row
+          from the first frame rather than looking shown. And because these
+          pages hand the legend to the panel, a panel that cannot build itself
+          puts the flat legend back and logs the reason, so a page is never left
+          with no legend at all.</li>
         <li><b>Freeze 3D view when toggling the legend</b> (checkbox in
           <b>Advanced</b> → Export, on by default): Plotly re-autoranges the
           three scene axes over the <i>visible</i> traces on every redraw, so
