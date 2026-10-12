@@ -23,8 +23,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install pyflakes
-        run: python -m pip install --quiet pyflakes
+      - name: Install pyflakes and markdown (docs gate)
+        run: python -m pip install --quiet pyflakes markdown
       - name: No undefined names in src/
         # The 2026-09-25 audit found two silently-swallowed NameErrors
         # shipped this way; pyflakes' full output stays informational, but

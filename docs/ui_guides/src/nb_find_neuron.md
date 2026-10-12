@@ -45,7 +45,7 @@ Each chip input takes <b>one line name at a time</b>: commit with Enter (or by l
   <tr><td>PDF Summary</td><td>on</td><td>Individual profile PDF/PPTX; <b>Profile Images Per Page (cols/rows)</b> (4/3) and <b>Profile Background</b> (white/black) tune its layout — the PDF layout controls sit in Advanced Settings, next to the <b>Output Directory</b> (which inherits your saved default)</td></tr>
 </table>
 
-<div class="callout warning">
+<div class="callout warn">
   Result visualizations default to <b>Skeleton Mode = line</b> for speed.
   For high-quality morphology, open <b>Visualization → Skeleton</b>, or
   select <b>tube</b> with the <b>fine</b> method and 95% simplification.

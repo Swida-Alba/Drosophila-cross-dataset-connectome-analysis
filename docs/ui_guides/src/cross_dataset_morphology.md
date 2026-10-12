@@ -7,7 +7,7 @@ page_title: Morphology · Comparison (Cross-Dataset)
 
 Compare the morphology of the <b>queried neurons across datasets</b>: enter query types, select two or more datasets, and get pairwise <b>vector_v2</b> similarity matrices per dataset pair, a seeded null baseline for context, and 3D overlay scenes with every dataset bridged into one reference template.
 
-<div class="callout warning">
+<div class="callout warn">
   <b>Dataset scope.</b> Only <b>FAFB</b>, <b>male-cns</b> and <b>BANC</b>
   participate — these are the datasets with a bridging transform inside
   the 2-hop accuracy guard (FAFB↔male-cns, FAFB↔BANC, male-cns↔BANC are

@@ -19,9 +19,14 @@ Source contract (``docs/ui_guides/src/<name>.md``)::
     <rest of the markdown body; raw HTML blocks (callout divs, tables)
     pass through untouched — the convention the md twins already use>
 
-The ``title`` is rendered as the page ``<h1>`` and head ``<title>``
-(``{title} - DROCAT Instructions``); ``tag`` fills the header chip. The
-front-matter reader is a deliberate 20-liner (key: value), not YAML.
+Required front-matter fields: ``title`` (the page ``<h1>``) and ``tag``
+(the header chip). Optional fields: ``subtag`` (a second chip inside the
+h1 — the tab a sub-tab guide belongs to), ``tag_class`` (chip class
+variant, e.g. ``sys``/``nb``), ``page_title`` (the fuller head
+``<title>``; default ``{title} - DROCAT Instructions``), and
+``lede: false`` (the first body paragraph is wrapped as ``p.lede``
+unless this is set). The front-matter reader is a deliberate 20-liner
+(key: value), not YAML.
 
 README.html is intentionally NOT generated: it is a curated editorial
 index (panel → guide table with hand-written "Covers" blurbs), not a
@@ -33,6 +38,9 @@ Usage:
     python scripts/build_ui_guides.py --check    # exit 1 when stale (CI)
     python scripts/build_ui_guides.py --root DIR # operate on another root
 
+Exit codes: 0 ok, 1 stale pages found (--check), 2 configuration error
+(no sources / missing required front-matter fields).
+
 CI: the static-gates job runs ``--check`` right after
 ``scripts/maintenance/check_docs_links.py``.
 """
@@ -43,10 +51,12 @@ from pathlib import Path
 
 import markdown
 
-# Extensions: tables (parameter/option grids), fenced_code (examples),
-# attr_list (opt-out / per-element classes). Raw HTML blocks (the callout
-# divs every guide already uses) pass through by default — that IS the
-# authoring convention, so md_in_html is deliberately not enabled.
+# Extensions: tables (parameter/option grids); fenced_code and
+# attr_list are available for authoring (no current page uses fenced
+# fences or {:attr} syntax — kept so new guides can). Raw HTML blocks
+# (the callout divs every guide already uses) pass through by default
+# — that IS the authoring convention, so md_in_html is deliberately
+# not enabled.
 _EXTENSIONS = ["tables", "fenced_code", "attr_list"]
 
 _TEMPLATE = """<!doctype html>

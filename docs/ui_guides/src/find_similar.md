@@ -100,7 +100,7 @@ Find Similar can render the query and found neurons as interactive 3D skeleton v
 
   
 
-<div class="callout warning">
+<div class="callout warn">
   Analysis-tab visualizations default to <b>Skeleton Mode = line</b> for
   speed. For high-quality morphology, open <b>Visualization → Skeleton</b>,
   or change the mode to <b>tube</b> and choose <b>fine</b> with 95%

@@ -7,7 +7,7 @@ page_title: Morphology · Comparison
 
 Compare the morphology of already-identified neurons <b>within one dataset</b>: enter neurons, types, taxonomy labels, or patterns and get the N×N similarity matrix at the bodyId level plus a type-level aggregation, with interactive heatmaps and a summary report.
 
-<div class="callout warning">
+<div class="callout warn">
   <b>One dataset = intra-dataset.</b> Skeletons are scored in one
   dataset's coordinate space against that dataset's caches. Select
   <b>two or more datasets</b> to switch this sub-tab into the
