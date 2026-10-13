@@ -5972,11 +5972,19 @@ def path_filter(path_df, keyword_in_path_to_remove=None):
     
     return kept, excluded
 
+# SCALE DISPATCH threshold (2026-10-13, plan-2026-10-11 §13.12
+# refinement): below it the pandas builder's constants win; at/above it
+# the vectorized polars builder is faster (measured 1.9x at 150K chained
+# 4-hop bodyId paths — 0.7s vs 1.3s — and the win grows with the
+# materialization size where the 1M-path complete runs live).
+_POLARS_BUILDER_MIN_PATHS = 50_000
+
+
 def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=None, level='type', type_lookup=None, edge_lookup=None, engine='auto'):
     """
     Build a DataFrame from a list of paths, calculating weights and ratios.
     Optimized with dictionary lookup for O(1) edge access.
-    
+
     UNIFIED ENTRY POINT: dispatches to the pandas implementation (below) or the
     Polars implementation (``build_path_dataframe_from_paths_polars``)
     based on ``engine`` / the input type. The engines' schemas differ in
@@ -5986,6 +5994,15 @@ def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=No
     pandas-only 'path_types' column is absent); and it aggregates
     duplicated (pre, post) rows with ``nt_type.first()`` where the pandas
     builder joins the distinct values with '|'.
+
+    SCALE DISPATCH (auto engine, bodyId level only): a build over
+    >= ``_POLARS_BUILDER_MIN_PATHS`` paths runs the polars builder even
+    when ``conn_data`` is a pandas frame, converting the result back to
+    pandas — every caller sees the frame class it sees today, while the
+    per-path loop (the materialization-tail cost on 1M-path runs) goes
+    vectorized. The polars-engine schema deltas above apply to the
+    values; the type-level builder always stays pandas (measured
+    pandas-faster there).
     """
     if engine == 'polars' or (engine == 'auto' and not isinstance(conn_data, pd.DataFrame)):
         if not isinstance(conn_data, pl.DataFrame):
@@ -5993,6 +6010,12 @@ def build_path_dataframe_from_paths(paths, conn_data, targets, real_layer_map=No
         return build_path_dataframe_from_paths_polars(paths, conn_data, targets,
                                                       real_layer_map=real_layer_map,
                                                       level=level, type_lookup=type_lookup)
+    if (engine == 'auto' and level == 'bodyId'
+            and paths is not None and len(paths) >= _POLARS_BUILDER_MIN_PATHS):
+        return build_path_dataframe_from_paths_polars(
+            paths, pl.from_pandas(conn_data), targets,
+            real_layer_map=real_layer_map,
+            level=level, type_lookup=type_lookup).to_pandas()
     if engine == 'pandas' and not isinstance(conn_data, pd.DataFrame):
         conn_data = conn_data.to_pandas()
     if not paths:
