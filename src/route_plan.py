@@ -685,6 +685,13 @@ def _parse_int(v, default=None):
         return default
 
 
+def _parse_float(v, default=None):
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_bool(v, default=False):
     if v is None:
         return default
@@ -700,10 +707,19 @@ def _match_type_labels(labels, tokens, body2type=None, prefix=False):
     """Enroll run-query tokens against effective labels. A token matches a
     label on equality, on a hemisphere-suffix strip (separate_hemispheres
     runs enroll both 'X_L' and 'X_R' for token 'X'), as a bodyId, or —
-    prefix mode (a recorded dict-filter query) — as a startswith match."""
+    prefix mode (a recorded dict-filter query) — as a startswith match.
+
+    F-PF-005 (audit 2026-10-13): returns a SECOND set — the tokens that
+    resolved as explicit bodyIds. Such a token used to enroll its whole
+    TYPE, so an unrequested sibling cell entered the query and could
+    displace the requested one; the lane now keeps the explicit bodyId
+    membership and restricts the endpoint body sets to it. Label
+    equality keeps today's precedence (a token that is also a label
+    stays a label)."""
     tokens = [str(t).strip() for t in tokens if str(t).strip()]
     label_set = set(labels)
     matched = set()
+    body_ids = set()
 
     def _enroll(tok):
         if tok in label_set:
@@ -715,6 +731,7 @@ def _match_type_labels(labels, tokens, body2type=None, prefix=False):
                 matched.add(lab)
         if body2type and tok in body2type:
             matched.add(body2type[tok])
+            body_ids.add(tok)
 
     for tok in tokens:
         _enroll(tok)
@@ -724,7 +741,7 @@ def _match_type_labels(labels, tokens, body2type=None, prefix=False):
         for lab in labels:
             if any(lab.startswith(tok) for tok in tokens):
                 matched.add(lab)
-    return matched
+    return matched, body_ids
 
 
 # ------------------------------------------------------------- driver
@@ -810,9 +827,20 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     if basis.startswith("connection_ratio"):
         _refuse("ratio-basis runs are not supported this round "
                 "(corridor UBs are synapse-weight bottlenecks)")
-    if (_parse_int(kv.get("min connection ratio"), 0) or 0) > 0:
-        _refuse("dual-threshold (AND mode) runs cannot be reproduced "
-                "by the synapse-corridor universe")
+    # F-PF-004 (audit 2026-10-13): parse the AND ratio as a FLOAT — the
+    # old _parse_int turned a fractional threshold like '0.01' into the
+    # default 0 and the dual-threshold refusal never fired, so the lane
+    # searched a graph violating the parent's own predicate. A non-empty
+    # value that is not a number refuses too (never silently zero).
+    _and_raw = str(kv.get("min connection ratio") or "").strip()
+    if _and_raw:
+        _and_val = _parse_float(_and_raw)
+        if _and_val is None:
+            _refuse(f"min connection ratio {_and_raw!r} is not a number "
+                    "(refusing rather than treating it as zero)")
+        if _and_val > 0:
+            _refuse("dual-threshold (AND mode) runs cannot be reproduced "
+                    "by the synapse-corridor universe")
     separate_hemi = _parse_bool(kv.get("separate hemispheres"), False) \
         if not fnc else bool(getattr(fnc, "separate_hemispheres", False))
     hemi_filter = (str(getattr(fnc, "hemisphere_filter", None)
@@ -833,13 +861,19 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     if source_types is not None:
         src_tokens = list(source_types)
     else:
-        query_prefix_src, src_tokens = _parse_query_tokens(
+        # _parse_query_tokens returns a MODE STRING ('equal'/'startswith');
+        # unpack to the boolean the lane means — the bare assignment made
+        # 'equal' truthy and silently ran every plain run-folder query in
+        # prefix mode (same unrequested-member family as F-PF-005)
+        _src_mode, src_tokens = _parse_query_tokens(
             kv.get("source neurons"))
+        query_prefix_src = _src_mode == "startswith"
     if target_types is not None:
         tgt_tokens = list(target_types)
     else:
-        query_prefix_tgt, tgt_tokens = _parse_query_tokens(
+        _tgt_mode, tgt_tokens = _parse_query_tokens(
             kv.get("target neurons"))
+        query_prefix_tgt = _tgt_mode == "startswith"
     if not src_tokens or not tgt_tokens:
         _refuse("source/target neurons could not be read from the run")
 
@@ -971,10 +1005,18 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     label_mapper = getattr(fnc, "label_mapper", None) if fnc else None
     if label_mapper is None:
         # subprocess mode: the run's recorded mapping file expands
-        # custom-label query tokens (e.g. '5th-LNv') into the type map
+        # custom-label query tokens (e.g. '5th-LNv') into the type map.
+        # F-PF-010 (audit 2026-10-13): a RECORDED map that is absent must
+        # refuse — falling back to native labels silently changes the
+        # settled group membership, endpoint enrollment and every
+        # exported label of the lane.
         _mf = (kv.get("custom mapping file")
                or "").strip()
-        if _mf and Path(_mf).exists():
+        if _mf and not Path(_mf).exists():
+            _refuse(f"recorded mapping file {_mf!r} does not exist — "
+                    "refusing rather than silently falling back to "
+                    "native labels")
+        if _mf:
             try:
                 from comparison.label_mapper import LabelMapper
                 label_mapper = LabelMapper(overall_mapping_json=_mf)
@@ -991,15 +1033,69 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                         schema={"bid": pl.Utf8, "t": pl.Utf8})
     body2type = dict(type_map)
 
-    src_labels = _match_type_labels(tmap["t"].to_list(), src_tokens,
-                                    body2type, prefix=query_prefix_src)
-    tgt_labels = _match_type_labels(tmap["t"].to_list(), tgt_tokens,
-                                    body2type, prefix=query_prefix_tgt)
+    src_labels, src_bodies_q = _match_type_labels(
+        tmap["t"].to_list(), src_tokens, body2type,
+        prefix=query_prefix_src)
+    tgt_labels, tgt_bodies_q = _match_type_labels(
+        tmap["t"].to_list(), tgt_tokens, body2type,
+        prefix=query_prefix_tgt)
     if not src_labels or not tgt_labels:
         _refuse(f"query tokens resolved to no types "
                 f"(sources kept {sorted(src_labels)}, "
                 f"targets kept {sorted(tgt_labels)})")
     src_types, tgt_types = sorted(src_labels), sorted(tgt_labels)
+
+    # F-PF-005 (audit 2026-10-13): preserve the parent's EXACT endpoint
+    # membership. (i) Query tokens that are explicit bodyIds restrict the
+    # endpoint body sets to themselves instead of their whole types.
+    # (ii) Run-folder mode additionally reads the parent's enrollment
+    # CSVs when present — source_neurons.csv and the Checked rows of
+    # target_neurons.csv are the parent's resolved enrollment (partially
+    # Checked targets included), which token re-expansion cannot
+    # reproduce. Both restrictions intersect; the provenance discloses
+    # the mode.
+    src_enrollment = ("bodyids" if src_bodies_q else
+                      "prefix" if query_prefix_src else "types")
+    tgt_enrollment = ("bodyids" if tgt_bodies_q else
+                      "prefix" if query_prefix_tgt else "types")
+    src_keep, tgt_keep = set(src_bodies_q), set(tgt_bodies_q)
+    if run_dir:
+        try:
+            _src_csv = pl.read_csv(
+                Path(run_dir) / "source_neurons.csv",
+                infer_schema_length=0)
+            if "bodyId" in _src_csv.columns:
+                src_keep |= set(
+                    _src_csv["bodyId"].drop_nulls().cast(pl.Utf8)
+                    .str.strip_chars().to_list())
+                src_enrollment += "+parent_csv"
+        except Exception:
+            pass
+        try:
+            _tgt_csv = pl.read_csv(
+                Path(run_dir) / "target_neurons.csv",
+                infer_schema_length=0)
+            if "bodyId" in _tgt_csv.columns:
+                if "Checked" in _tgt_csv.columns:
+                    _checked = _tgt_csv.filter(
+                        _tgt_csv["Checked"].cast(pl.Utf8)
+                        .str.to_lowercase().is_in(["true", "1"]))
+                else:
+                    _checked = _tgt_csv
+                tgt_keep |= set(
+                    _checked["bodyId"].drop_nulls().cast(pl.Utf8)
+                    .str.strip_chars().to_list())
+                tgt_enrollment += "+parent_csv"
+        except Exception:
+            pass
+    # A restriction applies whenever an explicit keep set exists (bodyId
+    # tokens, or the parent's enrollment CSVs — which are the parent's
+    # resolved query and must win over any token/prefix re-expansion,
+    # F-PF-005). Empty keep sets mean "no explicit membership known" —
+    # the type-level enrollment stands (audit fixture: token '10' of
+    # type {10, 11} must never emit 11's edges).
+    _src_restrict = bool(src_keep)
+    _tgt_restrict = bool(tgt_keep)
 
     # ---- G_type* + lossless prune ------------------------------------
     # CANONICAL ROW ORDER (2026-10-11): polars group_by is a parallel
@@ -1150,7 +1246,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                     mh_prov=max(1, round(
                         float(top_m_base) * (float(length_decay) ** (h - 1)))),
                     feasible=(d_lb is not None and h >= d_lb))
-        s_bodies = [b for b in src_ids if body2type.get(b) == s]
+        s_bodies = [b for b in src_ids if body2type.get(b) == s
+                    and (not _src_restrict or b in src_keep)]
         prov = validate_and_fill(
             drain, classes,
             lambda walk, cap, _s=s: _realize_on_loss(
@@ -1166,7 +1263,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             if deadline is not None and time.monotonic() > deadline:
                 time_capped = True
                 break
-            t_bodies = [b for b in tgt_ids if body2type.get(b) == t]
+            t_bodies = [b for b in tgt_ids if body2type.get(b) == t
+                        and (not _tgt_restrict or b in tgt_keep)]
             # per-WALK enumeration (§22): each accepted walk gets the
             # class's REMAINING share in UB-descending acceptance order —
             # a fat walk can consume the whole budget, a thin one leaves
@@ -1537,6 +1635,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "hemisphere_filter": hemi_filter,
         "exclude_intra_type_connections": exclude_intra,
         "label_mapper": label_mapper is not None,
+        # F-PF-005: how the endpoint bodies were enrolled — 'types' /
+        # 'prefix' (token expansion), 'bodyids' (explicit bodyId tokens),
+        # '+parent_csv' when the run's own enrollment CSVs restricted the
+        # endpoints (source_neurons.csv + Checked target_neurons.csv)
+        "enrollment": {"sources": src_enrollment, "targets": tgt_enrollment,
+                       "source_bodies": len(src_keep) or None,
+                       "target_bodies": len(tgt_keep) or None},
         "sources": src_types, "targets": tgt_types,
         "connections": str(conn_path), "neuron_table": neuron_source,
         "knobs": {"top_m_base": top_m_base,

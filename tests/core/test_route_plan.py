@@ -242,16 +242,21 @@ def test_read_run_params_spaced_keys_and_list_repr(tmp_path):
 def test_match_type_labels_hemisphere_suffixes():
     from route_plan import _match_type_labels
     labels = ["aMe12", "aMe12_L", "aMe12_R", "R7p_L", "APL"]
-    assert _match_type_labels(labels, ["aMe12"]) == {"aMe12"}
-    assert _match_type_labels(labels, ["aMe12"], body2type={}) == {"aMe12"}
+    # F-PF-005: the helper returns (matched labels, explicit bodyId tokens)
+    assert _match_type_labels(labels, ["aMe12"]) == ({"aMe12"}, set())
+    assert _match_type_labels(labels, ["aMe12"], body2type={}) == \
+        ({"aMe12"}, set())
     labels2 = ["aMe12_L", "aMe12_R", "R7p_L"]
-    assert _match_type_labels(labels2, ["aMe12"]) == {"aMe12_L", "aMe12_R"}
+    assert _match_type_labels(labels2, ["aMe12"]) == \
+        ({"aMe12_L", "aMe12_R"}, set())
     # a token absent from the label universe cannot enroll (refused later)
     assert _match_type_labels(labels2, ["APL"],
-                              body2type={"12345": "APL"}) == set()
-    # bodyId-routed token enrolls via its effective label
+                              body2type={"12345": "APL"}) == (set(), set())
+    # bodyId-routed token enrolls via its effective label AND keeps its
+    # explicit bodyId membership (the whole-type expansion is gone)
     assert _match_type_labels(labels2, ["12345"],
-                              body2type={"12345": "APL"}) == {"APL"}
+                              body2type={"12345": "APL"}) == \
+        ({"APL"}, {"12345"})
 
 
 # ------------------------------------------------------- end-to-end lane
@@ -790,3 +795,141 @@ def test_pair_edges_matches_reference_filter_recipe():
                 seen[(u, v)] = w
             assert pe.tuples(a, b) == [(u, v, w) for (u, v), w
                                        in sorted(seen.items())], (a, b)
+
+
+# ---------------------------------------------------------------------
+# Pathfinding-audit fixes (issues-2026-10-13; plan ...-audit-fixes.md)
+# ---------------------------------------------------------------------
+
+def test_and_fractional_ratio_refused(tmp_path):
+    """F-PF-004: a fractional min connection ratio must fire the
+    dual-threshold refusal — the old integer parser defaulted '0.01' to 0
+    and the lane searched a graph violating the parent's own predicate
+    (a 1-synapse edge into a 1000-synapse cell passed the corridor)."""
+    root = _write_synth_dataset(tmp_path, n_intermediate=3)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "min synapse number:         1\n"
+        "min connection ratio:       0.01\n")
+    with pytest.raises(CorridorRefusal):
+        run_lane(run, connections_path=root / "connections.parquet",
+                 neuron_table=root / "neurons.parquet")
+    prov = json.loads(
+        (run / "route_scope_paths" / "route_provenance.json").read_text())
+    assert prov["status"] == "refused"
+    assert "dual-threshold" in prov["reason"]
+
+
+def test_and_malformed_ratio_refused(tmp_path):
+    """F-PF-004: a non-numeric threshold refuses — never silently zero."""
+    root = _write_synth_dataset(tmp_path, n_intermediate=3)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "min synapse number:         1\n"
+        "min connection ratio:       strong\n")
+    with pytest.raises(CorridorRefusal):
+        run_lane(run, connections_path=root / "connections.parquet",
+                 neuron_table=root / "neurons.parquet")
+    prov = json.loads(
+        (run / "route_scope_paths" / "route_provenance.json").read_text())
+    assert "not a number" in prov["reason"]
+
+
+def test_and_zero_ratio_passes(tmp_path):
+    """F-PF-004: an explicit zero is not AND mode."""
+    root = _write_synth_dataset(tmp_path, n_intermediate=3)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "min connection ratio:       0\n")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+
+
+def test_missing_mapping_file_refused(tmp_path):
+    """F-PF-010: a recorded-but-absent mapping file refuses instead of
+    silently falling back to native labels (which changes the settled
+    group membership and every exported label)."""
+    root = _write_synth_dataset(tmp_path, n_intermediate=3)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "custom mapping file:        /tmp/drocat-audit-missing-mapper.json\n")
+    with pytest.raises(CorridorRefusal):
+        run_lane(run, connections_path=root / "connections.parquet",
+                 neuron_table=root / "neurons.parquet")
+    prov = json.loads(
+        (run / "route_scope_paths" / "route_provenance.json").read_text())
+    assert prov["status"] == "refused"
+    assert "does not exist" in prov["reason"]
+
+
+def test_bodyid_token_enrollment_keeps_membership(tmp_path):
+    """F-PF-005 (direct mode): an explicit bodyId source token keeps its
+    membership — the unrequested sibling body's much stronger edge must
+    not enter the query (the old expansion enrolled the whole type)."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a1", "a2"],
+        "bodyId_post": ["c1", "c1"],
+        "weight": [2, 100]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a1", "a2", "c1"],
+                  "type": ["A", "A", "C"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+    out = tmp_path / "lane_out"
+    assert run_lane(None, asked=1, max_interlayer=1,
+                    source_types=["a1"], target_types=["C"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out)
+    body = pl.read_csv(out / "route_paths_bodyId.csv")
+    assert body["path"].to_list() == ["a1->c1"]
+    prov = json.loads((out / "route_provenance.json").read_text())
+    assert prov["enrollment"]["sources"] == "bodyids"
+
+
+def test_run_folder_parent_csv_membership(tmp_path):
+    """F-PF-005 (run-folder mode): the parent's enrollment CSVs are the
+    query's resolved membership — a partially Checked target set must
+    survive into the corridor instead of being re-expanded to the type."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["s1", "s1"],
+        "bodyId_post": ["t1", "t2"],
+        "weight": [5, 50]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["s1", "t1", "t2"],
+                  "type": ["S", "C", "C"]}).to_csv(
+        root / "neurons.csv", index=False)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['S']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "dataset:                    synth\n")
+    pd.DataFrame({"bodyId": ["s1"]}).to_csv(
+        run / "source_neurons.csv", index=False)
+    pd.DataFrame({"bodyId": ["t1", "t2"],
+                  "Checked": ["True", "False"]}).to_csv(
+        run / "target_neurons.csv", index=False)
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.csv")
+    body = pl.read_csv(run / "route_scope_paths" / "route_paths_bodyId.csv")
+    assert body["path"].to_list() == ["s1->t1"]
+    prov = json.loads(
+        (run / "route_scope_paths" / "route_provenance.json").read_text())
+    assert prov["enrollment"]["targets"] == "types+parent_csv"
