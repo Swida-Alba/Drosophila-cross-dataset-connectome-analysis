@@ -570,3 +570,34 @@ def test_reconcile_quarantines_instead_of_deleting(tmp_path, monkeypatch):
     # a second call on an already-vacated folder is a no-op, never a raise
     analyzer._replace_with_marker('ds', 50, 19, str(folder))
     assert any('nothing is deleted' in m for m in logs)
+
+
+def test_w2_is_declared_a_bound_and_tau_reproduces_the_set():
+    """F-PF-001 (D1-A ruling, audit 2026-10-13): w2 comes from
+    walk-relaxed prefix bounds — an upper bound on the strongest omitted
+    SIMPLE path, never a certified exact value. The contract marker is
+    always present, and the bound-derived applied threshold reproduces
+    the materialized set in both audit counterexamples (a bound of 2
+    over a true dropped strength of 1; a bound of 8 over a true 1 where
+    threshold 2 already reproduces the set — minimality is NOT claimed)."""
+    prov = applied_threshold_provenance(
+        requested_threshold=1, strongest_first_tau=4,
+        strongest_first_budget_bitten=True,
+        strongest_dropped_bottleneck=2)
+    assert prov['strongest_dropped_is_bound'] is True
+    assert prov['applied_threshold'] == 3
+    assert prov['applied_threshold_source'] == 'strongest_first_budget'
+
+    prov2 = applied_threshold_provenance(
+        requested_threshold=1, strongest_first_tau=10,
+        strongest_first_budget_bitten=True,
+        strongest_dropped_bottleneck=8)
+    assert prov2['strongest_dropped_is_bound'] is True
+    assert prov2['applied_threshold'] == 9
+    # a complete run that merely reached the budget keeps the honest
+    # requested threshold and the bound marker
+    prov3 = applied_threshold_provenance(
+        requested_threshold=1, strongest_first_tau=4,
+        strongest_first_budget_bitten=True,
+        strongest_dropped_bottleneck=None)
+    assert prov3['strongest_dropped_is_bound'] is True

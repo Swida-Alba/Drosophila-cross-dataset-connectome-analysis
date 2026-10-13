@@ -944,8 +944,10 @@ The related values are:
 - `w0` / `edge_weight_floor`: the Edge Budget graph floor, and `w1` /
   `edge_budget_landing`: the tier that determined that floor. This applies in
   `all` mode only; Shortest Paths never applies the Edge Budget floor.
-- `w2` / `strongest_dropped_bottleneck`: the strongest path excluded by a
-  StrongestFirst budget bite; `w2 + 1` is the minimal equivalent threshold.
+- `w2` / `strongest_dropped_bottleneck`: an UPPER BOUND on the strongest
+  path excluded by a StrongestFirst budget bite (walk-relaxed prefix
+  bounds can overstate it — F-PF-001); `w2 + 1` is a threshold that
+  reproduces the materialized set, not a certified minimum.
 - `W*` / `strongest_retained_bottleneck`: the widest-path ceiling after
   lossless pruning. A path bottleneck is the minimum edge weight on that path.
 

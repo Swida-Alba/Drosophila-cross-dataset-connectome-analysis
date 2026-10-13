@@ -32,6 +32,8 @@ Design contracts pinned by tests (plan §7/§17/§18):
   MAX bottleneck over emitted paths (coana :17358-17367 semantics);
   ``None`` when nothing was emitted.
 - ``tau_canonical`` = the weakest distinct ratio tier STRICTLY above w2
+  (w2 itself is an upper BOUND on the strongest omitted simple path —
+  F-PF-001; minimality is not certified)
   (the float analog of the integer ``w2 + 1``); the degenerate
   bottom-tier gap is disclosed, never clamped.
 - Cone discovery + closure run in POLARS (a python-dict closure over
@@ -411,6 +413,8 @@ def ratio_threshold_provenance(
     provenance`` with IDENTICAL key names (the int-locked original
     cannot represent ratio thresholds), plus ``weight_basis`` and
     ``threshold_unit``. ``tau_canonical`` = the weakest distinct tier
+    (above w2, which is an upper bound -- F-PF-001; not a certified
+    minimum)
     STRICTLY above w2 (the float analog of ``w2 + 1``); when w2 is
     already the weakest tier the gap is disclosed via
     ``tau_canonical_exact: False`` — never clamped. W* = the P1 measured

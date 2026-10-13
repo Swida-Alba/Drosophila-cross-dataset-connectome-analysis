@@ -1845,12 +1845,15 @@ class FastGraph:
         truncated = False  # True when weaker paths were skipped (tau < full)
         pair_counts = {}
         last_pop_bound = None
-        # Canonical-tau support: the strongest DROPPED path's bottleneck.
-        # Paths below tau are dropped either by the drain break (this pop's
-        # bound is their best completion) or by the push filter (new_bound
-        # is the prefix's best completion); the max over both is the exact
-        # w2, so the canonical threshold tau_min = w2 + 1 is the minimal
-        # query that reproduces this output set.
+        # Canonical-tau support: an upper BOUND on the strongest dropped
+        # path's bottleneck (F-PF-001, audit 2026-10-13). Paths below tau
+        # are dropped either by the drain break (this pop's bound is their
+        # best WALK completion) or by the push filter (new_bound is the
+        # prefix's best walk completion); the max over both is a bound
+        # because the widest-suffix potential ignores already-visited
+        # prefix nodes -- a dropped walk need not be a dropped SIMPLE
+        # path, so w2 can overstate and tau_canonical = w2 + 1 reproduces
+        # the output set without certifying minimality.
         strongest_dropped = None
         # PERF (2026-10-08): a popped node's neighbor order is
         # deterministic ((-weight, node)) and does not change during the

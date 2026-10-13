@@ -104,7 +104,8 @@ budget bites, and includes the Edge Budget floor when that graph budget fires.
 The block also reports `strongest_first_budget` and its bite flag, `tau` /
 `strongest_first_tau` (the StrongestFirst landing or natural weakest emitted
 bottleneck), `tau_canonical`, `w2` /
-`strongest_dropped_bottleneck`, `w0` / `edge_weight_floor`, `w1` /
+`strongest_dropped_bottleneck` (an upper bound on the strongest omitted
+simple path — F-PF-001), `w0` / `edge_weight_floor`, `w1` /
 `edge_budget_landing`, `W*` / `strongest_retained_bottleneck`, and
 `paths_complete`. A path bottleneck is the minimum edge weight along that
 path. Shortest mode may be bounded by the StrongestFirst path budget but is

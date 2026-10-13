@@ -35,11 +35,22 @@ def applied_threshold_provenance(
       paths with bottleneck >= tau are retained when the path budget
       bites. For a complete run it is the natural weakest emitted-path
       bottleneck.
-    - ``tau_canonical`` / applied threshold: the MINIMAL threshold that
-      reproduces the materialized output set (``w2 + 1`` when the budget
-      bite leaves a gap; the landing tau otherwise).
-    - ``strongest_dropped_bottleneck`` (w2): the strongest path NOT
-      emitted after the StrongestFirst budget bites.
+    - ``tau_canonical`` / applied threshold: A threshold that reproduces
+      the materialized output set (``w2 + 1`` when the budget bite
+      leaves a gap; the landing tau otherwise). F-PF-001 (audit
+      2026-10-13, D1-A ruling): it is an UPPER BOUND of the minimal
+      equivalent threshold, not a certified minimum — see w2 below.
+    - ``strongest_dropped_bottleneck`` (w2): an UPPER BOUND on the
+      strongest SIMPLE path NOT emitted after the StrongestFirst budget
+      bites. The engine's value comes from walk-relaxed prefix bounds
+      (the widest-suffix potential ignores already-visited prefix
+      nodes), so it can overstate the true dropped-path strength and
+      the budget can be reached with no simple path actually omitted —
+      ``strongest_dropped_is_bound`` is always True in this contract;
+      exactness would require an explicit omitted-path enumeration
+      (ruled follow-up). Consumed conservatively (replay eligibility,
+      auto-refill) this direction is safe: a bound overstate can only
+      make those checks MORE conservative, never miss a real drop.
     - ``edge_weight_floor`` (w0) / ``edge_budget_landing`` (w1): the Edge
       Budget floor and the tier that determined it; a floored run is
       exactly a complete run at ``max(requested, w0)``.
@@ -48,8 +59,8 @@ def applied_threshold_provenance(
 
     ``applied_threshold`` is the requested threshold for an
     unbounded/complete run (the natural tau is reported separately);
-    when a lossy budget affects the output it is the **canonical
-    equivalent threshold** that reproduces the materialized set
+    when a lossy budget affects the output it is the **equivalent
+    threshold** that reproduces the materialized set
     (``tau_canonical``: ``w2 + 1`` when the StrongestFirst bite leaves a
     gap, else the landing/natural tau), and ``applied_threshold_source``
     names the contributing mechanism(s): 'requested',
@@ -134,6 +145,11 @@ def applied_threshold_provenance(
         'strongest_first_tau': strongest_first_tau,
         'tau_canonical': canonical_tau,
         'strongest_dropped_bottleneck': strongest_dropped_bottleneck,
+        # F-PF-001 (D1-A): w2 comes from walk-relaxed prefix bounds — an
+        # upper bound on the strongest omitted SIMPLE path, never a
+        # certified exact value. Consumers must treat tau_canonical as a
+        # set-reproducing threshold, not a certified minimum.
+        'strongest_dropped_is_bound': True,
         'edge_budget': (int(edge_budget) if edge_budget else None),
         # Per-threshold binding, not mere presence of a graph floor.
         'edge_budget_applied': floor_binding,
