@@ -14,7 +14,7 @@
     <span class="tag">Connectome</span>
   </header>
   <h1>Comparison <span class="tag">Morphology tab</span></h1>
-<p class="lede">Compare the morphology of already-identified neurons <b>within one dataset</b>: enter neurons, types, taxonomy labels, or patterns and get the N×N similarity matrix at the bodyId level plus a type-level aggregation, with interactive heatmaps and a summary report.</p>
+<p class="lede">Compare the morphology of already-identified neurons <b>within one dataset</b>: enter custom group labels, neurons, types, taxonomy labels, or patterns and get the N×N similarity matrix at the bodyId level plus a type-level aggregation, with interactive heatmaps and a summary report.</p>
 <div class="callout warn">
   <b>One dataset = intra-dataset.</b> Skeletons are scored in one
   dataset's coordinate space against that dataset's caches. Select
@@ -27,8 +27,8 @@
 <h2>Quick start</h2>
 <ol>
 <li>Pick the <b>Datasets to compare</b> (multi-select; BANC runs with an explicit caveat — the public L2/full skeleton products' vector quality is still unvalidated, so treat BANC scores as provisional and spot-check surprising pairs in the 3D scene; BANC 3D visualization and pathfinding work).</li>
-<li>Enter <b>one or more</b> query tokens: exact types, bodyIds, taxonomy labels (e.g. FAFB's <code>circadian_clock</code>), instance names, or patterns (e.g. <code>aMe.*</code>) — or pick <b>custom group</b> as the Aggregation Level and define the groups on the grouping board instead.</li>
-<li>Choose the <b>Aggregation Level</b> (type / bodyid / custom group) to decide what one matrix row is. The <b>Custom Groups (LabelMapper)</b> card is always visible — in <b>custom group</b> mode it fills the rows; in <b>type</b>/<b>bodyid</b> mode a loaded preset acts as the tier-0 label overlay (see below).</li>
+<li>Enter <b>one or more</b> query tokens: custom group labels from the grouping board, exact types, bodyIds, taxonomy labels (e.g. FAFB's <code>circadian_clock</code>), instance names, or patterns (e.g. <code>aMe.*</code>) — or pick <b>custom group</b> as the Aggregation Level and let the board's groups fill the rows directly.</li>
+<li>Choose the <b>Aggregation Level</b> (type / bodyid / custom group) to decide what one matrix row is. The <b>Custom Groups (LabelMapper)</b> card is always visible — in <b>custom group</b> mode it fills the rows; in <b>type</b>/<b>bodyid</b> mode a loaded preset both expands a query chip that names one of its labels and acts as the tier-0 label overlay (see below).</li>
 <li>Click <b>Run Comparison</b>; open <code>report.html</code> in the output folder.</li>
 </ol>
 <div class="callout info">
@@ -43,7 +43,10 @@
 
 <div class="callout info">
   <b>How each query token resolves.</b> Tokens resolve in the same order
-  the Connectivity ▸ Comparison tab uses: exact type name → bodyId →
+  the Connectivity ▸ Comparison tab uses: <b>custom group label</b> (a name
+  the grouping board defines resolves to that group's members in the
+  selected dataset, and wins over a same-spelling native type — the priority
+  every other lane already gives a label) → exact type name → bodyId →
   <b>taxonomy label</b> (a cell_type / class value such as FAFB's
   <code>circadian_clock</code> expands into one row per member type) →
   <b>instance name</b> (those neurons are pinned, like bodyId inputs) →

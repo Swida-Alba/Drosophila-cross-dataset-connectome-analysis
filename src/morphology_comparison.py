@@ -258,6 +258,9 @@ class MorphologyProfileComparer:
         self._label_mapper = None
         self._label_mapper_loaded = False
         self._axis_label_of_cache = None
+        # Source-side groups of the attached preset, read once so the custom
+        # level and the type/bodyId label lane cannot disagree.
+        self._label_groups_cache = None
         self.max_members_per_type = max(1, int(max_members_per_type))
         self.max_total_neurons = max(2, int(max_total_neurons))
         self.fetch_online = bool(fetch_online)
@@ -461,8 +464,28 @@ class MorphologyProfileComparer:
                 return
             _add_ids(type_name, ids)
 
+        label_groups = self._label_groups()
         for token in tokens:
             text = str(token).strip()
+            # A custom group label first: it is the user's own name for a set
+            # of neurons, and it wins over a same-spelling native type exactly
+            # as the pathfinding lanes and the connectivity comparison do. The
+            # board pushes this token, so the level must resolve it.
+            if text in label_groups:
+                ids = self._group_member_ids(text, label_groups[text])
+                if not ids:
+                    missing.append(text)
+                    continue
+                self._note(f"'{text}' is a custom group: expanded to "
+                           f"{len(ids)} neuron(s) of {self.dataset}.")
+                if self.aggregation_level == "bodyid":
+                    # Queried neurons are protected from every cap.
+                    for bid in ids:
+                        self._pinned.add(bid)
+                        rows.setdefault(str(bid), [bid])
+                    continue
+                _add_ids(text, ids)
+                continue
             # Exact type names win over pattern interpretation (some dataset
             # type names contain regex metacharacters, e.g. "PPL1*").
             if text in self._type_names:
@@ -562,6 +585,43 @@ class MorphologyProfileComparer:
             out[key] = [bid]
         return out
 
+    def _label_groups(self) -> "Dict[str, List[str]]":
+        """The attached preset's source-side groups, keyed by label.
+
+        Empty without a preset, so the type/bodyId label lane costs nothing on
+        a plain query. An unreadable file is reported and treated as no groups:
+        the level that *requires* a preset (_custom_rows) still raises.
+        """
+        if self._label_groups_cache is None:
+            if not self.custom_mapping_file:
+                self._label_groups_cache = {}
+            else:
+                try:
+                    groups, names, _side = load_labelmapper_source_groups(
+                        self.custom_mapping_file, self.dataset, log=self._log)
+                except ValueError as exc:
+                    self._note(f"grouping preset unreadable: {exc}")
+                    self._label_groups_cache = {}
+                else:
+                    self._label_groups_cache = dict(zip(names, groups))
+        return self._label_groups_cache
+
+    def _group_member_ids(self, label: str,
+                          members: List[object]) -> List[object]:
+        """Resolve a group's members (type names or bodyIds) against this
+        dataset, in first-occurrence order."""
+        ids: List[object] = []
+        for value in members:
+            text = str(value).strip()
+            if text.isdigit():
+                ids.append(self._body_id(text))
+            elif text in self._type_names:
+                ids.extend(self._type_member_ids(text))
+            else:
+                self._note(f"{label}: '{text}' is neither a type nor a "
+                           f"bodyId in {self.dataset}; skipped")
+        return list(dict.fromkeys(self._body_id(b) for b in ids))
+
     def _custom_rows(self) -> "Dict[str, List[object]]":
         """Rows from the grouping preset's source-side groups (query ignored).
 
@@ -581,17 +641,7 @@ class MorphologyProfileComparer:
                 "the grouping board's source mapping.")
         rows: Dict[str, List[object]] = {}
         for name, members in zip(names, groups):
-            ids: List[object] = []
-            for value in members:
-                text = str(value).strip()
-                if text.isdigit():
-                    ids.append(self._body_id(text))
-                elif text in self._type_names:
-                    ids.extend(self._type_member_ids(text))
-                else:
-                    self._note(f"{name}: '{text}' is neither a type nor a "
-                               f"bodyId in {self.dataset}; skipped")
-            ordered = list(dict.fromkeys(self._body_id(b) for b in ids))
+            ordered = self._group_member_ids(name, members)
             if not ordered:
                 self._note(f"{name}: no members in {self.dataset}; skipped")
                 continue

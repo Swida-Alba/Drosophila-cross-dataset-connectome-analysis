@@ -1039,6 +1039,63 @@ def test_custom_level_rows_are_groups(vector_setup, tmp_path):
     assert params["aggregation_level"] == "custom"
 
 
+def test_type_level_expands_a_custom_group_label(vector_setup):
+    """The grouping board pushes a label into the query box, so the type level
+    has to resolve it like the custom level and the other tabs do."""
+    preset = _write_preset(vector_setup, [("clock", ["aMe12", 5])])
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["clock"], aggregation_level="type",
+        custom_mapping_file=preset,
+        output_dir=str(vector_setup / "lane_type"),
+        generate_heatmaps=False, verbose=False).run()
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    assert set(members["row"]) == {"clock"}
+    assert sorted(int(b) for b in members["bodyId"]) == [1, 2, 5]
+    assert set(members["type"]) == {"aMe12", "PPL1*"}
+
+
+def test_bodyid_level_expands_a_custom_group_label(vector_setup):
+    preset = _write_preset(vector_setup, [("clock", ["aMe12", 5])])
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["clock"], aggregation_level="bodyid",
+        custom_mapping_file=preset,
+        output_dir=str(vector_setup / "lane_bodyid"),
+        generate_heatmaps=False, verbose=False).run()
+    # One matrix row per member neuron, like any other bodyId query; the
+    # members frame still files them under the label that asked for them.
+    assert _body_labels(result) == ["1_inst1", "2_inst2", "5_inst5"]
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    assert sorted(int(b) for b in members["bodyId"]) == [1, 2, 5]
+    assert set(members["row"]) == {"clock"}
+
+
+def test_group_label_beats_a_same_spelling_native_type(vector_setup):
+    """A label that is also a native type name resolves as the group — the
+    same priority the pathfinding lanes and the connectivity comparison use,
+    and the reason the mark on the chip is allowed to claim a group."""
+    preset = _write_preset(vector_setup, [("aMe12", ["aMe10"])])
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12"], aggregation_level="type",
+        custom_mapping_file=preset,
+        output_dir=str(vector_setup / "lane_collision"),
+        generate_heatmaps=False, verbose=False).run()
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    assert set(members["row"]) == {"aMe12"}
+    # The group's members (3, 4), not the native type's (1, 2).
+    assert sorted(int(b) for b in members["bodyId"]) == [3, 4]
+
+
+def test_query_without_a_preset_is_unchanged(vector_setup):
+    """No preset means no label lane: the ordinary type query must resolve
+    exactly as before, with the group machinery inert."""
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12"], aggregation_level="type",
+        output_dir=str(vector_setup / "lane_none"),
+        generate_heatmaps=False, verbose=False).run()
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    assert sorted(int(b) for b in members["bodyId"]) == [1, 2]
+
+
 def test_custom_level_heatmap_is_named_for_groups(vector_setup, monkeypatch):
     monkeypatch.setitem(sys.modules, "vispath_pkg", None)
     monkeypatch.setitem(sys.modules, "vispath_pkg.vispath", None)
