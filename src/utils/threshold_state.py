@@ -19,6 +19,7 @@ def applied_threshold_provenance(
     edge_budget_landing=None,
     edge_budget=None,
     strongest_retained_bottleneck=None,
+    strongest_dropped_is_bound=True,
 ):
     """Canonical threshold/bottleneck provenance for one pathfinding run
     (SYNAPSE basis — int units; ratio-basis runs use
@@ -46,10 +47,14 @@ def applied_threshold_provenance(
       (the widest-suffix potential ignores already-visited prefix
       nodes), so it can overstate the true dropped-path strength and
       the budget can be reached with no simple path actually omitted —
-      ``strongest_dropped_is_bound`` is always True in this contract;
-      exactness would require an explicit omitted-path enumeration
-      (ruled follow-up). Consumed conservatively (replay eligibility,
-      auto-refill) this direction is safe: a bound overstate can only
+      ``strongest_dropped_is_bound`` is True unless the engine CERTIFIED
+      the value by the bounded sub-tau enumeration (D1-B:
+      ``w2_exact``) -- when certified, w2 is the exact strongest omitted
+      simple path and ``tau_canonical`` is the MINIMAL equivalent
+      threshold (``tau_canonical_minimal`` True). An exact pass that
+      finds no omitted simple path retires the bite entirely (the run
+      was complete). Consumed conservatively (replay eligibility,
+      auto-refill) the bound direction is safe: an overstate can only
       make those checks MORE conservative, never miss a real drop.
     - ``edge_weight_floor`` (w0) / ``edge_budget_landing`` (w1): the Edge
       Budget floor and the tier that determined it; a floored run is
@@ -145,11 +150,14 @@ def applied_threshold_provenance(
         'strongest_first_tau': strongest_first_tau,
         'tau_canonical': canonical_tau,
         'strongest_dropped_bottleneck': strongest_dropped_bottleneck,
-        # F-PF-001 (D1-A): w2 comes from walk-relaxed prefix bounds — an
-        # upper bound on the strongest omitted SIMPLE path, never a
-        # certified exact value. Consumers must treat tau_canonical as a
-        # set-reproducing threshold, not a certified minimum.
-        'strongest_dropped_is_bound': True,
+        # F-PF-001 (D1-A + D1-B): w2 comes from walk-relaxed prefix
+        # bounds -- an upper bound on the strongest omitted SIMPLE path
+        # -- UNLESS the engine certified it (D1-B's bounded sub-tau
+        # pass, w2_exact): then it is exact and tau_canonical is the
+        # minimal equivalent threshold.
+        'strongest_dropped_is_bound': bool(strongest_dropped_is_bound),
+        'tau_canonical_minimal': (not bool(strongest_dropped_is_bound)
+                                  and bitten),
         'edge_budget': (int(edge_budget) if edge_budget else None),
         # Per-threshold binding, not mere presence of a graph floor.
         'edge_budget_applied': floor_binding,

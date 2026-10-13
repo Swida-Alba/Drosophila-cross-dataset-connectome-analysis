@@ -1777,7 +1777,8 @@ class FastGraph:
     def find_paths_strongest_first(self, sources, targets, cutoff,
                                    budget=None, per_pair_k=None, stats=None,
                                    verbose=False, yield_bottleneck=False,
-                                   raw_body_simple=False):
+                                   raw_body_simple=False,
+                                   exact_dropped=True):
         """Budgeted best-first enumeration in DESCENDING bottleneck order.
 
         Emits complete simple paths (source -> ... -> target, at most
@@ -1788,6 +1789,17 @@ class FastGraph:
         ``(bottleneck, list(path))`` — the engine's own per-entry
         bottleneck — instead of ``list(path)`` (perf: the consumer then
         need not re-derive the minimum per hop; 2026-10-08).
+
+        ``exact_dropped`` (D1-B, audit 2026-10-13): when a budget bite
+        truncates the drain, the ``strongest_dropped`` stat is by default
+        only an upper BOUND (walk-relaxed prefix potentials). With
+        ``exact_dropped=True`` a bounded second best-first pass below tau
+        certifies the TRUE strongest omitted simple path
+        (``stats['w2_exact'] = True``); if that pass finds NO simple path
+        below tau, the emitted set was already complete and the bite is
+        retired (``budget_bitten`` False, ``strongest_dropped`` None).
+        The pass is pop-capped (``stats['w2_capped']``) and falls back to
+        the bound when capped.
 
         ``raw_body_simple`` (F-PF-003, audit 2026-10-13): the
         no-repeated-nodes rule operates on each node's RAW identity — the
@@ -1921,12 +1933,85 @@ class FastGraph:
                 )
                 counter += 1
 
+        # D1-B: certify the strongest omitted SIMPLE path with a bounded
+        # best-first pass strictly below tau. Completions are visited in
+        # non-increasing bound order, so once the popped bound falls
+        # below the best sub-tau completion found, that completion is the
+        # EXACT strongest omitted path; a pass that ends uncapped with no
+        # completion proves the emitted set was already complete.
+        w2_exact = False
+        w2_capped = False
+        if exact_dropped and truncated and tau is not None:
+            best = None
+            heap2 = []
+            counter2 = 0
+            for s in sources:
+                bound = W[cutoff].get(s)
+                if bound is None:
+                    continue
+                heapq.heappush(heap2,
+                               (-bound, counter2, s, 0, INF, (s,)))
+                counter2 += 1
+            pops2 = 0
+            cap2 = 4_000_000
+            while heap2:
+                if pops2 >= cap2:
+                    w2_capped = True
+                    break
+                negb, _, node, hops, run_b, path = heapq.heappop(heap2)
+                b = -negb
+                pops2 += 1
+                if best is not None and b < best:
+                    break
+                if node in target_set and hops >= 1:
+                    if run_b < tau:
+                        if best is None or run_b > best:
+                            best = run_b
+                        # a completion's extensions never exceed its own
+                        # bottleneck -- do not expand past it
+                        continue
+                    # at/above tau: its continuations may dip below tau
+                if hops >= cutoff:
+                    continue
+                remaining = cutoff - hops - 1
+                path_set = {raw_of(p) for p in path}
+                neighbors = sorted_adj_cache.get(node)
+                if neighbors is None:
+                    neighbors = sorted(self.adj.get(node, {}).items(),
+                                       key=lambda kv: (-kv[1], kv[0]))
+                    sorted_adj_cache[node] = neighbors
+                for v, w in neighbors:
+                    if raw_of(v) in path_set:
+                        continue
+                    new_run = run_b if run_b < w else w
+                    if new_run >= tau:
+                        continue  # completions here stay >= tau
+                    v_bound = W[remaining].get(v)
+                    if v_bound is None:
+                        continue
+                    new_bound = new_run if new_run < v_bound else v_bound
+                    if best is not None and new_bound < best:
+                        continue
+                    heapq.heappush(heap2,
+                                   (-new_bound, counter2, v, hops + 1,
+                                    new_run, path + (v,)))
+                    counter2 += 1
+            if not w2_capped:
+                w2_exact = True
+                strongest_dropped = best
+                if best is None:
+                    # the emitted set was already complete: retire the
+                    # mechanical bite
+                    truncated = False
+
         if stats is not None:
             stats['emitted'] = emitted
             stats['budget_bitten'] = bool(budget is not None and truncated)
             stats['tau'] = tau
             stats['last_bound'] = last_pop_bound
             stats['strongest_dropped'] = strongest_dropped
+            stats['w2_exact'] = w2_exact
+            stats['w2_capped'] = w2_capped
 
     def __repr__(self):
         return f"FastGraph(nodes={self.number_of_nodes()}, edges={self.number_of_edges()})"

@@ -619,6 +619,8 @@ def find_ratio_paths(edges, sources, targets, *, min_ratio: float,
         strongest_first_tau=enum_stats.get('tau'),
         strongest_first_budget_bitten=enum_stats.get('budget_bitten', False),
         strongest_dropped_bottleneck=enum_stats.get('strongest_dropped'),
+        strongest_dropped_is_bound=not enum_stats.get(
+            'w2_exact', False),
         strongest_retained_bottleneck=w_star,
         edge_weight_floor=budget_stats.get('floor'),
         edge_budget_landing=budget_stats.get('budget_line'),

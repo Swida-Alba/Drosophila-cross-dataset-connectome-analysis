@@ -13014,6 +13014,52 @@ class FindNeuronConnection:
             public_attrs["path_mode"] = path_mode
         return self._sanitize_export_value(public_attrs)
 
+    def _residual_registry(self, population=None):
+        """This run's label-mapper typing decision, or ``None`` without a mapper.
+
+        ``comparison.type_resolver.ResidualRegistry`` is the only producer of
+        an effective type key in DROCAT: a mapper member takes its settled
+        label, a NON-member of a native type the mapper only partially governs
+        takes the terminal ``T*`` key, everything else keeps its raw type.
+        Membership needs only the mapper; the residual class needs the whole
+        population of a type, which is why the caller either already holds the
+        dataset's neuron table (the enrichment delegates, the refill frame) or
+        reaches it through ``statvis.neuron_population``.
+
+        Enrollment, path node labels, the ratio/refill map and the run's
+        disclosure all read THIS object, so one neuron cannot be typed two
+        ways inside one run.
+        """
+        if self.label_mapper is None or getattr(
+                self.label_mapper, 'is_empty', False):
+            return None
+        if population is None:
+            population = sv.neuron_population(self.dataset, self.script_path)
+        return sv.get_residual_registry(self.label_mapper, self.dataset,
+                                        population)
+
+    def _disclose_residuals(self, registry) -> None:
+        """Publish what the typing did, so a ``T*`` key is never mysterious.
+
+        The registry decides the wording: one line listing the collided types
+        with their enrolled/population/residual counts, or - when the dataset
+        has no neuron table - the disclosure that residuals could NOT be
+        evaluated.  Nothing is appended when there is nothing to say, and the
+        bullet is state-owned (one per tag) so a re-export replaces it instead
+        of accumulating duplicates.
+        """
+        if registry is None:
+            return
+        try:
+            for line in registry.notes():
+                tag = line.split(']')[0] + ']'
+                if any(str(note).startswith(tag) for note in self._warn_notes):
+                    continue
+                self._warn_notes.append(line)
+        except Exception as exc:  # noqa: BLE001 - disclosure never fails a run
+            self._vprint(f'[residual registry] skipped: {exc}', level='full')
+
+
     def InitializeNeuronInfo(self):
         # Ensure neuprint Client is set for the CORRECT dataset
         if self.client_type not in ('flywire', 'banc'):
@@ -13144,39 +13190,39 @@ class FindNeuronConnection:
         # Apply label mapping if available
         if self.label_mapper and not self.label_mapper.is_empty:
             self._vprint(f'\033[36mApplying label mapping to source/target neurons...\033[0m', level='simple')
-            # Apply to source_df
-            if not self.source_df.empty and 'type' in self.source_df.columns:
-                # Create a copy to avoid SettingWithCopyWarning
-                self.source_df = self.source_df.copy()
-                # Map types to standardized labels
-                # We use 'source' role for source neurons
-                self.source_df['std_label'] = self.source_df.apply(
-                    lambda row: self.label_mapper.get_std_label(
-                        self.dataset, 
-                        row['type'] if pd.notna(row['type']) else row['bodyId'], 
-                        'source'
-                    ), axis=1
-                )
-                # Overwrite type with std_label where available
-                mask = self.source_df['std_label'] != ''
-                self.source_df.loc[mask, 'type'] = self.source_df.loc[mask, 'std_label']
-                # Drop temporary column
-                self.source_df = self.source_df.drop(columns=['std_label'])
-                
-            # Apply to target_df
-            if not self.target_df.empty and 'type' in self.target_df.columns:
-                self.target_df = self.target_df.copy()
-                # We use 'target' role for target neurons
-                self.target_df['std_label'] = self.target_df.apply(
-                    lambda row: self.label_mapper.get_std_label(
-                        self.dataset, 
-                        row['type'] if pd.notna(row['type']) else row['bodyId'], 
-                        'target'
-                    ), axis=1
-                )
-                mask = self.target_df['std_label'] != ''
-                self.target_df.loc[mask, 'type'] = self.target_df.loc[mask, 'std_label']
-                self.target_df = self.target_df.drop(columns=['std_label'])
+            # The enrollment frames are what ``source_neurons.csv`` /
+            # ``target_neurons.csv`` are written from, and readers as different
+            # as the neuron-count card, the pair report's endpoint census and
+            # the path node labels all key on their ``type`` column.  That
+            # column is therefore a typing decision, not a label lookup, so it
+            # goes through the run's registry: members take their settled
+            # label, non-members of a partially governed native type take the
+            # terminal ``T*`` key, and anything else keeps the raw type (or
+            # the bodyId, the untyped tier).  Reading roles separately
+            # (source rows through the source role only) used to make these
+            # CSVs disagree with the run's own type table, which merges all
+            # three roles with source precedence.
+            registry = self._residual_registry()
+
+            def _enroll_frame(df):
+                if df is None or df.empty or 'type' not in df.columns:
+                    return df
+                df = df.copy()
+                natives = df['type']
+                out = []
+                for bid, native in zip(df['bodyId'].astype(str), natives):
+                    raw = None if pd.isna(native) else native
+                    if registry is not None:
+                        label = registry.key_for(bid, raw)
+                        if label:
+                            out.append(label)
+                            continue
+                    out.append(str(raw) if raw is not None else bid)
+                df['type'] = out
+                return df
+
+            self.source_df = _enroll_frame(self.source_df)
+            self.target_df = _enroll_frame(self.target_df)
 
         # Ensure hemisphere columns and apply suffixes if requested
         # (This must be OUTSIDE the label_mapper block to apply even when no mapper is used)
@@ -14364,26 +14410,12 @@ class FindNeuronConnection:
         # list, so this is idempotent).
         self._maybe_generate_type_level_refill()
 
-        # 5. Residual registry disclosure (user directive 2026-10-08):
-        # collided native types whose unenrolled neurons the type
-        # resolver star-tags (`T*`).
-        try:
-            neuron_frame = self._refill_neuron_frame()
-            if neuron_frame is not None and self.label_mapper is not None:
-                registry = sv.residual_registry_summary(
-                    self.label_mapper, self.dataset, neuron_frame)
-                if registry:
-                    lines = '; '.join(
-                        f"{t}: {v['enrolled']} enrolled / "
-                        f"{v['population']} population "
-                        f"({v['residuals']} residual(s) -> '{t}*')"
-                        for t, v in sorted(registry.items()))
-                    self._warn_notes.append(
-                        '- [label mapper residuals] collided native types: '
-                        'their unenrolled neurons are star-tagged '
-                        f"('T*') by the type resolver — {lines}.")
-        except Exception as exc:  # noqa: BLE001 — disclosure only
-            self._vprint(f'[residual registry] skipped: {exc}', level='full')
+        # 5. Residual disclosure: whatever this run's typing decided, in the
+        # registry's own words (collided types with their counts, or the
+        # disclosure that residuals could not be evaluated).
+        self._disclose_residuals(
+            self._residual_registry(self._refill_neuron_frame()))
+
         self._write_user_warning_notes(network_folder)
 
     def _trim_edges_with_path_integrity(self, conn, limit, label, sources, targets,
@@ -17741,6 +17773,8 @@ class FindNeuronConnection:
                     self, 'strongest_first_budget_bitten', False),
                 strongest_dropped_bottleneck=getattr(
                     self, 'strongest_dropped_bottleneck', None),
+                strongest_dropped_is_bound=getattr(
+                    self, 'strongest_dropped_is_bound', True),
                 strongest_retained_bottleneck=getattr(
                     self, 'strongest_retained_bottleneck', None),
                 edge_weight_floor=getattr(self, 'edge_weight_floor', None),
@@ -17758,6 +17792,8 @@ class FindNeuronConnection:
                     self, 'strongest_first_budget_bitten', False),
                 strongest_dropped_bottleneck=getattr(
                     self, 'strongest_dropped_bottleneck', None),
+                strongest_dropped_is_bound=getattr(
+                    self, 'strongest_dropped_is_bound', True),
                 tau_canonical=getattr(self, 'tau_canonical', None),
                 edge_weight_floor=getattr(self, 'edge_weight_floor', None),
                 edge_budget_landing=getattr(
@@ -20255,6 +20291,11 @@ class FindNeuronConnection:
                 # minimal (canonical) one. The LANDING tau stays the
                 # collapse/skip bound.
                 self.strongest_dropped_bottleneck = _dropped
+                # D1-B: w2_exact=True means the engine CERTIFIED the
+                # dropped-path value by the bounded sub-tau pass -- the
+                # canonical threshold is then truly minimal
+                self.strongest_dropped_is_bound = not bool(
+                    strongest_first_stats.get('w2_exact'))
                 if getattr(self, 'weight_basis',
                            'synapse') == 'connection_ratio':
                     # Ratio lane: the canonical tier is the weakest
@@ -20814,53 +20855,15 @@ class FindNeuronConnection:
         # derivation below share ONE label resolution — previously the
         # recompute counted frame membership while the coverage lists counted
         # network membership, giving two different Ns for the same type.
-        bodyid_to_label = {}
-        if self.label_mapper:
-            # Use the same mapping function that EnrichConnectionTablePolars uses
-            ndf_path = None
-            if self.dataset and self.script_path:
-                dataset_clean = canonical_dataset_name(self.dataset).replace(':', '_').replace('.', '_')
-                ndf_path = os.path.join(
-                    self.script_path, 'datasets', dataset_clean,
-                    f"{dataset_clean}_allneurons_neuron_df.csv"
-                )
-                if not os.path.exists(ndf_path):
-                    ndf_path = os.path.join(
-                        self.script_path, 'datasets',
-                        f"{dataset_clean}_allneurons_neuron_df.csv"
-                    )
+        # One population accessor and one typing decision for the whole lane.
+        # text_only: this block reads bodyId/label columns only, and BANC
+        # tables carry comma-joined id lists (manc_match = "22586, 21696")
+        # that break numeric inference past the schema window.
+        residual_registry = self._residual_registry(
+            sv.neuron_population(self.dataset, self.script_path,
+                                 text_only=True))
+        self._disclose_residuals(residual_registry)
 
-            if ndf_path and os.path.exists(ndf_path):
-                # infer_schema_length=0 (all Utf8): BANC neuron tables carry
-                # comma-joined id lists (e.g. manc_match = "22586, 21696")
-                # that break i64 inference past the schema window. This
-                # block only needs bodyId/label text columns.
-                ndf_complete = pl.read_csv(ndf_path, infer_schema_length=0)
-                if 'bodyId' in ndf_complete.columns:
-                    ndf_complete = ndf_complete.with_columns(pl.col('bodyId').cast(pl.Utf8))
-                bodyid_to_label = sv.build_bodyid_label_map(self.label_mapper, self.dataset, ndf_complete)
-                # Residual registry disclosure (user directive 2026-10-08):
-                # collided native types whose unenrolled neurons the type
-                # resolver star-tags (`T*`) — disclosed so the tagged keys
-                # are never mysterious.
-                try:
-                    registry = sv.residual_registry_summary(
-                        self.label_mapper, self.dataset, ndf_complete)
-                    if registry:
-                        self._residual_registry = registry
-                        lines = '; '.join(
-                            f"{t}: {v['enrolled']} enrolled / "
-                            f"{v['population']} population "
-                            f"({v['residuals']} residual(s) -> '{t}*')"
-                            for t, v in sorted(registry.items()))
-                        self._warn_notes.append(
-                            '- [label mapper residuals] collided native '
-                            'types: their unenrolled neurons are '
-                            f"star-tagged ('T*') by the type resolver — "
-                            f'{lines}.')
-                except Exception as exc:  # noqa: BLE001 — disclosure only
-                    self._vprint(f'[residual registry] skipped: {exc}',
-                                 level='full')
 
         # Helper to extract hemisphere suffix from a type string
         def _extract_hemi_suffix(type_str: str) -> str:
@@ -20874,22 +20877,31 @@ class FindNeuronConnection:
                     return '_U'
             return ''
 
-        def _node_type_label(b: str) -> str:
-            """Final type label of a bodyId inside conn_types (same
-            resolution as EnrichConnectionTablePolars: mapped std_label
-            (+ hemisphere suffix) -> raw type -> bodyId)."""
+        def _node_type_label(b: str, native=None) -> str:
+            """Final type label of a bodyId inside conn_types: the registry's
+            effective key (settled label or ``T*`` residual, + hemisphere
+            suffix) -> the frame's raw type -> the bodyId.
+
+            ``native`` is the neuron's own raw type where the caller has it.
+            It matters for a bodyId the dataset table does not know (a
+            cache-only id): classified by name it joins its same-type cousins
+            under ``T*`` instead of keeping the bare name and splitting one
+            native type across two keys of the same table.
+            """
             b = str(b)
-            if b in bodyid_to_label:
-                label = bodyid_to_label[b]
+            raw = native if native is not None else raw_type_map.get(b)
+            label = (residual_registry.key_for(b, raw)
+                     if residual_registry is not None else None)
+            if label is not None:
                 if self.separate_hemispheres:
-                    hemi = _extract_hemi_suffix(raw_type_map.get(b, ''))
+                    hemi = _extract_hemi_suffix(str(raw or ''))
                     if hemi and not label.endswith(hemi):
                         label = label + hemi
                 return label
-            t = raw_type_map.get(b)
-            if not _is_missing_type_label(t):
-                return str(t)
+            if not _is_missing_type_label(raw):
+                return str(raw)
             return b
+
 
         # Create group-level real layer map if custom groups exist
         real_layer_map_group = {}
@@ -21599,7 +21611,7 @@ class FindNeuronConnection:
         # type graph would drop.
         self._vprint('\nDeriving type-level paths from discovered bodyId paths...', level='full')
 
-        # bodyid_to_label / _extract_hemi_suffix / _node_type_label are
+        # residual_registry / _extract_hemi_suffix / _node_type_label are
         # built above the export phase (with raw_type_map) so the recompute
         # and this derivation share one label resolution.
 
@@ -21612,21 +21624,10 @@ class FindNeuronConnection:
             b = str(row['bodyId']) if 'bodyId' in row else ''
             t = row['type'] if 'type' in row else None
             
-            # Use std_label if available, else fall back to type, else fall back to bodyId
-            if b and b in bodyid_to_label:
-                label = bodyid_to_label[b]
-                # When separate_hemispheres is True, append hemisphere suffix from row['type']
-                if self.separate_hemispheres and t is not None:
-                    hemi_suffix = _extract_hemi_suffix(str(t))
-                    if hemi_suffix and not label.endswith(hemi_suffix):
-                        label = label + hemi_suffix
-            elif not _is_missing_type_label(t):
-                label = str(t)
-            elif b:
-                # Use bodyId as fallback for untyped neurons
-                label = b
-            else:
+            # One chain for both sides: registry key -> raw type -> bodyId
+            if not b:
                 continue
+            label = _node_type_label(b, t)
             source_labels.add(label)
         
         source_types = list(source_labels)
@@ -21637,21 +21638,10 @@ class FindNeuronConnection:
             b = str(row['bodyId']) if 'bodyId' in row else ''
             t = row['type'] if 'type' in row else None
             
-            # Use std_label if available, else fall back to type, else fall back to bodyId
-            if b and b in bodyid_to_label:
-                label = bodyid_to_label[b]
-                # When separate_hemispheres is True, append hemisphere suffix from row['type']
-                if self.separate_hemispheres and t is not None:
-                    hemi_suffix = _extract_hemi_suffix(str(t))
-                    if hemi_suffix and not label.endswith(hemi_suffix):
-                        label = label + hemi_suffix
-            elif not _is_missing_type_label(t):
-                label = str(t)
-            elif b:
-                # Use bodyId as fallback for untyped neurons
-                label = b
-            else:
+            # One chain for both sides: registry key -> raw type -> bodyId
+            if not b:
                 continue
+            label = _node_type_label(b, t)
             target_labels.add(label)
         
         target_types = list(target_labels)

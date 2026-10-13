@@ -601,3 +601,53 @@ def test_w2_is_declared_a_bound_and_tau_reproduces_the_set():
         strongest_first_budget_bitten=True,
         strongest_dropped_bottleneck=None)
     assert prov3['strongest_dropped_is_bound'] is True
+
+
+def test_w2_exact_certification_flows_through():
+    """D1-B: when the engine certifies the dropped-path value by the
+    bounded sub-tau pass (w2_exact), the bound flag clears and the
+    canonical threshold is the MINIMAL equivalent."""
+    prov = applied_threshold_provenance(
+        requested_threshold=1, strongest_first_tau=10,
+        strongest_first_budget_bitten=True,
+        strongest_dropped_bottleneck=1,
+        strongest_dropped_is_bound=False)
+    assert prov['strongest_dropped_is_bound'] is False
+    assert prov['tau_canonical_minimal'] is True
+    assert prov['applied_threshold'] == 2   # the true minimal equivalent
+    # a complete-set proof retires the bite entirely
+    prov2 = applied_threshold_provenance(
+        requested_threshold=1, strongest_first_tau=4,
+        strongest_first_budget_bitten=False,
+        strongest_dropped_bottleneck=None,
+        strongest_dropped_is_bound=False)
+    assert prov2['tau_canonical_minimal'] is False
+    assert prov2['applied_threshold'] == 1
+
+
+def test_engine_certifies_true_dropped_strength():
+    """D1-B at the engine: the audit's fixture-2 (bound 8, true omitted
+    strength 1) now certifies w2 = 1 exact; fixture-1 (nothing omitted)
+    retires the false bite."""
+    import sys
+    from pathlib import Path as _P
+    _VP = str(_P(__file__).resolve().parents[2] / 'vispath-subproject' / 'src')
+    if _VP not in sys.path:
+        sys.path.insert(0, _VP)
+    from vispath_pkg.fast_graph_core import FastGraph
+    g = FastGraph()
+    g.build_from_edges([('s', 't', 10), ('t', 'c', 8), ('c', 't', 10),
+                        ('s', 'u', 1), ('u', 't', 1)])
+    st: dict = {}
+    list(g.find_paths_strongest_first(['s'], {'t'}, 3, budget=1, stats=st))
+    assert st['strongest_dropped'] == 1.0 and st['w2_exact'] is True
+    assert st['budget_bitten'] is True
+    # fixture 1: the only simple route was emitted -- the walk bound (2)
+    # is gone and the bite is retired
+    g2 = FastGraph()
+    g2.build_from_edges([('s', 't', 4), ('t', 'c', 2), ('c', 't', 10)])
+    st2: dict = {}
+    list(g2.find_paths_strongest_first(['s'], {'t'}, 3, budget=1,
+                                       stats=st2))
+    assert st2['budget_bitten'] is False
+    assert st2['strongest_dropped'] is None and st2['w2_exact'] is True
