@@ -403,6 +403,7 @@ def ratio_threshold_provenance(
         strongest_first_tau: Optional[float] = None,
         strongest_first_budget_bitten: bool = False,
         strongest_dropped_bottleneck: Optional[float] = None,
+        strongest_dropped_is_bound: bool = True,
         strongest_retained_bottleneck: Optional[float] = None,
         edge_weight_floor: Optional[float] = None,
         edge_budget_landing: Optional[float] = None,
@@ -464,6 +465,9 @@ def ratio_threshold_provenance(
         'tau_canonical': canonical,
         'tau_canonical_exact': canonical_exact,
         'strongest_dropped_bottleneck': strongest_dropped_bottleneck,
+        'strongest_dropped_is_bound': bool(strongest_dropped_is_bound),
+        'tau_canonical_minimal': (not bool(strongest_dropped_is_bound)
+                                  and bool(strongest_first_budget_bitten)),
         'edge_budget': int(edge_budget) if edge_budget else None,
         'edge_budget_applied': floor_binding,
         'edge_floor_binding': floor_binding,
