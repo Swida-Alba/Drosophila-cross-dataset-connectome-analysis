@@ -461,6 +461,7 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
             pending.discard(key)
     time_capped = time_capped or bool(getattr(drain, "time_capped", False))
     pop_capped = bool(getattr(drain, "pop_capped", False))
+    push_capped = bool(getattr(drain, "push_capped", False))
     for _key, cb in classes.items():
         if cb.stop == "budget":
             continue
@@ -470,14 +471,18 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
                 and cb.used < cb.limit:
             cb.stop = "probe_cap"
         elif stalled:
-            cb.stop = "stalled" if cb.pulled else "dry"
-        elif getattr(drain, "push_capped", False) and cb.pulled:
+            # the accept stream stalled while this class stayed hungry —
+            # its emptiness is unverified (F-PF-007 family: no absence
+            # claims from capped/unverified classes)
+            cb.stop = "stalled"
+        elif push_capped:
             cb.stop = "push_capped"
-        elif pop_capped and cb.pulled:
+        elif pop_capped:
             # F-PF-007: the pop budget died with candidates unsearched —
-            # never report this as exhaustion or dryness
+            # never report this as exhaustion or dryness (the pulled /
+            # unpulled distinction lives in the class's pulled counter)
             cb.stop = "pop_capped"
-        elif pop_capped or capped or time_capped:
+        elif capped or time_capped:
             # a cap fired while this class was still hungry and unpulled —
             # its emptiness is UNVERIFIED, never an absence claim
             # (the old no-pull "dry" here claimed proven absence)

@@ -1039,8 +1039,10 @@ def test_pop_cap_reports_pop_capped_never_exhausted():
     assert prov["drain_pop_capped"] is True
     assert prov["drain_exhausted"] is False
     stops = {k: v["stop"] for k, v in prov["classes"].items()}
-    assert stops[("A", "T") and "A->T@h2"] == "pop_capped"   # pulled
-    assert stops["A->T@h1"] == "capped"                      # unverified
+    # both classes name the cause (the pulled/unpulled distinction lives
+    # in the class's pulled counter, not in a different stop label)
+    assert stops["A->T@h2"] == "pop_capped"
+    assert stops["A->T@h1"] == "pop_capped"
     assert "exhausted" not in stops.values()
     assert "dry" not in stops.values()
 

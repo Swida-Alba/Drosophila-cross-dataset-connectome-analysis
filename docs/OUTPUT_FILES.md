@@ -309,10 +309,12 @@ all-mode run):
 Written by the corridor lane — the route-scoped deep pass
 (plan-corridor-lane.md), the second of the two analysis modes
 (**Complete mode** = the run itself: all intact paths &ge; the applied
-threshold; **Fast mode** = this lane: the strongest type-level routes
-at the ASKED threshold; bodyId-level paths are body-SIMPLE (a neuron
-appears at most once — multi-visit chains' layered candidates that
-reuse a neuron are rejected and disclosed as `layered_rejected`)) —
+threshold; **Fast mode** = this lane: upper-bound-guided representative
+exploration at the ASKED threshold under per-class share quotas — not a
+guarantee of the strongest actual neuron routes; bodyId-level paths are
+body-SIMPLE (a neuron appears at most once — the knob-restored
+multi-visit walks enumerate body-simple paths only, the generator
+enforces raw-body simplicity directly, F-PF-003)) —
 after Complete/Shortest Paths runs with
 Fast Mode = `both`, or `auto` with Max Intermediate Layers &ge; 4
 (canonical values `complete`/`auto`/`both`; legacy `off`/`on`
@@ -345,13 +347,20 @@ lowest-threshold folder carries the superset corridors).
     bodyId path on a validated walk (`path` = bodyId chain, per-path
     `weights`, `applied_tau`, `route_h`, `plan_rank`).
 *   **`route_connection_type.csv`**: type-pair masses within the
-    validated scopes — the run-universe `weight_sum`/`weight_max`/
-    `pair_count` plus `realized_mass`/`realizing_paths`/`used_by_walks`
-    from the kept corridors.
+    validated scopes, with TWO named support sets —
+    `weight`/`universe_pair_mass` = the whole admitted type-pair mass
+    (`weight_max`/`pair_count` beside it) and
+    `selected_support_mass`/`realized_mass` = the mass on the lane's
+    emitted witnesses — plus `realizing_paths`/`used_by_walks`; the
+    heatmap/network draw the selected support and the ratios divide it.
 *   **`route_provenance.json`**: status, resolved mode/trigger, knobs,
-    per-(pair,h)-class disclosure (floors, `floor_next` witnesses, stop
-    reasons `budget`/`probe_cap`/`exhausted`/`dry`/`infeasible`,
-    phantoms, `unverified` work-capped probes, `off_plan`/`off_len`),
+    endpoint `enrollment` (token/parent-CSV membership per side),
+    per-(pair,h)-class disclosure (floors, `floor_next` candidate
+    bounds, stop reasons `budget`/`probe_cap`/`exhausted`/`dry`/
+    `infeasible`/`capped`/`push_capped`/`pop_capped`/`stalled` —
+    resource-capped classes never claim `dry`, F-PF-007; boundary ties
+    split `ties_truncated_confirmed`/`_potential`, F-PF-006; phantoms,
+    `unverified` work-capped probes, `off_plan`/`off_len`),
     `gap_partition` vs this run's own `*_allpaths_type.csv` (and the
     refill's paths when present), `plan_hash`, runtime, `phases_s`
     per-stage timings, the `store_dedup` policy (per-layer ROI-slice
