@@ -349,6 +349,19 @@ class LiteCustomGrouper:
                 ui.button(icon="add", on_click=self._add_group).props(
                     "flat dense round").tooltip("Add group")
                 self._load_button()
+                for key, target in self.query_inputs.items():
+                    if getattr(target, "_drocat_input_enabled", True) is False:
+                        continue
+                    # Named rather than icon-only: four of the six tabs carry
+                    # both a source and a target input, and two identical
+                    # glyphs would leave the tooltip to disambiguate them.
+                    ui.button(
+                        f"Add all to {key.title()}",
+                        icon="playlist_add_check",
+                        on_click=lambda _e, k=key: self.push_all_to_query(k),
+                    ).props("outline dense no-caps").classes(
+                        "drocat-labelmapper-query-action"
+                    ).tooltip(f"Add every group to the {key.title()} input")
             ui.label(
                 "Each group starts with a label, followed by one aligned "
                 "member row per dataset. Empty boxes export as empty groups."
@@ -363,6 +376,10 @@ class LiteCustomGrouper:
             if not self.handle.rows:
                 ui.label("No groups yet — click 'Add Group' or pull one from "
                          "history.").classes("drocat-empty")
+        # Every mutation path ends here, so this is where a deleted or renamed
+        # label stops being claimed: without it the query box keeps marking a
+        # chip whose group no longer exists until something else re-collects.
+        self._sync_group_chips(self.handle.rows)
 
     _QUERY_ICONS = {"source": "login", "target": "logout", "query": "hub"}
 
@@ -478,6 +495,80 @@ class LiteCustomGrouper:
         ui.notify(f"Group '{label}' added to {key.title()}", type="positive")
         return [label]
 
+    def push_all_to_query(self, key: str) -> List[str]:
+        """Add every populated group's LABEL to the named query input.
+
+        One click instead of one per row; the labels reach the input once
+        each, in board order.
+        """
+        target = self.query_inputs.get(key)
+        if target is None or not hasattr(target, "add_values"):
+            return []
+        rows = self._collect_rows()
+        # (chip label, name as typed, cells) for every populated row.
+        labeled = []
+        for i, row in enumerate(rows):
+            cells = row.get("cells") or {}
+            if not any(vals for vals in cells.values()):
+                continue
+            labeled.append((row["name"] or auto_label(i + 1),
+                            row["name"], cells))
+        if not labeled:
+            ui.notify("No group has members to add", type="warning")
+            return []
+        # The chip carries the name the run will see; the history keeps only
+        # groups the user actually named (group_history skips blank labels, and
+        # an auto-named Group_N carries no reusable identity).
+        labels = list(dict.fromkeys(label for label, _, _ in labeled))
+        target.add_values(labels)
+        group_history.record([(typed, cells) for _, typed, cells in labeled],
+                             origin="inline")
+        history_store.record(
+            labels,
+            custom_values=labels,
+            datasets=sorted({
+                dataset for _, _, cells in labeled
+                for dataset, values in cells.items()
+                if any(str(value).strip() for value in (values or []))
+            }),
+        )
+        ui.notify(f"Added {len(labels)} group(s) to {key.title()}",
+                  type="positive")
+        return labels
+
+    def _group_hints(self, rows: List[dict]) -> Dict[str, str]:
+        """Map each populated group's label to its chip tooltip text."""
+        hints: Dict[str, str] = {}
+        shown = self.datasets()
+        for i, row in enumerate(rows):
+            cells = {dataset: [value for value in values if str(value).strip()]
+                     for dataset, values in (row.get("cells") or {}).items()
+                     if values}
+            if not any(cells.values()):
+                continue
+            label = str(row.get("name") or "").strip() or auto_label(i + 1)
+            # Read in the board's own column order; datasets the tab no longer
+            # shows follow, since their members still resolve at run time.
+            order = [d for d in shown if cells.get(d)] + [
+                d for d in sorted(cells) if d not in shown and cells.get(d)]
+            detail = ", ".join(f"{len(cells[d])} in {d}" for d in order)
+            hints[label] = f"Custom group {label} — {detail}"
+        return hints
+
+    def _sync_group_chips(self, rows: List[dict]) -> None:
+        """Tell the query inputs which of their chips name a group.
+
+        A chip naming ``DN1a`` is ambiguous on its face: it reads the same as
+        a raw type query, yet with this board active the backend expands it
+        into the group's members. The input marks the ones that resolve as
+        groups, and clears the mark when a label stops existing.
+        """
+        hints = self._group_hints(rows)
+        for target in self.query_inputs.values():
+            setter = getattr(target, "set_group_labels", None)
+            if setter is not None:
+                setter(hints)
+
     # --------------------------------------------------------------- actions
     def _add_group(self) -> None:
         self._collect_rows()
@@ -546,6 +637,7 @@ class LiteCustomGrouper:
                     cells[ds] = list(vals)
             rows.append({"name": str(name).strip(), "cells": cells})
         self.handle.replace_rows(rows)
+        self._sync_group_chips(rows)
         return rows
 
     # --------------------------------------------------------------- export

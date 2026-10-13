@@ -2553,6 +2553,28 @@ html, body {
 .q-badge { border-radius: 999px; font-weight: 650; }
 .q-expansion-item__toggle-icon { color: var(--drocat-muted); }
 .q-chip { border-radius: 8px; background: var(--drocat-soft) !important; color: var(--drocat-navy) !important; }
+/* A query chip that names a custom group: a group glyph, a cobalt left rule
+   and the selected-row fill. The glyph is pseudo-element content so the chip's
+   textContent keeps reading as the value — dblclick-to-edit and the board's
+   marker both parse it — and the tooltip rides a plain title attribute, the
+   same device the marked history rows use. Two classes deep plus !important to
+   beat the bare .q-chip rule above. */
+.drocat-chip-input .q-chip.drocat-chip-group {
+    background: var(--drocat-selected) !important;
+    box-shadow: inset 3px 0 0 var(--drocat-cobalt);
+}
+.drocat-chip-input .q-chip.drocat-chip-group .q-chip__content::before {
+    content: 'group';
+    font-family: 'Material Symbols Outlined';
+    font-feature-settings: 'liga';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 15px;
+    line-height: 1;
+    margin-right: 4px;
+    color: var(--drocat-cobalt);
+    vertical-align: -2px;
+}
 .q-btn:focus-visible,
 .q-field:focus-within,
 .q-expansion-item:focus-within {

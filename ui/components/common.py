@@ -98,6 +98,40 @@ _CHIP_LIST_TOGGLE_JS = (
     "})"
 )
 
+# Marks the chips that name a custom group, so a query box does not present a
+# group label and a raw type/bodyId as the same kind of entry. The label set
+# lives on the field node and a MutationObserver re-applies it, because Quasar
+# rebuilds the chip nodes on every value change and a server round trip per
+# change would lag the render the user is looking at.
+_GROUP_CHIP_MARK_JS = """
+(() => {
+  const root = document.getElementById('__FIELD_ID__');
+  if (!root) return;
+  const apply = () => {
+    const hints = root.__drocatGroupHints || {};
+    root.querySelectorAll('.q-chip').forEach((chip) => {
+      const content = chip.querySelector('.q-chip__content') || chip;
+      const value = (content.textContent || '').trim();
+      const has = Object.prototype.hasOwnProperty.call(hints, value);
+      chip.classList.toggle('drocat-chip-group', has);
+      if (has) chip.setAttribute('title', hints[value]);
+      else chip.removeAttribute('title');
+    });
+  };
+  root.__drocatGroupHints = __HINTS__;
+  root.__drocatGroupApply = apply;
+  apply();
+  if (!root.__drocatGroupObserver) {
+    const observer = new MutationObserver(() => {
+      const fn = root.__drocatGroupApply;
+      if (fn) fn();
+    });
+    observer.observe(root, {childList: true, subtree: true, characterData: true});
+    root.__drocatGroupObserver = observer;
+  }
+})();
+"""
+
 # Client-side arrow-key navigation for the suggestion/history dropdown.
 # The menu never takes focus (no-focus), so keystrokes land in the QSelect
 # editor; this document-level capture handler moves a highlight between the
@@ -1205,6 +1239,11 @@ def neuron_list_input(
             with ui.element("div").classes(
                 "relative flex-grow drocat-chip-input-shell drocat-chip-list-collapsed"
             ) as chip_input_anchor:
+                # A plain element, so this id reaches the DOM (a Quasar
+                # component consumes it as a prop instead). The group-chip
+                # marker addresses the field through it.
+                chip_dom_id = f"drocat-chip-field-{id(chip_input_anchor)}"
+                chip_input_anchor.props(f'id="{chip_dom_id}"')
                 chip_input = ui.select(
                     options=list(initial_values),
                     value=list(initial_values),
@@ -2574,6 +2613,30 @@ def neuron_list_input(
         chip_input.set_value(current)
         update_status()
         return current
+
+    def set_group_labels(hints: Dict[str, str]) -> None:
+        """Mark the chips that name a custom group.
+
+        *hints* maps a group label to its tooltip text; a chip whose text is
+        not a key goes back to looking like an ordinary entry.
+        """
+        script = (_GROUP_CHIP_MARK_JS
+                  .replace("__FIELD_ID__", chip_dom_id)
+                  .replace("__HINTS__",
+                           json.dumps(dict(hints or {}), ensure_ascii=False)))
+        try:
+            # Run against this field's own element: a caller that has just
+            # re-rendered (the grouping board does, on every mutation) leaves
+            # the task's slot pointing at deleted elements, and run_javascript
+            # resolves its client through that slot.
+            with chip_input_anchor:
+                ui.run_javascript(script)
+        except Exception:
+            # Lazy tab panels keep their elements unmounted until first
+            # activation, so there may be no client to run this against yet.
+            pass
+
+    container.set_group_labels = set_group_labels
 
     def set_input_enabled(editable: bool) -> None:
         """Enable or disable this input as a unit, keeping its values.

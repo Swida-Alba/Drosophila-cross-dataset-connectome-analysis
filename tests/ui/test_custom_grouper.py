@@ -765,6 +765,154 @@ class TestQueryPushWorkflow:
         assert source.get_value()[1] == []
 
 
+    def test_push_all_adds_every_populated_group_once(self, isolated_store):
+        from nicegui import Client
+        from nicegui.page import page
+        from ui.components.common import neuron_list_input
+
+        client = Client(page("/grouper-push-all"))
+        with client:
+            source = neuron_list_input(label="Source Neurons",
+                                       show_filter=False, show_upload=False)
+            _selector, card, _resolve = me.custom_grouping_block(
+                tab_key="push_all", datasets_provider=lambda: [DS_A, DS_B],
+                query_inputs={"source": source})
+        grouper = card.inline_grouper
+        grouper.handle.add_row("aMe", {DS_A: ["aMe12", "aMe10"], DS_B: ["aMe12"]})
+        grouper.handle.add_row("", {DS_A: ["DN1p"]})
+        grouper.handle.add_row("empty", {DS_A: [], DS_B: []})
+        grouper.resync()
+        with client:
+            pushed = grouper.push_all_to_query("source")
+        # A blank label auto-names exactly as a single push would; a group with
+        # no members anywhere is not a row the query can expand.
+        assert pushed == ["aMe", "Group_2"]
+        assert source.get_value()[1] == ["aMe", "Group_2"]
+        with client:
+            assert grouper.push_all_to_query("source") == pushed
+        assert source.get_value()[1] == pushed
+        # The auto-named row reaches the query but not the history: a Group_N
+        # label carries no reusable identity (same rule a single push follows).
+        assert sorted(gh.valid_labels()) == ["aMe"]
+
+    def test_push_all_refuses_a_board_with_no_members(self, isolated_store,
+                                                     monkeypatch):
+        from nicegui import Client
+        from nicegui.page import page
+        from ui.components.common import neuron_list_input
+
+        client = Client(page("/grouper-push-none"))
+        with client:
+            source = neuron_list_input(label="Source Neurons",
+                                       show_filter=False, show_upload=False)
+            _selector, card, _resolve = me.custom_grouping_block(
+                tab_key="push_none", datasets_provider=lambda: [DS_A],
+                query_inputs={"source": source})
+        grouper = card.inline_grouper
+        grouper.handle.add_row("empty", {DS_A: []})
+        grouper.resync()
+        notes = []
+        monkeypatch.setattr(cg.ui, "notify",
+                            lambda message, **kw: notes.append(message))
+        with client:
+            assert grouper.push_all_to_query("source") == []
+        assert notes == ["No group has members to add"]
+        assert source.get_value()[1] == []
+
+
+class TestGroupChipMarking:
+    """A chip that names a group reads identically to a raw type query, yet the
+    backend expands it into the group's members -- so the input has to be told
+    which of its chips are groups, and told again when the board changes."""
+
+    def _board(self, page_name, rows, capture=True):
+        from nicegui import Client
+        from nicegui.page import page
+        from ui.components.common import neuron_list_input
+
+        client = Client(page(page_name))
+        with client:
+            query = neuron_list_input(label="Neurons to Compare",
+                                      show_filter=False, show_upload=False)
+            _selector, card, _resolve = me.custom_grouping_block(
+                tab_key=page_name, datasets_provider=lambda: [DS_A, DS_B],
+                query_inputs={"query": query})
+        grouper = card.inline_grouper
+        for name, cells in rows:
+            grouper.handle.add_row(name, cells)
+        pushes = []
+        if capture:
+            query.set_group_labels = lambda hints: pushes.append(dict(hints))
+        return client, grouper, pushes
+
+    def test_query_input_receives_labels_with_member_counts(self, isolated_store):
+        client, grouper, pushes = self._board("grouper-chips", [
+            ("aMe", {DS_A: ["aMe12", "aMe10"], DS_B: ["aMe12"]}),
+            ("clock", {DS_A: ["DN1p"]}),
+            ("empty", {DS_A: [], DS_B: []}),
+        ])
+        with client:
+            grouper.resync()
+        seen = pushes[-1]
+        assert sorted(seen) == ["aMe", "clock"]
+        # The counts read in the board's column order, not alphabetically.
+        assert seen["aMe"] == (
+            f"Custom group aMe — 2 in {DS_A}, 1 in {DS_B}")
+
+    def test_mark_follows_a_rename_and_a_removal(self, isolated_store):
+        client, grouper, pushes = self._board("grouper-chips2", [
+            ("aMe", {DS_A: ["aMe12"]}),
+            ("clock", {DS_A: ["DN1p"]}),
+        ])
+        with client:
+            grouper.resync()
+        assert sorted(pushes[-1]) == ["aMe", "clock"]
+        with client:
+            grouper._name_inputs[0].value = "renamed"
+            grouper._remove_group(1)
+        assert sorted(pushes[-1]) == ["renamed"]
+
+    def test_marker_push_is_scoped_to_the_field(self, isolated_store,
+                                                monkeypatch):
+        """A push that runs on the caller's slot is silently swallowed.
+
+        The board re-renders on every mutation, and that render deletes the
+        elements the handler's task entered with -- run_javascript resolves
+        its client through the slot stack, so it raises and the guard eats
+        it. Pinning the slot's parent is what catches a regression here; the
+        recorder above cannot, because it replaces the call that raises.
+        """
+        from nicegui import context
+
+        client, grouper, _ = self._board("grouper-scoped", [
+            ("aMe", {DS_A: ["aMe12"]}),
+        ], capture=False)
+        query = grouper.query_inputs["query"]
+        seen = []
+
+        def record(script, *args, **kwargs):
+            stack = context.slot_stack
+            seen.append(stack[-1].parent if stack else None)
+
+        monkeypatch.setattr(cg.ui, "run_javascript", record)
+        with client:
+            grouper.resync()
+        assert seen, "the marker was never pushed"
+        assert all(slot is query.chip_input_anchor for slot in seen), \
+            "push ran on the caller's slot instead of the field's own element"
+
+    def test_disabled_input_is_still_told(self, isolated_store):
+        """The comparison tabs disable the query box at 'custom group' level,
+        but a chip the user pushed earlier can still be sitting in it."""
+        client, grouper, pushes = self._board("grouper-chips3", [
+            ("aMe", {DS_A: ["aMe12"]}),
+        ])
+        with client:
+            grouper.query_inputs["query"]._drocat_input_enabled = False
+            grouper.resync()
+        assert sorted(pushes[-1]) == ["aMe"]
+
+
 class TestSuggestionAnchoring:
     def test_suggest_menu_targets_its_input_wrapper(self, isolated_store):
         """The custom suggestion menu must carry an explicit target selector
@@ -980,6 +1128,32 @@ class TestQueryActionGate:
             dialog.open()
             assert actions()
 
+
+    def test_add_all_button_follows_the_same_gate(self, isolated_store):
+        """The toolbar's add-all is the same action for every row at once, so
+        it must disappear with the per-row one."""
+        from nicegui import Client, ui
+        from nicegui.page import page
+
+        client = Client(page("/grouper-add-all-gate"))
+        with client:
+            target = ui.column().props('id=add-all-gate')
+            _button, dialog, _resolve = me.custom_grouping_block(
+                tab_key="gate5", datasets_provider=lambda: [DS_A],
+                query_inputs={"query": target})
+
+        def add_all():
+            return [e for e in client.elements.values()
+                    if getattr(e, "_props", {}).get("icon") == "playlist_add_check"]
+
+        with client:
+            dialog.open()
+            assert add_all(), "an editable input must offer add-all"
+        with client:
+            target._drocat_input_enabled = False
+            dialog.close()
+            dialog.open()
+            assert add_all() == []
 
     def test_plain_element_target_still_gets_the_action(self, isolated_store):
         """A target that never opted into the flag stays enabled — the gate
