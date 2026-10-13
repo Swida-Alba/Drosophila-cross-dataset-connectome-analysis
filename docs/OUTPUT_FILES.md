@@ -230,15 +230,17 @@ produced, for every weight basis (see
 the REFILL-ASKED records (recovering budget-cut mass) are written when
 the applied threshold &gt; asked, and on EVERY ratio-basis run with
 status `complete_at_asked` even when the budget did not bite. The
-FULL-scope enumeration is per-chain (2026-10-11: restricted to the
-emitted chains — exact layered DP for distinct-type chains, an
-alive-pruned visited DFS for multi-visit chains (walk-level dead-end
-pruning, lossless; deterministic collection order; structures recorded
-ON COMPLETION so only edges on ≥ 1 collected realization enter the
-masses) with a 2M
-path cap and honest
-`chains_truncated` disclosure beside the `chains` denominator; the pair
-tables' `refilled_total` is
+FULL-scope realization is per-chain (2026-10-11: restricted to the
+emitted chains; 2026-10-13: the LAYERED PER-POSITION BODY-SET FILTER
+replaced the DP/DFS enumeration at every applied threshold — forward
+body sets from the run's sources and backward sets to its targets over
+the chain's hop pairs, intersected per position; per-hop mass = kept
+edges' weight sum; NO bodyId paths are materialized, so the retired
+`full.paths`/`full.bodyid_paths` counters are null and nothing
+truncates. Chains without an effective-label revisit are exact;
+label-revisiting chains carry the layered-walk
+superset semantics, disclosed as `full.chains_revisit` with examples;
+the pair tables' `refilled_total` is
 chain-scoped and `pair_offchain_mass` discloses the ≥1 admitted mass
 off-chain): the
 refilled data mirrored in the path/connection data format, parallel to

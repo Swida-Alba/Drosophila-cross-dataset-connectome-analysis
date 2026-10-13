@@ -40,23 +40,29 @@ re-enumerated slices carry their own fresh provenance.
   `refill_full_type_pairs.csv` (data_details) and
   `refill_full_paths_type.csv` / `refill_full_carrying_paths_type.csv`
   / `refilled_full_connection_type.csv` (mirror). The report's Refill
-  tab carries a Refill-asked | Refill-full scope switch. Enumeration
-  is per-chain and bounded (2026-10-11): distinct-type chains use an
-  EXACT layered DP (a body has one type, so layered walks cannot
-  revisit a body — simplicity is automatic; no path budget, no
-  truncation); MULTI-VISIT chains (a repeated type) use an
-  alive-pruned visited simple-path DFS (walk-level dead-end pruning,
-  lossless) capped at 2M paths with honest `chains_truncated`
-  disclosure beside the `chains` denominator — the DP would silently
-  over-count those (layered walks
-  may revisit a body across layers, which the engine's simple-path
-  semantics excludes), and the DFS records structures ON COMPLETION so
-  only edges on ≥ 1 collected realization enter the masses. The old
-  unbudgeted whole-cone walk was
-  unbounded on fat queries (10h+ observed); the per-chain approach
-  bounds the cost to the chains' own subgraphs (the MCNS R1-R6→Tm3 L4
-  anchor: 10h+ → ~190-220s, 523,418,263 simple realizations, 29/77
-  multi-visit chains disclosed as truncated). The pair tables'
+  tab carries a Refill-asked | Refill-full scope switch. Realization
+  is per-chain (2026-10-11: restricted to the emitted chains) by the
+  **LAYERED PER-POSITION BODY-SET FILTER** (2026-10-13, universal at
+  every applied threshold — it replaced the 2026-10-11 DP/DFS
+  enumeration): forward body sets from the run's sources and backward
+  body sets to its targets over the chain's own hop pairs, intersected
+  per position; a hop edge is kept iff both endpoints survive at their
+  positions; per-hop mass = the kept edges' weight sum. NO bodyId
+  paths are materialized (no traversal/path counts anywhere — the
+  retired `full.paths`/`full.bodyid_paths` counters are null) and
+  nothing truncates (`full.chains_truncated` = 0; the 2M-path DFS caps
+  are gone). Chains WITHOUT an effective-label revisit are EXACT
+  (equal to the retired DP's realization set — a body has one
+  effective label, so a layered walk cannot revisit a body);
+  label-revisiting chains carry the LAYERED-WALK SUPERSET semantics (a
+  body may occupy two positions and contributes its edges at both; an
+  edge recurring at two positions counts once per position), disclosed
+  as `full.chains_revisit` with up to five `full.chains_revisit_examples`
+  and a run warning note. Cost is linear in the chains' own subgraphs —
+  the L8 MCNS ratio cell's refill subprocess fell from ~115 min
+  (3.02B reconstructed walks, 737 capped chains) to ~3 min with
+  identical asked-scope output and 0 mismatches on the non-superset
+  chains. The pair tables'
   `refilled_total` is chain-scoped; `pair_offchain_mass` discloses
   the ≥1 admitted mass the chain scope excludes.
 - shortest mode: asked view only (no second-round paths table to
@@ -147,6 +153,7 @@ separate_hemispheres=...)`).
 | `refill_type_pairs.csv` | One row per emitted type pair (zeros included): `emitted_weight`, `refill_weight`, `refilled_total`, `emitted_pair_count`, `refill_pair_count`, `refilled_connection_ratio`, `refilled_traversal_probability`, `split_status`. Never capped. |
 | `refill_bodyId_pairs.csv` | The refilled bodyId pairs with `traversal_count` and hop positions; capped by `--detail-cap` (default 50,000, deterministic weight-desc order). |
 | `refill_provenance.json` | Thresholds/budgets (incl. the run's `graph_pruning_record`), induced-graph sizes, `table_reproduced`, `refill_truncated`, and the disclosure counters: `skipped_pairs_not_emitted_type_pair` (per-type-pair census + capped examples; EMPTY under the 2026-10-07 route scope — pruned edges are disclosed as `non_emitted_pair_mass` instead), `excluded_edges_non_involved_endpoint`, `boundary_refill_edge_count/weight/examples_at_or_above_w0`. |
+| `refill_provenance.json` → `full` block | The full scope's own record: `refill_star: true`, `enumeration: 'none (layered per-position filtering reference)'`, `chains`/`chains_carrying`/`chains_complete`, `chains_truncated` (always 0), `refill_edges`/`refill_weight_total` (refill-class, per emitted pair), `kept_edge_count`/`kept_mass_total` (all kept classes), `position_set_memberships`/`position_set_max` (the filter's per-position body-set sizes), `chains_revisit` + `chains_revisit_examples` (the labeled layered-walk superset chains), `paths`/`bodyid_paths` (null — retired, no bodyId paths are materialized), and `cache_guard` (the full-scope completeness cross-check). |
 | `README.md` | Semantics + join recipe (join on `(type_pre, type_post)` against `connection_type.csv` summed across its `conn_layer` rows). |
 
 ### Ratio-basis refills run at synapse >= 1

@@ -101,9 +101,17 @@ tables have no adjusted variant (threshold-free per-pair ratio only).
 - **refill-full** — the second round admitted at SYNAPSE >= 1 ONLY (no
   ratio tier, no synapse tier), re-valuing the SAME emitted chains; the
   full-connection scope, produced for EVERY all-mode run with emitted rows.
-  Enumerated UNBUDGETED (a strongest-first budget would drain exactly the
-  weak sub-threshold paths the scope exists for); `full.truncated` is
-  always false. Files: `refill_full_type_pairs.csv` (data_details) +
+  Realized per chain by the LAYERED PER-POSITION BODY-SET FILTER
+  (2026-10-13, universal at every applied threshold — forward body sets
+  from the run's sources, backward sets to its targets, intersected per
+  position; per-hop mass = kept-edge weight sum; no bodyId paths
+  materialized, so `full.paths`/`full.bodyid_paths` are null and
+  `full.truncated` is always false). Chains without an effective-label
+  revisit are exact; label-revisiting chains carry the layered-walk
+  superset semantics, disclosed as `full.chains_revisit` (+ examples)
+  and a run warning note. Linear cost — the L8 MCNS ratio cell's refill
+  fell ~115 min → ~3 min. Files: `refill_full_type_pairs.csv`
+  (data_details) +
   `refill_full_paths_type.csv` / `refill_full_carrying_paths_type.csv` /
   `refilled_full_connection_type.csv` (mirror). The report's Refill tab
   carries a Refill-asked | Refill-full scope switch; the full scope's Adj
