@@ -1144,3 +1144,60 @@ def test_corridor_multi_visit_emits_valid_realization(tmp_path):
     # 90 realization must
     assert ["a1", "b1", "a1", "t"] not in emitted
     assert ["a1", "b2", "a2", "t"] in emitted
+
+
+def test_shortest_store_enforces_per_endpoint_minimum_hops(tmp_path):
+    """F-PF-009 (D3-B): with the store's per-target distance maps the
+    lane enforces per-endpoint minimum hops — the audit's two-target
+    fixture emits a->t1, b->t1 and the MINIMUM a->b->t2, and rejects the
+    nonminimum a->b->t1 that the flattened union used to emit while
+    claiming shortest semantics."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a", "b", "b", "a"],
+        "bodyId_post": ["t1", "t1", "t2", "b"],
+        "weight": [5, 5, 5, 5]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a", "b", "t1", "t2"],
+                  "type": ["S", "S", "T", "T"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['S']\n"
+        "target neurons:             ['T']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "path_mode:                  shortest\n"
+        "dataset:                    synth\n")
+    store = run / "shortest_discovery_store"
+    (store / "connections").mkdir(parents=True)
+    (store / "node_distances").mkdir(parents=True)
+    (store / "meta.json").write_text('{"targets_found": ["t1", "t2"]}')
+    pl.DataFrame({
+        "bodyId_pre": ["a", "b", "b", "a"],
+        "bodyId_post": ["t1", "t1", "t2", "b"],
+        "weight": [5.0, 5.0, 5.0, 5.0]}).write_parquet(
+        store / "connections" / "connections_L0.parquet")
+    pl.DataFrame({
+        "target": ["t1", "t1", "t2", "t2"],
+        "node": ["a", "b", "b", "a"],
+        "dist": [1, 1, 1, 2]}).write_parquet(
+        store / "node_distances" / "node_distances_L0_c0.parquet")
+    # the nonminimum a->b->t1 route rides the type-revisiting walk
+    # S->S->T, which only exists under the multi-visit knob (the default
+    # planner rule never plans type-revisiting walks at all)
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    allow_multi_visit=True)
+    prov = json.loads(
+        (run / "route_scope_paths" / "route_provenance.json").read_text())
+    assert prov["validation_basis"] == "shortest_dag_store_enforced"
+    assert prov["shortest_enforced"] is True
+    body = pl.read_csv(run / "route_scope_paths" / "route_paths_bodyId.csv")
+    paths = set(body["path"].to_list())
+    assert "a->t1" in paths and "b->t1" in paths
+    assert "a->b->t2" in paths          # the minimum 2-hop route to t2
+    assert "a->b->t1" not in paths      # nonminimum: d_t1(a) == 1

@@ -955,6 +955,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     # an explicit disclosure (the storeless path keeps working).
     path_mode = str(kv.get("path_mode", "all") or "all").strip().lower()
     store_universe = None
+    store_distances = None   # F-PF-009 D3-B: per-target distance maps
     validation_basis = ("lossless_prune" if path_mode != "shortest"
                         else "lossless_prune_fallback")
     if path_mode == "shortest" and run_dir:
@@ -1150,13 +1151,11 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             su = su.filter(pl.col("type_pre") != pl.col("type_post"))
         if su.height:
             store_universe = su.sort(["bodyId_pre", "bodyId_post"])
-            # F-PF-009 (audit 2026-10-13): the FLATTENED store union does
-            # not carry the parent's per-target distance maps — the lane
-            # enumerates ordinary bounded routes over the edge union, so
-            # a route can be nonminimum-hop for its bodyId pair while the
-            # old 'shortest_dag_store' name claimed shortest semantics.
-            # Name the scope what it is; enforcing per-endpoint minimum
-            # hops is a ruled follow-up (plan ...-audit-fixes.md D3-B).
+            # F-PF-009 D3-B: the per-target distance maps load AFTER
+            # tgt_ids exists (below); with them the basis becomes
+            # shortest_dag_store_enforced and realization enforces
+            # per-endpoint minimum hops; without them the lane stays on
+            # the honestly-named edge union.
             validation_basis = "shortest_store_edge_union"
         else:
             store_universe = None  # nothing survives — prune fallback
@@ -1197,6 +1196,27 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         _refuse(f"no typed edges at asked threshold {asked}")
     src_ids = tmap.filter(pl.col("t").is_in(src_types))["bid"].to_list()
     tgt_ids = tmap.filter(pl.col("t").is_in(tgt_types))["bid"].to_list()
+
+    # F-PF-009 D3-B (ruled follow-up, implemented): load the parent's
+    # per-target distance maps and ENFORCE per-endpoint minimum hops at
+    # realization -- a layered path (s_body -> ... -> t_body, h hops) is
+    # kept iff h == dist[t_body][s_body]. With the maps the basis
+    # regains true shortest semantics; without them (missing
+    # node_distances) the lane falls back to the honestly-named union.
+    if store_universe is not None and path_mode == "shortest" and run_dir:
+        try:
+            from shortest_discovery_store import load_target_distances
+            store_distances = load_target_distances(
+                Path(run_dir) / 'shortest_discovery_store', tgt_ids)
+            store_distances = {
+                str(k): {str(n): int(d) for n, d in v.items()}
+                for k, v in (store_distances or {}).items()}
+            if any(store_distances.values()):
+                validation_basis = "shortest_dag_store_enforced"
+            else:
+                store_distances = None  # maps unavailable -> union
+        except Exception:
+            store_distances = None
 
     vis_adj, rel, ds_all, _dt_all = _type_adj(pairs, src_types, tgt_types,
                                               bound)
@@ -1417,6 +1437,17 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                                 time_capped = True
                                 break
                             paths.append(p)
+                            if store_distances is not None:
+                                # D3-B: per-endpoint minimum-hop
+                                # enforcement -- the realization must be
+                                # SHORTEST for its own (src, tgt) body
+                                # pair, not merely present in the
+                                # flattened store union
+                                _raw = [n.split("\x1f")[0] for n in p]
+                                if store_distances.get(
+                                        _raw[-1], {}).get(_raw[0]) != h:
+                                    paths.pop()
+                                    continue
                             if len(paths) >= remaining:
                                 # §21 heavy-tail ruling: the share
                                 # truncates the walk's tie mass. The
@@ -1430,15 +1461,20 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                                 # flag then clears); no pull at all
                                 # stays potential.
                                 ties_truncated = True
-                                nxt = next(gen, None)
-                                if nxt is not None:
+                                for cand in gen:
+                                    _rw = [n.split("\x1f")[0]
+                                           for n in cand]
+                                    if store_distances is not None                                             and store_distances.get(
+                                                _rw[-1], {}).get(
+                                                _rw[0]) != h:
+                                        continue  # filtered witness
+                                    nxt = cand
                                     ties_next_bn = min(
                                         adj_w[nxt[i]][nxt[i + 1]]
                                         for i in range(h))
                                     _nxt_repeats = (
-                                        len(set(n.split("\x1f")[0]
-                                                for n in nxt))
-                                        != len(nxt))
+                                        len(set(_rw)) != len(_rw))
+                                    break
                                 break
                         kept, class_body_rows = [], []
                         # engine type-path semantics: a hop's mass counts
@@ -1747,16 +1783,18 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "phases_s": phases,
         "store_dedup": ("ROI-slice sum per layer; keep-first by sorted "
                         "layer"
-                        if validation_basis == "shortest_store_edge_union"
+                        if validation_basis in ("shortest_store_edge_union", "shortest_dag_store_enforced")
                         else None),
         "store_weight_conflicts": (store_weight_conflicts
-                                   if validation_basis
-                                   == "shortest_store_edge_union" else None),
+                                   if (validation_basis.startswith("shortest_dag") or validation_basis == "shortest_store_edge_union") else None),
         "time_capped": time_capped,
         "time_budget_s": time_budget_s,
         "plan_hash": plan_hash,
         "path_mode": path_mode,
         "validation_basis": validation_basis,
+        "shortest_enforced": (store_distances is not None
+                              if validation_basis.startswith(
+                                  "shortest_dag") else None),
         "validated_walks": len(walk_rows),
         "bodyId_paths": len(body_rows),
         "scope_pairs": len(scope_pairs),
@@ -1789,7 +1827,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
               "and layers deduplicated keep-first by sorted layer; "
               "cross-layer weight disagreements after summation are "
               "disclosed as store_weight_conflicts)"
-              if validation_basis == "shortest_store_edge_union" else
+              if validation_basis in ("shortest_store_edge_union", "shortest_dag_store_enforced") else
               " (lossless hop-budget prune)"
               if validation_basis == "lossless_prune" else
               " (store absent — lossless-prune FALLBACK, not min-hop-"
