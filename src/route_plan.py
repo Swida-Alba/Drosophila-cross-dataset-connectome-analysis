@@ -1627,6 +1627,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                                          if denom_adj > 0 else None),
                 # corridor tail
                 "weight_max": wmax, "pair_count": n,
+                # F-PF-008 (audit 2026-10-13): `weight` is the WHOLE
+                # admitted type-pair mass while connection_ratio divides
+                # the SELECTED-realization mass — two support sets behind
+                # one row. The explicit aliases name each quantity so no
+                # reader has to guess which numerator a number uses.
+                "universe_pair_mass": wsum,
+                "selected_support_mass": realized,
                 "realized_mass": realized,
                 "realizing_paths": rec["paths"],
                 "used_by_walks": rec["walks"]})
@@ -1777,6 +1784,11 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
               "restricted)") + "\n\n")
         + "Per-class disclosure (floor = lowest accepted walk UB; floor_next "
         "= first skipped candidate's UB, the honest certificate witness):\n\n"
+        + ("- route_connection_type.csv carries TWO support sets, named: "
+           "`weight`/`universe_pair_mass` is the WHOLE admitted type-pair "
+           "mass; `selected_support_mass`/`realized_mass` is the mass on "
+           "the lane's emitted witnesses (the heatmap/network draw the "
+           "latter; the ratios divide it).\n\n")
         + ("\n".join(f"- {f}" for f in floors) if floors
            else "- no validated corridors (all classes dry)\n")
         + (f"\n- TIME-CAPPED at {time_budget_s}s — enumeration was cut "
@@ -1802,15 +1814,22 @@ def _write_mirror_visualizations(out, src_types=(), tgt_types=()):
         if not conn_csv.exists():
             return
         frame = pd.read_csv(conn_csv)
-        frame = frame[frame["weight"].fillna(0) > 0]
+        # F-PF-008 (audit 2026-10-13): the route-scoped visualization
+        # draws the SELECTED-support mass — a route-support panel, not
+        # the whole admitted type-pair universe (the old `weight` column
+        # drew 101 synapses for a hop whose emitted witnesses carry 1).
+        # The universe stays in the CSV under `weight`/`universe_pair_mass`.
+        frame = frame[frame["selected_support_mass"].fillna(0) > 0]
         if frame.empty:
             return
         from vispath_pkg.vispath import VisualizePath
         vp = VisualizePath(
-            path_file=frame[["type_pre", "type_post", "weight",
+            path_file=frame[["type_pre", "type_post",
+                             "selected_support_mass",
                              "connection_ratio", "connection_ratio_adj"]]
             .rename(columns={"type_pre": "source",
                              "type_post": "target",
+                             "selected_support_mass": "weight",
                              "connection_ratio": "ratio",
                              "connection_ratio_adj": "ratio_adj"}),
             output_folder=str(out), showfig=False, verbose=False,

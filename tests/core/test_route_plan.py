@@ -1043,3 +1043,42 @@ def test_pop_cap_reports_pop_capped_never_exhausted():
     assert stops["A->T@h1"] == "capped"                      # unverified
     assert "exhausted" not in stops.values()
     assert "dry" not in stops.values()
+
+
+def test_pair_export_names_both_support_sets(tmp_path):
+    """F-PF-008: route_connection_type.csv explicitly names its two
+    support sets — weight/universe_pair_mass (the whole admitted
+    type-pair mass) vs selected_support_mass/realized_mass (the lane's
+    emitted witnesses) — and they differ exactly when the universe is
+    bigger than the selected support."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a", "a", "b1", "b2"],
+        "bodyId_post": ["b1", "b2", "t", "t"],
+        "weight": [10, 10, 10, 10]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a", "b1", "b2", "t"],
+                  "type": ["A", "B", "B", "T"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+    out = tmp_path / "lane_out"
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    per_pair_length_budget=1,
+                    source_types=["A"], target_types=["T"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out)
+    conn = pl.read_csv(out / "route_connection_type.csv")
+    for col in ("universe_pair_mass", "selected_support_mass",
+                "realized_mass"):
+        assert col in conn.columns
+    ab = conn.filter((pl.col("type_pre") == "A")
+                     & (pl.col("type_post") == "B")).row(0, named=True)
+    # universe: a->b1 + a->b2 = 20; the selected walk witnesses a->b1 = 10
+    assert ab["weight"] == ab["universe_pair_mass"] == 20
+    assert ab["selected_support_mass"] == ab["realized_mass"] == 10
+    bt = conn.filter((pl.col("type_pre") == "B")
+                     & (pl.col("type_post") == "T")).row(0, named=True)
+    assert bt["universe_pair_mass"] == 20
+    assert bt["selected_support_mass"] == 10
