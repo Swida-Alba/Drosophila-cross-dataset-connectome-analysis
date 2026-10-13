@@ -303,7 +303,7 @@ def create_find_path_tab():
                              "auto": "Auto (deep runs)",
                              "both": "Complete + Fast"},
                             default=get_user_default("corridor_mode"),
-                            hint="Values — complete: run COMPLETE mode only (all intact paths >= the applied threshold; the run itself). auto: also run FAST mode (the corridor lane: strongest type-level routes at the ASKED threshold) after deep searches (max intermediate layers >= 4). both: always run FAST after the run. Fast writes its own route_scope_paths/ beside the run and never modifies this run's outputs. Full guide via the book icon.",
+                            hint="Values — complete: run COMPLETE mode only (all intact paths >= the applied threshold; the run itself). auto: also run FAST mode (the corridor lane) after deep searches (max intermediate layers >= 4). both: always run FAST after the run. FAST mode is upper-bound-guided representative exploration under per-class share quotas — not a guarantee of the strongest actual neuron routes; floor/floor_next in its provenance are candidate bounds. Fast writes its own route_scope_paths/ beside the run and never modifies this run's outputs. Full guide via the book icon.",
                             help_doc="pathfinding_algorithms",
                         )
                         corridor_note = ui.label("").classes(
@@ -312,11 +312,14 @@ def create_find_path_tab():
                         def _corridor_note_text():
                             mode = corridor_mode.value
                             depth = int(max_interlayer.value or 0)
-                            will = (mode == "on"
+                            # canonical modes are complete/auto/both — the
+                            # legacy on/off checks never matched the selector
+                            will = (mode == "both"
                                     or (mode == "auto" and depth >= 4))
-                            if mode == "off":
-                                return "Corridor lane: off (never runs)."
-                            return (f"Corridor lane: {'WILL' if will else 'will NOT'} "
+                            if mode == "complete":
+                                return "Fast mode: off (Complete only)."
+                            return (f"Fast mode (corridor lane): "
+                                    f"{'WILL' if will else 'will NOT'} "
                                     f"run after this search (mode {mode}, "
                                     f"depth {depth}; auto needs >= 4).")
 
