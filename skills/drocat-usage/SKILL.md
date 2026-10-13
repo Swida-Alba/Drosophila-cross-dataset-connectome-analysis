@@ -114,7 +114,8 @@ the grouping board exports — see the in-app guide
 applies the same labels as a tier-0 overlay without touching rows, and
 `group_partners_by_mapping` collapses the partner/feature space through
 the groups), Morphology ▸ Comparison (`custom_mapping_file` for custom
-rows; `label_mapping_file` for the overlay), and the cross-dataset
+rows; `label_mapping_file` for the overlay and for expanding a query token
+that names a group label), and the cross-dataset
 morphology run (`label_mapping_file`). A loaded preset is the **tier-0
 identity**: labels are never re-resolved through the auto type mapper,
 bodyId axes read `{bodyId}_{label}({native})` (dropped when the label

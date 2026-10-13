@@ -20,7 +20,7 @@ comparer = MorphologyProfileComparer(
     method="vector_v2",                  # "vector_v2" | "nblast"
     aggregation_level="type",            # "type" | "bodyid" | "custom group"
     custom_mapping_file=None,            # LabelMapper preset; forces "custom"
-    label_mapping_file=None,             # LabelMapper preset; axes overlay only
+    label_mapping_file=None,             # LabelMapper preset; label lane + axes overlay
     max_members_per_type=25,
     max_total_neurons=200,               # truncation cap; nblast > 30 neurons warns and proceeds
     output_dir="/abs/output/morph_cmp",  # default local_data/morphology_comparison/
@@ -49,7 +49,13 @@ NeuPrint datasets missing a token).
 
 
 - **Resolution** returns `{row label: [member bodyIds]}`, and the row label
-  is what `aggregation_level` selects. Exact type names win over pattern
+  is what `aggregation_level` selects. A token naming a source-side group of
+  the attached preset resolves to that group's members FIRST and wins over a
+  same-spelling native type (the priority the profiling and pathfinding lanes
+  already give a user label) — that is the lane a grouping board's "Add to
+  Query" chip relies on, since the tabs pass `label_mapping_file` at
+  `type`/`bodyid` and reserve `custom_mapping_file` for the custom level.
+  Exact type names win over pattern
   interpretation; numeric tokens are bodyIds resolved through
   `_load_neuron_type_map`; patterns (`aMe.*`) full-match dataset type names.
   With `label_mapping_file`, bodyId-level axes upgrade to

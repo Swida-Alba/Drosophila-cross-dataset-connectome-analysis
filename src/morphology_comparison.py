@@ -1,7 +1,8 @@
 """MorphologyProfileComparer - intra-dataset morphology comparison.
 
 Given ONE dataset and 2+ queried neurons (types, taxonomy labels such as a
-cell_type value, bodyIds, instance names, or regex patterns), computes the
+cell_type value, bodyIds, instance names, regex patterns, or — with a preset
+attached — the labels of its source-side groups), computes the
 N×N morphological similarity matrix at bodyId level
 plus, unless the comparison IS at bodyId level, an aggregated matrix over
 them, then writes CSV matrices, interactive heatmaps, and a report — the
@@ -200,17 +201,22 @@ class MorphologyProfileComparer:
     - ``custom`` — rows are the source-side groups of a LabelMapper preset
       (``custom_mapping_file``); the query list is ignored.
 
-    ``label_mapping_file`` (a LabelMapper preset JSON) is the TIER-0
-    overlay that does NOT touch the rows: bodyId-level axes upgrade to
+    ``label_mapping_file`` (a LabelMapper preset JSON) is the TIER-0 label
+    source: bodyId-level axes upgrade to
     ``{bodyId}_{label}({native})`` on preset-resolved bodyIds (dropped
     when the label already is the native name; unmapped members keep the
     legacy form), ``members.csv`` gains a ``label`` column beside the
     native ``type``, and the preset path + format are echoed in
     ``parameters.json``. Labels are never re-resolved through the auto
-    type mapper.
+    type mapper. It also feeds the first resolution lane below, so a query
+    token naming one of the preset's labels pools that group's members;
+    ``custom_mapping_file`` is the parameter that instead replaces the whole
+    query with the groups.
 
     Each query token resolves in the same order the connectivity Comparison
-    sub-tab uses: exact type name, bodyId, taxonomy label (a cell_type /
+    sub-tab uses: a custom group label of the attached preset (winning over a
+    same-spelling native type, as every other lane gives a user label), exact
+    type name, bodyId, taxonomy label (a cell_type /
     class / subclass value such as FAFB's ``circadian_clock`` expands into
     one row per member type), instance name, and finally the regex-pattern
     interpretation.
@@ -588,17 +594,22 @@ class MorphologyProfileComparer:
     def _label_groups(self) -> "Dict[str, List[str]]":
         """The attached preset's source-side groups, keyed by label.
 
-        Empty without a preset, so the type/bodyId label lane costs nothing on
-        a plain query. An unreadable file is reported and treated as no groups:
-        the level that *requires* a preset (_custom_rows) still raises.
+        Read from ``custom_mapping_file or label_mapping_file``, the same source
+        the profiling comparer uses: the tab passes ``label_mapping_file`` in
+        type/bodyId mode and ``custom_mapping_file`` only at the custom level,
+        where the query is ignored and ``_custom_rows`` reads the preset
+        directly. Empty without a preset, so the lane costs nothing on a plain
+        query. An unreadable file is reported and treated as no groups: the
+        level that *requires* a preset still raises.
         """
         if self._label_groups_cache is None:
-            if not self.custom_mapping_file:
+            source = self.custom_mapping_file or self.label_mapping_file
+            if not source:
                 self._label_groups_cache = {}
             else:
                 try:
                     groups, names, _side = load_labelmapper_source_groups(
-                        self.custom_mapping_file, self.dataset, log=self._log)
+                        source, self.dataset, log=self._log)
                 except ValueError as exc:
                     self._note(f"grouping preset unreadable: {exc}")
                     self._label_groups_cache = {}

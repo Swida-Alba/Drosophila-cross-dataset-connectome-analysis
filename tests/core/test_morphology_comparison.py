@@ -1040,14 +1040,18 @@ def test_custom_level_rows_are_groups(vector_setup, tmp_path):
 
 
 def test_type_level_expands_a_custom_group_label(vector_setup):
-    """The grouping board pushes a label into the query box, so the type level
-    has to resolve it like the custom level and the other tabs do."""
+    """The tab passes label_mapping_file in type/bodyId mode (custom_mapping_file
+    is reserved for the custom level, where the query is ignored), so this is
+    the wiring the lane has to work under -- and the level assertion is what
+    proves the run resolved through _query_rows rather than _custom_rows."""
     preset = _write_preset(vector_setup, [("clock", ["aMe12", 5])])
-    result = mc.MorphologyProfileComparer(
+    comparer = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=["clock"], aggregation_level="type",
-        custom_mapping_file=preset,
+        label_mapping_file=preset,
         output_dir=str(vector_setup / "lane_type"),
-        generate_heatmaps=False, verbose=False).run()
+        generate_heatmaps=False, verbose=False)
+    result = comparer.run()
+    assert comparer.aggregation_level == "type"
     members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
     assert set(members["row"]) == {"clock"}
     assert sorted(int(b) for b in members["bodyId"]) == [1, 2, 5]
@@ -1056,17 +1060,26 @@ def test_type_level_expands_a_custom_group_label(vector_setup):
 
 def test_bodyid_level_expands_a_custom_group_label(vector_setup):
     preset = _write_preset(vector_setup, [("clock", ["aMe12", 5])])
-    result = mc.MorphologyProfileComparer(
+    comparer = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=["clock"], aggregation_level="bodyid",
-        custom_mapping_file=preset,
+        label_mapping_file=preset,
         output_dir=str(vector_setup / "lane_bodyid"),
-        generate_heatmaps=False, verbose=False).run()
-    # One matrix row per member neuron, like any other bodyId query; the
-    # members frame still files them under the label that asked for them.
-    assert _body_labels(result) == ["1_inst1", "2_inst2", "5_inst5"]
+        generate_heatmaps=False, verbose=False)
+    result = comparer.run()
+    assert comparer.aggregation_level == "bodyid"
+    # One matrix row per member neuron, like any other bodyId query. The
+    # groups decided which neurons are in scope; the level then compares them
+    # as themselves, so the row identity is the neuron, not the label.
+    #
+    # The axis upgrade is the tier-0 overlay's own, pre-existing behavior: the
+    # member listed by bodyId (5) carries the label, the two that entered the
+    # group through its type name (1, 2) keep the native form. Recorded in
+    # _plan/pending_issues.md rather than changed here.
+    assert _body_labels(result) == ["1_inst1", "2_inst2", "5_clock(inst5)"]
     members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
     assert sorted(int(b) for b in members["bodyId"]) == [1, 2, 5]
-    assert set(members["row"]) == {"clock"}
+    assert sorted({str(r).partition("_")[0] for r in members["row"]}) == \
+        ["1", "2", "5"]
 
 
 def test_group_label_beats_a_same_spelling_native_type(vector_setup):
@@ -1074,11 +1087,13 @@ def test_group_label_beats_a_same_spelling_native_type(vector_setup):
     same priority the pathfinding lanes and the connectivity comparison use,
     and the reason the mark on the chip is allowed to claim a group."""
     preset = _write_preset(vector_setup, [("aMe12", ["aMe10"])])
-    result = mc.MorphologyProfileComparer(
+    comparer = mc.MorphologyProfileComparer(
         dataset="male-cns:v1.0", query=["aMe12"], aggregation_level="type",
-        custom_mapping_file=preset,
+        label_mapping_file=preset,
         output_dir=str(vector_setup / "lane_collision"),
-        generate_heatmaps=False, verbose=False).run()
+        generate_heatmaps=False, verbose=False)
+    result = comparer.run()
+    assert comparer.aggregation_level == "type"
     members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
     assert set(members["row"]) == {"aMe12"}
     # The group's members (3, 4), not the native type's (1, 2).

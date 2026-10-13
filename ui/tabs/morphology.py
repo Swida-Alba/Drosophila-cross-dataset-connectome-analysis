@@ -451,13 +451,15 @@ def create_morphology_tab():
                         "Groups are read from the grouping board's source "
                         "mapping. Intra 'custom group': each label is one row "
                         "(the neuron query above is disabled). Intra "
-                        "'type'/'bodyid' and cross-dataset runs: a query chip "
-                        "naming a label resolves to that group's members in "
-                        "the selected dataset — a name that is also a native "
-                        "type resolves as the group — while bodyId axes read "
-                        "{bodyId}_{label}({native}) on resolved ids and the "
-                        "cross run gains a label-aligned type view beside the "
-                        "native one; label identities are never re-resolved."
+                        "'type'/'bodyid': a query chip naming a label resolves "
+                        "to that group's members in the selected dataset — a "
+                        "name that is also a native type resolves as the group "
+                        "— and bodyId axes read {bodyId}_{label}({native}) on "
+                        "resolved ids. Cross-dataset runs: the preset is an "
+                        "axis-label overlay only (a label-aligned type view "
+                        "beside the native one); query tokens there resolve "
+                        "through the auto type mapper, not the groups. Label "
+                        "identities are never re-resolved."
                     ).classes("text-caption drocat-muted")
 
                 # --- intra-dataset-only parameters (exactly one dataset) ---

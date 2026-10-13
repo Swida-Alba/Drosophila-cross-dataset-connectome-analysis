@@ -22,10 +22,11 @@ from morphology_comparison import MorphologyProfileComparer
 
 comparer = MorphologyProfileComparer(
     dataset="male-cns:v1.0",             # ONE dataset (intra-dataset; BANC runs with a warning)
-    query=["aMe12", "aMe10", "aMe.*"],   # types, taxonomy labels, bodyIds, instance names, or patterns
+    query=["aMe12", "aMe10", "aMe.*"],   # types, taxonomy labels, bodyIds, instance names, patterns (or group labels with a preset)
     method="vector_v2",                  # "vector_v2" (default) | "nblast"
     aggregation_level="type",            # "type" | "bodyid" | "custom group"
     custom_mapping_file=None,            # LabelMapper preset; forces "custom"
+    label_mapping_file=None,             # LabelMapper preset; label lane + tier-0 overlay
     max_members_per_type=25,             # members kept per type / per group
     max_total_neurons=200,               # safety cap (truncates; NBLAST warns past 30)
     fetch_online=True,                   # pull missing skeletons via API (NeuPrint SWC / FAFB bundle→CAVE)
@@ -78,6 +79,15 @@ python skills/drocat-usage/scripts/run_direct.py \
   compared as themselves — the thing the type level folds away. `custom`:
   rows are the source-side groups of `custom_mapping_file` and the query is
   ignored. Patterns always expand (to types, or to their neurons).
+- **A query token naming a group label expands at `type` and `bodyid` too.**
+  With a preset attached as `label_mapping_file` (what the tab passes in
+  those two modes — `custom_mapping_file` forces the `custom` level), a token
+  equal to a source-side group label resolves to that group's members before
+  the type/bodyId/taxonomy/instance/pattern lanes, and wins over a
+  same-spelling native type. That is what makes the grouping board's
+  **Add to Query** chip mean the same thing on this tab as on Connectivity ▸
+  Comparison. The expansion is logged and lands in
+  `user_warning_notes.txt`.
 - **The gate is two NEURONS in scope, not two rows.** One type runs at every
   level: at the type level its single aggregate cell is that type's cohesion
   (mean pairwise score, not 1.0) and `bodyid_level/` carries the pairwise
