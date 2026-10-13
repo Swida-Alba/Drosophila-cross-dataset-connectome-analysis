@@ -926,6 +926,42 @@ class TestGroupChipMarking:
             query.filter_mode.value = "exact"
         assert '"aMe"' in scripts[-1]
 
+    def test_badge_names_groups_including_uploaded_ones(self, isolated_store):
+        """An uploaded list never becomes a chip, so the count badge is the one
+        place where those entries can say what they are."""
+        client, grouper, _ = self._board("grouper-badge", [
+            ("aMe", {DS_A: ["aMe12"]}),
+            ("clock", {DS_A: ["DN1p"]}),
+        ], capture=False, show_filter=True)
+        query = grouper.query_inputs["query"]
+        with client:
+            grouper.resync()
+            query.add_values(["aMe", "clock"])
+        assert query.count_badge.text == "2 groups"
+        with client:
+            query.add_values(["someRawType"])
+        assert query.count_badge.text == "3 neurons · 2 groups"
+        with client:
+            query.chip_input.set_value([])
+            query.uploaded_neurons[:] = ["aMe", "clock"]
+            query.add_values([])
+        assert query.count_badge.text == "2 groups", \
+            "uploaded group labels must count as groups too"
+
+    def test_badge_wording_follows_the_mode_too(self, isolated_store):
+        client, grouper, _ = self._board("grouper-badge-mode", [
+            ("aMe", {DS_A: ["aMe12"]}),
+        ], capture=False, show_filter=True)
+        query = grouper.query_inputs["query"]
+        with client:
+            grouper.resync()
+            query.add_values(["aMe"])
+        assert query.count_badge.text == "1 group"
+        with client:
+            query.filter_mode.value = "contains"
+        assert query.count_badge.text == "1 neuron", \
+            "a pattern query is not an expanding label, so the badge says so"
+
     def test_disabled_input_is_still_told(self, isolated_store):
         """The comparison tabs disable the query box at 'custom group' level,
         but a chip the user pushed earlier can still be sitting in it."""

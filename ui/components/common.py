@@ -1199,6 +1199,10 @@ def neuron_list_input(
     uploaded_neurons: List = []
     value_change_callbacks: List[Callable[[], None]] = []
     chip_list_expanded = {"value": False}
+    # Group labels the owning grouping board has declared, kept here so the
+    # count badge can say what the entries are. Declared before the first
+    # update_status() call below.
+    group_labels = {"hints": {}}
 
     async def handle_upload(e):
         """Parse the first column of an uploaded CSV/TSV/Excel neuron list."""
@@ -1462,6 +1466,34 @@ def neuron_list_input(
     def normalize_neuron(item):
         return _normalize_neuron_value(item)
 
+    def _group_marks_resolve() -> bool:
+        """Whether a group label in this field will actually be expanded.
+
+        ``apply_filter_mode`` rewrites a non-exact chip into a regex before the
+        backend sees it and label expansion matches the literal name only, so
+        at any other Match-by the label resolves as a pattern search instead:
+        claiming it as a group would promise an expansion that will not
+        happen.
+        """
+        if filter_mode is None:
+            return True
+        return str(filter_mode.value or "exact").strip().lower() == "exact"
+
+    def _count_text(count: int, entries: List) -> str:
+        """Badge text naming what the entries are, not only how many.
+
+        Uploaded entries count here too, and they never become chips, so this
+        is the one surface where an uploaded group label can say what it is.
+        """
+        hints = group_labels["hints"] if _group_marks_resolve() else {}
+        groups = len({str(v).strip() for v in entries
+                      if str(v).strip() in hints}) if hints else 0
+        if not groups:
+            return f"{count} {_unit(count)}"
+        if groups == count:
+            return f"{count} group{'s' if count != 1 else ''}"
+        return f"{count} {_unit(count)} · {groups} group{'s' if groups != 1 else ''}"
+
     def sync_options(values):
         """Keep committed values in the option list so they render as chips.
 
@@ -1474,12 +1506,16 @@ def neuron_list_input(
             if value not in chip_input.options:
                 chip_input.options.append(value)
 
-    def update_status():
+    def _entries() -> "tuple[int, List]":
+        """The field's effective query: uploaded rows plus chips, deduped."""
         combined = [normalize_neuron(item) for item in uploaded_neurons]
         combined.extend(normalize_neuron(item) for item in (chip_input.value or []))
-        count = len(dict.fromkeys(combined))
+        return len(dict.fromkeys(combined)), combined
+
+    def update_status():
+        count, combined = _entries()
         if count_badge is not None:
-            count_badge.text = f"{count} {_unit(count)}"
+            count_badge.text = _count_text(count, combined)
             count_badge.props(f"color={'primary' if count else 'grey-6'}")
         expand_button.set_visibility(bool(chip_input.value))
         for callback in list(value_change_callbacks):
@@ -2585,6 +2621,7 @@ def neuron_list_input(
     container.chip_input_anchor = chip_input_anchor
     container.expand_button = expand_button
     container.filter_mode = filter_mode
+    container.count_badge = count_badge
     container.uploaded_neurons = uploaded_neurons
     container.suggest_menu = suggest_menu
     container.neuron_index_link = viewer_link
@@ -2614,21 +2651,6 @@ def neuron_list_input(
         update_status()
         return current
 
-    group_labels = {"hints": {}}
-
-    def _group_marks_resolve() -> bool:
-        """Whether a group label in this field will actually be expanded.
-
-        ``apply_filter_mode`` rewrites a non-exact chip into a regex before the
-        backend sees it, and the label expansion matches the literal name only,
-        so at Match-by = contains/startswith/regex/endwith/regex the label
-        resolves as a pattern search instead: marking the chip would promise an
-        expansion that will not happen.
-        """
-        if filter_mode is None:
-            return True
-        return str(filter_mode.value or "exact").strip().lower() == "exact"
-
     def set_group_labels(hints: Dict[str, str]) -> None:
         """Mark the chips that name a custom group.
 
@@ -2636,9 +2658,16 @@ def neuron_list_input(
         not a key goes back to looking like an ordinary entry.
         """
         group_labels["hints"] = dict(hints or {})
-        _push_group_marks()
+        _refresh_group_presentation()
 
-    def _push_group_marks() -> None:
+    def _refresh_group_presentation() -> None:
+        """Re-derive the badge wording and the chip marks from the current
+        labels and Match-by. Deliberately not ``update_status()``: that also
+        fires the tabs' value-change callbacks, and the grouping board
+        re-states its labels on every mutation."""
+        if count_badge is not None:
+            count, combined = _entries()
+            count_badge.text = _count_text(count, combined)
         hints = group_labels["hints"] if _group_marks_resolve() else {}
         script = (_GROUP_CHIP_MARK_JS
                   .replace("__FIELD_ID__", chip_dom_id)
@@ -2656,7 +2685,7 @@ def neuron_list_input(
             pass
 
     if filter_mode is not None:
-        filter_mode.on_value_change(lambda _e: _push_group_marks())
+        filter_mode.on_value_change(lambda _e: _refresh_group_presentation())
 
     container.set_group_labels = set_group_labels
 
