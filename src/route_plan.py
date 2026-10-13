@@ -191,12 +191,34 @@ class ClassBudget:
     stop: str = ""
     mh_prov: int | None = None
     feasible: bool = True
+    # D2-B (certified actual-strength mode, opt-in): the class stays
+    # share-satisfied mechanically, but the batch loop keeps witnessing
+    # skipped candidates until the first skipped candidate's optimistic
+    # bound drops to the weakest ACTUALLY emitted path's bottleneck --
+    # then no skipped candidate can beat any exported path and the
+    # top-share is certified against actual route strength.
+    certify_actual: bool = False
+    certified: bool = False
+    weakest_emitted: float | None = None
+    enum_upto: int = 0
+    realized_bns: list = field(default_factory=list)
+    pending_records: list = field(default_factory=list)
     # enumeration-side disclosures (filled by run_lane's per-class pass)
     emitted: int = 0
     off_plan: int = 0
     off_len: int = 0
 
     def satisfied(self) -> bool:
+        if self.certify_actual and self.feasible:
+            # D2-B: an OPEN class stays in the drain's pending set so the
+            # skip path keeps witnessing skipped candidates' UBs against
+            # the running weakest exported bottleneck. The probe cap
+            # below still closes the class (a certified-mode drain is
+            # bounded by the same budgets).
+            if self.used >= self.limit or not self.feasible:
+                return self.certified
+            return (self.mh_prov is not None
+                    and self.pulled >= self.mh_prov)
         if self.used >= self.limit or not self.feasible:
             return True
         return (self.mh_prov is not None
@@ -428,17 +450,39 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
         if cb is None:
             since_accept += 1
             continue
-        if cb.satisfied():
+        share_done = cb.used >= cb.limit or not cb.feasible
+        _cert_open = (cb.certify_actual and cb.feasible
+                      and not cb.certified)
+        if cb.satisfied() or (share_done and (
+                not _cert_open
+                or (cb.weakest_emitted is not None
+                    and ub < cb.weakest_emitted))):
             # Class already done: the first post-stop candidate's UB is
-            # the honest floor witness (plan §5: floor = UB(M+1) — the
-            # last ACCEPTED UB can overstate safety by a tie).
+            # the floor witness (plan §5: floor = UB(M+1) — the last
+            # ACCEPTED UB can overstate safety by a tie).
             if cb.floor_next is None:
                 cb.floor_next = ub
-            pending.discard(key)
+            if (cb.certify_actual and not cb.certified
+                    and cb.weakest_emitted is not None
+                    and cb.floor_next <= cb.weakest_emitted):
+                # D2-B: the first skipped candidate's optimistic bound has
+                # dropped below the weakest exported path's ACTUAL
+                # bottleneck -- no skipped candidate can beat any exported
+                # path; the top-share is certified against actual route
+                # strength. (Certified-open classes with UB >= the witness
+                # are ACCEPTED above: their realizations join the pool and
+                # may take the share -- the audit's displacement case.)
+                cb.certified = True
+            if not (cb.certify_actual and share_done
+                    and not cb.certified and cb.feasible):
+                # D2-B: an open certified-mode class stays pending -- the
+                # drain keeps producing the witnesses it needs
+                pending.discard(key)
             continue
         cb.pulled += 1
         since_accept += 1
-        n, truncated = realize_fn(walk, cb.limit - cb.used)
+        n, truncated = realize_fn(
+            walk, cb.limit if _cert_open else cb.limit - cb.used)
         if n == 0:
             if truncated:
                 # work-capped before the first path: unverified, NOT a
@@ -781,7 +825,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
              target_types=None, connections_path=None, neuron_table=None,
              out_dir=None, dataset=None, trigger=None,
              write_bodyid=True, time_budget_s=900.0,
-             allow_multi_visit=False):
+             allow_multi_visit=False, certify_actual=False):
     """Standalone corridor lane (plan §23.3/§23.5): G_type* -> shared W ->
     per-source drain -> validate loop -> PER-WALK subgraph enumeration
     (§22 share-consumption) -> route_scope_paths/ exports.
@@ -828,6 +872,11 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
 
     # ---- resolve run parameters -------------------------------------
     kv = read_run_params(run_dir) if run_dir else {}
+    # D2-B: a run folder can request certified actual-strength selection
+    # via parameters.txt (the CLI passes --certify-actual; the in-run
+    # hook keeps the default off)
+    certify_actual = certify_actual or _parse_bool(
+        kv.get("certify actual"), False)
     trigger = trigger or ("in-run" if fnc is not None else
                           "run-folder" if run_dir else "driver-direct")
     out = Path(out_dir) if out_dir else (
@@ -1284,6 +1333,184 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     provenance_classes, budgets = {}, {}
     scope_pairs = {}      # (a, b) -> {"mass": x, "paths": n, "walks": k}
     time_capped = False
+
+    # ---- D2-B helpers (certified actual-strength mode, opt-in) -------
+    def _certified_realize(s, walk, cap):
+        """realize_fn for the certified mode: enumerate ONE accepted
+        walk's body-simple realizations (per-endpoint
+        distance-enforced when the store maps exist) into the class's
+        pending pool and update the running share-th strongest realized
+        bottleneck -- the LIVE certification witness the validate loop's
+        share-skip path checks each skipped candidate's UB against.
+        Returns (count, truncated) like the counting realize_fn."""
+        nonlocal time_capped
+        h = len(walk) - 1
+        t = walk[-1]
+        t_bodies = {b for b in tgt_ids if body2type.get(b) == t
+                    and (not _tgt_restrict or b in tgt_keep)}
+        cb = classes[((s, t), h)]
+        if deadline is not None and time.monotonic() > deadline:
+            time_capped = True
+            return 0, True
+        pair_rows = [pair_edges.tuples(walk[i], walk[i + 1])
+                     for i in range(h)]
+        alive = [set() for _ in range(h + 1)]
+        alive[h] = set(t_bodies)
+        for i in range(h - 1, -1, -1):
+            nxt = alive[i + 1]
+            alive[i] = {u for u, v, _w in pair_rows[i] if v in nxt}
+        kept_rows = []
+        for i in range(h):
+            for u, v, w in pair_rows[i]:
+                if v not in alive[i + 1]:
+                    continue
+                if i == 0 and u not in s_bodies:
+                    continue
+                kept_rows.append((i, u, v, w))
+        raw_w = {}
+        layered_edges = []
+        for i, u, v, w in kept_rows:
+            raw_w[(u, v)] = w
+            layered_edges.append(
+                (f"{u}\x1f{i}", f"{v}\x1f{i + 1}", w))
+        g = FastGraph()
+        g.build_from_edges(layered_edges)
+        adj_w = g.adj
+        st: dict = {}
+        multi_visit = len(set(walk)) < len(walk)
+        src_l = [f"{b}\x1f0" for b in s_bodies]
+        tgt_l = {f"{b}\x1f{h}" for b in t_bodies}
+        kept = []
+        hop_edges = [dict() for _ in range(h)]
+        node_seen = [set() for _ in range(h + 1)]
+        bns = []
+        for p in g.find_paths_strongest_first(
+                src_l, tgt_l, h, budget=cap, stats=st,
+                raw_body_simple=multi_visit):
+            raw = [n.split("\x1f")[0] for n in p]
+            if store_distances is not None and store_distances.get(
+                    raw[-1], {}).get(raw[0]) != h:
+                continue
+            bn = min(adj_w[p[i]][p[i + 1]] for i in range(h))
+            kept.append(raw)
+            bns.append(bn)
+            for i in range(h):
+                hop_edges[i][(raw[i], raw[i + 1])] = float(
+                    adj_w[p[i]][p[i + 1]])
+                node_seen[i].add(raw[i])
+            node_seen[h].add(raw[h])
+        tau = st.get("tau")
+        if tau is None and kept:
+            tau = float(min(bns))
+        cb.realized_bns.extend(bns)
+        rank = len(cb.pending_records) + 1
+        # the walk's type-level candidate bound: the widest-path product
+        # of its hops' max edges (the drain's own UB semantics)
+        walk_ub = min(
+            (max((w for _u, _v, w in pair_rows[i]), default=0.0)
+             for i in range(h)), default=0.0)
+        if kept:
+            cb.pending_records.append({
+                "walk": walk, "rank": rank, "ub": float(walk_ub),
+                "tau": tau, "kept": kept, "hop_edges": hop_edges,
+                "node_seen": node_seen, "raw_w": raw_w,
+                "bns": bns})
+        else:
+            cb.off_len += 1
+        if len(cb.realized_bns) >= cb.limit:
+            cb.weakest_emitted = sorted(cb.realized_bns,
+                                        reverse=True)[cb.limit - 1]
+        return len(kept), False
+
+    def _certified_allocate(s, t, h, cb):
+        """Allocate the class's share across ALL realized paths by actual
+        bottleneck (the true top-share), emit the witness rows, and set
+        the certification pair (weakest_emitted vs floor_next)."""
+        pool = []
+        for ri, rec in enumerate(cb.pending_records):
+            for pi, bn in enumerate(rec["bns"]):
+                pool.append((bn, ri, pi))
+        pool.sort(key=lambda x: -x[0])
+        alloc = pool[:cb.limit]
+        by_rec = {}
+        for bn, ri, pi in alloc:
+            by_rec.setdefault(ri, []).append(pi)
+        cb.weakest_emitted = (alloc[-1][0] if alloc else None)
+        cb.emitted = len(alloc)
+        cb.off_plan = sum(1 for ri in range(len(cb.pending_records))
+                          if ri not in by_rec)
+        if (cb.weakest_emitted is not None and cb.floor_next is not None
+                and cb.floor_next <= cb.weakest_emitted):
+            cb.certified = True
+        tau_share = cb.weakest_emitted
+        for ri, rec in enumerate(cb.pending_records):
+            pis = sorted(by_rec.get(ri, []))
+            if not pis:
+                continue
+            walk = rec["walk"]
+            kept = [rec["kept"][pi] for pi in pis]
+            hop_edges = [dict() for _ in range(h)]
+            node_seen = [set() for _ in range(h + 1)]
+            for raw in kept:
+                for i in range(h):
+                    hop_edges[i][(raw[i], raw[i + 1])] = float(
+                        rec["raw_w"][(raw[i], raw[i + 1])])
+                    node_seen[i].add(raw[i])
+                node_seen[h].add(raw[h])
+            hop_mass = [sum(e.values()) for e in hop_edges]
+            ratios, ratios_adj = [], []
+            for i in range(h):
+                denom = type_incoming.get(walk[i + 1], 0.0)
+                ratios.append(hop_mass[i] / denom if denom > 0 else 0.0)
+                denom_adj = type_incoming_adj.get(walk[i + 1], 0.0)
+                ratios_adj.append(hop_mass[i] / denom_adj
+                                  if denom_adj > 0 else None)
+            finite_adj = [r for r in ratios_adj if r is not None]
+            cov = ["{}/{}".format(
+                len(node_seen[i]),
+                type_membership.get(walk[i], len(node_seen[i])))
+                for i in range(h + 1)]
+            nts = [type_nt.get(walk[i], "unknown") for i in range(h)]
+            walk_rows.append({
+                "path": "->".join(walk),
+                "weights": "[" + ", ".join(
+                    _fmt_mass(m) for m in hop_mass) + "]",
+                "ratios": "[" + ", ".join(
+                    repr(r) for r in ratios) + "]",
+                "ratios_adj": ("[" + ", ".join(
+                    repr(r) for r in ratios_adj) + "]"
+                    if len(finite_adj) == len(ratios_adj) and ratios_adj
+                    else ""),
+                "min_weight": (int(min(hop_mass)) if hop_mass else None),
+                "min_ratio": min(ratios) if ratios else None,
+                "min_ratio_adj": (min(finite_adj) if finite_adj else None),
+                "length": h,
+                "nt_types": "[" + ", ".join(
+                    f'"{x}"' for x in nts) + "]",
+                "coverage": "[" + ", ".join(cov) + "]",
+                "applied_tau": tau_share,
+                "route_h": h, "route_ub": float(rec["ub"]),
+                "route_floor_h": (None if cb.floor is None
+                                  else float(cb.floor)),
+                "plan_rank": rec["rank"],
+                "realized_paths": len(kept)})
+            for i in range(h):
+                key = (walk[i], walk[i + 1])
+                r2 = scope_pairs.setdefault(
+                    key, {"edges": {}, "paths": 0, "walks": 0})
+                r2["edges"].update(hop_edges[i])
+                r2["paths"] += len(kept)
+                r2["walks"] += 1
+            for raw in kept:
+                body_rows.append({
+                    "path": "->".join(str(b) for b in raw),
+                    "weights": ",".join(_fmt_mass(
+                        rec["raw_w"][(raw[i], raw[i + 1])])
+                        for i in range(h)),
+                    "length": h, "route_h": h,
+                    "applied_tau": tau_share,
+                    "plan_rank": rec["rank"]})
+
     for s in src_types:
         drain = CorridorDrain(vis_adj, s, set(tgt_types), bound,
                               W=shared_W, deadline=deadline,
@@ -1302,14 +1529,46 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                     limit=limit,
                     mh_prov=max(1, round(
                         float(top_m_base) * (float(length_decay) ** (h - 1)))),
-                    feasible=(d_lb is not None and h >= d_lb))
+                    feasible=(d_lb is not None and h >= d_lb),
+                    certify_actual=certify_actual)
         s_bodies = [b for b in src_ids if body2type.get(b) == s
                     and (not _src_restrict or b in src_keep)]
+        realize_fn = lambda walk, cap, _s=s: _realize_on_loss(  # noqa: E731
+            pair_edges, walk, s_bodies,
+            {b for b in tgt_ids if body2type.get(b) == walk[-1]}, cap)
+        if certify_actual:
+            # D2-B CERTIFIED ACTUAL-STRENGTH MODE (opt-in, ruled): the
+            # realize_fn enumerates each accepted walk's FULL body-simple
+            # realization set inline and keeps the class's running
+            # share-th strongest realized bottleneck (weakest_emitted)
+            # live, so the validate loop's share-skip path certifies
+            # against ACTUAL route strength: candidates past the share
+            # are accepted while their UB can still beat the witness and
+            # skipped (floor_next recorded) once it cannot -- the
+            # exported top-share is then the true strongest actual
+            # routes. The share allocation is deferred to the post-drain
+            # pass below.
+            prov = validate_and_fill(
+                drain, classes,
+                lambda walk, cap, _s=s: _certified_realize(_s, walk, cap),
+                max_pulls=drain.max_pops, deadline=deadline)
+            time_capped = time_capped or prov.get("time_capped", False)
+            provenance_classes.update(prov["classes"])
+            budgets.update(classes)
+            for t in tgt_types:
+                for h in range(1, bound + 1):
+                    cb = classes[((s, t), h)]
+                    _certified_allocate(s, t, h, cb)
+                    if drain.exhausted:
+                        # every candidate was consumed: nothing was
+                        # skipped beyond the last witness, so the emitted
+                        # set is the complete realization set --
+                        # certified trivially
+                        cb.certified = True
+            _phase(f"certified source {s}")
+            continue
         prov = validate_and_fill(
-            drain, classes,
-            lambda walk, cap, _s=s: _realize_on_loss(
-                pair_edges, walk, s_bodies,
-                {b for b in tgt_ids if body2type.get(b) == walk[-1]}, cap),
+            drain, classes, realize_fn,
             max_pulls=drain.max_pops, deadline=deadline)
         time_capped = time_capped or prov.get("time_capped", False)
         _phase(f"validated source {s}")
@@ -1626,6 +1885,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 cb.ties_truncated_confirmed
             entry["ties_truncated_potential"] = \
                 cb.ties_truncated_potential
+            entry["certified"] = (cb.certified if certify_actual
+                                  else None)
+            entry["weakest_emitted"] = (cb.weakest_emitted
+                                        if certify_actual else None)
     out.mkdir(parents=True, exist_ok=True)
     # one row per VALIDATED WALK in *_allpaths_type.csv column order +
     # the additive lane columns (per-path detail lives in the bodyId csv)
@@ -1778,7 +2041,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "knobs": {"top_m_base": top_m_base,
                   "length_decay": length_decay,
                   "per_pair_length_budget": limit,
-                  "allow_multi_visit": allow_multi_visit},
+                  "allow_multi_visit": allow_multi_visit,
+                  "certify_actual": certify_actual},
         "runtime_s": runtime,
         "phases_s": phases,
         "store_dedup": ("ROI-slice sum per layer; keep-first by sorted "

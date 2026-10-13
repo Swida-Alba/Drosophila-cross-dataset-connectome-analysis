@@ -188,7 +188,9 @@ similar-neuron → 3D skeleton), see [references/combinations.md](references/com
 - `scripts/CorridorDeepDive.py <run_dir>` — Fast mode (the corridor
   lane; the run itself is Complete mode): re-enumerates at the ASKED
   threshold restricted to validated top-M* type corridors per
-  source-target pair × hop length,
+  source-target pair × hop length
+  (`--certify-actual` upgrades the selection from bound-guided
+  representatives to the true strongest actual routes per class),
   writing `route_scope_paths/` (walk rows with both ratio flavors —
   plain + adjusted — per-path bodyId rows, scope connection table,
   provenance with gap partition, content-hashed plan.json, mirror

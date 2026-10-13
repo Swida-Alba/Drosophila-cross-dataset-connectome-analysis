@@ -55,6 +55,14 @@ def main():
                     help="plan walks that revisit a type (default: "
                          "disabled — reciprocal-heavy subtrees explode "
                          "the drain for little gain)")
+    ap.add_argument("--certify-actual", action="store_true",
+                    help="certify actual-strength selection: keep "
+                         "accepting candidates per class until the first "
+                         "skipped candidate's bound drops below the "
+                         "weakest exported path's real bottleneck -- the "
+                         "exported top-share is then the true strongest "
+                         "actual routes (slower: cost tracks bound "
+                         "tightness; F-PF-002 D2-B)")
     ap.add_argument("--trigger", default="run-folder",
                     help="provenance trigger label (the in-run hook "
                          "passes 'in-run (subprocess)')")
@@ -66,6 +74,7 @@ def main():
 
     common = dict(corridor_mode="both",
                   allow_multi_visit=args.allow_multi_visit,
+                  certify_actual=args.certify_actual,
                   trigger=args.trigger,
                   top_m_base=args.top_m_base,
                   length_decay=args.length_decay,

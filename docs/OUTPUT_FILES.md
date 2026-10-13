@@ -353,13 +353,15 @@ lowest-threshold folder carries the superset corridors).
     `selected_support_mass`/`realized_mass` = the mass on the lane's
     emitted witnesses — plus `realizing_paths`/`used_by_walks`; the
     heatmap/network draw the selected support and the ratios divide it.
-*   **`route_provenance.json`**: status, resolved mode/trigger, knobs,
-    endpoint `enrollment` (token/parent-CSV membership per side),
-    per-(pair,h)-class disclosure (floors, `floor_next` candidate
-    bounds, stop reasons `budget`/`probe_cap`/`exhausted`/`dry`/
-    `infeasible`/`capped`/`push_capped`/`pop_capped`/`stalled` —
-    resource-capped classes never claim `dry`, F-PF-007; boundary ties
-    split `ties_truncated_confirmed`/`_potential`, F-PF-006; phantoms,
+*   **`route_provenance.json`**: status, resolved mode/trigger, knobs
+    (incl. `certify_actual`), endpoint `enrollment` (token/parent-CSV
+    membership per side), per-(pair,h)-class disclosure (floors,
+    `floor_next` candidate bounds, stop reasons
+    `budget`/`probe_cap`/`exhausted`/`dry`/`infeasible`/`capped`/
+    `push_capped`/`pop_capped`/`stalled` — resource-capped classes
+    never claim `dry`, F-PF-007; boundary ties split
+    `ties_truncated_confirmed`/`_potential`, F-PF-006; certified-mode
+    classes carry `certified` + `weakest_emitted`, D2-B; phantoms,
     `unverified` work-capped probes, `off_plan`/`off_len`),
     `gap_partition` vs this run's own `*_allpaths_type.csv` (and the
     refill's paths when present), `plan_hash`, runtime, `phases_s`

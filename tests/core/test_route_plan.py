@@ -1201,3 +1201,52 @@ def test_shortest_store_enforces_per_endpoint_minimum_hops(tmp_path):
     assert "a->t1" in paths and "b->t1" in paths
     assert "a->b->t2" in paths          # the minimum 2-hop route to t2
     assert "a->b->t1" not in paths      # nonminimum: d_t1(a) == 1
+
+
+def test_certified_mode_exports_the_strongest_actual_route(tmp_path):
+    """F-PF-002 (D2-B): with certify_actual the class keeps accepting
+    candidates past the share until the first skipped candidate's bound
+    drops below the weakest exported path's ACTUAL bottleneck -- the
+    audit's displacement fixture (a bound-100 walk whose realization is
+    bottleneck-1, against a bound-90 walk realizing bottleneck-90, share
+    1) exports the 90 route. The default bound-guided mode exports the
+    bottleneck-1 route (the documented displacement)."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a", "b1", "a", "b2", "a", "c"],
+        "bodyId_post": ["b1", "t", "b2", "t", "c", "t"],
+        "weight": [100, 1, 1, 100, 90, 90]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a", "b1", "b2", "c", "t"],
+                  "type": ["A", "B", "B", "C", "T"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+
+    out_bound = tmp_path / "bound"
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    per_pair_length_budget=1,
+                    source_types=["A"], target_types=["T"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out_bound)
+    body_bound = pl.read_csv(
+        out_bound / "route_paths_bodyId.csv")["path"].to_list()
+    assert body_bound == ["a->b1->t"]          # the documented displacement
+
+    out_cert = tmp_path / "cert"
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    per_pair_length_budget=1,
+                    certify_actual=True,
+                    source_types=["A"], target_types=["T"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out_cert)
+    body_cert = pl.read_csv(
+        out_cert / "route_paths_bodyId.csv")["path"].to_list()
+    assert body_cert == ["a->c->t"]            # the strongest ACTUAL route
+    prov = json.loads((out_cert / "route_provenance.json").read_text())
+    assert prov["knobs"]["certify_actual"] is True
+    cls = prov["classes"]["A->T@h2"]
+    assert cls["certified"] is True
+    assert cls["weakest_emitted"] == 90
