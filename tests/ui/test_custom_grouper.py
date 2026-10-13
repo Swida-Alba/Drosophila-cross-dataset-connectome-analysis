@@ -599,9 +599,10 @@ class TestReloadIntoBoard:
 
         NiceGUI 3 replaced ``event.content`` with ``event.file`` (async
         ``read()``); a handler that still reads ``content`` raises
-        AttributeError and the board silently never fills, so drive the real
-        handler with the real event shape. ``ui.notify`` is stubbed because
-        asyncio.run tasks have an empty slot stack.
+        AttributeError and the board silently never fills. The confirmation is
+        checked too: the board re-render deletes the elements the upload
+        task's slot stack pointed at, so a notify that does not enter a live
+        slot raises and the user is left with no feedback at all.
         """
         import asyncio
         from types import SimpleNamespace
@@ -621,16 +622,26 @@ class TestReloadIntoBoard:
                 return raw
 
         client = Client(page("/grouper-upload"))
-        seen = []
-        monkeypatch.setattr(cg.ui, "notify",
-                            lambda message, **kw: seen.append(message))
         with client:
             _selector, card, _resolve = me.custom_grouping_block(
                 tab_key="upload", datasets_provider=lambda: [DS_A, DS_B])
             grouper = card.inline_grouper
+
+        seen = []
+        real_notify = cg.ui.notify
+
+        def spy(message, **kwargs):
+            seen.append((message, len(grouper.handle.rows)))
+            return real_notify(message, **kwargs)
+
+        monkeypatch.setattr(cg.ui, "notify", spy)
+        with client:
             asyncio.run(grouper._handle_load(
                 SimpleNamespace(file=NiceGUI3File())))
-        assert seen == ["Loaded 1 group(s)"]
+
+        # Emitted after the rows landed, and it did not fall into the
+        # negative branch.
+        assert seen == [("Loaded 1 group(s)", 1)]
         assert grouper.handle.rows[0]["name"] == "aMe"
         assert grouper.handle.rows[0]["cells"][DS_A] == ["aMe12"]
         assert grouper.handle.rows[0]["cells"][DS_B] == ["aMe10"]

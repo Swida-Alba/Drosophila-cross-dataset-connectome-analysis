@@ -515,7 +515,11 @@ class LiteCustomGrouper:
             if not rows:
                 raise ValueError("file defines no groups")
             self.load_rows(rows)
-            ui.notify(f"Loaded {len(rows)} group(s)", type="positive")
+            # ``load_rows`` re-renders, which deletes the elements the upload
+            # task's slot stack pointed at; notifying through the live
+            # container is what lets the confirmation resolve a client at all.
+            with self._container:
+                ui.notify(f"Loaded {len(rows)} group(s)", type="positive")
         except Exception as exc:
             ui.notify(f"Could not load mapping file: {exc}", type="negative")
 
