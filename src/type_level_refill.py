@@ -577,6 +577,102 @@ def _enumerate_paths(edges, sources, targets, bound, budget=None):
     return paths, info, stats
 
 
+def _layered_chain_structures(chain, pair_edges, sources, targets,
+                              type_map, cut_keys):
+    """LAYERED PER-POSITION FILTER for ONE emitted chain at the full
+    scope — THE universal full-scope realization (plan-corridor-ratio-
+    basis §8.2/§9, user directive 2026-10-13): forward body sets rooted
+    at the run's sources and backward body sets rooted at the run's
+    targets over the chain's own hop pairs, INTERSECTED per position
+    (the intersection is load-bearing — a union would admit
+    forward-only/backward-only decoys); a hop-i edge (u, v) is kept iff
+    u survives at position i and v at position i+1. Per-hop mass = the
+    kept edges' weight sum; the kept positions per edge are its hops.
+    NO path or traversal counts exist (the estimator duality is
+    dropped — reference-only data).
+
+    Exactness keys on the chain's EFFECTIVE labels (the labels bodies
+    resolve to — display-distinct labels that resolve alike are one
+    label here). No label revisit -> the kept set equals the counted
+    DP's realization set exactly (a body has one effective label, so a
+    layered walk cannot revisit a body; probe/fixture-verified incl.
+    decoy rejection). Label revisit -> the kept set is the LAYERED-WALK
+    SUPERSET of the simple-path scope (disclosed via ``revisit``): a
+    body may occupy two positions and contributes its edges at both; an
+    edge recurring at two positions counts once per position.
+
+    Canonical iteration throughout (sorted adjacency, sorted pres) so
+    float mass sums are order-stable run to run.
+
+    Returns None when the chain has no realization; else a dict with
+    edges_cls_at (per-hop {'emitted'/'refill': {(u,v): w}}), edges_at
+    (per-hop {(u,v): w} all classes), nodes_at (per-position body sets,
+    fwd ∩ bwd), revisit (bool)."""
+    h = len(chain) - 1
+    if h < 1:
+        return None
+    start = {str(s) for s in sources
+             if type_map.get(str(s)) == chain[0]}
+    goal = {str(t) for t in targets
+            if type_map.get(str(t)) == chain[-1]}
+    if not start or not goal:
+        return None
+    hop_dicts = []
+    for i in range(h):
+        d = pair_edges.get((chain[i], chain[i + 1]))
+        if not d:
+            return None
+        hop_dicts.append(
+            {u: sorted(vs) for u, vs in d.items()})
+    # forward per-position body sets (POST-only propagation)
+    fwd = [set() for _ in range(h + 1)]
+    fwd[0] = set(start)
+    for i in range(h):
+        d = hop_dicts[i]
+        nxt = fwd[i + 1]
+        for u in fwd[i]:
+            for v, _w in d.get(u, ()):
+                nxt.add(v)
+    # backward per-position body sets (PRE-only propagation), rooted at
+    # the FORWARD-REACHABLE targets only (a target no source reaches
+    # realizes nothing — the counted DP roots its backward counts the
+    # same way)
+    bwd = [set() for _ in range(h + 1)]
+    bwd[h] = {t for t in goal if t in fwd[h]}
+    if not bwd[h]:
+        return None
+    for i in range(h - 1, -1, -1):
+        d = hop_dicts[i]
+        nxt = bwd[i + 1]
+        prv = bwd[i]
+        for u, vs in d.items():
+            for v, _w in vs:
+                if v in nxt:
+                    prv.add(u)
+                    break
+    revisit = len(set(chain)) != len(chain)
+    edges_cls_at = [{} for _ in range(h)]
+    edges_at = [{} for _ in range(h)]
+    for i in range(h):
+        d = hop_dicts[i]
+        cls_i = edges_cls_at[i]
+        all_i = edges_at[i]
+        fi = fwd[i]
+        bi = bwd[i]
+        fi1 = fwd[i + 1]
+        bi1 = bwd[i + 1]
+        for u in sorted(fi & bi):
+            for v, w in d.get(u, ()):
+                if v in fi1 and v in bi1:
+                    key = (u, v)
+                    cls = 'emitted' if key in cut_keys else 'refill'
+                    cls_i.setdefault(cls, {})[key] = w
+                    all_i[key] = w
+    nodes_at = [fwd[i] & bwd[i] for i in range(h + 1)]
+    return {'edges_cls_at': edges_cls_at, 'edges_at': edges_at,
+            'nodes_at': nodes_at, 'revisit': revisit}
+
+
 def _dp_chain_structures(chain, pair_edges, sources, targets, type_map,
                          cut_keys):
     """EXACT layered DP for ONE emitted chain at the full scope: forward
@@ -586,6 +682,11 @@ def _dp_chain_structures(chain, pair_edges, sources, targets, type_map,
     counts. No path materialization: cost is O(chain subgraph), and
     nothing truncates (2026-10-11: replaces the DFS collector whose
     200k cap under-counted the fat MCNS chains — 108/249 truncated).
+
+    TEST ORACLE ONLY since 2026-10-13: the production full scope uses
+    ``_layered_chain_structures`` (plan §9 — no counts, linear cost);
+    this DP stays as the exactness oracle the layered filter is
+    fixture-tested against.
 
     Returns None when the chain has no realization; else a dict with
     edges_cls_at (per-hop {'emitted'/'refill': {(u,v): w}}), edges_at
@@ -675,6 +776,12 @@ def _dfs_chain_structures(chain, pair_edges, sources, targets, type_map,
     masses; the DP cannot serve these chains because layered walks may
     revisit a body across layers, which the engine's simple-path
     semantics excludes).
+
+    TEST ORACLE ONLY since 2026-10-13: the production full scope uses
+    ``_layered_chain_structures`` (plan §9); this DFS stays as the
+    simple-path bound the layered filter's labeled superset is
+    fixture-tested against.
+
     Returns None when the chain has no realization; else a dict with
     edges_cls_at / edges_at / nodes_at / path_count / traversals /
     truncated."""
@@ -1043,12 +1150,18 @@ def compute_type_level_refill(
       SYNAPSE >= 1 only — no ratio tier, no synapse tier — re-valuing the
       SAME emitted chain sequences (value change, zero structural
       change). Produced for EVERY all-mode run with emitted rows,
-      enumerated per chain (2026-10-11: restricted to the emitted
-      chains — bounded cost, no path budget, so the weak sub-threshold
-      tail is never lost; DISTINCT-type chains via an exact layered DP
-      (no truncation), multi-visit chains via an alive-pruned
-      simple-path DFS whose 2M path cap is disclosed as
-      ``chains_truncated`` with the ``chains`` denominator).
+      restricted to the emitted chains (2026-10-11: bounded cost, no
+      path budget, so the weak sub-threshold tail is never lost) and
+      realized by the LAYERED PER-POSITION BODY-SET FILTER (2026-10-13,
+      plan-corridor-ratio-basis §8.3/§9 — universal at every applied
+      threshold, replacing the DP/DFS enumeration: forward source sets
+      and backward target sets per position, intersected; per-hop mass
+      = kept-edge weight sum; NO path/traversal counts). Exact on
+      chains without an effective-label revisit; label-revisiting
+      chains carry the layered-walk superset semantics, disclosed as
+      ``chains_revisit`` (with examples) in the full block. The retired
+      ``paths``/``bodyid_paths`` counters are null (no bodyId paths are
+      materialized); nothing truncates (``chains_truncated`` = 0).
       Writes refill_full_type_pairs.csv + the mirror's
       refill_full_paths_type.csv / refill_full_carrying_paths_type.csv /
       refilled_full_connection_type.csv.
@@ -1287,8 +1400,12 @@ def compute_type_level_refill(
         sequences (value change, zero structural change; mass behind
         emitted pairs but off-chain stays disclosed via the asked
         view's unfired residual, never tabulated). Produced for
-        EVERY all-mode run with emitted rows. Returns the 'full'
-        provenance block (the pair table is written alongside)."""
+        EVERY all-mode run with emitted rows. Since 2026-10-13 the
+        per-chain realization is the LAYERED PER-POSITION BODY-SET
+        FILTER (``_layered_chain_structures`` — universal at every
+        applied threshold, plan-corridor-ratio-basis §8.3/§9; no
+        bodyId-path enumeration, no counts, no caps). Returns the
+        'full' provenance block (the pair table is written alongside)."""
         if not e_u_full:
             return None
         # (the lossless hop prefilter is retired here: the per-chain
@@ -1335,43 +1452,36 @@ def compute_type_level_refill(
         seq_edges_full: Dict[Tuple[str, ...], List[Dict]] = {}
         seq_nodes_full: Dict[Tuple[str, ...], List[set]] = {}
         seq_cls_full: Dict[Tuple[str, ...], List[Dict]] = {}
-        bodyid_paths_full = 0
-        dp_traversals: Dict[Tuple[str, str], int] = {}
-        chains_truncated = 0
+        # LAYERED PER-POSITION FILTER (2026-10-13, plan §9): every chain
+        # through the same set-propagation pass — no per-chain dispatch,
+        # no DP counts, no DFS, no 2M caps. Label-revisiting chains are
+        # disclosed (the layered-walk superset semantics); everything
+        # else is exact vs the retired DP's realization set.
+        chains_revisit = 0
+        revisit_examples: List[str] = []
+        position_set_memberships = 0
+        position_set_max = 0
         for chain in sorted(chain_keys):
-            # HYBRID (2026-10-11 review): distinct-type chains -> the DP
-            # is EXACT (a body has one type, so layered walks cannot
-            # revisit a body; simplicity is automatic). MULTI-VISIT
-            # chains -> the visited DFS (layered walks may revisit a
-            # body across layers, which the engine's simple-path
-            # semantics excludes; the DP would silently over-count).
-            if len(set(chain)) == len(chain):
-                dp = _dp_chain_structures(
-                    chain, pair_edges_full, sources, targets, type_map,
-                    cut_keys_f)
-                c_trunc = False
-            else:
-                dp = _dfs_chain_structures(
-                    chain, pair_edges_full, sources, targets, type_map,
-                    cut_keys_f)
-                c_trunc = bool(dp and dp['truncated'])
-            chains_truncated += 1 if c_trunc else 0
+            dp = _layered_chain_structures(
+                chain, pair_edges_full, sources, targets, type_map,
+                cut_keys_f)
             if dp is None:
                 continue
-            bodyid_paths_full += dp['path_count']
-            for k2, cnt2 in dp['traversals'].items():
-                dp_traversals[k2] = dp_traversals.get(k2, 0) + cnt2
-            # classed structures (complete view): ALL chains
+            if dp['revisit']:
+                chains_revisit += 1
+                if len(revisit_examples) < 5:
+                    revisit_examples.append('->'.join(chain))
             seq_cls_full[chain] = dp['edges_cls_at']
             seq_nodes_full[chain] = dp['nodes_at']
+            for nodes_i in dp['nodes_at']:
+                position_set_memberships += len(nodes_i)
+                position_set_max = max(position_set_max, len(nodes_i))
             # carrying structures (refill view): chains with >= 1
             # refill-class (non-cut) edge on a realization
-            has_refill = any(
-                'refill' in cls_at and cls_at['refill']
-                for cls_at in dp['edges_cls_at'])
-            if has_refill:
+            if any('refill' in cls_at and cls_at['refill']
+                   for cls_at in dp['edges_cls_at']):
                 seq_edges_full[chain] = dp['edges_at']
-        # estar_full edge info from the structures (exact traversals)
+        # estar_full edge info from the structures (kept positions)
         hops: Dict[Tuple[str, str], set] = defaultdict(set)
         for chain in seq_cls_full:
             for i, cls_at in enumerate(seq_cls_full[chain]):
@@ -1379,12 +1489,14 @@ def compute_type_level_refill(
                     for (u, v) in edges:
                         hops[(u, v)].add(i)
         estar_full = {k: {'w': weight_full[k],
-                          'traversals': dp_traversals.get(k, 0),
                           'hops': sorted(hops[k])}
                       for k in hops}
         refill_full_keys = set(estar_full) - set(cut_edge_keys or ())
         full_totals: Dict[Tuple[str, str], float] = defaultdict(float)
-        for uv in refill_full_keys:
+        # sorted() pins the float-addition order (polars row order
+        # varies run to run; the pair totals must not wiggle in the
+        # last ulp between replays)
+        for uv in sorted(refill_full_keys):
             full_totals[(type_map[uv[0]], type_map[uv[1]])] += \
                 anchor_full(uv)
         # OFF-CHAIN disclosure (2026-10-10 user-approved; 2026-10-11
@@ -1398,13 +1510,14 @@ def compute_type_level_refill(
         # (+ edges outside the involved-types node set / hop bound).
         full_edge_keys = set(estar_full)
         offchain: Dict[Tuple[str, str], float] = defaultdict(float)
-        for uv in e_u_full:
-            if (uv[0], uv[1]) not in full_edge_keys:
-                offchain[(type_map[uv[0]], type_map[uv[1]])] += (
-                    syn_of.get((uv[0], uv[1]),
-                               weight_full.get((uv[0], uv[1]), 0.0))
+        # sorted() pins the float-addition order (see full_totals)
+        for u, v, w in sorted(e_u_full):
+            if (u, v) not in full_edge_keys:
+                offchain[(type_map[u], type_map[v])] += (
+                    syn_of.get((u, v),
+                               weight_full.get((u, v), 0.0))
                     if ratio_mode
-                    else uv[2])
+                    else w)
         rows_full = []
         for pair in sorted(emitted):
             emit_w = int(emitted[pair])
@@ -1432,24 +1545,35 @@ def compute_type_level_refill(
         complete_rows_full, complete_stats_full = \
             _complete_rows_from_structures(
                 seq_cls_full, seq_nodes_full, type_n_full, type_in)
+        # kept-edge census (all classes incl. emitted-class): the
+        # layered reference's own disclosures (plan §9.4)
+        kept_mass_total = sum(
+            anchor_full(uv) for uv in sorted(estar_full))
         block = {
-            'status': 'ok',   # per-chain enumeration (chain-scoped)
-            'enumeration': ('per-chain: layered DP for distinct-type '
-                            'chains (exact) + alive-pruned visited DFS '
-                            'for multi-visit chains (cap 2M paths, '
-                            'disclosed)'),
+            'status': 'ok',   # layered per-position filter (chain-scoped)
+            'refill_star': True,
+            'enumeration': 'none (layered per-position filtering '
+                           'reference)',
             'chains': len(chain_keys),
-            'chains_truncated': chains_truncated,
+            'chains_revisit': chains_revisit,
+            'chains_revisit_examples': revisit_examples,
+            'chains_truncated': 0,
             'induced_edges': len(e_u_full),
             'prefilter_dropped': full_drop,
-            'paths': bodyid_paths_full,
+            'paths': None,
+            'paths_note': 'retired (the layered reference materializes '
+                          'no bodyId paths)',
             'chains_carrying': len(carrying_rows),
             'chains_complete': complete_stats_full['chains'],
-            'bodyid_paths': bodyid_paths_full,
+            'bodyid_paths': None,
             'refill_edges': len(refill_full_keys),
             'refill_weight_total': int(sum(
                 full_totals.get(p, 0.0) for p in emitted)),
-            'truncated': chains_truncated > 0,
+            'kept_edge_count': len(estar_full),
+            'kept_mass_total': int(kept_mass_total),
+            'position_set_memberships': position_set_memberships,
+            'position_set_max': position_set_max,
+            'truncated': False,
         }
         # FULL-SCOPE CACHE GUARD (2026-10-10, user-approved): the asked
         # scope is anchored by table_reproduced, but the full scope had
@@ -2133,16 +2257,29 @@ Refill-full (DUAL REFILL, 2026-10-08)
 The second kind: the second round admitted at SYNAPSE >= 1 ONLY (no
 ratio tier, no synapse tier) — the full-connection view of the SAME
 emitted chain sequences, produced for EVERY all-mode run with emitted
-rows and enumerated as an EXACT per-chain layered DP (a strongest-first
-count budget would drain exactly the weak sub-threshold paths this
-scope exists for — chain SCOPING bounds the cost without cutting
-them). Files:
+rows and restricted to the emitted chains (2026-10-11 — chain SCOPING
+bounds the cost without cutting the weak sub-threshold paths this
+scope exists for). Since 2026-10-13 each chain's realization is the
+LAYERED PER-POSITION BODY-SET FILTER (plan-corridor-ratio-basis
+§8.3/§9, universal at every applied threshold): forward body sets from
+the run's sources and backward sets to its targets over the chain's
+hop pairs, intersected per position; per-hop mass = the kept edges'
+weight sum. NO bodyId paths are materialized (no traversal/path
+counts anywhere). Chains WITHOUT an effective-label revisit are exact
+(equal to the retired DP's realization set); label-REVISITING chains
+carry the layered-walk superset semantics (a body may occupy two
+positions and contributes its edges at both; an edge recurring at two
+positions counts once per position) — counted in the provenance as
+`full.chains_revisit` with up to five `full.chains_revisit_examples`.
+The retired `full.paths`/`full.bodyid_paths` counters are null;
+nothing truncates (`full.chains_truncated` = 0; the former per-chain
+DP/DFS enumeration with its 2M-path caps is retired). Files:
 - `refill_full_type_pairs.csv` (this folder) — per emitted pair:
   emitted / refill-full (sub-threshold mass) / refilled_total +
   `refilled_connection_ratio` (the plain full ratio; at floor 1 it is
   also the adjusted value) + `pair_offchain_mass` (the pair's
-  floor-passing mass that fired on no enumerated full-scope chain —
-  the chain scope is a lower bound of the raw pair total by design,
+  floor-passing mass kept by NO chain's layered filter — the chain
+  scope is a lower bound of the raw pair total by design,
   and this column makes the gap self-describing). The full scope is
   CACHE-GUARDED: the refill refuses when the stream-derived all-post
   incoming is smaller than the run's own exported applied-tier
@@ -2562,7 +2699,9 @@ def _write_records(run_dir: Path, out_dir, rec: dict, rows, detail,
                 or 'Standalone mirror folder' not in readme.read_text(
                     encoding='utf-8')
                 or 'ROUTE SCOPE' not in readme.read_text(
-                    encoding='utf-8')):
+                    encoding='utf-8')
+                or 'LAYERED PER-POSITION BODY-SET FILTER' not in
+                readme.read_text(encoding='utf-8')):
             readme.write_text(_README_TEXT, encoding='utf-8')
     (out / 'refill_provenance.json').write_text(
         json.dumps(rec, indent=2, sort_keys=True, default=str),

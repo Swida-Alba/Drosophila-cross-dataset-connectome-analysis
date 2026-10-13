@@ -1435,6 +1435,187 @@ def test_dfs_matches_dp_on_distinct_chain_fixture():
     assert dp['nodes_at'] == dfs['nodes_at']
 
 
+# ---------------------------------------------------------------------------
+# The universal layered per-position filter (plan-corridor-ratio-basis
+# §8.2/§9, 2026-10-13): the full-scope realization. Exactness oracle =
+# the retired DP; simple-path bound = the retired DFS.
+# ---------------------------------------------------------------------------
+
+def test_layered_filter_equals_dp_walk_oracle_with_decoys():
+    """Exactness pin (plan §9.5): the layered filter's kept set (edges,
+    classes, node sets) equals the counted DP's realization set exactly.
+    The DP's f/b structures are LAYERED-WALK level, so it oracles the
+    filter on revisiting chains too (production used the DFS there
+    precisely because the DP over-counts SIMPLE-path mass — its kept
+    EDGE set is still the walk set). Covers decoy rejection: a
+    forward-only decoy (reaches no target) and a same-type non-source
+    body (pseudo-source trap) must both be excluded; seeding uses the
+    run's sources/targets only."""
+    from type_level_refill import (_dp_chain_structures,
+                                   _layered_chain_structures)
+    # decoys: a3 forward-reaches b3 but b3 is backward-dead; b4 is
+    # backward-alive but no source reaches it; a2 is same-type as the
+    # source but NOT a source (pseudo-source trap via b4). The chain
+    # revisits A (positions 0 and 2) — revisit must be flagged.
+    pair_edges = {
+        ('A', 'B'): {'a1': [('b1', 10.0), ('b2', 4.0), ('b3', 6.0)],
+                     'a2': [('b4', 5.0)]},
+        ('B', 'A'): {'b1': [('a9', 9.0)], 'b2': [('a9', 8.0)]},
+        ('A', 'C'): {'a9': [('c1', 7.0), ('c2', 3.0)]},
+    }
+    type_map = {'a1': 'A', 'a2': 'A', 'a9': 'A', 'b1': 'B', 'b2': 'B',
+                'b3': 'B', 'b4': 'B', 'c1': 'C', 'c2': 'C'}
+    chain = ('A', 'B', 'A', 'C')
+    for cut_keys in (set(), {('a1', 'b1')}):
+        dp = _dp_chain_structures(chain, pair_edges, ['a1'], ['c1', 'c2'],
+                                  type_map, cut_keys)
+        layered = _layered_chain_structures(
+            chain, pair_edges, ['a1'], ['c1', 'c2'], type_map, cut_keys)
+        assert dp is not None and layered is not None
+        assert layered['edges_at'] == dp['edges_at']
+        assert layered['edges_cls_at'] == dp['edges_cls_at']
+        assert layered['nodes_at'] == dp['nodes_at']
+        assert layered['revisit'] is True
+    # the decoys really are excluded by the intersection
+    layered = _layered_chain_structures(
+        chain, pair_edges, ['a1'], ['c1', 'c2'], type_map, set())
+    assert ('a1', 'b3') not in layered['edges_at'][0]  # b3 backward-dead
+    assert ('a2', 'b4') not in layered['edges_at'][0]  # a2 not a source
+    assert layered['nodes_at'][0] == {'a1'}
+
+
+def test_layered_filter_equals_dp_and_dfs_on_distinct_chain():
+    """Distinct-chain exactness (plan §9.5): with no label revisit all
+    three agree exactly — the layered filter, the DP, and the DFS (the
+    standing DP/DFS parity fixture, now three-way)."""
+    from type_level_refill import (_dfs_chain_structures,
+                                   _dp_chain_structures,
+                                   _layered_chain_structures)
+    pair_edges = {
+        ('A', 'B'): {'a1': [('b1', 9.0), ('b2', 5.0)],
+                     'a2': [('b2', 6.0)]},
+        ('B', 'C'): {'b1': [('c1', 8.0)], 'b2': [('c1', 3.0),
+                                                 ('c2', 2.0)]},
+    }
+    type_map = {'a1': 'A', 'a2': 'A', 'b1': 'B', 'b2': 'B',
+                'c1': 'C', 'c2': 'C'}
+    chain = ('A', 'B', 'C')
+    for cut_keys in (set(), {('a2', 'b2')}):
+        dp = _dp_chain_structures(chain, pair_edges, ['a1', 'a2'],
+                                  ['c1', 'c2'], type_map, cut_keys)
+        dfs = _dfs_chain_structures(chain, pair_edges, ['a1', 'a2'],
+                                    ['c1', 'c2'], type_map, cut_keys)
+        layered = _layered_chain_structures(
+            chain, pair_edges, ['a1', 'a2'], ['c1', 'c2'], type_map,
+            cut_keys)
+        assert layered is not None and layered['revisit'] is False
+        assert layered['edges_at'] == dp['edges_at'] == dfs['edges_at']
+        assert (layered['edges_cls_at'] == dp['edges_cls_at']
+                == dfs['edges_cls_at'])
+        assert layered['nodes_at'] == dp['nodes_at'] == dfs['nodes_at']
+
+
+def test_layered_filter_none_contract_matches_dp():
+    """None cases match the DP: backward-dead chains (no realization),
+    missing hop pairs, and empty source/target type matches all return
+    None."""
+    from type_level_refill import (_dp_chain_structures,
+                                   _layered_chain_structures)
+    type_map = {'a1': 'A', 'b1': 'B', 'c1': 'C', 'z': 'Z'}
+    dead = {('A', 'B'): {'a1': [('b1', 4.0)]},
+            ('B', 'C'): {}}  # no B->C edges: backward-dead
+    chain = ('A', 'B', 'C')
+    assert _layered_chain_structures(
+        chain, dead, ['a1'], ['c1'], type_map, set()) is None
+    assert _dp_chain_structures(
+        chain, dead, ['a1'], ['c1'], type_map, set()) is None
+    missing_hop = {('A', 'B'): {'a1': [('b1', 4.0)]}}
+    assert _layered_chain_structures(
+        chain, missing_hop, ['a1'], ['c1'], type_map, set()) is None
+    no_source = {('A', 'B'): {'a1': [('b1', 4.0)]},
+                 ('B', 'C'): {'b1': [('c1', 4.0)]}}
+    assert _layered_chain_structures(
+        chain, no_source, ['z'], ['c1'], type_map, set()) is None
+    assert _layered_chain_structures(
+        chain, no_source, ['a1'], ['z'], type_map, set()) is None
+
+
+def test_layered_filter_revisiting_chain_is_labeled_superset():
+    """Superset pin (plan §9.5): on a label-revisiting chain the layered
+    filter keeps the layered-WALK edges the simple-path semantics
+    excludes — labeled via ``revisit`` — with per-position groups (the
+    revisited body occupies two positions) and an edge recurring at two
+    positions counted once per position. The DFS (simple-path bound)
+    realizes nothing on this fixture; the DP is not consultable (it
+    would over-count)."""
+    from type_level_refill import (_dfs_chain_structures,
+                                   _layered_chain_structures)
+    # chain A->B->A->B revisits A and B; the ONLY realization is the
+    # walk a1->b1->a1->b1 (no simple path exists: every realization
+    # revisits bodies)
+    pair_edges = {
+        ('A', 'B'): {'a1': [('b1', 5.0)]},
+        ('B', 'A'): {'b1': [('a1', 3.0), ('a2', 9.0)]},
+    }
+    type_map = {'a1': 'A', 'a2': 'A', 'b1': 'B'}
+    chain = ('A', 'B', 'A', 'B')
+    layered = _layered_chain_structures(
+        chain, pair_edges, ['a1'], ['b1'], type_map, set())
+    assert layered is not None and layered['revisit'] is True
+    # the walk's edges, each at its position; (a1,b1) counts once per
+    # position (hops 0 and 2)
+    assert layered['edges_at'][0] == {('a1', 'b1'): 5.0}
+    assert layered['edges_at'][1] == {('b1', 'a1'): 3.0}
+    assert layered['edges_at'][2] == {('a1', 'b1'): 5.0}
+    # per-position groups: a1 occupies positions 0 and 2 (two
+    # memberships), b1 positions 1 and 3
+    assert layered['nodes_at'] == [{'a1'}, {'b1'}, {'a1'}, {'b1'}]
+    # the simple-path bound realizes nothing here (the DFS finds no
+    # simple path) — the layered set is a strict superset, disclosed
+    dfs = _dfs_chain_structures(
+        chain, pair_edges, ['a1'], ['b1'], type_map, set())
+    assert dfs is None
+    # a revisiting walk whose decoy branch is walk-dead stays excluded:
+    # a2 is backward-alive (a2 reaches b1? no — a2 has no A->B edges)
+    assert ('b1', 'a2') not in layered['edges_at'][1]
+
+
+def test_layered_filter_superset_over_dfs_on_multi_visit_walks():
+    """On a multi-visit chain WITH simple paths, the layered kept set
+    contains the DFS-collected (simple-path) edge set edge for edge —
+    the labeled superset over a completing bound."""
+    from type_level_refill import (_dfs_chain_structures,
+                                   _layered_chain_structures)
+    # chain A->B->A->C: simple path a1->b1->a2->c1 exists; the layered
+    # filter ALSO admits walk-only edges if any (here none — the decoys
+    # are walk-dead — so equality on this fixture; a revisit-exposing
+    # variant follows)
+    pair_edges = {
+        ('A', 'B'): {'a1': [('b1', 10.0)]},
+        ('B', 'A'): {'b1': [('a2', 9.0), ('a1', 8.0)]},
+        ('A', 'C'): {'a2': [('c1', 7.0)], 'a1': [('c1', 2.0)]},
+    }
+    type_map = {'a1': 'A', 'a2': 'A', 'b1': 'B', 'c1': 'C'}
+    chain = ('A', 'B', 'A', 'C')
+    dfs = _dfs_chain_structures(
+        chain, pair_edges, ['a1'], ['c1'], type_map, set())
+    layered = _layered_chain_structures(
+        chain, pair_edges, ['a1'], ['c1'], type_map, set())
+    assert dfs is not None and layered is not None
+    assert layered['revisit'] is True
+    # superset: every simple-path edge is kept...
+    for i, edge_d in enumerate(dfs['edges_at']):
+        for key in edge_d:
+            assert key in layered['edges_at'][i]
+    # ...and here the walk a1->b1->a1->c1 is layered-realizable but no
+    # simple path, so the layered filter strictly exceeds the DFS: the
+    # edge (b1,a1) backs only the revisiting walk
+    assert ('b1', 'a1') in layered['edges_at'][1]
+    assert ('b1', 'a1') not in dfs['edges_at'][1]
+    assert ('a1', 'c1') in layered['edges_at'][3 - 1]  # hop 2
+    assert ('a1', 'c1') not in dfs['edges_at'][2]
+
+
 def test_load_shortest_store_slice_sum(tmp_path):
     """Per-ROI slice-sum fix (plan §10, original-data adjudication):
     the store's layer frames are verbatim per-ROI fetch slices — the

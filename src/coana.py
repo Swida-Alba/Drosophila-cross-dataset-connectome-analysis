@@ -18258,6 +18258,15 @@ class FindNeuronConnection:
                         'synapses behind the emitted pairs at synapse>=1, '
                         'emitted chains only) — the Refill tab\'s '
                         'Refill-full scope.')
+                    if _full.get('chains_revisit'):
+                        self._warn_notes.append(
+                            '- [refill-full] '
+                            f'{_full.get("chains_revisit"):,} emitted '
+                            'chain(s) revisit an effective type label — '
+                            'their full-scope masses carry the '
+                            'layered-walk superset semantics (per-position '
+                            'body sets; no simple-path enumeration), '
+                            'disclosed in full.chains_revisit.')
             return (rec.get('status') in ('refilled', 'complete_at_asked')
                     or bool(rec.get('full')))
         except TypeLevelRefillError as exc:
