@@ -184,6 +184,35 @@ Cross-dataset comparisons forward the mode to every per-dataset run (firing only
 <strong>Ratio flavors and visualization bases (shared with the refill lane):</strong> corridor walk rows carry BOTH per-hop share flavors &mdash; plain (realized mass &divide; the post type's full-membership incoming) and adjusted (&divide; the &ge;-threshold incoming; equal to plain when the asked threshold is 1). The same four metric bases are selectable across the pathfinding visualizations &mdash; Synapses / Ratio (all inputs) / Ratio (&ge;&nbsp;N) / Refilled &mdash; on the heatmap toggle and the network + Sankey Connection-Metric selectors (options appear when the data carries them; hover always lists every metric; Sankey labels stay weight-based with metrics on hover; NT coloring, when enabled, overrides colors only). BodyId-level visualizations keep weight+ratio only: adjusted/refilled bodyId data lives in the exported CSVs.
 
   
+## Cost profile (time & memory)
+
+Measured on the MCNS long-haul query (ORN* &rarr; DN*, 2,635 sources,
+1,350 targets, max intermediate layers = 8, bound 9): the <strong>Complete
+mode</strong> is output-linear &mdash; its cost scales with the emitted
+bodyId path count P through materialization, the enrichment join and the
+CSV/visualization writes (measured: 25&ndash;30 min wall, 11&ndash;18 GB
+peak at 354K&ndash;1M paths). The refill's full-scope tail is the layered
+per-position body-set filter (2026-10-13): linear in the chains' own
+subgraphs, no path materialization, nothing truncates &mdash; on the
+long-haul ratio query it replaced a ~115-minute DP/DFS reconstruction
+(3.02B walks, 737 chains capped at 2M paths) with a ~3-minute pass at
+identical asked-scope output; the label-revisiting chains among them
+carry the layered-walk superset semantics, disclosed as
+<code>chains_revisit</code>. The <strong>Fast mode</strong> is
+input-linear &mdash; one full-cache scan plus per-source drains and
+exports (measured: ~4.3 min, a few GB, 12&ndash;22K type walks). The
+corridor's per-source drain explores the type graph with a best-first
+order whose worst case is super-linear in the graph's density; the
+pop/push budgets bound it and a bound exceed is disclosed
+(<code>push_capped</code>/<code>stalled</code>), so the lane degrades to
+a weaker certificate rather than an unbounded run. Threshold semantics
+do not change either mode's complexity class: the synapse cutoff is an
+absolute edge filter, while the ratio cutoff is per-neuron adaptive
+(each hop needs only t<sub>r</sub> of that target's own input), which
+admits a larger cone and a proportionally larger output &mdash; on the
+long-haul query the ratio basis kept ~3&times; the bodyId paths and
+correspondingly more wall time.
+
 ## What bounds a run today?
 
   
