@@ -933,3 +933,113 @@ def test_run_folder_parent_csv_membership(tmp_path):
     prov = json.loads(
         (run / "route_scope_paths" / "route_provenance.json").read_text())
     assert prov["enrollment"]["targets"] == "types+parent_csv"
+
+
+def test_tie_truncation_confirmed_on_real_tie(tmp_path):
+    """F-PF-006: a share break that truly cuts an equal-strength route
+    reports ties_truncated_confirmed — and the FINAL provenance snapshot
+    carries it (the audit's hard-cut-serialized-as-zero bug)."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a", "a", "b1", "b2"],
+        "bodyId_post": ["b1", "b2", "t", "t"],
+        "weight": [10, 10, 10, 10]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a", "b1", "b2", "t"],
+                  "type": ["A", "B", "B", "T"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+    out = tmp_path / "lane_out"
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    per_pair_length_budget=1,
+                    source_types=["A"], target_types=["T"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out)
+    rows = pl.read_csv(out / "route_paths_type.csv")
+    assert rows.height == 1
+    prov = json.loads((out / "route_provenance.json").read_text())
+    cls = prov["classes"]["A->T@h2"]
+    assert cls["ties_truncated"] == 1
+    assert cls["ties_truncated_confirmed"] == 1
+    assert cls["ties_truncated_potential"] == 0
+
+
+def test_tie_truncation_absent_single_route(tmp_path):
+    """F-PF-006: exactly one realization — the share cut nothing, so no
+    tie flag may fire."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a", "b"],
+        "bodyId_post": ["b", "t"],
+        "weight": [10, 10]}).write_parquet(root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a", "b", "t"],
+                  "type": ["A", "B", "T"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+    out = tmp_path / "lane_out"
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    per_pair_length_budget=1,
+                    source_types=["A"], target_types=["T"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out)
+    prov = json.loads((out / "route_provenance.json").read_text())
+    cls = prov["classes"]["A->T@h2"]
+    assert cls["ties_truncated"] == 0
+    assert cls["ties_truncated_confirmed"] == 0
+    assert cls["ties_truncated_potential"] == 0
+
+
+def test_tie_truncation_cleared_on_unequal_next(tmp_path):
+    """F-PF-006: the next realization strictly weaker than the share's
+    tau is NOT a tie cut — the flag must clear (the old code set it on
+    every share break)."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a", "a", "b1", "b2"],
+        "bodyId_post": ["b1", "b2", "t", "t"],
+        "weight": [10, 5, 10, 5]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a", "b1", "b2", "t"],
+                  "type": ["A", "B", "B", "T"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+    out = tmp_path / "lane_out"
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    per_pair_length_budget=1,
+                    source_types=["A"], target_types=["T"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out)
+    prov = json.loads((out / "route_provenance.json").read_text())
+    cls = prov["classes"]["A->T@h2"]
+    assert cls["ties_truncated"] == 0
+    assert cls["ties_truncated_confirmed"] == 0
+    assert cls["ties_truncated_potential"] == 0
+    rows = pl.read_csv(out / "route_paths_type.csv")
+    assert rows.height == 1          # the strong route; weak one over share
+
+
+def test_pop_cap_reports_pop_capped_never_exhausted():
+    """F-PF-007: a drain stopped by the pop budget names the cause —
+    a pulled class is 'pop_capped', an unpulled hungry class is 'capped'
+    (never 'exhausted'/'dry', which claim a complete search / proven
+    absence)."""
+    adj = {"A": [("B", 10), ("C", 9)], "B": [("T", 8)], "C": [("T", 7)]}
+    drain = CorridorDrain(adj, "A", {"T"}, 2, max_pops=3)
+    classes = {(("A", "T"), 1): ClassBudget(limit=5),
+               (("A", "T"), 2): ClassBudget(limit=5)}
+    prov = validate_and_fill(drain, classes,
+                             lambda walk, cap: (1, False),
+                             max_pulls=drain.max_pops)
+    assert prov["drain_pop_capped"] is True
+    assert prov["drain_exhausted"] is False
+    stops = {k: v["stop"] for k, v in prov["classes"].items()}
+    assert stops[("A", "T") and "A->T@h2"] == "pop_capped"   # pulled
+    assert stops["A->T@h1"] == "capped"                      # unverified
+    assert "exhausted" not in stops.values()
+    assert "dry" not in stops.values()

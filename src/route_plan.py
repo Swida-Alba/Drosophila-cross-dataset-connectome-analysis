@@ -178,6 +178,14 @@ class ClassBudget:
     unverified: int = 0
     truncated_walks: int = 0
     ties_truncated: int = 0
+    # F-PF-006 (audit 2026-10-13): a share break used to set
+    # ties_truncated without checking whether an equal-strength route
+    # actually existed beyond the share. The flag now splits: CONFIRMED
+    # (the next yielded realization's bottleneck equals the class tau)
+    # vs POTENTIAL (share reached, next unverified — e.g. a deadline cut
+    # the peek). ties_truncated keeps meaning confirmed+potential.
+    ties_truncated_confirmed: int = 0
+    ties_truncated_potential: int = 0
     layered_rejected: int = 0
     pulled: int = 0
     stop: str = ""
@@ -224,6 +232,13 @@ class CorridorDrain:
         self.pushes = 0
         self.push_capped = False
         self.time_capped = False
+        # F-PF-007 (audit 2026-10-13): the pop budget used to set
+        # exhausted=True with no flag of its own, so a pop-capped drain was
+        # indistinguishable from a fully searched graph and hungry classes
+        # were labeled 'exhausted'/'dry'. exhausted now means NATURAL heap
+        # exhaustion only; a pop-budget stop carries pop_capped and the
+        # stop assignment names the cause on every pending class.
+        self.pop_capped = False
         self.W = W if W is not None else widest_to_targets(
             adj, self.tgt, bound)
         self.heap = []
@@ -255,7 +270,7 @@ class CorridorDrain:
         exhaustion/cap."""
         while self.heap:
             if self.pops >= self.max_pops:
-                self.exhausted = True
+                self.pop_capped = True
                 raise StopIteration
             if (self.deadline is not None
                     and not self.pops & 4095
@@ -445,6 +460,7 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
         if cb.satisfied():
             pending.discard(key)
     time_capped = time_capped or bool(getattr(drain, "time_capped", False))
+    pop_capped = bool(getattr(drain, "pop_capped", False))
     for _key, cb in classes.items():
         if cb.stop == "budget":
             continue
@@ -457,14 +473,23 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
             cb.stop = "stalled" if cb.pulled else "dry"
         elif getattr(drain, "push_capped", False) and cb.pulled:
             cb.stop = "push_capped"
-        elif capped or time_capped or not drain.exhausted:
-            # the drain stopped on a cap while this class was still hungry
+        elif pop_capped and cb.pulled:
+            # F-PF-007: the pop budget died with candidates unsearched —
+            # never report this as exhaustion or dryness
+            cb.stop = "pop_capped"
+        elif pop_capped or capped or time_capped:
+            # a cap fired while this class was still hungry and unpulled —
+            # its emptiness is UNVERIFIED, never an absence claim
+            # (the old no-pull "dry" here claimed proven absence)
+            cb.stop = "capped"
+        elif not drain.exhausted:
             cb.stop = "capped" if cb.pulled else "dry"
         elif cb.pulled:
             cb.stop = "exhausted" if cb.used < cb.limit else "budget"
         else:
             cb.stop = "dry"
     return {"drain_pops": drain.pops, "drain_exhausted": drain.exhausted,
+            "drain_pop_capped": pop_capped,
             "pulls": pulls, "stalled": stalled,
             "time_capped": time_capped,
             "classes": {f"{k[0][0]}->{k[0][1]}@h{k[1]}": {
@@ -1335,7 +1360,12 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                     g = FastGraph()
                     g.build_from_edges(layered_edges)
                     adj_w = g.adj
-                    budget = remaining
+                    # F-PF-006: ONE path beyond the share (bounded: the
+                    # share + 1) so the tie-witness peek below can see
+                    # what the share cut — the old budget == share made
+                    # the generator stop exactly at the share and every
+                    # boundary read as unverifiable.
+                    budget = remaining + 1
                     for _attempt in range(1):  # layered: no retry needed
                         st: dict = {}
                         # LAZY consumption with a per-item deadline check:
@@ -1345,6 +1375,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                         # >20 min in exactly that drain)
                         paths = []
                         ties_truncated = False
+                        ties_next_bn = None
+                        _nxt_repeats = False
                         # BODY-SIMPLICITY FILTER (2026-10-11, Q1 round):
                         # the engine's no-repeated-nodes rule operates on
                         # LAYERED ids (body\x1f{i}), so a multi-visit
@@ -1360,9 +1392,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                         layered_rejected_here = 0
                         src_l = [f"{b}\x1f0" for b in s_bodies]
                         tgt_l = {f"{b}\x1f{h}" for b in t_bodies}
-                        for p in g.find_paths_strongest_first(
-                                src_l, tgt_l, h, budget=budget,
-                                stats=st):
+                        gen = g.find_paths_strongest_first(
+                            src_l, tgt_l, h, budget=budget, stats=st)
+                        for p in gen:
                             if (deadline is not None
                                     and time.monotonic() > deadline
                                     and len(paths) >= 1):
@@ -1381,7 +1413,21 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                                 # the engine's tie-drain before it can
                                 # explode (the MCNS h5 layered tau-tie
                                 # mass burned 26 min when fully drained).
+                                # F-PF-006: ONE extra lazy pull witnesses
+                                # whether an equal-strength route was
+                                # really cut (confirmed) or not (the
+                                # flag then clears); no pull at all
+                                # stays potential.
                                 ties_truncated = True
+                                nxt = next(gen, None)
+                                if nxt is not None:
+                                    ties_next_bn = min(
+                                        adj_w[nxt[i]][nxt[i + 1]]
+                                        for i in range(h))
+                                    _nxt_repeats = (
+                                        len(set(n.split("\x1f")[0]
+                                                for n in nxt))
+                                        != len(nxt))
                                 break
                         kept, class_body_rows = [], []
                         # engine type-path semantics: a hop's mass counts
@@ -1417,7 +1463,29 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                             min(raw_w[(p[i], p[i + 1])]
                                 for i in range(h)) for p in kept))
                     if ties_truncated:
-                        cb.ties_truncated += 1
+                        # F-PF-006 classification: CONFIRMED when the
+                        # peeked next realization ties the class tau;
+                        # cleared when it is strictly weaker or the
+                        # generator finished under share+1 (the share
+                        # cut nothing); POTENTIAL when the generator
+                        # bit its own budget or a deadline cut the peek,
+                        # or the peeked layered yield is a repeated-body
+                        # walk (multi-visit — not a route).
+                        _nxt_is_route = (
+                            ties_next_bn is not None
+                            and not (multi_visit and _nxt_repeats))
+                        if _nxt_is_route and tau is not None and \
+                                abs(ties_next_bn - tau) <= 1e-9 * max(
+                                    1.0, abs(tau)):
+                            cb.ties_truncated_confirmed += 1
+                        elif ties_next_bn is not None and _nxt_is_route:
+                            ties_truncated = False
+                        elif time_capped or st.get("budget_bitten"):
+                            cb.ties_truncated_potential += 1
+                        else:
+                            ties_truncated = False
+                        if ties_truncated:
+                            cb.ties_truncated += 1
                     cb.layered_rejected += layered_rejected_here
                     for r in class_body_rows:
                         r["applied_tau"] = tau
@@ -1502,6 +1570,15 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             entry["off_plan"] = cb.off_plan
             entry["off_len"] = cb.off_len
             entry["layered_rejected"] = cb.layered_rejected
+            # F-PF-006: the audit found the tie flags counted during the
+            # per-class enumeration but never copied into the serialized
+            # snapshot — a hard share cut at the boundary serialized as
+            # ties_truncated 0. Copy the FINAL state.
+            entry["ties_truncated"] = cb.ties_truncated
+            entry["ties_truncated_confirmed"] = \
+                cb.ties_truncated_confirmed
+            entry["ties_truncated_potential"] = \
+                cb.ties_truncated_potential
     out.mkdir(parents=True, exist_ok=True)
     # one row per VALIDATED WALK in *_allpaths_type.csv column order +
     # the additive lane columns (per-path detail lives in the bodyId csv)
