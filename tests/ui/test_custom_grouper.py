@@ -592,6 +592,49 @@ class TestReloadIntoBoard:
         out = grouper.to_canonical()
         assert out["source_mapping"] == payload["source_mapping"]
 
+    def test_load_button_upload_handler_reads_a_nicegui3_event(
+        self, isolated_store, monkeypatch
+    ):
+        """The "Load…" seam is the serializer's only untested entry point.
+
+        NiceGUI 3 replaced ``event.content`` with ``event.file`` (async
+        ``read()``); a handler that still reads ``content`` raises
+        AttributeError and the board silently never fills, so drive the real
+        handler with the real event shape. ``ui.notify`` is stubbed because
+        asyncio.run tasks have an empty slot stack.
+        """
+        import asyncio
+        from types import SimpleNamespace
+
+        from nicegui import Client
+        from nicegui.page import page
+
+        payload = cg.to_canonical_dict(
+            [{"name": "aMe", "cells": {DS_A: ["aMe12"], DS_B: ["aMe10"]}}],
+            [DS_A, DS_B])
+        raw = json.dumps(payload).encode("utf-8")
+
+        class NiceGUI3File:
+            name = "groups.json"
+
+            async def read(self):
+                return raw
+
+        client = Client(page("/grouper-upload"))
+        seen = []
+        monkeypatch.setattr(cg.ui, "notify",
+                            lambda message, **kw: seen.append(message))
+        with client:
+            _selector, card, _resolve = me.custom_grouping_block(
+                tab_key="upload", datasets_provider=lambda: [DS_A, DS_B])
+            grouper = card.inline_grouper
+            asyncio.run(grouper._handle_load(
+                SimpleNamespace(file=NiceGUI3File())))
+        assert seen == ["Loaded 1 group(s)"]
+        assert grouper.handle.rows[0]["name"] == "aMe"
+        assert grouper.handle.rows[0]["cells"][DS_A] == ["aMe12"]
+        assert grouper.handle.rows[0]["cells"][DS_B] == ["aMe10"]
+
     def test_embedded_selector_load_adds_nonempty_datasets_and_rectangularizes_rows(
         self, isolated_store
     ):

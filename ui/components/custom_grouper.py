@@ -38,7 +38,7 @@ from nicegui import ui
 
 from .. import group_history, history_store
 from ..type_suggestions import get_dataset_pools, match_suggestions
-from .common import neuron_list_input
+from .common import neuron_list_input, read_upload_event
 
 FORMAT_TAG = "drocat_custom_groups/v1"
 _LABEL_KEYS = ("custom_label", "std_label")
@@ -509,7 +509,7 @@ class LiteCustomGrouper:
 
     async def _handle_load(self, e) -> None:
         try:
-            raw = e.content.read()
+            _filename, raw = await read_upload_event(e)
             data = json.loads(raw.decode("utf-8-sig", errors="replace"))
             rows = from_canonical_dict(data)
             if not rows:
