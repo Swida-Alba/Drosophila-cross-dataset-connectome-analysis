@@ -373,8 +373,10 @@ def create_connectivity_tab():
                         hint="Collapse the partner side of every profile through these "
                              "groups (weights summed per label) so the similarity is "
                              "computed over the group feature space instead of raw type "
-                             "names. Type/bodyid rows only; bodyId-level matrices keep "
-                             "raw keys.",
+                             "names. It folds the type-level partner keys at whatever "
+                             "aggregation level the run ends up on — attaching a preset "
+                             "forces the custom group level — while bodyId-level "
+                             "matrices keep raw keys.",
                     )
 
                 # --- Advanced Settings (kept at the bottom, in its own card) ---

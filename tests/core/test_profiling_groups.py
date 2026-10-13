@@ -508,6 +508,23 @@ def test_label_mapping_file_does_not_force_custom_aggregation(tmp_path):
     assert "grp1" in comparer._user_label_governing_labels()
 
 
+def test_partner_fold_applies_whether_or_not_a_preset_forces_custom(tmp_path):
+    """The control's hint once read 'Type/bodyid rows only', but the board's
+    preset forces aggregation_level='custom' — so the fold has to survive that,
+    while the overlay path leaves the level at type. Both are the contract the
+    hint now states."""
+    mapping_path = _write_mapping(tmp_path)
+    forced = _make_comparer(query=["grp1"], custom_mapping_file=mapping_path,
+                            group_partners_by_mapping=True)
+    assert forced.aggregation_level == "custom"
+    assert forced.group_partners_by_mapping is True
+    overlay = _make_comparer(query=["grp1", "Mi1"],
+                             label_mapping_file=mapping_path,
+                             group_partners_by_mapping=True)
+    assert overlay.aggregation_level == "type"
+    assert overlay.group_partners_by_mapping is True
+
+
 def test_type_mode_user_label_token_expands_to_pooled_row(tmp_path):
     """U2: a query chip naming a user label pools that label's members for
     the dataset into one row, recorded as a tier-0 resolution."""
