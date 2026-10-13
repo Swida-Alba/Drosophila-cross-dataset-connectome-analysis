@@ -970,7 +970,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             store_weight_conflicts = 0
         if store_universe is not None and store_universe.height:
             _phase(f"store-loaded+dedup ({store_universe.height:,} rows)")
-            # validation_basis is set to shortest_dag_store AFTER the
+            # validation_basis is set to shortest_store_edge_union AFTER the
             # type join succeeds (post-tmap stage below)
 
     # ---- connection universe: collapse per-roi rows, cast ids once ---
@@ -1145,7 +1145,14 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             su = su.filter(pl.col("type_pre") != pl.col("type_post"))
         if su.height:
             store_universe = su.sort(["bodyId_pre", "bodyId_post"])
-            validation_basis = "shortest_dag_store"
+            # F-PF-009 (audit 2026-10-13): the FLATTENED store union does
+            # not carry the parent's per-target distance maps — the lane
+            # enumerates ordinary bounded routes over the edge union, so
+            # a route can be nonminimum-hop for its bodyId pair while the
+            # old 'shortest_dag_store' name claimed shortest semantics.
+            # Name the scope what it is; enforcing per-endpoint minimum
+            # hops is a ruled follow-up (plan ...-audit-fixes.md D3-B).
+            validation_basis = "shortest_store_edge_union"
         else:
             store_universe = None  # nothing survives — prune fallback
     if neuron_source and neuron_source.startswith("engine-resolved"):
@@ -1377,34 +1384,33 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                         ties_truncated = False
                         ties_next_bn = None
                         _nxt_repeats = False
-                        # BODY-SIMPLICITY FILTER (2026-10-11, Q1 round):
+                        # BODY-SIMPLICITY (F-PF-003, audit 2026-10-13):
                         # the engine's no-repeated-nodes rule operates on
                         # LAYERED ids (body\x1f{i}), so a multi-visit
-                        # walk's layered enumeration admits the same
-                        # bodyId at several layers — which the run's own
-                        # simple-path convention (and realize_count, and
-                        # the refill) excludes. For multi-visit walks the
-                        # consumption keeps only body-simple paths and
-                        # counts toward the share in SIMPLE paths; the
-                        # share is then the strongest <= share SIMPLE
-                        # realizations (matching the validator exactly).
+                        # walk's layered enumeration admitted the same
+                        # bodyId at several layers — and the old external
+                        # filter rejected those walks AFTER the engine's
+                        # budget had already been spent on them, so one
+                        # invalid stronger walk could starve a valid
+                        # weaker realization (emitted 0 despite a
+                        # successful validation). raw_body_simple moves
+                        # the simplicity predicate INTO the generator:
+                        # every yield is a body-simple path and the
+                        # budget/tau/tie-drain semantics apply to exactly
+                        # those.
                         multi_visit = len(set(walk)) < len(walk)
                         layered_rejected_here = 0
                         src_l = [f"{b}\x1f0" for b in s_bodies]
                         tgt_l = {f"{b}\x1f{h}" for b in t_bodies}
                         gen = g.find_paths_strongest_first(
-                            src_l, tgt_l, h, budget=budget, stats=st)
+                            src_l, tgt_l, h, budget=budget, stats=st,
+                            raw_body_simple=multi_visit)
                         for p in gen:
                             if (deadline is not None
                                     and time.monotonic() > deadline
                                     and len(paths) >= 1):
                                 time_capped = True
                                 break
-                            if multi_visit:
-                                raw = [n.split("\x1f")[0] for n in p]
-                                if len(set(raw)) != len(raw):
-                                    layered_rejected_here += 1
-                                    continue
                             paths.append(p)
                             if len(paths) >= remaining:
                                 # §21 heavy-tail ruling: the share
@@ -1456,9 +1462,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                         break
                     tau = st.get("tau")
                     if tau is None and kept:
-                        # (multi-visit walks always take this branch: the
-                        # engine's layered tau describes the layered drain,
-                        # not the body-simple kept set)
+                        # (fallback: with raw_body_simple the engine tau
+                        # already describes the body-simple drain; this
+                        # only fires when the engine never opened a tau)
                         tau = float(min(
                             min(raw_w[(p[i], p[i + 1])]
                                 for i in range(h)) for p in kept))
@@ -1736,11 +1742,11 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "phases_s": phases,
         "store_dedup": ("ROI-slice sum per layer; keep-first by sorted "
                         "layer"
-                        if validation_basis == "shortest_dag_store"
+                        if validation_basis == "shortest_store_edge_union"
                         else None),
         "store_weight_conflicts": (store_weight_conflicts
                                    if validation_basis
-                                   == "shortest_dag_store" else None),
+                                   == "shortest_store_edge_union" else None),
         "time_capped": time_capped,
         "time_budget_s": time_budget_s,
         "plan_hash": plan_hash,
@@ -1771,19 +1777,24 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         f"{len(body_rows)}\n"
         f"- runtime: {runtime}s\n"
         + (f"- validation basis: {validation_basis}"
-           + (" (the run's shortest-DAG discovery store — scope is "
-              "shortest within the explored, threshold-filtered graph; "
+           + (" (the run's shortest-DAG discovery store, FLATTENED to "
+              "an edge union — routes are bounded routes within that "
+              "union, NOT guaranteed minimum-hop per bodyId pair; "
               "per-layer ROI slices are summed to the physical weight "
               "and layers deduplicated keep-first by sorted layer; "
               "cross-layer weight disagreements after summation are "
               "disclosed as store_weight_conflicts)"
-              if validation_basis == "shortest_dag_store" else
+              if validation_basis == "shortest_store_edge_union" else
               " (lossless hop-budget prune)"
               if validation_basis == "lossless_prune" else
               " (store absent — lossless-prune FALLBACK, not min-hop-"
               "restricted)") + "\n\n")
-        + "Per-class disclosure (floor = lowest accepted walk UB; floor_next "
-        "= first skipped candidate's UB, the honest certificate witness):\n\n"
+        + "Per-class disclosure (F-PF-002: floor = lowest accepted walk UB "
+        "and floor_next = first skipped candidate's UB are CANDIDATE-BOUND "
+        "quantities — optimistic upper bounds from per-hop max edges, not "
+        "the strengths of realized/omitted neuron routes; the lane is "
+        "upper-bound-guided representative exploration, not a "
+        "strongest-actual-route certificate):\n\n"
         + ("- route_connection_type.csv carries TWO support sets, named: "
            "`weight`/`universe_pair_mass` is the WHOLE admitted type-pair "
            "mass; `selected_support_mass`/`realized_mass` is the mass on "

@@ -691,7 +691,7 @@ def test_store_universe_dedup_keep_first_sorted_layer(tmp_path):
                     neuron_table=root / "neurons.parquet")
     out = run / "route_scope_paths"
     prov = json.loads((out / "route_provenance.json").read_text())
-    assert prov["validation_basis"] == "shortest_dag_store"
+    assert prov["validation_basis"] == "shortest_store_edge_union"
     assert prov["store_dedup"] == "ROI-slice sum per layer; keep-first by sorted layer"
     # the L1 refetch carries ONE slice (5) vs L0's summed 9 — a simulated
     # incomplete refetch is exactly what the conflict disclosure exists
@@ -1082,3 +1082,63 @@ def test_pair_export_names_both_support_sets(tmp_path):
                      & (pl.col("type_post") == "T")).row(0, named=True)
     assert bt["universe_pair_mass"] == 20
     assert bt["selected_support_mass"] == 10
+
+
+def test_raw_body_simple_engine_yields_only_simple_paths():
+    """F-PF-003 (engine level): with raw_body_simple the layered
+    generator spends its budget on body-simple paths only — the audit's
+    fixture (invalid 100 walk a1->b1->a1->t vs valid 90 walk
+    a1->b2->a2->t) yields the 90 path under budget 1 instead of
+    exhausting the budget on the invalid 100 walk."""
+    from vispath_pkg.fast_graph_core import FastGraph
+    g = FastGraph()
+    g.build_from_edges([
+        # layered, position-encoded: hop0 A->B, hop1 B->A, hop2 A->T
+        ("a1\x1f0", "b1\x1f1", 100.0), ("a1\x1f0", "b2\x1f1", 90.0),
+        ("b1\x1f1", "a1\x1f2", 100.0), ("b2\x1f1", "a2\x1f2", 90.0),
+        ("a1\x1f2", "t\x1f3", 100.0), ("a2\x1f2", "t\x1f3", 90.0),
+    ])
+    paths = list(g.find_paths_strongest_first(
+        ["a1\x1f0"], {"t\x1f3"}, 3, budget=1, raw_body_simple=True))
+    assert len(paths) == 1
+    assert [n.split("\x1f")[0] for n in paths[0]] == \
+        ["a1", "b2", "a2", "t"]
+    # and the raw weights follow the simple route, not the invalid one
+    st: dict = {}
+    list(g.find_paths_strongest_first(
+        ["a1\x1f0"], {"t\x1f3"}, 3, budget=1, stats=st,
+        raw_body_simple=True))
+    # tau = 90 (the only SIMPLE realization); nothing valid was dropped,
+    # so the budget did not bite -- the old code burned the budget on the
+    # invalid 100 walk and emitted nothing at all
+    assert st["tau"] == 90.0 and st["budget_bitten"] is False
+
+
+def test_corridor_multi_visit_emits_valid_realization(tmp_path):
+    """F-PF-003 (corridor level): allow_multi_visit=True with share 1 —
+    the valid weaker realization of the repeated-type walk is emitted
+    (the audit probe recorded accepted=1, used=1, emitted=0)."""
+    import pandas as pd
+    root = tmp_path / "ds"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a1", "a1", "b1", "b2", "a1", "a2"],
+        "bodyId_post": ["b1", "b2", "a1", "a2", "t", "t"],
+        "weight": [100, 90, 100, 90, 100, 90]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a1", "a2", "b1", "b2", "t"],
+                  "type": ["A", "A", "B", "B", "T"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+    out = tmp_path / "lane_out"
+    assert run_lane(None, asked=1, max_interlayer=3,
+                    per_pair_length_budget=1, allow_multi_visit=True,
+                    source_types=["A"], target_types=["T"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out)
+    body = pl.read_csv(out / "route_paths_bodyId.csv")
+    emitted = [p.split("->") for p in body["path"].to_list()]
+    # the strong invalid walk (a1->b1->a1->t) must NOT appear; the valid
+    # 90 realization must
+    assert ["a1", "b1", "a1", "t"] not in emitted
+    assert ["a1", "b2", "a2", "t"] in emitted

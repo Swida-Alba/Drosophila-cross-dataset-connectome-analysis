@@ -1776,7 +1776,8 @@ class FastGraph:
 
     def find_paths_strongest_first(self, sources, targets, cutoff,
                                    budget=None, per_pair_k=None, stats=None,
-                                   verbose=False, yield_bottleneck=False):
+                                   verbose=False, yield_bottleneck=False,
+                                   raw_body_simple=False):
         """Budgeted best-first enumeration in DESCENDING bottleneck order.
 
         Emits complete simple paths (source -> ... -> target, at most
@@ -1787,6 +1788,16 @@ class FastGraph:
         ``(bottleneck, list(path))`` — the engine's own per-entry
         bottleneck — instead of ``list(path)`` (perf: the consumer then
         need not re-derive the minimum per hop; 2026-10-08).
+
+        ``raw_body_simple`` (F-PF-003, audit 2026-10-13): the
+        no-repeated-nodes rule operates on each node's RAW identity — the
+        part before the first ``\\x1f`` (the layered/position-encoded
+        convention, e.g. ``body\\x1f3``; nodes without a separator are
+        their own raw identity). A layered enumeration then yields only
+        walks whose underlying bodies are all distinct, so the budget,
+        tau and tie-drain semantics apply to simple-body paths directly
+        instead of the consumer filtering repeats AFTER the budget was
+        already spent on invalid stronger walks.
 
         Semantics:
         - With ``budget=None`` (or a budget >= the total path count) the
@@ -1816,6 +1827,8 @@ class FastGraph:
             return
         target_set = set(targets)
         W = self._widest_path_backward(target_set, cutoff)
+        raw_of = (lambda n: n.split('\x1f', 1)[0]) if raw_body_simple \
+            else (lambda n: n)
 
         heap = []  # (-bound, tie, node, hops, run_bottleneck, path_tuple)
         counter = 0
@@ -1883,9 +1896,9 @@ class FastGraph:
                 neighbors = sorted(self.adj.get(node, {}).items(),
                                    key=lambda kv: (-kv[1], kv[0]))
                 sorted_adj_cache[node] = neighbors
-            path_set = set(path)
+            path_set = {raw_of(p) for p in path}
             for v, w in neighbors:
-                if v in path_set:
+                if raw_of(v) in path_set:
                     continue
                 new_run = run_b if run_b < w else w
                 v_bound = W[remaining].get(v)
