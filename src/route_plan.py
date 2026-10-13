@@ -1799,7 +1799,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
            "`weight`/`universe_pair_mass` is the WHOLE admitted type-pair "
            "mass; `selected_support_mass`/`realized_mass` is the mass on "
            "the lane's emitted witnesses (the heatmap/network draw the "
-           "latter; the ratios divide it).\n\n")
+           "latter; the ratios divide it). Both are UNIONS of edges over "
+           "realizations — a large aggregate never implies one neuron "
+           "path carrying all of it.\n\n")
         + ("\n".join(f"- {f}" for f in floors) if floors
            else "- no validated corridors (all classes dry)\n")
         + (f"\n- TIME-CAPPED at {time_budget_s}s — enumeration was cut "

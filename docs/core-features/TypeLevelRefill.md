@@ -96,6 +96,12 @@ The refill adds back exactly that mass:
   involved-type subgraph cannot be seen; the provenance discloses the
   conservatism gap instead of silently closing it.
 
+Refill masses are UNIONS of edges over realizations — a large
+aggregate never implies one neuron path carrying all of it; use the
+simple bodyId witnesses for circuit claims. On label-revisiting chains
+the full scope additionally carries the disclosed layered-walk
+superset semantics (`full.chains_revisit`).
+
 Ratios use the threshold-free all-post denominators (F9,
 `min_weight=1`). **`refilled_traversal_probability` is SUSPENDED
 (2026-10-06, unverifiable fidelity)** — it is no longer exported

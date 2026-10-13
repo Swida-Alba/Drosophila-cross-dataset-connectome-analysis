@@ -2646,6 +2646,12 @@ def _render_refill_section(folder: Path, label: str,
         # scope summary instead of the no-records hint.
         stat = ('ok' if _full_block.get('status') != 'truncated'
                 else 'truncated')
+        _rv = int(_full_block.get('chains_revisit') or 0)
+        _rv_txt = ('' if not _rv else
+                   ' <b>' + f'{_rv:,}' + '</b> emitted chain(s) revisit an '
+                   'effective type label — their full-scope masses carry '
+                   'the disclosed layered-walk superset semantics (a body '
+                   'may occupy two positions), not simple-path masses. ')
         return (head
                 + '<p><b>Refill-full</b> (synapse &gt;= 1, no tier — the '
                 'full-connection scope): the budget did not bite on this '
@@ -2656,7 +2662,9 @@ def _render_refill_section(folder: Path, label: str,
                 f'({_full_block.get("refill_edges", 0):,} sub-threshold '
                 f'bodyId edges / '
                 f'{int(_full_block.get("refill_weight_total") or 0):,} '
-                'synapses recovered). Browse it in the explorer below '
+                'synapses recovered). '
+                + _rv_txt +
+                'Browse it in the explorer below '
                 '(Refill-full scope).</p></div>', False)
     if str(prov.get('status') or '') not in ('refilled',
                                              'complete_at_asked') \

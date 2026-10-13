@@ -1442,12 +1442,9 @@ def compute_type_level_refill(
             chain_keys = {tuple(type_map[n] for n in nodes)
                           for _bn, nodes in (_emitted_paths or [])}
             cut_edge_keys = set(cut_info or ())
-        # HYBRID per-chain enumeration: distinct-type chains via an
-        # exact layered DP (no path materialization, no truncation);
-        # multi-visit chains via the alive-pruned visited DFS (cap 2M,
-        # disclosed). Forward/backward layered counts identify every
-        # edge/body on >= 1 realization of the chain, with exact
-        # per-edge traversals.
+        # (the retired HYBRID DP/DFS enumeration comment stood here —
+        # the layered per-position filter above replaced it at every
+        # applied threshold, plan-corridor-ratio-basis §8.3/§9)
         cut_keys_f = set(cut_edge_keys or ())
         seq_edges_full: Dict[Tuple[str, ...], List[Dict]] = {}
         seq_nodes_full: Dict[Tuple[str, ...], List[set]] = {}

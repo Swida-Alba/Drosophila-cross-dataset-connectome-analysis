@@ -38,8 +38,12 @@ preparation in `_graph_edge_frames`.
 Source/target queries (types, bodyIds, instances, regex) resolve to
 bodyIds; the `all_neurons` token forces depth 0. `min_synapse_num`
 filters connection rows at fetch time (weight = synapse count).
-`min_ratio` / `min_traversal_probability` are **readout columns only**
-(F9 retirement) — they never filter the graph.
+`min_traversal_probability` is a **readout column only** (probability
+suspension, 2026-10-06) — it never filters the graph. `min_ratio`
+filters on the RATIO basis (`weight basis: connection_ratio`): each
+edge is admitted on its own F9 input share (w over the target's
+all-post incoming), with `min_synapse_num` as the mass floor; on the
+default synapse basis `min_ratio` is a readout column.
 
 ### Stage 1 — Discovery
 - **'all' mode**: forward layer-by-layer fetch with `forward_only=True`

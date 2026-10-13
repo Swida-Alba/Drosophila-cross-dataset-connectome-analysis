@@ -1,5 +1,14 @@
 # Why FindAllPath Finds Paths at the bodyId Level First
 
+> **Status note (2026-10-13):** the pan-graph **edge-limit trim**
+> described in sections below is RETIRED — the current discovery cone
+> is the Edge Budget's lossless hop-budget prune with the tier-fit
+> floor (`edge_weight_floor`/`edge_budget_landing`), not
+> path-integrity trimming. This document remains as the design
+> rationale for bodyId-first discovery and as the historical
+> OLD-vs-NEW aggregation analysis; read its trim mechanics as the
+> retired pipeline it measures.
+
 Design rationale for the discovery-first pipeline in `FindAllPath` and
 `FindShortestPath`:
 
