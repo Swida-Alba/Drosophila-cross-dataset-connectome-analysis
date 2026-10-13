@@ -825,7 +825,7 @@ class TestGroupChipMarking:
     backend expands it into the group's members -- so the input has to be told
     which of its chips are groups, and told again when the board changes."""
 
-    def _board(self, page_name, rows, capture=True):
+    def _board(self, page_name, rows, capture=True, show_filter=False):
         from nicegui import Client
         from nicegui.page import page
         from ui.components.common import neuron_list_input
@@ -833,7 +833,8 @@ class TestGroupChipMarking:
         client = Client(page(page_name))
         with client:
             query = neuron_list_input(label="Neurons to Compare",
-                                      show_filter=False, show_upload=False)
+                                      show_filter=show_filter,
+                                      show_upload=False)
             _selector, card, _resolve = me.custom_grouping_block(
                 tab_key=page_name, datasets_provider=lambda: [DS_A, DS_B],
                 query_inputs={"query": query})
@@ -900,6 +901,30 @@ class TestGroupChipMarking:
         assert seen, "the marker was never pushed"
         assert all(slot is query.chip_input_anchor for slot in seen), \
             "push ran on the caller's slot instead of the field's own element"
+
+    def test_mark_is_withheld_when_the_query_is_not_exact(
+        self, isolated_store, monkeypatch
+    ):
+        """A non-exact Match-by rewrites the chip into a regex before the
+        backend sees it, so the label no longer expands -- and the mark has to
+        stop claiming it does."""
+        client, grouper, _ = self._board("grouper-mode", [
+            ("aMe", {DS_A: ["aMe12"]}),
+        ], capture=False, show_filter=True)
+        scripts = []
+        monkeypatch.setattr(cg.ui, "run_javascript",
+                            lambda script, *a, **kw: scripts.append(script))
+        query = grouper.query_inputs["query"]
+        with client:
+            grouper.resync()
+        assert '"aMe"' in scripts[-1]
+        with client:
+            query.filter_mode.value = "contains"
+        assert scripts and '"aMe"' not in scripts[-1], \
+            "a pattern query must not be marked as an expanding group"
+        with client:
+            query.filter_mode.value = "exact"
+        assert '"aMe"' in scripts[-1]
 
     def test_disabled_input_is_still_told(self, isolated_store):
         """The comparison tabs disable the query box at 'custom group' level,

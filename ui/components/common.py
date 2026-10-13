@@ -2614,16 +2614,35 @@ def neuron_list_input(
         update_status()
         return current
 
+    group_labels = {"hints": {}}
+
+    def _group_marks_resolve() -> bool:
+        """Whether a group label in this field will actually be expanded.
+
+        ``apply_filter_mode`` rewrites a non-exact chip into a regex before the
+        backend sees it, and the label expansion matches the literal name only,
+        so at Match-by = contains/startswith/regex/endwith/regex the label
+        resolves as a pattern search instead: marking the chip would promise an
+        expansion that will not happen.
+        """
+        if filter_mode is None:
+            return True
+        return str(filter_mode.value or "exact").strip().lower() == "exact"
+
     def set_group_labels(hints: Dict[str, str]) -> None:
         """Mark the chips that name a custom group.
 
         *hints* maps a group label to its tooltip text; a chip whose text is
         not a key goes back to looking like an ordinary entry.
         """
+        group_labels["hints"] = dict(hints or {})
+        _push_group_marks()
+
+    def _push_group_marks() -> None:
+        hints = group_labels["hints"] if _group_marks_resolve() else {}
         script = (_GROUP_CHIP_MARK_JS
                   .replace("__FIELD_ID__", chip_dom_id)
-                  .replace("__HINTS__",
-                           json.dumps(dict(hints or {}), ensure_ascii=False)))
+                  .replace("__HINTS__", json.dumps(hints, ensure_ascii=False)))
         try:
             # Run against this field's own element: a caller that has just
             # re-rendered (the grouping board does, on every mutation) leaves
@@ -2635,6 +2654,9 @@ def neuron_list_input(
             # Lazy tab panels keep their elements unmounted until first
             # activation, so there may be no client to run this against yet.
             pass
+
+    if filter_mode is not None:
+        filter_mode.on_value_change(lambda _e: _push_group_marks())
 
     container.set_group_labels = set_group_labels
 
