@@ -31,7 +31,7 @@ comparer = ConnectivityProfileComparer(
     aggregation_level="type",           # "type" | "bodyid" | "custom"
     ensure_cache_complete=False,
     custom_mapping_file=None,           # required when aggregation_level="custom"
-    label_mapping_file=None,            # tier-0 preset; does NOT change the rows
+    label_mapping_file=None,            # tier-0 preset; the query still picks the rows
     group_partners_by_mapping=False,    # fold the partner space into preset labels
 )
 results = comparer.run()
@@ -39,8 +39,11 @@ results = comparer.run()
 
 `custom_mapping_file` and `label_mapping_file` take the same LabelMapper preset
 JSON. The first makes the preset's groups the ROWS (it forces
-`aggregation_level="custom"`); the second only overlays label identity on
-whatever rows the query already produces, and is the parameter the
+`aggregation_level="custom"`); the second keeps the query's own row set, but it
+is not merely cosmetic: a query token naming one of the preset's labels pools
+that label's members for the dataset into its row (tier 0, recorded in
+`mapping_resolution_counts` as a `user_label` resolution), bodyId-level axes
+upgrade to `{bodyId}_{label}({native})`, and it is the parameter the
 cross-dataset (multi-`datasets`) lane needs to compare settled labels.
 `group_partners_by_mapping` collapses the PARTNER side of every type-level
 profile through the same preset (weights summed per label, ranks rebuilt); it
