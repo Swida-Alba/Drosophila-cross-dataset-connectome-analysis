@@ -18067,6 +18067,10 @@ class FindNeuronConnection:
             mode = 'complete'
         elif mode == 'on':
             mode = 'both'
+        elif mode == 'fast':
+            # STANDALONE FAST (2026-10-14): the hook may be reached on a
+            # fast-only folder (defensive) -- the lane always runs
+            mode = 'both'
         if mode not in ('auto', 'both'):
             return False
         if (mode == 'auto'
@@ -18103,7 +18107,14 @@ class FindNeuronConnection:
             ]
             if getattr(self, 'skip_bodyId', False):
                 cmd.append('--no-bodyid')
-            budget_s = 900
+            # CORRIDOR-ON-RATIO: the adaptive ratio cone makes the lane's
+            # drain genuinely bigger (the L8 long-haul ratio cell needs
+            # ~900 s where the synapse lane needs ~270 s) -- double the
+            # in-run budget on the ratio basis so the lane is not killed
+            # at its own completion threshold.
+            budget_s = 1800 if str(getattr(
+                self, 'weight_basis', 'synapse')).startswith(
+                'connection_ratio') else 900
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True,
@@ -19141,7 +19152,39 @@ class FindNeuronConnection:
                 f.write(f'{key}:{" "*max(1, 30-keylen)}{value}\n')
             f.write(f'path_mode:{" "*21}{path_mode}\n')
             f.write('\n')
-        
+
+        # STANDALONE FAST MODE (corridor_mode='fast', 2026-10-14): the
+        # corridor lane IS the deliverable -- skip the Complete pipeline
+        # entirely (no discovery, no enumeration, no materialization, no
+        # refill). The folder carries parameters + enrollment + the lane's
+        # route_scope_paths/ exports; in-process is safe here (no big
+        # engine graph exists in a fast-only process).
+        if str(getattr(self, 'corridor_mode', 'auto') or '').lower() == 'fast':
+            self._save_path_neuron_enrollment(self.allpath_folder)
+            self._warn_notes = getattr(self, '_warn_notes', None) or []
+            self._warn_notes.append(
+                '- [fast-only] Complete mode skipped (Run Mode = Fast '
+                'only): the corridor lane ran standalone on this query; '
+                'this folder carries no allpaths/connection exports.')
+            self._vprint('Fast-only run: the corridor lane is the '
+                         'deliverable (Complete mode skipped).',
+                         level='always')
+            try:
+                from route_plan import run_lane
+                run_lane(run_dir=self.allpath_folder, fnc=self,
+                         trigger='fast-only (standalone)')
+                self._vprint('  ✓ Fast-only corridor lane complete '
+                             '(route_scope_paths/)', level='always')
+            except Exception as exc:
+                from route_plan import CorridorRefusal
+                label = ('refused' if isinstance(exc, CorridorRefusal)
+                         else 'failed')
+                self._warn_notes.append(
+                    f'- [fast-only] corridor lane {label}: {exc}')
+                self._vprint(f'  ⚠️ Fast-only corridor lane {label}: {exc}',
+                             level='always')
+            return None
+
         # FlyWire identifiers are canonicalized losslessly before any graph
         # membership or join operation.  The legacy NeuPrint path keeps its
         # existing string conversion semantics.
