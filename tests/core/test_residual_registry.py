@@ -264,6 +264,34 @@ class TestResidualRegistry:
         assert lines[0].startswith("- [label mapper residuals]")
         assert "SMP540: 1 enrolled / 4 population (3 residual(s) -> 'SMP540*')" in lines[0]
 
+    def test_members_of_names_the_class_an_emitted_key_stands_for(self, mapper):
+        """`members_of` is what makes a published `T*` key pickable.
+
+        The registry is the only producer of these keys, so it is the one place
+        that can say which neurons a key stands for — a query lane holding a
+        mapper resolves the class through it instead of reading the star as a
+        glob (_plan/pending_issues.md, "a `T*` key cannot be named in a query").
+        """
+        registry = ResidualRegistry(mapper, DS, _population_frame())
+        assert registry.members_of("SMP540*") == ["80002", "80003", "80004"]
+        # The hemisphere spelling addresses the same class (decision D4).
+        assert registry.members_of("SMP540*_L") == ["80002", "80003", "80004"]
+        # A fully governed type emits no key, so the spelling names nothing
+        # rather than the whole population; an untouched type is not collided
+        # either.
+        assert registry.members_of("CB3449*") == []
+        assert registry.members_of("XYZ*") == []
+
+    def test_members_of_refuses_to_call_unknown_empty(self, mapper):
+        """No neuron table means residuals were NOT evaluated.
+
+        An empty list there would read as "this type has no residuals" — an
+        absence claim a degraded run cannot make (decision D5).
+        """
+        registry = ResidualRegistry(mapper, DS, None)
+        assert registry.population_available is False
+        assert registry.members_of("SMP540*") is None
+
 
 class TestEnrichmentParity:
     """The delegates are callers of the registry, not second implementations.
@@ -428,6 +456,34 @@ class TestPartnerCollapseFoldsOnlyGovernedTypes:
         assert C._label_for_type_via_mapper(
             comparer, "MIXED", DS, mapper,
             self.LABELS | {"CB3449-LAB"}) is None
+
+    def test_the_census_publishes_what_the_fold_refused(self, mapper):
+        """The docstring promised "so the report can say so"; this is that
+        promise kept.
+
+        Recorded-then-never-read was the defect (found 2026-10-14 — the same
+        class as LM-007, a disclosure that cannot fire): a user could not see
+        which partner mass was left unfolded because the mapper governed the
+        type only partly.
+        """
+        from comparison.profile_comparator import ConnectivityProfileComparer as C
+        comparer = self._comparer(["80001", "80002", "80003"])
+        C._label_for_type_via_mapper(
+            comparer, "SMP540", DS, mapper, self.LABELS)
+        assert comparer._partner_fold_census() == [
+            {'dataset': DS, 'raw_type': 'SMP540', 'label': 'DN1pD',
+             'residuals': 2, 'population': 3}]
+        lines = comparer._partner_fold_note_lines()
+        assert any('SMP540' in ln and '2/3' in ln for ln in lines), lines
+        assert any('partner_fold_mixed' in ln for ln in lines), lines
+
+    def test_a_run_that_refused_nothing_publishes_nothing(self, mapper):
+        from comparison.profile_comparator import ConnectivityProfileComparer as C
+        comparer = self._comparer(["80001"])
+        assert C._label_for_type_via_mapper(
+            comparer, "SMP540", DS, mapper, self.LABELS) == "DN1pD"
+        # the README splices this list only when it is non-empty
+        assert comparer._partner_fold_census() == []
 
     def test_residual_keys_are_terminal_in_this_lane(self, mapper):
         # The analyzer's twin already honoured `T*`; this lane re-resolved it

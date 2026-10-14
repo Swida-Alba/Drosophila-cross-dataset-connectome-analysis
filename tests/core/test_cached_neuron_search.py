@@ -125,6 +125,65 @@ def test_get_neurons_uses_cache_resolver_before_dataframe_scan(tmp_path, monkeyp
     assert neurons["bodyId"].tolist() == ["100"]
 
 
+def test_an_emitted_T_star_key_is_read_as_the_key_before_the_glob(tmp_path):
+    """``SMP540*`` is the key the typing registry emits, not a family glob.
+
+    Copying that key out of a typed export used to ask for every name STARTING
+    with ``SMP540`` — which includes the bare native type wherever it is
+    legitimately untouched (_plan/pending_issues.md). A frame carrying the
+    emitted key answers it exactly; a frame that has none keeps the prefix
+    reading, because this lane holds no label mapper and must not invent the
+    class either. Both resolvers carry the rule, so the sidecar and the
+    authoritative dataframe cannot disagree about one query.
+    """
+    from src.neuron_index_builder import (
+        build_search_cache_frame,
+        search_cache_path,
+    )
+    from src.neuron_search import (
+        get_cached_neuron_search,
+        resolve_dataframe_query,
+        resolve_neuron_query,
+    )
+
+    typed = pd.DataFrame({
+        "bodyId": ["1", "2", "3", "4"],
+        "type": ["SMP540*", "SMP540*", "SMP540", "SMP5401"],
+        "instance": ["a", "b", "c", "d"],
+    })
+    ids, info = resolve_dataframe_query(typed, "SMP540*")
+    assert [str(value) for value in ids] == ["1", "2"]
+    assert info["matched_column"] == "type"
+    # the hemisphere spelling addresses the same key
+    ids_l, _info_l = resolve_dataframe_query(typed, "SMP540*_L")
+    assert [str(value) for value in ids_l] == ["1", "2"]
+
+    # nothing carries the key: the prefix reading still answers, unchanged
+    plain = pd.DataFrame({"bodyId": ["3", "4"],
+                          "type": ["SMP540", "SMP5401"],
+                          "instance": ["c", "d"]})
+    ids2, info2 = resolve_dataframe_query(plain, "SMP540*")
+    assert [str(value) for value in ids2] == ["3", "4"]
+    assert info2["matched_column"] == "type"
+
+    # the cached sidecar path agrees
+    dataset = "residual-key-test:v1.0"
+    folder = dataset.replace(":", "_").replace(".", "_")
+    cache_dir = tmp_path / "neuron_indexes" / folder
+    cache_dir.mkdir(parents=True)
+    index_path = cache_dir / "neuron_index.parquet"
+    plframe = pl.from_pandas(typed)
+    plframe.write_parquet(index_path)
+    build_search_cache_frame(plframe).write_parquet(
+        search_cache_path(index_path))
+    cache = get_cached_neuron_search(
+        dataset, index_root=tmp_path / "neuron_indexes")
+    assert cache is not None
+    cached_ids, cached_info = resolve_neuron_query(cache, "SMP540*")
+    assert {str(value) for value in cached_ids} == {"1", "2"}
+    assert cached_info["matched_column"] == "type"
+
+
 def test_stale_sidecar_rebuilds_for_new_priority_fields(tmp_path):
     from src.neuron_index_builder import build_search_cache_frame, search_cache_path
     from src.neuron_search import get_cached_neuron_search, resolve_neuron_query

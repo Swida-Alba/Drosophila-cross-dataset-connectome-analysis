@@ -211,6 +211,17 @@ The web UI builds custom mappings **inline on each tab** — no scripting needed
    *Terminality*: `T*` is never re-resolved by the policy/family/canonical
    tiers. The tag is hemisphere-aware, so a separated-hemisphere run's
    `SMP540*_L` is still recognized as a residual.
+   *Pickability* (2026-10-14): a key you can read in an export is a key you can
+   query. A comparison query that IS an emitted `T*` resolves to that class —
+   the neurons of the native type the mapper does not enroll — in both
+   comparison lanes (`profile_comparator._residual_member_ids`,
+   `morphology_comparison._residual_class`), and the neuron search reads the
+   spelling literally before it reads it as a glob. The rule declines rather
+   than guesses, because a trailing `*` is also legal glob grammar and a real
+   release name can end in one (FAFB's `PPL1*`): a token is a class only where
+   its base type exists **and** is partly governed, so an untouched type's
+   `T*` never rows that type's whole population, and a name the dataset
+   actually uses stays a name.
    *Cross-dataset scope*: the key is deliberately UNDECORATED — two
    datasets' residuals of the same native name are the same class ("the
    un-enrolled remainder of `T`") and share one comparison row, while a

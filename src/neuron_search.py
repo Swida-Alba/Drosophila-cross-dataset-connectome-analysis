@@ -299,6 +299,32 @@ def _normalized_query(value: Any) -> str:
     return text
 
 
+def _residual_key_literal(query_text: str) -> Optional[str]:
+    """The token itself when it is an emitted ``T*`` residual key.
+
+    The star is the residual tag the typing registry mints (``T*``, or ``T*_L``
+    once a hemisphere suffix rides on it), not a glob: ``SMP540*`` names the
+    neurons of native type ``SMP540`` that a label mapper does not enroll. Read
+    as a prefix it asks for every name STARTING with ``SMP540`` — which includes
+    the bare native type in the datasets where it is legitimately untouched —
+    so the key a report prints could not be picked from the query box
+    (_plan/pending_issues.md). One predicate with
+    ``comparison.type_resolver.is_residual_key``, kept local because this
+    cache layer must not import the comparison package.
+    """
+    value = str(query_text or "").strip()
+    for side in ("_L", "_R", "_U"):
+        if value.endswith(side):
+            value = value[:-len(side)]
+            break
+    if not value.endswith("*") or len(value) < 2:
+        return None
+    base = value[:-1]
+    if "*" in base or not base.strip():
+        return None
+    return value
+
+
 def _prefix_literal(pattern: str) -> Optional[str]:
     """Return the literal prefix represented by ``name.*``/``name*``."""
     value = str(pattern or "")
@@ -798,6 +824,22 @@ def resolve_dataframe_query(
             if value and predicate(value)
         ]
 
+    # Before ANY glob reading, a `T*` token is tried as the KEY the typing
+    # registry emits: a frame that carries the emitted key (a typed export, an
+    # enrichment table) answers it exactly. Reading it as a prefix instead asked
+    # for every name starting with `SMP540`, which includes the bare native type
+    # wherever it is legitimately untouched, so the key a report prints could
+    # not be picked back out of a query (_plan/pending_issues.md). The CLASS
+    # itself belongs to the lanes that hold a label mapper — this one has none,
+    # so it resolves the spelling and never invents a population.
+    if wildcard:
+        literal = _residual_key_literal(query_text)
+        if literal is not None:
+            for column in columns:
+                rows = find_rows(column, lambda value: value == literal)
+                if rows:
+                    return finish(rows, column, "exact")
+
     if prefix is not None:
         for column in columns:
             rows = find_rows(column, lambda value: value.startswith(prefix))
@@ -1091,6 +1133,24 @@ def resolve_neuron_query(
         columns = list(all_columns)
     else:
         columns = list(all_columns)
+
+    # Before ANY glob reading, a ``T*`` token is tried as the KEY the typing
+    # registry emits — the same rule the dataframe lane applies, so a query
+    # copy-pasted out of a typed export is not widened into the family its
+    # spelling happens to prefix (_plan/pending_issues.md). ``T*_L`` counts:
+    # the engines append the side after the tag, and ``_prefix_literal`` never
+    # sees that spelling at all.
+    if wildcard:
+        literal = _residual_key_literal(query_text)
+        if literal is not None:
+            for column in columns:
+                entries = _entries_for_values(
+                    cache.search_frame,
+                    [column],
+                    pl.col("search_value") == literal,
+                )
+                if not entries.is_empty():
+                    return _result(cache, query, entries, column)
 
     # Explicit prefix mode follows the analysis priority contract. The viewer
     # deliberately keeps later-column hits as secondary explanations, but a

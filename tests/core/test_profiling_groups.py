@@ -612,6 +612,77 @@ def test_standardize_profile_protects_user_label_keys(tmp_path):
     assert plain.upstream_partners == {"canon_grp1": 5.0, "canon_Tm3": 3.0}
 
 
+def test_a_T_star_query_key_selects_the_residual_class(tmp_path):
+    """U10: a `T*` key copied out of an export names a CLASS, not a label.
+
+    The preset enrolls bodyId 1 of native type aMe12 (neurons 1,2), so
+    ``aMe12*`` is that type's unenrolled half — neuron 2. Before this branch the
+    token was claimed as a tier-0 identity, ``get_neurons_for_label('aMe12*')``
+    answered nothing, and the row silently disappeared
+    (_plan/pending_issues.md, "a `T*` key cannot be named in a query").
+    """
+    preset = tmp_path / "residual_preset.json"
+    preset.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
+        "source_mapping": {"custom_label": ["clock"], DATASET: [[1]]},
+    }), encoding="utf-8")
+    comparer = _make_comparer(query=["aMe12*"],
+                              label_mapping_file=str(preset))
+    comparer.profiler.get_bodyids_for_type = lambda t, ds: {
+        "aMe12": [1, 2]}.get(t, [])
+    assert comparer._get_neurons_to_compare(aggregation_level="type") == {
+        "aMe12*": [2]}
+    # the resolution record says which class the key resolved to
+    record = comparer.mapping_resolution_record[DATASET]["aMe12*"]
+    assert record["members"] == ["2"] and "residual class" in record["reason"]
+
+
+def test_an_untouched_type_has_no_residual_class_to_query(tmp_path):
+    """Collision is dataset-scoped: with nothing enrolled the key names nothing.
+
+    A `T*` spelling of a type the preset does not govern at all is NOT that
+    type's population — an untouched native type keeps its raw name — so the
+    lane must not invent a row of neurons under a star the export never printed.
+    Declined, the token falls to the ordinary lanes, which keep it as the raw
+    item they keep any unresolved pattern.
+    """
+    preset = tmp_path / "residual_preset2.json"
+    preset.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
+        "source_mapping": {"custom_label": ["clock"], DATASET: [["OTHER"]]},
+    }), encoding="utf-8")
+    comparer = _make_comparer(query=["aMe12*"],
+                              label_mapping_file=str(preset))
+    comparer.profiler.get_bodyids_for_type = lambda t, ds: {
+        "aMe12": [2, 3]}.get(t, [])
+    neurons = comparer._get_neurons_to_compare(aggregation_level="type")
+    flat = [bid for ids in neurons.values() for bid in ids]
+    assert 2 not in flat and 3 not in flat, (
+        f"an untouched type was rowed under a star: {neurons}")
+
+
+def test_a_star_that_is_a_real_type_name_is_still_the_type(tmp_path):
+    """A dataset type spelled with a star (FAFB's `PPL1*`) is not a class.
+
+    The tier-0 claim used to swallow it: the token reads as a terminal identity
+    by spelling, `get_neurons_for_label` answers nothing, and the row of a valid
+    type query disappears. Declining it leaves the type lanes to resolve it.
+    """
+    preset = tmp_path / "residual_preset3.json"
+    preset.write_text(json.dumps({
+        "format": PRESET_FORMAT_TAG,
+        "source_mapping": {"custom_label": ["clock"], DATASET: [[1]]},
+    }), encoding="utf-8")
+    comparer = _make_comparer(query=["PPL1*"],
+                              label_mapping_file=str(preset))
+    comparer.profiler.get_bodyids_for_type = lambda t, ds: {
+        "PPL1*": [7, 8], "PPL1": [1, 2]}.get(t, [])
+    comparer.profiler.list_types = lambda p, ds: (
+        ["PPL1*"] if p == "PPL1*" else [])
+    assert comparer._get_neurons_to_compare(aggregation_level="type") == {
+        "PPL1*": [7, 8]}
+
+
 def test_collapse_partners_sums_member_weights(tmp_path):
     """U7: partner-side grouping folds member types into their label with
     summed weights; unmapped keys and true labels keep their keys."""

@@ -207,9 +207,11 @@ def test_intra_display_labels_formatted(tmp_path, monkeypatch):
     comp.dataset = DS_A
     comp.project_root = PROJECT_ROOT
     comp.label_mapping_file = _write_preset(tmp_path)
+    comp.custom_mapping_file = ""
     comp._label_mapper = None
     comp._label_mapper_loaded = False
     comp._axis_label_of_cache = None
+    comp._label_groups_cache = None
     comp._type_map = {"1": "T1", "5": "T3"}
     comp._instance_map = {"1": "x", "5": "y"}
     comp._body_id = lambda value: int(value)
@@ -228,9 +230,11 @@ def test_intra_display_labels_legacy_without_preset():
     comp.dataset = DS_A
     comp.project_root = PROJECT_ROOT
     comp.label_mapping_file = ""
+    comp.custom_mapping_file = ""
     comp._label_mapper = None
     comp._label_mapper_loaded = False
     comp._axis_label_of_cache = None
+    comp._label_groups_cache = None
     comp._type_map = {"1": "T1"}
     comp._instance_map = {"1": "x"}
     comp._body_id = lambda value: int(value)

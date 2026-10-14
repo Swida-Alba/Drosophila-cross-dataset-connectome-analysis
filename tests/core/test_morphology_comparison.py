@@ -1071,15 +1071,89 @@ def test_bodyid_level_expands_a_custom_group_label(vector_setup):
     # groups decided which neurons are in scope; the level then compares them
     # as themselves, so the row identity is the neuron, not the label.
     #
-    # The axis upgrade is the tier-0 overlay's own, pre-existing behavior: the
-    # member listed by bodyId (5) carries the label, the two that entered the
-    # group through its type name (1, 2) keep the native form. Recorded in
-    # _plan/pending_issues.md rather than changed here.
-    assert _body_labels(result) == ["1_inst1", "2_inst2", "5_clock(inst5)"]
+    # The axis upgrade covers EVERY member of the group, however the member
+    # list spells it: the tier-0 map is widened by the group's own expansion
+    # (morphology_comparison._group_member_label_overlay), so the two neurons
+    # that entered through the type name `aMe12` carry `clock` beside the one
+    # listed as a literal bodyId. Before that, one group's rows had two axis
+    # spellings (`5_clock(inst5)` beside `1_inst1`) — _plan/pending_issues.md.
+    assert _body_labels(result) == ["1_clock(inst1)", "2_clock(inst2)",
+                                    "5_clock(inst5)"]
     members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
     assert sorted(int(b) for b in members["bodyId"]) == [1, 2, 5]
     assert sorted({str(r).partition("_")[0] for r in members["row"]}) == \
         ["1", "2", "5"]
+
+
+def test_a_T_star_query_key_rows_its_residual_class(vector_setup):
+    """An exported ``T*`` key is a CLASS, not a glob.
+
+    The preset enrolls neurons 1 and 3, so ``aMe12*`` is that type's unenrolled
+    half — neuron 2 — and ``aMe10*`` is neuron 4. Read as a pattern instead the
+    star quantified its own last letter, so the key matched ``aMe12`` and
+    ``aMe122`` and never named the class the export printed
+    (_plan/pending_issues.md, "a `T*` key cannot be named in a query").
+    """
+    preset = _write_preset(vector_setup, [("clock", [1]), ("late", [3])])
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12*", "aMe10*"],
+        aggregation_level="bodyid", label_mapping_file=preset,
+        output_dir=str(vector_setup / "lane_residual"),
+        generate_heatmaps=False, verbose=False)
+    result = comparer.run()
+    assert _body_labels(result) == ["2_inst2", "4_inst4"]
+    assert any("residual class" in note and "aMe12*" in note
+               for note in comparer._resolution_notes), \
+        comparer._resolution_notes
+
+
+def test_a_T_star_key_is_one_row_at_the_type_level(vector_setup):
+    """The matrix row IS the emitted key, so a report row can be re-queried."""
+    preset = _write_preset(vector_setup, [("clock", [1]), ("late", [3])])
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12*", "aMe10*"],
+        aggregation_level="type", label_mapping_file=preset,
+        output_dir=str(vector_setup / "lane_residual_type"),
+        generate_heatmaps=False, verbose=False).run()
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    assert set(members["row"]) == {"aMe12*", "aMe10*"}
+    assert sorted(int(b) for b in members["bodyId"]) == [2, 4]
+
+
+def test_a_fully_governed_type_has_no_residual_class_to_row(vector_setup):
+    """The key names nothing when every member is enrolled.
+
+    Collision is dataset-scoped: a type the preset governs wholly emits no
+    ``T*``, so the lane must refuse rather than quietly row its whole
+    population under a star the export never printed.
+    """
+    preset = _write_preset(vector_setup,
+                           [("clock", ["aMe12"]), ("late", ["aMe10"])])
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12*", "aMe10*"],
+        aggregation_level="bodyid", label_mapping_file=preset,
+        output_dir=str(vector_setup / "lane_no_residual"),
+        generate_heatmaps=False, verbose=False)
+    with pytest.raises(ValueError, match="at least two neurons"):
+        comparer.run()
+    assert any("names no residual class" in note
+               for note in comparer._resolution_notes), \
+        comparer._resolution_notes
+
+
+def test_a_star_key_without_a_preset_keeps_the_glob_reading(vector_setup):
+    """Compatibility: no preset, no residual vocabulary.
+
+    A trailing star is also legal glob grammar, and with no mapper attached
+    nothing here can be a class — the token must resolve exactly the way it did
+    before this lane spoke ``T*``.
+    """
+    result = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=["aMe12*", "PPL1*"],
+        aggregation_level="type", output_dir=str(vector_setup),
+        generate_heatmaps=False, verbose=False).run()
+    members = pd.read_csv(Path(result["output_folder"]) / "members.csv")
+    assert set(members["row"]) == {"aMe12", "PPL1*"}
 
 
 def test_group_label_beats_a_same_spelling_native_type(vector_setup):

@@ -1512,6 +1512,25 @@ class ResidualRegistry:
         """The flat bodyId -> key map the enrichment engines join on."""
         return dict(self._map)
 
+    def members_of(self, key) -> Optional[List[str]]:
+        """The bodyIds whose effective key IS *key* — the members of one class.
+
+        This is what makes an emitted ``T*`` pickable: the key a report shows
+        is a class of neurons, and the query lane that has a mapper and a
+        population can name them exactly. Returns ``None`` (NOT an empty list)
+        when the class cannot be decided here: with no neuron table the
+        residual tier was never evaluated, and 'unknown' must not read as
+        'this type has no residuals'. Hemisphere spellings of the same key
+        (``T*_L``) address the same class.
+        """
+        if not self.population_available:
+            return None
+        want = native_base(key)
+        if not want:
+            return None
+        return [bid for bid, emitted in self._map.items()
+                if emitted == want]
+
     def __bool__(self) -> bool:
         return bool(self._map)
 

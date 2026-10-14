@@ -497,6 +497,34 @@ class MorphologyProfileComparer:
             if text in self._type_names:
                 _add_type(text)
                 continue
+            # An emitted `T*` key is a CLASS, not a glob: it names the neurons
+            # of the native type the attached preset does NOT enroll. Read as a
+            # pattern instead, the star quantified its own last letter and
+            # `SMP540*` matched `SMP54`, `SMP540` and `SMP5400` — a wider set
+            # than the key and none of it the class (_plan/pending_issues.md).
+            # It runs AFTER the exact-type lane, because a real type name can
+            # itself end in a star.
+            residual = self._residual_class(text)
+            if residual is not None:
+                native, ids = residual
+                if not ids:
+                    self._note(f"'{text}' names no residual class in "
+                               f"{self.dataset}: every neuron of {native!r} "
+                               "this preset knows is enrolled under a label, so "
+                               "the key has nothing to row here (a class exists "
+                               "only where a type is partly governed).")
+                    missing.append(text)
+                    continue
+                self._note(f"'{text}' is a residual class: expanded to "
+                           f"{len(ids)} neuron(s) of {native} in "
+                           f"{self.dataset} the preset does not enroll.")
+                if self.aggregation_level == "bodyid":
+                    for bid in ids:
+                        self._pinned.add(bid)
+                        rows.setdefault(str(bid), [bid])
+                    continue
+                _add_ids(text, ids)
+                continue
             if text.isdigit():
                 bid = self._body_id(text)
                 type_name = str(self._type_map.get(bid, "") or "").strip()
@@ -617,10 +645,59 @@ class MorphologyProfileComparer:
                     self._label_groups_cache = dict(zip(names, groups))
         return self._label_groups_cache
 
-    def _group_member_ids(self, label: str,
-                          members: List[object]) -> List[object]:
+    def _residual_class(self, token: str):
+        """``(native_type, member_bodyIds)`` for an emitted ``T*`` query key,
+        or ``None`` when the token is not a residual key at all.
+
+        ``SMP540*`` is a CLASS, not a glob: the neurons of native type
+        ``SMP540`` the attached preset does not enroll. Reaching this lane as a
+        pattern instead matched ``SMP54``, ``SMP540`` and ``SMP5400`` — the
+        exported key was unpicklable from the query box
+        (_plan/pending_issues.md). One membership law with the connectivity
+        lane's ``_population_partition`` and the axis overlay: the preset's own
+        resolver decides whether a neuron carries a label.
+        """
+        text = str(token).strip()
+        try:
+            from comparison.type_resolver import (is_residual_key, native_base)
+        except ImportError:  # pragma: no cover - direct src/ execution
+            try:
+                from type_resolver import is_residual_key, native_base
+            except ImportError:
+                return None
+        if not is_residual_key(text):
+            return None
+        label_of = self._axis_label_of()
+        if label_of is None:
+            # No preset: nothing in this run can be a residual class, so the
+            # token is not one and the ordinary lanes answer it.
+            return None
+        base = native_base(text)   # `T*_L` and `T*` address one class
+        native = base[:-1] if base.endswith("*") else ""
+        if not native:
+            return None
+        population = self._type_member_ids(native)
+        if not population:
+            # Nothing of that name is here, so the star cannot be a tag — it is
+            # the glob the user wrote (a trailing star is legal grammar).
+            return None
+        residual = [bid for bid in population
+                    if not label_of(self.dataset, bid)]
+        if len(residual) == len(population):
+            # Untouched native type here: collision is dataset-scoped, so `T*`
+            # names no class rather than the whole population.
+            return None
+        return native, residual
+
+    def _group_member_ids(self, label: str, members: List[object],
+                          disclose: bool = True) -> List[object]:
         """Resolve a group's members (type names or bodyIds) against this
-        dataset, in first-occurrence order."""
+        dataset, in first-occurrence order.
+
+        ``disclose=False`` is for a reader that only needs the mapping (the
+        tier-0 axis overlay), so an unresolvable token is said once per run
+        rather than once per reader of the same preset.
+        """
         ids: List[object] = []
         for value in members:
             text = str(value).strip()
@@ -628,10 +705,30 @@ class MorphologyProfileComparer:
                 ids.append(self._body_id(text))
             elif text in self._type_names:
                 ids.extend(self._type_member_ids(text))
-            else:
+            elif disclose:
                 self._note(f"{label}: '{text}' is neither a type nor a "
                            f"bodyId in {self.dataset}; skipped")
         return list(dict.fromkeys(self._body_id(b) for b in ids))
+
+    def _group_member_label_overlay(self) -> "Dict[str, str]":
+        """``{canonical bodyId: preset label}`` for EVERY neuron a group puts
+        in scope, not only the ones its member list spells as a bodyId.
+
+        The mapper keys its tier-0 map by the member tokens as written, so a
+        group mixing a type name with bodyIds — the grouping board's member
+        cells accept both — labeled only the literal ones: ``["aMe12", 5]``
+        gave ``5_clock(inst5)`` while the two neurons ``aMe12`` expands into
+        kept the native axis form, one group's rows in two spellings (found
+        2026-10-14). The same expansion the row builder uses is what makes the
+        axis form uniform; the mapper's own answer still wins, so an id enrolled
+        under a different label is not re-labeled here.
+        """
+        overlay: "Dict[str, str]" = {}
+        for label, members in self._label_groups().items():
+            for bid in self._group_member_ids(label, members,
+                                              disclose=False):
+                overlay.setdefault(str(self._body_id(bid)), str(label))
+        return overlay
 
     def _custom_rows(self) -> "Dict[str, List[object]]":
         """Rows from the grouping preset's source-side groups (query ignored).
@@ -1263,7 +1360,10 @@ class MorphologyProfileComparer:
         """``(dataset, body_id) -> standard label | None`` from the preset.
 
         ``None`` when no preset was supplied or it failed to load — every
-        axis then keeps the legacy format (byte-identical runs)."""
+        axis then keeps the legacy format (byte-identical runs). With a preset,
+        the tier-0 map is widened by ``_group_member_label_overlay`` so a
+        group's members share one axis spelling however the member list spells
+        them."""
         if not self._label_mapper_loaded:
             self._label_mapper_loaded = True
             try:
@@ -1277,7 +1377,16 @@ class MorphologyProfileComparer:
                     return None
             self._label_mapper = load_label_mapper(
                 self.label_mapping_file, log=self._note_or_log)
-            self._axis_label_of_cache = axis_label_resolver(self._label_mapper)
+            resolver = axis_label_resolver(self._label_mapper)
+            overlay = self._group_member_label_overlay()
+            if not overlay:
+                self._axis_label_of_cache = resolver
+            else:
+                def label_of(dataset, body_id, _r=resolver, _o=overlay):
+                    hit = _r(dataset, body_id) if _r is not None else None
+                    return hit or _o.get(str(body_id))
+
+                self._axis_label_of_cache = label_of
         return self._axis_label_of_cache
 
     def _note_or_log(self, message: str) -> None:
