@@ -53,10 +53,37 @@ Key behaviors:
 - Grid lines behind the trees are hidden while the bands are shown.
 - `init_clustered=False` ships the linkage data but opens in original order;
   `square_cells=True` auto-locks cells at first render.
+- The "🏷️ Show/Hide Labels" toggle writes the **flat** Plotly attribute keys
+  (`'colorbar.title'`, `'title'`, `'xaxis.title'`, `'yaxis.title'`), because
+  `createHeatmap` stores those titles as plain strings — a nested
+  `'xaxis.title.text'` write is two levels into a string container and Plotly
+  throws `container is not an object`, in `restyle` and in `relayout` alike. The
+  colourbar title the toggle restores is the string `createHeatmap` actually drew
+  (`colorbarTitleText`, the selected metric's display name plus the scale label),
+  never a recomputed one. Pages over 100 rows or columns open with the tick
+  labels hidden; hidden *by the button* additionally clears the colourbar and
+  axis titles, while a page that loads hidden keeps them.
+- Showing the labels on such a page runs `fitCanvasForLabels(true)`: the canvas
+  grows to `ticks × (fontSize + 2)` plus margins on BOTH axes (one pitch for both,
+  so the square-cell lock cannot leave one axis under-spaced), capped at
+  `LABEL_FIT_MAX_PX = 4000` per side, and `syncPlotSizeControls()` writes the new
+  size back into the Plot Size panel — a page that resized itself while the panel
+  still said 800 px would be the same lie as the old dead button. Hiding gives the
+  room back **unless** the reader touched the size meanwhile: `updatePlotSize`,
+  `updatePlotSizeFromInput`, `resetPlotSize` and `loadSettings` clear
+  `labelFitSize`, because the square-cell hook re-derives the height after the
+  relayout, so the fitted size cannot be compared against to decide authorship.
 - PNG/SVG export captures the whole figure including the dendrograms.
 - The deprecated `statvis._VisConnMatInteractive_local` fallback (used only
   when vispath_pkg cannot be imported) does NOT have the dendrogram feature;
-  it emits an ImportWarning when used.
+  it emits an ImportWarning when used. Its label toggle re-renders rather
+  than restyling, leaves the figure/axis titles standing, and does not fit
+  the canvas for a large matrix. Until 2026-10-14 its emitted script read
+  `is_sparse`/`sparsity`/`use_scatter_mode` — Python-only names — so the
+  page drew nothing at all; `tests/core/test_statvis_coverage.py`
+  (`TestVisConnMatInteractiveLocalRenders`) now renders it in headless
+  Chrome, because eight string-level tests had kept it green while it was
+  blank.
 
 ## Library embedding (offline contract)
 

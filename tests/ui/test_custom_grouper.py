@@ -991,6 +991,46 @@ class TestSuggestionAnchoring:
         anchor = box.chip_input.parent_slot.parent
         assert menu._props.get("target") == f"#{anchor.html_id}"
 
+    def test_anchor_keeps_its_generated_dom_id(self, isolated_store):
+        """No component may claim the wrapper's ``id`` attribute.
+
+        ``Element.html_id`` is hardcoded to ``c<id>`` and ignores props, so the
+        target selector above is built from the generated id -- but NiceGUI
+        renders ``props['id']`` as the element's DOM id, overriding it. Setting
+        an id prop therefore detaches the popup: the menu still builds with all
+        of its rows (so every server-side assertion stays green) and opens at
+        the page origin instead of under the field. Measured live: left 0 /
+        top 1466 with the prop, left 99 / top 760 without it, in a 1057-tall
+        viewport -- which is what a user sees as "the lists are gone".
+        """
+        from nicegui import Client
+        from nicegui.page import page
+        from ui.components.common import neuron_list_input
+
+        client = Client(page("/grouper-anchor3"))
+        with client:
+            box = neuron_list_input(
+                label="Source Neurons", show_filter=False, show_upload=False,
+                suggestions=lambda text: [("aMe12", "type")])
+        anchor = box.chip_input.parent_slot.parent
+        assert anchor._props.get("id") is None, \
+            "an id prop overrides the generated c<id> the menu targets"
+        assert anchor._props.get("data-drocat-field"), \
+            "the group-chip marker needs an addressing attribute of its own"
+        # The marker script must address that attribute, not an id.
+        pushed = []
+        import ui.components.common as common
+        original = common.ui.run_javascript
+        common.ui.run_javascript = lambda script, *a, **k: pushed.append(script)
+        try:
+            with client:
+                box.set_group_labels({"aMe12": "Custom group aMe12"})
+        finally:
+            common.ui.run_javascript = original
+        assert pushed, "the marker never pushed a script"
+        assert "data-drocat-field=" in pushed[-1]
+        assert "getElementById" not in pushed[-1]
+
     def test_grouper_cell_menus_are_anchored(self, isolated_store):
         from nicegui import Client
         from nicegui.page import page

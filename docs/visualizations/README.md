@@ -339,7 +339,8 @@ plot_navis_3d(bodyIds=[...], show_rois=True)
 | Issue                  | Visualization   | Solution                                        |
 | ---------------------- | --------------- | ----------------------------------------------- |
 | Slow performance       | All             | Reduce data size, filter weak connections       |
-| Overlapping labels     | Network, Sankey | Increase plot size, adjust font size            |
+| Overlapping labels     | Network, Sankey, Heatmap | Increase plot size, adjust font size (a heatmap fits its own canvas when 🏷️ Show Labels reveals the axis names) |
+| Heatmap axis labels missing | Heatmap  | A map over 100 rows/columns opens with the tick labels hidden — press 🏷️ **Show Labels** (see `docs/TROUBLESHOOTING.md`) |
 | Colors not visible     | Heatmap         | Adjust colorscale, check data range             |
 | Export fails           | All             | Check browser permissions, try different format |
 | Clustering unavailable | Heatmap         | Matrix too small or contains NaN                |

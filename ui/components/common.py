@@ -105,7 +105,7 @@ _CHIP_LIST_TOGGLE_JS = (
 # change would lag the render the user is looking at.
 _GROUP_CHIP_MARK_JS = """
 (() => {
-  const root = document.getElementById('__FIELD_ID__');
+  const root = document.querySelector('[data-drocat-field="__FIELD_KEY__"]');
   if (!root) return;
   const apply = () => {
     const hints = root.__drocatGroupHints || {};
@@ -1243,11 +1243,14 @@ def neuron_list_input(
             with ui.element("div").classes(
                 "relative flex-grow drocat-chip-input-shell drocat-chip-list-collapsed"
             ) as chip_input_anchor:
-                # A plain element, so this id reaches the DOM (a Quasar
-                # component consumes it as a prop instead). The group-chip
-                # marker addresses the field through it.
-                chip_dom_id = f"drocat-chip-field-{id(chip_input_anchor)}"
-                chip_input_anchor.props(f'id="{chip_dom_id}"')
+                # Marker for the group-chip marker script. It MUST NOT be an
+                # ``id`` prop: Element.html_id is hardcoded to ``c<id>`` and the
+                # suggestion/history menu below anchors itself with
+                # ``target="#<html_id>"``, so claiming the id attribute detaches
+                # the popup and the lists silently stop appearing.
+                chip_field_key = f"drocat-chip-field-{id(chip_input_anchor)}"
+                chip_input_anchor.props(
+                    f'data-drocat-field="{chip_field_key}"')
                 chip_input = ui.select(
                     options=list(initial_values),
                     value=list(initial_values),
@@ -1733,9 +1736,7 @@ def neuron_list_input(
         # The menu must NEVER take focus from the editor: QMenu focuses itself
         # on open by default, which blurs the QSelect, clears the typed text
         # and swallows further keystrokes. no-focus keeps the editor focused
-        # while the menu overlays. (No explicit target: NiceGUI 3.15 renders
-        # no DOM ids, so the menu anchors to the per-input wrapper instead of
-        # relying on a selector target.)
+        # while the menu overlays.
         # ``no-focus`` keeps the popup from taking the editor focus when it
         # opens. ``no-refocus`` is equally important when a second QSelect is
         # clicked: closing the first popup must not put focus back on its old
@@ -2670,7 +2671,7 @@ def neuron_list_input(
             count_badge.text = _count_text(count, combined)
         hints = group_labels["hints"] if _group_marks_resolve() else {}
         script = (_GROUP_CHIP_MARK_JS
-                  .replace("__FIELD_ID__", chip_dom_id)
+                  .replace("__FIELD_KEY__", chip_field_key)
                   .replace("__HINTS__", json.dumps(hints, ensure_ascii=False)))
         try:
             # Run against this field's own element: a caller that has just

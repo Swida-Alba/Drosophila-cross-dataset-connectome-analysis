@@ -979,6 +979,30 @@ MemoryError: Unable to allocate array
 
 ---
 
+### Heatmap Row/Column Labels Are Hidden
+
+**Symptom:** A large similarity heatmap names nothing along its axes, so a row cannot
+be identified.
+
+**This is the designed opening state.** Any map over 100 rows or columns starts with
+its tick labels hidden — 245 names per axis on a bodyId map is illegible.
+
+**To read them:** click **🏷️ Show Labels** in the control panel. It reveals the tick
+labels together with the colourbar title and the Source/Target axis titles, and grows the
+canvas so the names have a line each (up to 4000 px per side — the Plot Size panel shows
+what it settled on, and hiding the labels gives the room back). Pressing again hides all
+of it. Hovering a cell always names its source and target, labels or not.
+
+**If the button does nothing** — the caption flips and the picture stays put: that was
+a defect in the exported pages (fixed 2026-10-14). The toggle wrote nested Plotly keys
+(`xaxis.title.text`, `colorbar.title.text`) into titles the page itself stores as plain
+strings, so Plotly threw `container is not an object` inside the click handler before
+the axis change could be applied. Heatmaps rendered before that fix need a re-render;
+editing an exported HTML is not a fix — it changes no input, silently diverges from the
+producer, and the next render loses it.
+
+---
+
 ### Heatmap NaN Values
 
 **Symptom:** Heatmap shows NaN values with log/sqrt scales.
