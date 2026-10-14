@@ -903,21 +903,33 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     if max_il < 0:
         _refuse(f"max interlayer {max_il} is negative")
     basis = str(kv.get("weight basis", "synapse") or "synapse").lower()
-    if basis.startswith("connection_ratio"):
-        _refuse("ratio-basis runs are not supported this round "
-                "(corridor UBs are synapse-weight bottlenecks)")
-    # F-PF-004 (audit 2026-10-13): parse the AND ratio as a FLOAT — the
-    # old _parse_int turned a fractional threshold like '0.01' into the
-    # default 0 and the dual-threshold refusal never fired, so the lane
-    # searched a graph violating the parent's own predicate. A non-empty
-    # value that is not a number refuses too (never silently zero).
+    ratio_basis = basis.startswith("connection_ratio")
+    # F-PF-004 (audit 2026-10-13): the AND ratio parses as a FLOAT and a
+    # non-numeric value refuses (never silently zero).
     _and_raw = str(kv.get("min connection ratio") or "").strip()
-    if _and_raw:
-        _and_val = _parse_float(_and_raw)
-        if _and_val is None:
-            _refuse(f"min connection ratio {_and_raw!r} is not a number "
-                    "(refusing rather than treating it as zero)")
-        if _and_val > 0:
+    _and_val = _parse_float(_and_raw) if _and_raw else None
+    if _and_raw and _and_val is None:
+        _refuse(f"min connection ratio {_and_raw!r} is not a number "
+                "(refusing rather than treating it as zero)")
+    if ratio_basis:
+        # CORRIDOR-ON-RATIO (plan-corridor-ratio-basis §2, the adopted
+        # design): E1 admits each edge on its own F9 input share
+        # (w / W_v >= t_r, W_v = the post neuron's FULL-table incoming),
+        # the drain ranks by the Et type-level ratios, and the
+        # realization exports BOTH units (synapse masses + mean
+        # realizing-edge ratios). t_r is the run's own min connection
+        # ratio; the mass floor (min synapse number) composes in the
+        # admission (R3 AND).
+        if not _and_raw or _and_val is None or _and_val <= 0:
+            _refuse("ratio-basis corridor requires the run's "
+                    "'min connection ratio' (t_r) to be positive")
+        asked = float(_and_val)
+        t_ratio = float(_and_val)
+        t_syn_floor = int(_parse_float(
+            kv.get("min synapse number"), 1) or 1)
+    else:
+        t_ratio = None
+        if _and_val is not None and _and_val > 0:
             _refuse("dual-threshold (AND mode) runs cannot be reproduced "
                     "by the synapse-corridor universe")
     separate_hemi = _parse_bool(kv.get("separate hemispheres"), False) \
@@ -1222,9 +1234,57 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 neuron_source = _neuron_p
         except Exception:
             pass
-    typed, pairs = _typed_universe_cached(
-        conn_path, neuron_source, conn, tmap, asked, drop_untyped,
-        exclude_intra, separate_hemi, hemi_filter, label_mapper, _phase)
+    if ratio_basis:
+        # CORRIDOR-ON-RATIO universe (plan-corridor-ratio-basis §2):
+        # E1 admits each edge on its own F9 input share
+        # (weight / W_post >= t_r, W_post = the post neuron's FULL-table
+        # incoming) AND the mass floor (min synapse number, R3 AND);
+        # typed carries BOTH units (weight = the per-edge RATIO -- the
+        # enumeration space -- and weight_syn = the synapse mass -- the
+        # bookkeeping space); the drain's per-pair weight (w_max) is the
+        # ET type-level ratio = pair admitted synapse mass over the post
+        # TYPE's full-membership incoming.
+        # the RAW cache carries per-ROI slice rows: collapse to one row
+        # per bodyId pair FIRST -- the F9 ratio is a property of the
+        # pair's TOTAL weight, and per-slice admission would admit/drop
+        # slices of the same edge inconsistently
+        conn_pairs = conn.group_by(["bodyId_pre", "bodyId_post"]).agg(
+            pl.col("weight").sum().alias("weight"))
+        W_post = conn.group_by("bodyId_post").agg(
+            pl.col("weight").sum().alias("_W"))
+        conn_r = (conn_pairs.join(W_post, on="bodyId_post", how="left")
+                  .with_columns(
+                      (pl.col("weight") / pl.col("_W")).alias("_ratio"))
+                  .drop("_W")
+                  .filter((pl.col("_ratio") >= t_ratio)
+                          & (pl.col("weight") >= t_syn_floor)))
+        typed = build_type_pairs(conn_r, tmap, 0,
+                                 drop_untyped=drop_untyped)[0]
+        typed = typed.join(
+            conn_r.select("bodyId_pre", "bodyId_post", "_ratio"),
+            on=["bodyId_pre", "bodyId_post"], how="left")
+        typed = typed.with_columns(
+            pl.col("_ratio").fill_null(0.0).alias("weight"),
+            pl.col("weight").alias("weight_syn")).drop("_ratio")
+        # Et denominators: the post TYPE's full-membership incoming
+        W_type_full = (W_post.join(tmap, left_on="bodyId_post",
+                                   right_on="bid")
+                       .group_by("t").agg(pl.col("_W").sum().alias("_tw")))
+        pairs = (typed.group_by("type_pre", "type_post")
+                 .agg(pl.col("weight_syn").sum().alias("w_sum"),
+                      pl.len().alias("n"))
+                 .join(W_type_full, left_on="type_post", right_on="t",
+                       how="left")
+                 .with_columns(
+                     (pl.col("w_sum") / pl.col("_tw")).alias("w_max"))
+                 .drop("_tw"))
+        _phase(f"ratio universe ({typed.height:,} admitted edges, "
+               f"t_r={t_ratio:g})")
+    else:
+        typed, pairs = _typed_universe_cached(
+            conn_path, neuron_source, conn, tmap, asked, drop_untyped,
+            exclude_intra, separate_hemi, hemi_filter, label_mapper,
+            _phase)
     # CANONICAL ROW ORDER (2026-10-11): polars group_by is a parallel
     # hash aggregate — its output order varies run to run, which leaks
     # into FastGraph edge-insertion order and the budgeted tie-drain's
@@ -1241,6 +1301,14 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                  .agg(pl.col("weight").sum().alias("w_sum"),
                       pl.col("weight").max().alias("w_max"),
                       pl.len().alias("n")))
+        if ratio_basis:
+            # re-derive the Et ratios over the intra-filtered set
+            pairs = (pairs.drop("w_max")
+                     .join(W_type_full, left_on="type_post", right_on="t",
+                           how="left")
+                     .with_columns(
+                         (pl.col("w_sum") / pl.col("_tw")).alias("w_max"))
+                     .drop("_tw"))
     if typed.height == 0:
         _refuse(f"no typed edges at asked threshold {asked}")
     src_ids = tmap.filter(pl.col("t").is_in(src_types))["bid"].to_list()
@@ -1282,6 +1350,15 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     typed_routed = typed.with_columns(pl.concat_str(
         [pl.col("type_pre"), pl.lit("\x1f"), pl.col("type_post")])
         .alias("k")).join(rel_keys, on="k", how="semi").drop("k")
+    if ratio_basis:
+        # the MASS space lookup: per bodyId edge's synapse weight (the
+        # enumeration space on the ratio basis is the per-edge ratio)
+        syn_w = {(u, v): float(w) for u, v, w in
+                 zip(typed_routed["bodyId_pre"].to_list(),
+                     typed_routed["bodyId_post"].to_list(),
+                     typed_routed["weight_syn"].to_list())}
+    else:
+        syn_w = None
     coana_mod = __import__("coana")  # also puts vispath on sys.path in
     # embedded contexts — import FastGraph only after this
     if store_universe is not None:
@@ -1382,6 +1459,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         tgt_l = {f"{b}\x1f{h}" for b in t_bodies}
         kept = []
         hop_edges = [dict() for _ in range(h)]
+        hop_ratio = [dict() for _ in range(h)]
         node_seen = [set() for _ in range(h + 1)]
         bns = []
         for p in g.find_paths_strongest_first(
@@ -1396,6 +1474,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             bns.append(bn)
             for i in range(h):
                 hop_edges[i][(raw[i], raw[i + 1])] = float(
+                    syn_w[(raw[i], raw[i + 1])]
+                    if ratio_basis else adj_w[p[i]][p[i + 1]])
+                hop_ratio[i][(raw[i], raw[i + 1])] = float(
                     adj_w[p[i]][p[i + 1]])
                 node_seen[i].add(raw[i])
             node_seen[h].add(raw[h])
@@ -1413,6 +1494,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             cb.pending_records.append({
                 "walk": walk, "rank": rank, "ub": float(walk_ub),
                 "tau": tau, "kept": kept, "hop_edges": hop_edges,
+                "hop_ratio": hop_ratio,
                 "node_seen": node_seen, "raw_w": raw_w,
                 "bns": bns})
         else:
@@ -1450,16 +1532,33 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             walk = rec["walk"]
             kept = [rec["kept"][pi] for pi in pis]
             hop_edges = [dict() for _ in range(h)]
+            hop_ratio = [dict() for _ in range(h)]
             node_seen = [set() for _ in range(h + 1)]
             for raw in kept:
                 for i in range(h):
                     hop_edges[i][(raw[i], raw[i + 1])] = float(
+                        syn_w[(raw[i], raw[i + 1])]
+                        if ratio_basis else
                         rec["raw_w"][(raw[i], raw[i + 1])])
+                    if ratio_basis:
+                        hop_ratio[i][(raw[i], raw[i + 1])] = float(
+                            rec["raw_w"][(raw[i], raw[i + 1])])
                     node_seen[i].add(raw[i])
                 node_seen[h].add(raw[h])
             hop_mass = [sum(e.values()) for e in hop_edges]
+            hop_ratio_mass = [sum(e.values()) for e in hop_ratio]
             ratios, ratios_adj = [], []
             for i in range(h):
+                if ratio_basis:
+                    # CORRIDOR-ON-RATIO readout pin: the realized per-hop
+                    # ratio = the MEAN realizing-edge F9 ratio (the run's
+                    # type-table convention); the >=t_r conditioning is
+                    # vacuous (every admitted edge clears it)
+                    _m = (hop_ratio_mass[i] / len(hop_ratio[i])
+                          if hop_ratio[i] else None)
+                    ratios.append(_m if _m is not None else 0.0)
+                    ratios_adj.append(_m)
+                    continue
                 denom = type_incoming.get(walk[i + 1], 0.0)
                 ratios.append(hop_mass[i] / denom if denom > 0 else 0.0)
                 denom_adj = type_incoming_adj.get(walk[i + 1], 0.0)
@@ -1668,6 +1767,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                         ties_truncated = False
                         ties_next_bn = None
                         _nxt_repeats = False
+                        hop_ratio = [dict() for _ in range(h)]
                         # BODY-SIMPLICITY (F-PF-003, audit 2026-10-13):
                         # the engine's no-repeated-nodes rule operates on
                         # LAYERED ids (body\x1f{i}), so a multi-visit
@@ -1745,8 +1845,16 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                             raw = [n.split("\x1f")[0] for n in p]
                             kept.append(raw)
                             for i in range(h):
-                                hop_edges[i][(raw[i], raw[i + 1])] = \
-                                    float(adj_w[p[i]][p[i + 1]])
+                                # the ratio basis keeps BOTH units: the
+                                # mass columns take the SYNAPSE weight,
+                                # the realized-ratio readout the edge's
+                                # own F9 ratio (the engine space)
+                                hop_edges[i][(raw[i], raw[i + 1])] = float(
+                                    syn_w[(raw[i], raw[i + 1])]
+                                    if ratio_basis
+                                    else adj_w[p[i]][p[i + 1]])
+                                hop_ratio[i][(raw[i], raw[i + 1])] = float(
+                                    adj_w[p[i]][p[i + 1]])
                                 node_seen[i].add(raw[i])
                             node_seen[h].add(raw[h])
                             if write_bodyid:
@@ -1853,9 +1961,12 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                     for i in range(h) if kept else ():
                         key = (walk[i], walk[i + 1])
                         rec = scope_pairs.setdefault(
-                            key, {"edges": {}, "paths": 0, "walks": 0})
+                            key, {"edges": {}, "edge_ratios": {},
+                                  "paths": 0, "walks": 0})
                         # merge DISTINCT edges across walks sharing the hop
                         rec["edges"].update(hop_edges[i])
+                        if ratio_basis:
+                            rec["edge_ratios"].update(hop_ratio[i])
                         rec["paths"] += len(kept)
                         rec["walks"] += 1
                     body_rows.extend(class_body_rows)
@@ -1924,17 +2035,30 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             wsum, wmax, n = pair_lookup.get((a, b), (None, None, None))
             realized = round(sum(rec["edges"].values()), 2)
             denom = type_incoming.get(b, 0.0)
+            if ratio_basis:
+                denom = denom_adj = 0  # the mean-ratio readout needs no
+                # mass denominators on the ratio basis
             denom_adj = type_incoming_adj.get(b, 0.0)
+            _sel_ratios = rec.get("edge_ratios") or {}
+            _mean_ratio = (round(sum(_sel_ratios.values())
+                                 / len(_sel_ratios), 6)
+                           if _sel_ratios else None)
             conn_rows.append({
                 # _TYPE_MIRROR_COLUMNS family (type_level_refill.py:1758)
                 "type_pre": a, "type_post": b,
                 "weight": wsum,
                 "nt_type": type_nt.get(b, ""),
-                "connection_ratio": (round(realized / denom, 6)
-                                     if denom > 0 else None),
+                # CORRIDOR-ON-RATIO: on the ratio basis the pair's ratio
+                # readout is the MEAN realizing-edge F9 ratio over the
+                # selected support (never a mass quotient)
+                "connection_ratio": (
+                    _mean_ratio if ratio_basis else
+                    (round(realized / denom, 6) if denom > 0 else None)),
                 "conn_layer": "route_scope",
-                "connection_ratio_adj": (round(realized / denom_adj, 6)
-                                         if denom_adj > 0 else None),
+                "connection_ratio_adj": (
+                    _mean_ratio if ratio_basis else
+                    (round(realized / denom_adj, 6)
+                     if denom_adj > 0 else None)),
                 # corridor tail
                 "weight_max": wmax, "pair_count": n,
                 # F-PF-008 (audit 2026-10-13): `weight` is the WHOLE
@@ -2096,6 +2220,17 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
               if validation_basis == "lossless_prune" else
               " (store absent — lossless-prune FALLBACK, not min-hop-"
               "restricted)") + "\n\n")
+        + ("- RATIO BASIS: the corridor admits each edge on its own F9 "
+           "input share (weight / the post neuron's FULL-table incoming "
+           ">= t_r = the run's Min Connection Ratio), ranks type pairs by "
+           "the Et type-level ratio (pair admitted mass / the post type's "
+           "full incoming), and exports BOTH units per hop (synapse "
+           "masses + the mean realizing-edge ratio). Every realized hop "
+           "clears t_r by construction -- the structural bodyId floor. "
+           "The pair table's Et weight is the pair's true connection "
+           "strength: on a budget-cut run it exceeds the parent run's "
+           "PATH-SUPPORTED connection_ratio by design (that table counts "
+           "only mass on the run's emitted paths).\n\n")
         + "Per-class disclosure (F-PF-002: floor = lowest accepted walk UB "
         "and floor_next = first skipped candidate's UB are CANDIDATE-BOUND "
         "quantities — optimistic upper bounds from per-hop max edges, not "
