@@ -170,8 +170,9 @@ The web UI builds custom mappings **inline on each tab** — no scripting needed
 
 1. **Open the tab's mapping board.** The **Cross-Dataset Comparison** page
    mounts it as **Custom Mapping**; **Complete Paths**, **Network** and
-   **Shortest Paths** mount it as **Custom Grouping**, and **Connectivity's
-   Comparison sub-tab** as **Custom Grouping Preset** (the Settings tab's
+   **Shortest Paths** mount it as **Custom Grouping**, and both
+   **Connectivity's Comparison sub-tab** and **Morphology's Comparison
+   sub-tab** as **Custom Grouping Preset** (the Settings tab's
    **Custom Type Mappings** card offers the same editor). The shared board has
    one row per custom group, one aligned member input per selected dataset,
    outlined chips, a history menu of previously used groups, and an
