@@ -139,7 +139,7 @@ def test_composed_star_centres_the_origin_dataset():
         assert data['position']['x'] == int(layer) * 380
         assert isinstance(data['position']['y'], (int, float))
     # each column is stacked with a row gap, not scattered by a force layout
-    by_column: Dict[str, list] = {}
+    by_column: dict[str, list] = {}
     for node, data in graph.nodes(data=True):
         by_column.setdefault(str(node).split('|')[0], []).append(
             data['position']['y'])

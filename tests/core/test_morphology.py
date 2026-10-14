@@ -3744,7 +3744,7 @@ class TestPopulationStats:
         pool, so run the vectorization sequentially."""
         monkeypatch.setattr(
             morph.SkeletonVectorCache, "_vectorize_parallel",
-            lambda self, files: [_vectorize_one_file(p) for p in files],
+            lambda self, files: [morph._vectorize_one_file(p) for p in files],
         )
 
     def test_persists_and_reuses(self, tmp_path, monkeypatch):
