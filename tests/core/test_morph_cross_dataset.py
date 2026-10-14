@@ -890,7 +890,6 @@ class TestMorphQualificationModeLevel:
         mq.scores[(1, 100)] = 0.5
         mq.null_stats[1] = {'p95': 0.6, 'bar_p': 0.5, 'n': 30}
         df = pd.DataFrame([{'source_bodyId': 1, 'target_bodyId': 100}])
-        out = mq  # merge lives at module level
         from comparison.morph_cross_dataset import merge_morph_columns
         merged = merge_morph_columns(df, mq)
         assert list(merged['morph_bar_kind']) == ['native']

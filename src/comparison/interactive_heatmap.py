@@ -111,18 +111,12 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
             'col_order': col_order_clustered
         }
         clustering_successful = True
-        print(f"  ✓ Clustering complete")
+        print("  ✓ Clustering complete")
     except Exception as e:
         print(f"  ⚠ Clustering failed: {e}")
 
     row_order_original = list(range(len(y_labels)))
     col_order_original = list(range(len(x_labels)))
-    
-    # Generate unique storage key
-    from datetime import datetime
-    output_name = os.path.splitext(os.path.basename(filename))[0]
-    timestamp_hash = datetime.now().strftime('%Y%m%d%H%M%S')
-    storage_key = f"heatmap_settings_{output_name}#{timestamp_hash}"
     
     # Metric display names
     metric_display_names = {m: m.replace('_', ' ').title() for m in available_metrics}
@@ -296,6 +290,23 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
                 }},
                 margin: {{ l: 150, b: 100 }}
             }};
+            
+            // Room for the labels, from the same pitch rule the vispath page
+            // uses (vispath.fitCanvasForLabels): one label per font+2 px,
+            // floored by this page's own 800 px canvas and capped so a
+            // three-digit map cannot ask for a taller page than a browser
+            // renders. Without it a 245-label map reveals into ~3 px per label
+            // (_plan/pending_issues.md), because the only size this template
+            // had was the fixed CSS height. Hidden labels keep the CSS size, so
+            // an unchanged page stays byte-identical.
+            if (showLabels) {{
+                const fitPx = Math.min(4000, Math.max(
+                    800,
+                    Math.round(Math.max(plotX.length, plotY.length)
+                               * (currentFontSize + 2)) + 250));
+                layout.width = fitPx;
+                layout.height = fitPx;
+            }}
             
             Plotly.newPlot('heatmap', [trace], layout);
         }}

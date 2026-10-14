@@ -2423,8 +2423,8 @@ class CrossDatasetMorphComparer:
             f'Generated: {datetime.now():%Y-%m-%d %H:%M:%S}',
             f'Queries: {", ".join(tokens)}',
             f'Datasets: {", ".join(datasets)}',
-            f'Scoring: vector_v2 in each target render space '
-            f'(no NBLAST cross-dataset)',
+            'Scoring: vector_v2 in each target render space '
+            '(no NBLAST cross-dataset)',
             '',
             '  OUTPUT STRUCTURE',
             '  <SRC>_to_<TGT>/            per dataset pair',

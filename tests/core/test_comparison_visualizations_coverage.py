@@ -5,6 +5,9 @@ Hermetic: synthetic pandas data only, matplotlib Agg backend, no network.
 
 import json
 import os
+import sys
+import time
+from pathlib import Path
 
 import matplotlib
 
@@ -615,6 +618,91 @@ def test_interactive_heatmap_large_branch(tmp_path):
     assert out.exists()
     html = out.read_text(encoding="utf-8")
     assert "Show Labels" in html  # large matrices start with labels hidden
+
+
+# --- The label-reveal canvas fit -------------------------------------------
+#
+# This page's ONLY size was the CSS `#heatmap { height: 800px }`, so revealing a
+# large map's axis names packed them into ~3 px each — the same reader-facing
+# shape the vispath page had before its own canvas fit (_plan/pending_issues.md;
+# the button itself always worked here, because toggleLabels() re-renders).
+# createHeatmap now sizes the div from the matrix shape with the vispath pitch
+# rule, and only when labels are shown, so a page that hides them stays exactly
+# the page it was.
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# the headless-Chrome driver the heatmap tests share (tests/vispath is not a
+# package, so the path insert IS the import)
+sys.path.insert(0, str(PROJECT_ROOT / "tests" / "vispath"))
+from heatmap_cdp import PAGE_READY, REQUIRES_CDP, Page  # noqa: E402
+
+FIT_N = 105          # past the is_large bound, so labels start hidden
+FIT_MARGIN_PX = 250  # the template's own margin allowance (l 150 + b 100)
+
+
+def _big_matrices(n=FIT_N):
+    rng = np.random.default_rng(11)
+    labels = [f"type{i}" for i in range(n)]
+    return pd.DataFrame(rng.random((n, n)), index=labels, columns=labels)
+
+
+def _create_heatmap_body(html):
+    start = html.index("function createHeatmap()")
+    return html[start:html.index("\n        function ", start + 1)]
+
+
+def test_canvas_fit_rule_ships_with_the_template(tmp_path):
+    out = tmp_path / "fit.html"
+    generate_interactive_heatmap({"m": _big_matrices()}, str(out),
+                                 showfig=False, verbose=False)
+    body = _create_heatmap_body(out.read_text(encoding="utf-8"))
+    assert "if (showLabels) {" in body, \
+        "a page with labels hidden must keep its CSS size (unchanged bytes)"
+    # the pitch rule: one label per font+2 px, floored by the page's own 800 px
+    # canvas and capped so a three-digit map cannot outgrow the browser.
+    assert "Math.min(4000, Math.max(" in body
+    assert "800," in body
+    assert "(currentFontSize + 2)" in body
+    assert "layout.width = fitPx;" in body
+    assert "layout.height = fitPx;" in body
+
+
+@REQUIRES_CDP
+def test_revealing_labels_on_a_large_map_grows_the_canvas(tmp_path):
+    out = tmp_path / "bigfit.html"
+    generate_interactive_heatmap({"m": _big_matrices()}, str(out),
+                                 title="bigfit", showfig=False, verbose=False)
+    page = Page(out)
+    try:
+        assert page.wait(PAGE_READY, timeout=180), \
+            "the fallback page drew no plotly graph at all"
+        read = ("var gd=document.querySelector('.js-plotly-plot');"
+                "return {w: (gd.layout.width === undefined ? null"
+                " : gd.layout.width),"
+                " h: (gd.layout.height === undefined ? null"
+                " : gd.layout.height),"
+                " ticks: document.querySelectorAll("
+                "'.xtick text, .ytick text').length,"
+                " showLabels: showLabels, font: currentFontSize};")
+        hidden = page.js(read)
+        assert hidden["showLabels"] is False, \
+            f"a >100 map opens with its labels hidden: {hidden}"
+        assert hidden["w"] is None, \
+            f"the hidden-label page must keep the CSS size: {hidden}"
+
+        page.js("document.getElementById('toggleLabelsBtn').click();")
+        time.sleep(2.0)
+        shown = page.js(read)
+        assert shown["showLabels"] is True, shown
+        assert shown["ticks"] > 0, f"the press revealed no labels: {shown}"
+        expected = min(4000, max(
+            800, FIT_N * (int(shown["font"]) + 2) + FIT_MARGIN_PX))
+        assert shown["w"] == expected, f"{shown} != the pitch rule {expected}"
+        assert shown["h"] == shown["w"], shown
+        assert shown["w"] > 800, f"the canvas never left the CSS height: {shown}"
+        assert page.errors() == [], page.errors()
+    finally:
+        page.close()
 
 
 # ============================================================================
