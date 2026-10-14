@@ -19,6 +19,7 @@ The pandas (statvis.EnrichConnectionTable) and Polars
 """
 
 import sys
+import json
 from pathlib import Path
 
 import numpy as np
@@ -376,9 +377,15 @@ class TestEnrichmentEngineParity:
         assert 'block_probability' not in ct_pl.columns
 
     def test_bodyid_level_shared_schema(self):
-        """BodyId-level outputs share every column; std_label_pre/post are
-        polars-engine internals (the pandas engine overwrites type_pre/post
-        with the mapped labels instead)."""
+        """Both engines export the SAME bodyId-level typing contract.
+
+        The `std_label_pre` this test used to require was a polars-only column:
+        one engine left the raw native type in `type_pre` and the tag in
+        `std_label_pre`, the other overwrote `type_pre` — so whether a run's
+        residuals survived depended on which engine enriched it (plan LM-002).
+        D2 replaced that pair with one rule on both engines: `type_pre` is the
+        effective key, `native_type_pre` the raw type beside it.
+        """
         from statvis import EnrichConnectionTable as pd_enrich
         from statvis import EnrichConnectionTablePolars
         conn = _parity_conn()
@@ -386,15 +393,77 @@ class TestEnrichmentEngineParity:
         conn_df_pl, _, _ = EnrichConnectionTablePolars(pl.from_pandas(conn),
                                                        traversal_probability_threshold=0)
         shared = set(conn_df_pd.columns) & set(conn_df_pl.columns)
-        assert 'std_label_pre' in conn_df_pl.columns and 'std_label_pre' not in conn_df_pd.columns
+        for frame, name in ((conn_df_pd, 'pandas'), (conn_df_pl, 'polars')):
+            cols = set(frame.columns)
+            assert not ({'std_label_pre', 'std_label_post'} & cols), \
+                f"{name} still exports the retired std_label pair"
+            # Symmetric whether or not a mapper ran: the pair is taken at engine
+            # entry, so an untyped run simply repeats its own `type_*`.
+            assert {'native_type_pre', 'native_type_post'} <= cols, (
+                f"{name} hides the raw type — readers would have to know which "
+                "engine enriched the frame")
         pl_pd = conn_df_pl.to_pandas().sort_values(['bodyId_pre', 'bodyId_post']).reset_index(drop=True)
         pd_pd = conn_df_pd.sort_values(['bodyId_pre', 'bodyId_post']).reset_index(drop=True)
+        for col in ('type_pre', 'native_type_pre'):
+            assert list(pd_pd[col].astype(str)) == list(pl_pd[col].astype(str)), col
         assert len(pl_pd) == len(pd_pd)
         for col in sorted(shared):
             # bodyId_pre may be int (pandas, no-local fallback) vs str (polars)
             left = pl_pd[col].astype(str) if col == 'bodyId_pre' else pl_pd[col]
             right = pd_pd[col].astype(str) if col == 'bodyId_pre' else pd_pd[col]
             pd.testing.assert_series_equal(left, right, check_dtype=False, obj=col)
+
+    def test_mapper_run_publishes_the_pair_on_both_engines(self, tmp_path):
+        """The engine split D2 closes is asserted where the typing happens."""
+        import polars as _pl
+        from comparison.label_mapper import LabelMapper
+        from statvis import EnrichConnectionTable as pd_enrich
+        from statvis import EnrichConnectionTablePolars
+        ds = 'banc_v888'
+        population = [('80001', 'SMP540'), ('80002', 'SMP540'),
+                      ('80003', 'SMP540'), ('80004', 'SMP540'),
+                      ('70001', 'CB3449')]
+        labels = ['DN1pD', 'CB3449-LAB']
+        members = [['80001'], ['CB3449']]
+
+        table_dir = tmp_path / "datasets" / ds
+        table_dir.mkdir(parents=True)
+        pd.DataFrame({"bodyId": [b for b, _ in population],
+                      "type": [t for _, t in population],
+                      "instance": [''] * len(population),
+                      "post": [100] * len(population)}).to_csv(
+                          table_dir / f"{ds}_allneurons_neuron_df.csv",
+                          index=False)
+        mapping = tmp_path / "mapping.json"
+        mapping.write_text(json.dumps({
+            "format": "drocat_custom_groups/v1",
+            "source_mapping": {"custom_label": labels, ds: members},
+            "target_mapping": {"custom_label": labels, ds: members},
+        }), encoding="utf-8")
+        mapper = LabelMapper(overall_mapping_json=str(mapping))
+        conn = pd.DataFrame({
+            "bodyId_pre": ["80002", "80001", "99999"],
+            "bodyId_post": ["70001"] * 3,
+            "type_pre": ["SMP540", "SMP540", "SMP540"],
+            "type_post": ["CB3449"] * 3,
+            "weight": [3, 4, 5]})
+        out = {}
+        for engine, frame in (("pandas", conn.copy()),
+                              ("polars", _pl.from_pandas(conn))):
+            enriched, _, _ = (
+                pd_enrich if engine == "pandas" else EnrichConnectionTablePolars)(
+                    frame, dataset=ds, script_path=str(tmp_path),
+                    label_mapper=mapper, traversal_probability_threshold=0)
+            out[engine] = (enriched.to_pandas() if hasattr(enriched, 'to_pandas')
+                           else enriched).sort_values('weight').reset_index(drop=True)
+        for engine, res in out.items():
+            assert {'type_pre', 'native_type_pre'} <= set(res.columns), engine
+            assert 'std_label_pre' not in res.columns, engine
+            keyed = dict(zip(res['native_type_pre'].astype(str),
+                             res['type_pre'].astype(str)))
+            assert keyed['SMP540'] == 'SMP540*', \
+                f"{engine}: a residual of a frame-only bodyId lost its tag"
+        assert list(out['pandas']['type_pre']) == list(out['polars']['type_pre'])
 
     def test_unified_dispatcher_routes_by_input_and_engine(self):
         from statvis import EnrichConnectionTable

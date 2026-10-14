@@ -50,9 +50,14 @@ import os
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .cross_dataset_type_mapper import CrossDatasetTypeMapper, get_type_mapper
+
+try:
+    from ..utils.naming_utils import canonical_dataset_name
+except ImportError:  # pragma: no cover - direct package imports
+    from utils.naming_utils import canonical_dataset_name
 
 __all__ = [
     'STATUS_MAPPED', 'STATUS_BRIDGED', 'STATUS_VALID_SPLIT',
@@ -64,6 +69,10 @@ __all__ = [
     'resolve_one_target', 'canonical_merge_key', 'same_namespace',
     'resolve_flow_status', 'equivalence_key', 'expansion_targets',
     'auto_mapping_metadata',
+    # label-mapper typing: the residual vocabulary and its single producer
+    'RESIDUAL_SUFFIX', 'residual_key', 'is_residual_key', 'native_base',
+    'is_terminal_identity', 'ResidualRegistry', 'get_residual_registry',
+    'build_type_key_map',
 ]
 
 # --- canonical status vocabulary -----------------------------------------
@@ -105,26 +114,90 @@ _STATUS_SEVERITY = (
 CANONICAL_NAMESPACE = 'male-cns:v1.0'
 
 # --- Residual neurons of label-mapper-collided native types --------------
-# User directive 2026-10-08: when a native type's population is only
-# PARTIALLY governed by the label mapper (some neurons retyped to their
-# settled labels, others not), or the type name is itself a mapper
-# label, the UNLABELED neurons are RESIDUALS. The TYPE RESOLVER renames
-# them to the star-tagged native type — a TERMINAL key that never
-# resolves further and never merges with the governed population, with
-# a same-spelling settled label, or across datasets. They are never
-# labeled with bodyIds (that was the superseded e591330 approach).
+# User directive 2026-10-08 (plan-2026-10-08-label-mapper-type-resolver-
+# coordination.md), boundary and two-column contract per
+# _plan/issues-2026-10-13-label-mapper-type-space-completeness.md §8-§9:
+# when a native type's population is only PARTIALLY governed by the label
+# mapper (some neurons retyped to their settled labels, others not), or the
+# type name is itself a mapper label, the UNLABELED neurons are RESIDUALS.
+# This module RENAMES them (see ResidualRegistry — the only producer of the
+# tag in the repository) to the star-tagged native type: a TERMINAL key that
+# is never re-resolved by the policy/family/canonical tiers and never merges
+# with the governed population or with a same-spelling settled label.  They
+# are never labeled with bodyIds (that was the superseded e591330 approach).
+#
+# Cross-dataset scope (decision D7, author-confirmed 2026-10-13): the key
+# stays UNDECORATED.  Two datasets' residuals of the same native name are the
+# same semantic class — the un-governed remainder of that type — so they share
+# one key; what must never happen is a collided dataset's `T*` being equated
+# with a NON-collided dataset's bare `T`, and the per-dataset composition of
+# every `T*` row is published (`ResidualRegistry.metadata()`) rather than
+# hidden inside a merged row.
 RESIDUAL_SUFFIX = '*'
 
 
 def residual_key(native_type) -> str:
-    """Star-tagged residual key for a collided native type."""
-    return f'{str(native_type).strip()}{RESIDUAL_SUFFIX}'
+    """Star-tagged residual key for a collided native type.
+
+    Returns ``''`` for an empty/absent native type: untyped neurons have no
+    shared name to collide with, so they must fall through to their own
+    per-bodyId tier instead of merging into a bare ``'*'`` bucket.
+    """
+    base = str(native_type if native_type is not None else '').strip()
+    return f'{base}{RESIDUAL_SUFFIX}' if base else ''
+
+
+def _hemi_split(key: str) -> Tuple[str, str]:
+    try:
+        from ..utils.naming_utils import split_hemi_suffix
+    except ImportError:  # pragma: no cover - direct package imports
+        from utils.naming_utils import split_hemi_suffix
+    return split_hemi_suffix(key)
 
 
 def is_residual_key(key) -> bool:
-    """True when ``key`` carries the residual star tag (terminal)."""
+    """True when ``key`` carries the residual star tag (terminal).
+
+    Hemisphere-aware (decision D4): the enrichment engines append the
+    ``_L``/``_R``/``_U`` suffix AFTER the rename, so a suffixed residual is
+    spelled ``T*_L``.  Stripping the suffix before testing keeps one
+    predicate that every tier-0 guard can trust — a key that failed this
+    check silently lost its terminality and re-entered policy resolution.
+    """
     s = str(key)
-    return s.endswith(RESIDUAL_SUFFIX) and len(s) > 1
+    if s.endswith(RESIDUAL_SUFFIX) and len(s) > 1:
+        return True
+    base, suffix = _hemi_split(s)
+    return bool(suffix) and base.endswith(RESIDUAL_SUFFIX) and len(base) > 1
+
+
+def native_base(key) -> str:
+    """``key`` without a trailing hemisphere suffix (``T*_L`` -> ``T*``).
+
+    The engines append ``_L``/``_R``/``_U`` AFTER the typing decision, so a
+    reader that compares an emitted key against a name list (a native type, a
+    settled label) has to test the base, not the spelling.
+    """
+    return _hemi_split(str(key))[0]
+
+
+def is_terminal_identity(name, labels) -> bool:
+    """One tier-0 test: is ``name`` already a comparison identity?
+
+    True for a label-mapper settled label (or its hemisphere-suffixed base)
+    and for a star-tagged residual.  Both pass through the resolution tiers
+    verbatim — never re-resolved by the policy/family/canonical machinery,
+    which is what manufactured ``X(Y/Z)`` compounds and ``ds:X`` conflict
+    keys out of settled labels.  The four lanes that needed this test each
+    hand-rolled a variant; this is the shared one.
+    """
+    s = str(name)
+    if is_residual_key(s):
+        return True
+    if s in (labels or ()):
+        return True
+    base, suffix = _hemi_split(s)
+    return bool(suffix) and base in (labels or ())
 
 
 def _severity(status: str) -> int:
@@ -1160,3 +1233,372 @@ def auto_mapping_metadata(
         'raw_fallback_used': bool(raw_fallback_used),
     })
     return meta
+
+
+# --- label-mapper residual registry --------------------------------------
+# The single producer of the effective type key (boundary: see
+# _plan/issues-2026-10-13-label-mapper-type-space-completeness.md §8).  A
+# lane may ASSIGN this key — write the exported type column — or DECIDE with
+# it (filter on it inside its own lane) only when it can see the dataset's
+# neuron POPULATION, because a type's residual class is a property of that
+# population.  Readers consume the published key; they must never re-derive
+# it from ``LabelMapper.get_label``, whose contract is label-or-identity and
+# which therefore cannot express a residual at all.
+
+def _clean_cell(value) -> str:
+    """One population cell as text: None/NaN/'' all mean "no name"."""
+    if value is None:
+        return ''
+    text = str(value).strip()
+    if text.lower() in ('nan', 'none', 'null', '<na>', '<null>'):
+        return ''
+    return text
+
+
+def _population_columns(population):
+    """Yield the (bodyId, type, instance) columns of a neuron population.
+
+    Accepts a Polars or a pandas frame (the enrichment delegates hold Polars,
+    the refill and the profile lanes hold pandas) and normalizes both to
+    python lists of text — the registry is engine-agnostic by design, since
+    its output is a dict of keys, not a frame.
+    """
+    if population is None:
+        return None
+    columns = getattr(population, 'columns', None)
+    if columns is None or 'bodyId' not in columns:
+        return None
+
+    def _col(name):
+        if name not in columns:
+            return [None] * len(population)
+        series = population[name]
+        to_list = getattr(series, 'to_list', None)
+        if to_list is not None:
+            return to_list()
+        return list(series)
+
+    return _col('bodyId'), _col('type'), _col('instance')
+
+
+def _mapper_labels(mapper) -> frozenset:
+    """Every settled label the mapper defines, across all three roles."""
+    labels = set()
+    for attr in ('_source_mapping', '_target_mapping',
+                 '_intermediate_mapping'):
+        mapping = getattr(mapper, attr, None)
+        if isinstance(mapping, dict):
+            labels.update(str(key) for key in mapping.keys())
+    return frozenset(labels)
+
+
+def _dataset_candidates(mapper, dataset: str) -> List[str]:
+    """Dataset-key spellings a mapping file may store for ``dataset``.
+
+    CSV role-files keep sanitized column names while the dict/JSON lanes keep
+    raw dataset names, so membership has to accept either — the same tolerance
+    ``LabelMapper._dataset_keys`` gives a lookup.  A payload without that
+    helper (a test fake, a bare mapping dict) still resolves on its raw and
+    sanitized spellings.
+    """
+    out: List[str] = []
+    canonical = canonical_dataset_name(dataset)
+    for key in (dataset, canonical,
+                canonical.replace(':', '_').replace('.', '_').replace('-', '_')):
+        if key and key not in out:
+            out.append(key)
+    try:
+        for key in mapper._dataset_keys(dataset):
+            if key and key not in out:
+                out.append(key)
+    except Exception:  # noqa: BLE001 - helper absent; the spellings above stand
+        pass
+    return out
+
+
+def _mapper_member_ids(mapper, dataset: str) -> Dict[str, str]:
+    """{member bodyId / type name / instance name -> settled label}, one dataset.
+
+    Read from the mapper's forward groups and reduced with its own precedence:
+    within a role the LAST group naming an id wins, and source beats target
+    beats intermediate — exactly what ``LabelMapper.get_label`` answers.  Two
+    lanes that must agree on who is a member then read one membership table
+    rather than re-deriving it from a different end of the same mapper.
+    """
+    if mapper is None:
+        return {}
+    candidates = set(_dataset_candidates(mapper, dataset))
+    merged: Dict[str, str] = {}
+    for attr in ('_source_mapping', '_target_mapping',
+                 '_intermediate_mapping'):
+        mapping = getattr(mapper, attr, None)
+        if not isinstance(mapping, dict):
+            continue
+        role: Dict[str, str] = {}
+        for label, per_dataset in mapping.items():
+            if not isinstance(per_dataset, dict):
+                continue
+            for key, member_ids in per_dataset.items():
+                if key not in candidates:
+                    continue
+                for member_id in (member_ids or []):
+                    role[str(member_id)] = label
+        for member_id, label in role.items():
+            merged.setdefault(member_id, label)
+    return merged
+
+
+class ResidualRegistry:
+    """bodyId -> effective type key for one (mapper, dataset, population).
+
+    Resolution, in the order the boundary fixes (§8 of the 2026-10-13 plan):
+
+    1. **settled label** — a direct member of the mapper (bodyId-keyed), or a
+       member of a type/instance the mapper governs as a whole.  A direct
+       bodyId membership always beats a name-keyed expansion, whatever order
+       the groups were authored in.
+    2. ``T*`` **residual** — a non-member of a COLLIDED native type ``T``:
+       ``0 < enrolled(T) < population(T)``, or ``T`` is itself a settled label
+       spelling.  Terminal, and never a bodyId label.
+    3. nothing (``None``) — an untouched type keeps its raw name; an untyped
+       neuron keeps its bodyId.  Neither is renamed.
+
+    ``population=None`` means the dataset's full neuron table is unavailable:
+    tier 1 still applies (membership needs only the mapper) and residuals are
+    NOT evaluated — ``population_available`` records exactly that, so the run
+    can disclose the degradation instead of looking complete.
+    """
+
+    #: Bump when the collision rule itself changes, so a published census can
+    #: be told apart from one produced by older semantics.
+    REGISTRY_VERSION = '1'
+
+    def __init__(self, mapper, dataset, population=None, *, source=None,
+                 version=None):
+        self.mapper = mapper
+        self.dataset = str(dataset or '')
+        self.source = source
+        self.version = version
+        self.labels = _mapper_labels(mapper)
+        self.members = _mapper_member_ids(mapper, self.dataset)
+        # A mapper that carries no groups of its own — the analyzer's
+        # user+policy wrapper — is read through its own `get_label`. That
+        # lookup is name-keyed and label-or-identity, which is exactly what
+        # the merge-policy lane needs (Decision 8: the policy's raw→group-label
+        # map is materialized as a synthesized mapper applied at alignment
+        # time), and it can never mint a residual, so the tag is only ever
+        # produced where a population was actually read.
+        self.lookup = (getattr(mapper, 'get_label', None)
+                       if mapper is not None and not self.members else None)
+        self.population_available = False
+        self._map: Dict[str, str] = {}
+        self._native_by_bodyid: Dict[str, str] = {}
+        self.collided: Dict[str, Dict[str, Any]] = {}
+        if mapper is None or not self.members:
+            return
+
+        cols = _population_columns(population)
+        if cols is None:
+            return
+        body_ids, types, instances = cols
+        self.population_available = True
+        bodyid_set = set()
+        type_groups: Dict[str, List[str]] = {}
+        instance_groups: Dict[str, List[str]] = {}
+        for bid, native, instance in zip(body_ids, types, instances):
+            bid = _clean_cell(bid)
+            if not bid:
+                continue
+            bodyid_set.add(bid)
+            native = _clean_cell(native)
+            instance = _clean_cell(instance)
+            self._native_by_bodyid.setdefault(bid, native)
+            if native:
+                type_groups.setdefault(native, []).append(bid)
+            if instance:
+                instance_groups.setdefault(instance, []).append(bid)
+
+        # Tier 1 — membership, in the mapper's own group order.  A direct
+        # bodyId member is written unguarded (it wins); a type/instance
+        # expansion is written first-wins (it never displaces a member's own
+        # label).  Keys that resolve to nothing in this dataset are still
+        # recorded, so an id used directly elsewhere keeps resolving.
+        for member_id, label in self.members.items():
+            if member_id in bodyid_set:
+                self._map[member_id] = label
+                continue
+            expanded = False
+            for groups in (type_groups, instance_groups):
+                bids = groups.get(member_id)
+                if not bids:
+                    continue
+                for bid in bids:
+                    self._map.setdefault(bid, label)
+                expanded = True
+                break
+            if not expanded:
+                self._map[member_id] = label
+
+        # Tier 2 — residuals.  Enrollment is counted BEFORE any star is
+        # written: counting it afterwards made every collided type look fully
+        # governed, which is exactly how the disclosure of 2026-10-08 came to
+        # emit nothing at all.
+        for native, bids in type_groups.items():
+            total = len(bids)
+            if not total:
+                continue
+            enrolled = sum(1 for bid in bids if bid in self._map)
+            if enrolled >= total:
+                continue
+            if enrolled == 0 and native not in self.labels:
+                continue
+            key = residual_key(native)
+            if not key:
+                continue
+            self.collided[native] = {
+                'enrolled': enrolled,
+                'population': total,
+                'residuals': total - enrolled,
+                'key': key,
+            }
+            for bid in bids:
+                self._map.setdefault(bid, key)
+
+    # --- lookups ----------------------------------------------------------
+    def key_for(self, body_id, native_type=None) -> Optional[str]:
+        """Effective key of one neuron, given what the caller can see.
+
+        ``native_type`` is the frame's own raw type, used when the population
+        does not know this bodyId (a cache-only id).  Without it a foreign
+        neuron fell through to its bare native type while its same-type
+        cousins were star-tagged — one native type split across two keys in
+        one table.
+        """
+        bid = _clean_cell(body_id)
+        hit = self._map.get(bid)
+        if hit is not None:
+            return hit
+        if not self.population_available:
+            # Membership is decidable from the mapper alone — the neuron's own
+            # id first, then its type name, the order the engines have always
+            # tried.  The residual class is not: it needs the type's
+            # population, and `notes()` discloses that it was skipped.
+            native = _clean_cell(native_type)
+            hit = self.members.get(bid) or self.members.get(native)
+            if hit:
+                return hit
+            if self.lookup is not None:
+                for value in (bid, native):
+                    if not value:
+                        continue
+                    try:
+                        label = self.lookup(self.dataset, value)
+                    except Exception:  # noqa: BLE001 - a lookup miss is a miss
+                        continue
+                    if label and str(label) != value:
+                        return str(label)
+            return None
+        native = (_clean_cell(native_type) if native_type is not None
+                  else self._native_by_bodyid.get(bid, ''))
+        if not native or native == bid:
+            return None
+        label = self.members.get(native)
+        if label is not None:
+            return label
+        info = self.collided.get(native)
+        return info['key'] if info else None
+
+    def bodyid_map(self) -> Dict[str, str]:
+        """The flat bodyId -> key map the enrichment engines join on."""
+        return dict(self._map)
+
+    def __bool__(self) -> bool:
+        return bool(self._map)
+
+    # --- disclosure -------------------------------------------------------
+    def metadata(self) -> Dict[str, Any]:
+        """The published record of this typing: what was tagged, and with
+        which enrolled/population counts per dataset.
+
+        D7: ``T*`` stays undecorated across datasets, so the composition each
+        ``T*`` row stands for has to travel with it — this block is what makes
+        a merged residual row auditable instead of mysterious.
+        """
+        return {
+            'dataset': self.dataset,
+            'registry_version': self.REGISTRY_VERSION,
+            'population_source': self.source,
+            'population_version': self.version,
+            'population_available': self.population_available,
+            'mapper_labels': len(self.labels),
+            'mapper_members': len(self.members),
+            'governed_bodyids': sum(
+                1 for key in self._map.values() if key in self.labels),
+            'residual_bodyids': sum(
+                info['residuals'] for info in self.collided.values()),
+            'collided': {native: dict(info)
+                         for native, info in sorted(self.collided.items())},
+            'residual_keys': sorted(info['key'] for info in
+                                    self.collided.values()),
+        }
+
+    def notes(self) -> List[str]:
+        """The ``user_warning_notes`` bullets for this registry.
+
+        One line for the collided types (with their counts) when residuals
+        exist, one disclosure line when the population was absent — and
+        nothing at all when there is genuinely nothing to say.
+        """
+        out: List[str] = []
+        if self.collided:
+            lines = '; '.join(
+                f"{native}: {info['enrolled']} enrolled / "
+                f"{info['population']} population "
+                f"({info['residuals']} residual(s) -> '{info['key']}')"
+                for native, info in sorted(self.collided.items()))
+            out.append(
+                '- [label mapper residuals] collided native types have '
+                f"unenrolled neurons star-tagged by the type resolver: "
+                f'{lines}. The tag is terminal (never re-resolved, never '
+                'merged with the governed population or a same-spelling '
+                'label); cross-dataset rows sharing one `T*` key are '
+                'disclosed per dataset in the residual registry record.')
+        elif not self.population_available and self.members:
+            out.append(
+                '- [label mapper residuals] NOT evaluated: no neuron '
+                f'population for {self.dataset!r}, so a native type that is '
+                'only PARTIALLY governed keeps its bare name here and its '
+                'neurons can merge with the governed population. Run with '
+                'the dataset\'s *_allneurons_neuron_df table to resolve '
+                'residuals.')
+        return out
+
+
+_REGISTRY_CACHE: Dict[Tuple, ResidualRegistry] = {}
+_REGISTRY_CACHE_MAX = 4
+
+
+def get_residual_registry(mapper, dataset, population=None, *, source=None,
+                          version=None) -> ResidualRegistry:
+    """One registry per (mapper, dataset, population frame).
+
+    Keyed on object identity because the callers reach the population through
+    the mtime-aware neuron-table loaders, which hand back the same frame
+    object for the same file — a stale-key rebuild is therefore impossible,
+    and a run that loads two datasets gets two registries.
+    """
+    token = (id(mapper), str(dataset or ''),
+             id(population) if population is not None else 0)
+    registry = _REGISTRY_CACHE.get(token)
+    if registry is None:
+        registry = ResidualRegistry(mapper, dataset, population,
+                                    source=source, version=version)
+        if len(_REGISTRY_CACHE) >= _REGISTRY_CACHE_MAX:
+            _REGISTRY_CACHE.clear()
+        _REGISTRY_CACHE[token] = registry
+    return registry
+
+
+def build_type_key_map(mapper, dataset, population=None) -> Dict[str, str]:
+    """bodyId -> effective type key. THE producer of ``T*`` in DROCAT."""
+    return get_residual_registry(mapper, dataset, population).bodyid_map()

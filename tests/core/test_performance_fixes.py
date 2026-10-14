@@ -5,7 +5,7 @@ Regression tests for performance and pandas/polars interop fixes.
 Covers:
   - Vectorized + cached full-dataset incoming-weight aggregates
     (_fetch_total_incoming_weight / _by_type)
-  - O(M*N) -> O(M+N) label mapping in statvis_polars.build_bodyid_label_map
+  - O(M*N) -> O(M+N) label mapping in the residual registry
   - EnrichConnectionTablePolars global-weight aggregation (join instead of
     map_elements)
   - Vectorized hemisphere suffix logic matches the old scalar logic
@@ -33,7 +33,11 @@ from coana import FindNeuronConnection  # noqa: E402
 from statvis import (  # noqa: E402
     EnrichConnectionTablePolars,
     _PL_NEURON_DF_CACHE,
-    build_bodyid_label_map,
+)
+# The flat bodyId -> effective-key map is the residual registry's view; the
+# former statvis wrapper was deleted once both engines called the registry.
+from comparison.type_resolver import (  # noqa: E402
+    build_type_key_map as build_bodyid_label_map,
 )
 
 

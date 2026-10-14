@@ -148,7 +148,11 @@ def test_align_results_at_threshold(metrics):
     assert aligned.loc["A -> B", "d1"] == pytest.approx(5.0)
     assert aligned.loc["A -> B", "d2"] == pytest.approx(4.0)
 
-    # std_label columns take priority
+    # type_pre/type_post ARE the key (plan decision D2): the delegate exports
+    # the effective type there -- settled label, `T*` residual, raw type,
+    # bodyId -- and no longer publishes a std_label_* twin for readers to
+    # choose between. A leftover std_label column (a pre-D2 run folder, or an
+    # analyzer-internal frame) must NOT outrank the key column.
     results_std = {
         "d1": {1: pd.DataFrame({
             "std_label_pre": ["S"], "std_label_post": ["T"],
@@ -156,7 +160,8 @@ def test_align_results_at_threshold(metrics):
         })},
     }
     aligned_std = metrics._align_results_at_threshold(results_std, ["d1"], 1)
-    assert "S -> T" in aligned_std.index
+    assert "x -> y" in aligned_std.index
+    assert "S -> T" not in aligned_std.index
 
     # bodyId fallback + no weight column -> count aggregation
     results_bodyid = {
@@ -174,17 +179,34 @@ def test_align_results_at_threshold(metrics):
 
 
 def test_align_with_label_mapper(metrics):
-    class StubMapper:
-        def apply_to_dataframe(self, df, dataset):
-            df["std_label_pre"] = df["type_pre"].map({"A": "grpA"})
-            df["std_label_post"] = df["type_post"].map({"B": "grpB"})
-            return df
+    """A label-mapper run aligns on the key the DELEGATE published.
 
+    This used to assert that metrics re-derived std labels itself. It must
+    not: ``LabelMapper.apply_to_dataframe`` answers label-or-identity, so
+    applying it to an already-typed frame erased the residual tag the run
+    emitted (and, when a label was itself a mapper member name, retyped it a
+    second time). Frames now arrive with ``type_pre``/``type_post`` already
+    carrying the settled label, and alignment simply reads them.
+    """
     results = {
-        "d1": {1: pd.DataFrame({"type_pre": ["A"], "type_post": ["B"], "weight": [2.0]})},
+        "d1": {1: pd.DataFrame({"type_pre": ["grpA"], "type_post": ["grpB"],
+                                "native_type_pre": ["A"],
+                                "native_type_post": ["B"], "weight": [2.0]})},
+        "d2": {1: pd.DataFrame({"type_pre": ["grpA"], "type_post": ["grpB"],
+                                "weight": [3.0]})},
     }
-    aligned = metrics._align_results_at_threshold(results, ["d1"], 1, label_mapper=StubMapper())
-    assert "grpA -> grpB" in aligned.index
+
+    class StubMapper:
+        """Recorded mapper: read for tier-0 identity, never to retype."""
+
+        @staticmethod
+        def is_user_label(name):
+            return str(name) in {"grpA", "grpB"}
+
+    aligned = metrics._align_results_at_threshold(
+        results, ["d1", "d2"], 1, label_mapper=StubMapper())
+    assert aligned.loc["grpA -> grpB", "d1"] == pytest.approx(2.0)
+    assert aligned.loc["grpA -> grpB", "d2"] == pytest.approx(3.0)
 
 
 def test_align_with_type_mapper(metrics):

@@ -477,6 +477,10 @@ except (TypeError, ValueError):
 _PATH_CONN_KEEP_COLS = (
     'bodyId_pre', 'bodyId_post', 'weight', 'roi',
     'type_pre', 'type_post', 'instance_pre', 'instance_post',
+    # The raw native type beside the effective key (column contract, plan
+    # decision D2). Only present when a label mapper retyped the frame, so it
+    # costs nothing on the ordinary path.
+    'native_type_pre', 'native_type_post',
     'nt_type', 'nt_type_pre',
     'custom_group_pre', 'custom_group_post',
     'connection_ratio',
@@ -8647,17 +8651,7 @@ class FindNeuronConnection:
         # Apply filters
         if self.label_mapper and not combined.empty:
             self._vprint(f'  🏷️  Applying label mapping to {len(combined):,} connections...', level='full')
-            combined = self.label_mapper.apply_to_dataframe(combined, self.dataset)
-            
-            if 'std_label_pre' in combined.columns:
-                mask = combined['std_label_pre'] != ''
-                combined.loc[mask, 'type_pre'] = combined.loc[mask, 'std_label_pre']
-                combined = combined.drop(columns=['std_label_pre'])
-                
-            if 'std_label_post' in combined.columns:
-                mask = combined['std_label_post'] != ''
-                combined.loc[mask, 'type_post'] = combined.loc[mask, 'std_label_post']
-                combined = combined.drop(columns=['std_label_post'])
+            combined = self._apply_typing_columns(combined)
 
         # Apply hemisphere suffixes if requested
         combined = self._apply_hemisphere_suffix_to_conn_df(combined)
@@ -9005,15 +8999,7 @@ class FindNeuronConnection:
         combined = self._enrich_connections_with_neuron_info(combined)
 
         if self.label_mapper and not combined.empty:
-            combined = self.label_mapper.apply_to_dataframe(combined, self.dataset)
-            if 'std_label_pre' in combined.columns:
-                mask = combined['std_label_pre'] != ''
-                combined.loc[mask, 'type_pre'] = combined.loc[mask, 'std_label_pre']
-                combined = combined.drop(columns=['std_label_pre'])
-            if 'std_label_post' in combined.columns:
-                mask = combined['std_label_post'] != ''
-                combined.loc[mask, 'type_post'] = combined.loc[mask, 'std_label_post']
-                combined = combined.drop(columns=['std_label_post'])
+            combined = self._apply_typing_columns(combined)
 
         combined = self._apply_hemisphere_suffix_to_conn_df(combined)
 
@@ -9974,24 +9960,10 @@ class FindNeuronConnection:
             self._mark_fetched_neurons_quietly(
                 combined, neurons_to_mark, downstream_bodyIds)
         
-        # Apply label mapping if available (AFTER caching, so cache keeps original types)
+        # Apply the run's typing AFTER caching, so the cache keeps native types
         if self.label_mapper and not combined.empty:
             self._vprint(f'  🏷️  Applying label mapping to {len(combined):,} connections...', level='full')
-            # Use apply_to_dataframe from LabelMapper
-            # It adds std_label_pre and std_label_post
-            combined = self.label_mapper.apply_to_dataframe(combined, self.dataset)
-            
-            # Overwrite type_pre with std_label_pre
-            if 'std_label_pre' in combined.columns:
-                mask = combined['std_label_pre'] != ''
-                combined.loc[mask, 'type_pre'] = combined.loc[mask, 'std_label_pre']
-                combined = combined.drop(columns=['std_label_pre'])
-                
-            # Overwrite type_post with std_label_post
-            if 'std_label_post' in combined.columns:
-                mask = combined['std_label_post'] != ''
-                combined.loc[mask, 'type_post'] = combined.loc[mask, 'std_label_post']
-                combined = combined.drop(columns=['std_label_post'])
+            combined = self._apply_typing_columns(combined)
 
         # Apply hemisphere suffixes if requested
         combined = self._apply_hemisphere_suffix_to_conn_df(combined)
@@ -10126,22 +10098,11 @@ class FindNeuronConnection:
             self._mark_fetched_neurons_quietly(
                 combined, neurons_to_mark, downstream_bodyIds)
 
-        # Label mapping has no Polars port; fall back to a guarded pandas
-        # round trip on this optional configuration.
         if self.label_mapper and len(combined) > 0:
             self._vprint(f'  🏷️  Applying label mapping to {len(combined):,} connections...', level='full')
             try:
                 combined_pd = combined.to_pandas()
-                combined_pd = self.label_mapper.apply_to_dataframe(combined_pd, self.dataset)
-                if 'std_label_pre' in combined_pd.columns:
-                    mask = combined_pd['std_label_pre'] != ''
-                    combined_pd.loc[mask, 'type_pre'] = combined_pd.loc[mask, 'std_label_pre']
-                    combined_pd = combined_pd.drop(columns=['std_label_pre'])
-                if 'std_label_post' in combined_pd.columns:
-                    mask = combined_pd['std_label_post'] != ''
-                    combined_pd.loc[mask, 'type_post'] = combined_pd.loc[mask, 'std_label_post']
-                    combined_pd = combined_pd.drop(columns=['std_label_post'])
-                combined = pl.from_pandas(combined_pd)
+                combined = self._apply_typing_columns(combined)
             except MemoryError:
                 self._warn_conversion_memory('applying label mapping to a connection layer')
                 raise
@@ -13034,21 +12995,55 @@ class FindNeuronConnection:
                 self.label_mapper, 'is_empty', False):
             return None
         if population is None:
-            population = sv.neuron_population(self.dataset, self.script_path)
+            # No frame handed in: resolve the table ourselves and keep its
+            # provenance, so the published census names its source.
+            population, source, version = sv.neuron_population_provenance(
+                self.dataset, self.script_path)
+            return sv.get_residual_registry(self.label_mapper, self.dataset,
+                                            population, source=source,
+                                            version=version)
         return sv.get_residual_registry(self.label_mapper, self.dataset,
                                         population)
 
-    def _disclose_residuals(self, registry) -> None:
+    def _apply_typing_columns(self, combined):
+        """Type this fetched frame through the run's registry (see D2/D3).
+
+        The fetch lanes used to overwrite ``type_pre``/``type_post`` from
+        ``LabelMapper.apply_to_dataframe`` — a label lookup whose vocabulary is
+        label-or-identity, so a native type the mapper only PARTIALLY governed
+        lost its unlabeled neurons into the settled label before the frame even
+        reached enrichment.
+        """
+        return sv.apply_typing_columns(combined, self._residual_registry())
+
+    def _disclose_residuals(self, registry, run_folder=None) -> None:
         """Publish what the typing did, so a ``T*`` key is never mysterious.
 
-        The registry decides the wording: one line listing the collided types
-        with their enrolled/population/residual counts, or - when the dataset
-        has no neuron table - the disclosure that residuals could NOT be
-        evaluated.  Nothing is appended when there is nothing to say, and the
-        bullet is state-owned (one per tag) so a re-export replaces it instead
-        of accumulating duplicates.
+        Three surfaces, all from the registry's own census:
+
+        * ``all_attributes.json`` — the record is a PUBLIC attribute
+          (``label_mapper_residuals``); ``_run_export_attributes`` filters
+          ``_``-prefixed instance attributes, which is exactly why the
+          2026-10-08 disclosure could never reach a run folder.
+        * ``user_warning_notes.txt`` — the registry supplies the wording: one
+          line listing the collided types with their enrolled/population/
+          residual counts, or the disclosure that residuals could NOT be
+          evaluated because the dataset has no neuron table.  The bullet is
+          state-owned (one per tag), so a re-export replaces it rather than
+          accumulating duplicates, and nothing is written when there is
+          genuinely nothing to say.
+        * ``label_mapper_residuals.csv`` in the run folder (when one is given)
+          — the machine-readable census the comparison report reads back, so a
+          ``T*`` row publishes the composition it stands for (decision D7)
+          rather than leaving the reader to infer it from a name.
         """
         if registry is None:
+            return
+        try:
+            self.label_mapper_residuals = registry.metadata()
+        except Exception as exc:  # noqa: BLE001 - disclosure never fails a run
+            self._vprint(f'[residual registry] metadata skipped: {exc}',
+                         level='full')
             return
         try:
             for line in registry.notes():
@@ -13058,6 +13053,35 @@ class FindNeuronConnection:
                 self._warn_notes.append(line)
         except Exception as exc:  # noqa: BLE001 - disclosure never fails a run
             self._vprint(f'[residual registry] skipped: {exc}', level='full')
+        if run_folder:
+            try:
+                rows = [{
+                    'dataset': self.label_mapper_residuals['dataset'],
+                    'native_type': native,
+                    'enrolled': info['enrolled'],
+                    'population': info['population'],
+                    'residuals': info['residuals'],
+                    'emitted_key': info['key'],
+                } for native, info in
+                    sorted(self.label_mapper_residuals['collided'].items())]
+                if not rows and not self.label_mapper_residuals[
+                        'population_available']:
+                    rows = [{'dataset': self.dataset, 'native_type': '',
+                             'enrolled': '', 'population': '',
+                             'residuals': '',
+                             'emitted_key': 'NOT EVALUATED (no neuron table)'}]
+                if rows:
+                    import csv as _csv
+                    with open(os.path.join(run_folder,
+                                           'label_mapper_residuals.csv'),
+                              'w', newline='', encoding='utf-8') as handle:
+                        writer = _csv.DictWriter(handle, fieldnames=list(
+                            rows[0].keys()))
+                        writer.writeheader()
+                        writer.writerows(rows)
+            except Exception as exc:  # noqa: BLE001 - add-on, never fatal
+                self._vprint(f'[residual registry] csv skipped: {exc}',
+                             level='full')
 
 
     def InitializeNeuronInfo(self):
@@ -14414,7 +14438,8 @@ class FindNeuronConnection:
         # registry's own words (collided types with their counts, or the
         # disclosure that residuals could not be evaluated).
         self._disclose_residuals(
-            self._residual_registry(self._refill_neuron_frame()))
+            self._residual_registry(self._refill_neuron_frame()),
+            network_folder)
 
         self._write_user_warning_notes(network_folder)
 
@@ -20859,10 +20884,15 @@ class FindNeuronConnection:
         # text_only: this block reads bodyId/label columns only, and BANC
         # tables carry comma-joined id lists (manc_match = "22586, 21696")
         # that break numeric inference past the schema window.
-        residual_registry = self._residual_registry(
-            sv.neuron_population(self.dataset, self.script_path,
-                                 text_only=True))
-        self._disclose_residuals(residual_registry)
+        _pop, _src, _ver = sv.neuron_population_provenance(
+            self.dataset, self.script_path, text_only=True)
+        residual_registry = (
+            sv.get_residual_registry(self.label_mapper, self.dataset, _pop,
+                                     source=_src, version=_ver)
+            if self.label_mapper is not None and not getattr(
+                self.label_mapper, 'is_empty', False) else None)
+        self._disclose_residuals(residual_registry,
+                                 getattr(self, 'allpath_folder', None))
 
 
         # Helper to extract hemisphere suffix from a type string

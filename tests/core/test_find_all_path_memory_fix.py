@@ -318,20 +318,37 @@ class TestPolarsFetchEquivalence:
 
     def test_label_mapper_fallback(self, monkeypatch):
         class FakeMapper:
-            def apply_to_dataframe(self, df, dataset):
-                df = df.copy()
-                df["std_label_pre"] = "std_" + df["type_pre"].astype(str)
-                df["std_label_post"] = "std_" + df["type_post"].astype(str)
-                return df
+            """Mapper groups keyed by native type name (the real shape).
+
+            The fetch lane types its frame through the run's registry, not
+            through ``apply_to_dataframe``: both engines must reach the same
+            keys, and only the registry can also express a `T*` residual.
+            """
+
+            is_empty = False
+
+            def __init__(self):
+                groups = {f"std_{t}": {"test:v1": [t]}
+                          for t in ("TA", "TB", "TD")}
+                self._source_mapping = groups
+                self._target_mapping = groups
+                self._intermediate_mapping = {}
+
+            def _dataset_keys(self, dataset):
+                return [dataset]
 
         _, _, pd_result, pl_result = self._run_both(
             monkeypatch, uncached=["4"], label_mapper=FakeMapper(),
         )
         _assert_equivalent(pd_result, pl_result)
+        # the effective key lives in type_pre; no std_label twin is exported
         assert "std_label_pre" not in pl_result.columns
         assert set(pl_result["type_pre"].to_list()) == {
             "std_TA", "std_TB", "std_TD",
         }
+        # ...and the raw native type survives beside it for provenance (D2)
+        assert set(str(v) for v in pl_result["native_type_pre"].to_list()) <= {
+            "TA", "TB", "TD", "None"}
 
     def test_intra_type_exclusion(self, monkeypatch):
         # 1->1 style self loop via same type on both endpoints: give

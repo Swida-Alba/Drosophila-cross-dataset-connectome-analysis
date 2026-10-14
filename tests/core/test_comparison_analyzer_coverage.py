@@ -1173,9 +1173,16 @@ def test_run_path_analysis_applies_label_mapper_and_custom_names(
     )
     a = ComparisonAnalyzer(params, label_mapper=mapper, verbose=False)
 
+    # What a label-mapper delegate exports: type_pre/type_post carry the
+    # EFFECTIVE key and the raw native type travels beside it (plan D2). The
+    # analyzer no longer retypes a loaded frame — re-deriving it from
+    # LabelMapper.get_label erased the `T*` the run had emitted — it only
+    # verifies, so the keys below must survive untouched.
     pd.DataFrame({
         "bodyId_pre": [1], "bodyId_post": [2],
-        "type_pre": ["aMe1"], "type_post": ["PPL1"], "weight": [4],
+        "type_pre": ["SrcStd"], "type_post": ["TgtStd"],
+        "native_type_pre": ["aMe1"], "native_type_post": ["PPL1"],
+        "weight": [4],
     }).to_csv(os.path.join(str(fake_fnc), "data_details",
                            "connection_info_bodyId.csv"), index=False)
 
@@ -1192,9 +1199,12 @@ def test_run_path_analysis_applies_label_mapper_and_custom_names(
 
     out = a.run_path_analysis(DS1, 1)
     assert not out.empty
-    # standardized labels overwrite original types
+    # the delegate's typing survives the load lane verbatim
     assert out.iloc[0]["type_pre"] == "SrcStd"
     assert out.iloc[0]["type_post"] == "TgtStd"
+    # and the mapper is handed to the delegate, which is where typing happens
+    assert captured.get("label_mapper") is mapper or captured.get(
+        "custom_mapping_file")
     # custom single-label names forwarded to FindNeuronConnection
     assert captured["custom_source_name"] == "CustomSrc"
     assert captured["custom_target_name"] == "CustomTgt"
@@ -1983,7 +1993,7 @@ def test_get_edge_ratio_data_for_threshold(tmp_path):
     open(os.path.join(d2, "connections_edge.csv"), "w").close()
     dd = os.path.join(d2, "data_details")
     os.makedirs(dd, exist_ok=True)
-    pd.DataFrame({"std_label_pre": ["SrcStd"], "std_label_post": ["TgtStd"],
+    pd.DataFrame({"type_pre": ["SrcStd"], "type_post": ["TgtStd"],
                   "connection_ratio": [0.3]}).to_csv(
         os.path.join(dd, "connection_type.csv"), index=False)
     out = a._get_edge_ratio_data_for_threshold(1)

@@ -253,22 +253,16 @@ def read_emitted_pairs(run_dir) -> Dict[Tuple[str, str], int]:
             info_path,
             dtype={'bodyId_pre': str, 'bodyId_post': str,
                    'type_pre': str, 'type_post': str})
-        # EFFECTIVE-LABEL preference (2026-10-12, plan §13.5): a
-        # label-mapper run exports the NATIVE types in type_pre/type_post
-        # and the mapper's labels in std_label_pre/std_label_post — while
-        # the cut re-derivation keys pairs through the EFFECTIVE
-        # (mapper-applied) type map. Reading the native columns made
-        # every custom-labeled pair mismatch ('re-derived 0 vs exported
-        # N') and the refill refuse fail-closed. Prefer the std-label
-        # columns when they carry values; fall back to the type columns
-        # per row (unmapped bodies keep their native labels either way).
-        if {'std_label_pre', 'std_label_post'} <= set(ci.columns):
-            ci['type_pre'] = ci['std_label_pre'].where(
-                ci['std_label_pre'].notna() & (ci['std_label_pre'] != ''),
-                ci['type_pre'])
-            ci['type_post'] = ci['std_label_post'].where(
-                ci['std_label_post'].notna() & (ci['std_label_post'] != ''),
-                ci['type_post'])
+        # A run exported before the column contract still has std_label_*
+        # columns; they are simply not read. Re-run it to get a frame whose
+        # type_pre carries the typing (no compatibility ladder here).
+        # No std_label_* preference any more: type_pre/type_post on the
+        # bodyId export ARE the effective key (plan decision D2). The
+        # workaround this replaces existed because the Polars delegate kept
+        # the native type in type_pre and the effective label only in
+        # std_label_pre, so reading type_pre made every custom-labelled pair
+        # mismatch ('re-derived 0 vs exported N') and the refill refused
+        # fail-closed.
         if not ci.empty and {'bodyId_pre', 'bodyId_post',
                              'type_pre', 'type_post'} <= set(ci.columns):
             # canonical pair mass: exact dup collapse + per-pair sum (per-ROI caches store slices; pair-level caches no-op)
@@ -903,10 +897,13 @@ def build_effective_type_map(neuron_frame, *, dataset,
     """bodyId -> EFFECTIVE type label, mirroring the run's own type-level
     aggregation (statvis ``EnrichConnectionTable`` semantics):
 
-    1. Label mapping first — a bodyId-level mapping wins when it differs
-       from the raw id, else a type-level mapping when it differs from
-       the raw type (``LabelMapper.get_label``; unmapped ids keep their
-       raw labels through the identity fallback).
+    1. Typing first — the type resolver's residual registry over this very
+       frame: a mapper member takes its settled label (a direct bodyId
+       member ahead of any whole-type/instance expansion), a non-member of
+       a native type the mapper only PARTIALLY governs takes the terminal
+       ``T*`` key, and everything else keeps its raw type.  Step 1 is the
+       same producer the enrichment engines use, which is what makes the
+       table reproduction it claims below actually hold.
     2. Hemisphere suffix ``_L/_R/_U`` appended when the run separated
        hemispheres (coana ``_append_hemisphere_suffix_series`` rules:
        hemisphere > somaSide/soma side > rootSide columns, then the
@@ -942,22 +939,26 @@ def build_effective_type_map(neuron_frame, *, dataset,
         if 'type' in frame.columns else pd.Series(
             ['Unknown'] * len(frame), index=frame.index)
 
-    if label_mapper is not None:
-        bid_map = {b: label_mapper.get_label(dataset, b)
-                   for b in body_ids.unique()}
-        mapped_body = body_ids.map(bid_map)
-        mask_body = mapped_body.notna() & (mapped_body != body_ids)
-        type_map_lut = {t: label_mapper.get_label(dataset, t)
-                        for t in types[~mask_body].unique()}
-        mapped_type = types.map(type_map_lut)
-        mask_type = (~mask_body & (types != 'Unknown')
-                     & (types != body_ids) & mapped_type.notna()
-                     & (mapped_type != types))
-        effective = types.copy()
-        effective.loc[mask_body] = mapped_body[mask_body]
-        effective.loc[mask_type] = mapped_type[mask_type]
-    else:
+    if label_mapper is None:
         effective = types
+    else:
+        try:
+            from comparison.type_resolver import get_residual_registry
+        except ImportError:  # pragma: no cover - src laid bare on sys.path
+            from type_resolver import get_residual_registry
+        # Step 1 is the type resolver's registry, not a per-id label lookup.
+        # This function's own contract is to mirror the run's type-level
+        # aggregation, and that aggregation resolves through the registry: a
+        # NON-member of a native type the mapper only partially governs is
+        # star-tagged (`T*`).  Reading membership through get_label could not
+        # express it -- its vocabulary is label-or-identity -- so the refill,
+        # corridor and ratio lanes retyped the members and left the rest under
+        # the bare native name, where the type table no longer reproduced.
+        registry = get_residual_registry(label_mapper, dataset, frame)
+        effective = pd.Series(
+            [registry.key_for(b, t) or t
+             for b, t in zip(body_ids, types)],
+            index=frame.index, dtype=object)
 
     if separate_hemispheres:
         codes = _hemisphere_codes(frame)

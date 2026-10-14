@@ -10494,6 +10494,11 @@ class ConnectivityProfileComparer:
         # are comparison identities and are never re-resolved.
         self._user_label_mapper = None
         self._user_labels_cache: Optional[frozenset] = None
+        # Partner types the mapper only PARTIALLY governs: their partner mass
+        # cannot be attributed between the settled label and its `T*`
+        # residuals, so they stay under their raw key and this census says so
+        # {(dataset, raw_type): {'label', 'residuals', 'population'}}.
+        self._partner_fold_mixed: dict = {}
         # Set early: the query/mapping parsing below logs via self._log
         self.verbose = verbose
         
@@ -11116,22 +11121,24 @@ class ConnectivityProfileComparer:
     def _user_label_governs(self, name: Any) -> bool:
         """Tier-0 test: is this name already a comparison identity?
 
-        True when the name IS a label-mapper label (or its hemisphere-
-        suffixed base is one): user labels pass through every resolution
-        verbatim and are never re-resolved through the auto type mapper
-        (same contract as ``comparison_analyzer._user_label_governs``)."""
+        True for a label-mapper label (or its hemisphere-suffixed base) AND
+        for a star-tagged residual ``T*``: both are comparison identities that
+        pass through every resolution verbatim and are never re-resolved
+        through the auto type mapper.  One predicate with
+        ``comparison_analyzer._user_label_governs`` — the residual half used to
+        be missing here, so a `T*` key reaching this lane was re-resolved."""
         if getattr(self, '_user_label_mapper', None) is None:
             return False
-        s = str(name)
-        labels = self._user_label_governing_labels()
-        if s in labels:
-            return True
         try:
-            from ..utils.naming_utils import split_hemi_suffix
+            from .type_resolver import is_terminal_identity
         except ImportError:  # pragma: no cover - direct package imports
-            from utils.naming_utils import split_hemi_suffix
-        base, suffix = split_hemi_suffix(s)
-        return bool(suffix) and base in labels
+            from type_resolver import is_terminal_identity
+        # One shared predicate with the analyzer's twin — which also carries
+        # the residual clause this lane was missing.  A `T*` key that failed
+        # this test was re-resolved through the auto type mapper, exactly what
+        # the terminal contract forbids; with hemisphere suffixes the tag sits
+        # before the suffix (`T*_L`), so the check has to be suffix-aware.
+        return is_terminal_identity(name, self._user_label_governing_labels())
 
     def _label_mapper_chips(self) -> List[str]:
         """Report meta chips disclosing the tier-0 mapper state."""
@@ -11176,25 +11183,47 @@ class ConnectivityProfileComparer:
     ) -> Optional[str]:
         """Bridge a partner TYPE name through a bodyId-keyed label mapper.
 
-        The type's bodyIds in ``dataset`` are mapped through the label
-        mapper; when every resolved member agrees on ONE label the type
-        folds into it (members the mapper does not know do not block — a
-        validated-subset label still owns its type's partner mass).  A type
-        whose members span SEVERAL labels stays raw: no arbitrary branch.
+        The type folds into a label ONLY when the mapper governs its whole
+        population and every member agrees on that one label.  `get_bodyids_for_type`
+        is dataset-wide (it reads the neuron table, or the API when no table
+        is local), so this is a real coverage test, not a spot check: a type
+        with any unenrolled neuron is MIXED, and its partner mass cannot be
+        attributed — the profile stores partners at type level, so there is no
+        per-neuron weight here to split out a `T*` row honestly.  Leaving a
+        mixed type under its raw key is the safe answer and the one the
+        contract demands; folding it (as this lane used to, "members the mapper
+        does not know do not block") silently merged the residual population
+        into the settled label, which is the exact hazard `T*` exists to stop.
+
+        Mixed types are recorded on ``self._partner_fold_mixed`` so the report
+        can say which partner keys stayed raw and why.
         """
         try:
             bids = self.profiler.get_bodyids_for_type(
                 str(type_name), dataset) or []
         except Exception:
             return None
+        if not bids:
+            return None
         resolved: set = set()
+        ungoverned = 0
         for bid in bids:
             target = label_mapper.get_label(dataset, bid)
             if target in labels:
                 resolved.add(target)
                 if len(resolved) > 1:
-                    return None
-        return next(iter(resolved)) if resolved else None
+                    return None  # members span several labels: no branch
+            else:
+                ungoverned += 1
+        if not resolved:
+            return None
+        if ungoverned:
+            self._partner_fold_mixed.setdefault(
+                (str(dataset), str(type_name)),
+                {'label': next(iter(resolved)), 'residuals': ungoverned,
+                 'population': len(bids)})
+            return None
+        return next(iter(resolved))
 
     def collapse_partners_by_label_mapper(
         self, profiles: Dict[str, 'ConnectivityProfile'], dataset: str

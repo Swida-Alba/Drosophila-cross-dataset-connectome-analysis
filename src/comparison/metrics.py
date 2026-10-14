@@ -10,7 +10,7 @@ Optimized with polars for high-performance operations on large datasets.
 import numpy as np
 from utils.naming_utils import split_hemi_suffix
 try:
-    from .type_resolver import is_residual_key
+    from .type_resolver import (get_residual_registry, is_residual_key)
 except ImportError:  # pragma: no cover - direct package imports
     from type_resolver import is_residual_key
 import pandas as pd
@@ -937,18 +937,32 @@ class ComparisonMetrics:
             if df.empty:
                 continue
             
-            # Determine edge columns
-            if 'std_label_pre' in df.columns and 'std_label_post' in df.columns:
-                pre_col, post_col = 'std_label_pre', 'std_label_post'
-            elif 'type_pre' in df.columns and 'type_post' in df.columns:
+            # Determine edge columns.  ``type_pre``/``type_post`` ARE the
+            # effective key (settled label, `T*` residual, raw type, bodyId),
+            # so there is no std_label ladder to choose between -- this module
+            # used to prefer std_label here and type_pre at the coverage pass
+            # below, i.e. two answers for one frame.
+            from statvis import apply_typing_columns
+            if 'type_pre' in df.columns and 'type_post' in df.columns:
+                # Decision 8 (merge-policy aggregation): the policy's
+                # raw->group-label map is materialized as a synthesized
+                # LabelMapper and applied HERE, because raw_results are not
+                # pre-mapped. That is a producer applying a mapper to native
+                # names, which is legitimate; what this lane must never do is
+                # re-run a lookup over an ALREADY-typed frame -- the old
+                # ``apply_to_dataframe`` did exactly that and replaced the
+                # delegate's `T*` with the bare native type, since a label
+                # lookup cannot express a residual. Going through the same
+                # registry writer keeps one typing rule, preserves the native
+                # name beside the key, and leaves a typed frame untouched (a
+                # label is never a member name of the same mapper).
+                if label_mapper is not None:
+                    df = apply_typing_columns(
+                        df.copy(),
+                        get_residual_registry(label_mapper, dataset, None))
                 pre_col, post_col = 'type_pre', 'type_post'
             else:
                 pre_col, post_col = 'bodyId_pre', 'bodyId_post'
-            
-            # Apply label mapping if provided
-            if label_mapper and 'type_pre' in df.columns:
-                df = label_mapper.apply_to_dataframe(df.copy(), dataset)
-                pre_col, post_col = 'std_label_pre', 'std_label_post'
             
             # Aggregate by edge
             weight_col = 'weight' if 'weight' in df.columns else 'path_weight'
@@ -970,7 +984,7 @@ class ComparisonMetrics:
             
             # Apply type mapping if provided - standardize edge names to canonical form
             # Using vectorized operations instead of slow iterrows
-            if type_mapper is not None and pre_col in ['type_pre', 'std_label_pre']:
+            if type_mapper is not None and pre_col == 'type_pre':
                 # Vectorized: convert columns to strings
                 original_pre_series = agg_df[pre_col].astype(str)
                 original_post_series = agg_df[post_col].astype(str)
@@ -1558,8 +1572,9 @@ class ComparisonMetrics:
                 continue
             
             # Find type columns
-            pre_col = 'type_pre' if 'type_pre' in df.columns else 'std_label_pre' if 'std_label_pre' in df.columns else None
-            post_col = 'type_post' if 'type_post' in df.columns else 'std_label_post' if 'std_label_post' in df.columns else None
+            # Same single key column as the alignment pass above.
+            pre_col = 'type_pre' if 'type_pre' in df.columns else None
+            post_col = 'type_post' if 'type_post' in df.columns else None
             
             source_connected = 0
             target_connected = 0

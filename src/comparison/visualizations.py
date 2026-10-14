@@ -2742,10 +2742,12 @@ class ComparisonVisualizer:
                             valid_paths = df
                             
                         if not valid_paths.empty:
-                            # Use type_pre/type_post directly since results are already type-mapped
-                            # (get_mapped_results() applies canonical type mapping)
-                            # Don't use std_label_pre/std_label_post as those may contain display names
-                            # like 'MeVPLo2(MTe07)' which won't match across datasets
+                            # Key on type_pre/type_post: that pair IS the
+                            # effective key (settled label / `T*` residual /
+                            # canonical name) this stage compares on, and it is
+                            # stable across datasets. A label-mapper display
+                            # name (e.g. 'MeVPLo2(MTe07)') must never be used
+                            # as a matching key here.
                             pre_col = 'type_pre'
                             post_col = 'type_post'
                             if pre_col in valid_paths.columns and post_col in valid_paths.columns:
@@ -3639,10 +3641,12 @@ class ComparisonVisualizer:
                             valid_paths = df
                         
                         if not valid_paths.empty:
-                            # Use type_pre/type_post directly since results are already type-mapped
-                            # (get_mapped_results() applies canonical type mapping)
-                            # Don't use std_label_pre/std_label_post as those may contain display names
-                            # like 'MeVPLo2(MTe07)' which won't match across datasets
+                            # Key on type_pre/type_post: that pair IS the
+                            # effective key (settled label / `T*` residual /
+                            # canonical name) this stage compares on, and it is
+                            # stable across datasets. A label-mapper display
+                            # name (e.g. 'MeVPLo2(MTe07)') must never be used
+                            # as a matching key here.
                             pre_col = 'type_pre'
                             post_col = 'type_post'
                             

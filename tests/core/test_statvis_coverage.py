@@ -802,8 +802,7 @@ class TestTypeProbabilitySeries:
 
 
 # =============================================================================
-# build_bodyid_label_map
-# =============================================================================
+# build_type_key_map (the residual registry's flat map view)=============================================================================
 
 class FakeLabelMapper:
     def __init__(self, source=None, target=None, intermediate=None):
@@ -811,6 +810,8 @@ class FakeLabelMapper:
         self._target_mapping = target or {}
         self._intermediate_mapping = intermediate or {}
 
+
+from comparison.type_resolver import build_type_key_map
 
 class TestBuildBodyIdLabelMap:
     def _neuron_df(self):
@@ -821,13 +822,13 @@ class TestBuildBodyIdLabelMap:
         })
 
     def test_empty_inputs(self):
-        assert sv.build_bodyid_label_map(None, "d", self._neuron_df()) == {}
+        assert build_type_key_map(None, "d", self._neuron_df()) == {}
         mapper = FakeLabelMapper()
-        assert sv.build_bodyid_label_map(mapper, "d", pl.DataFrame()) == {}
+        assert build_type_key_map(mapper, "d", pl.DataFrame()) == {}
 
     def test_no_bodyid_column(self):
         mapper = FakeLabelMapper(source={"G": {"d": [1]}})
-        out = sv.build_bodyid_label_map(mapper, "d",
+        out = build_type_key_map(mapper, "d",
                                         pl.DataFrame({"type": ["a"]}))
         assert out == {}
 
@@ -840,7 +841,7 @@ class TestBuildBodyIdLabelMap:
             },
             intermediate={"G3": {"other_ds": ["99"]}},  # dataset mismatch
         )
-        out = sv.build_bodyid_label_map(mapper, "test:v1", self._neuron_df())
+        out = build_type_key_map(mapper, "test:v1", self._neuron_df())
         assert out["1"] == "G1"       # direct bodyId
         assert out["2"] == "G1"       # type expansion (Mi1)
         assert out["3"] == "G2"       # instance expansion (Tm3_L)

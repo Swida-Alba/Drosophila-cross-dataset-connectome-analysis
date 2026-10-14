@@ -51,12 +51,12 @@ except ImportError:  # pragma: no cover - src laid bare on sys.path
     from utils.naming_utils import canonical_dataset_name
 
 try:
-    from .type_resolver import residual_key
+    from .type_resolver import get_residual_registry
 except ImportError:  # pragma: no cover - src laid bare on sys.path
     try:
-        from comparison.type_resolver import residual_key
+        from comparison.type_resolver import get_residual_registry
     except ImportError:  # pragma: no cover - direct statvis execution
-        from type_resolver import residual_key
+        from type_resolver import get_residual_registry
 
 try:
     from .flywire_ids import (
@@ -6414,6 +6414,19 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
     if conn_table.shape[0] == 0 or conn_table.shape[1] == 0:
         return pd.DataFrame(), pd.DataFrame(), None
     conn_df = conn_table.copy()
+
+    # Column contract (plan decision D2), taken at the one moment the frame is
+    # still exactly what the caller handed in: `type_pre`/`type_post` are
+    # rewritten below by the local-table join, the label mapper and the
+    # untyped-becomes-bodyId rule, and the raw native type has to survive beside
+    # them. The Polars engine exports the same pair, so a reader never has to
+    # know which engine wrote a file — or whether any mapper ran at all (LM-002
+    # was exactly that asymmetry, and an untyped run's `native_type_*` simply
+    # equals its `type_*`).
+    for _side in ('pre', 'post'):
+        _key = f'type_{_side}'
+        if _key in conn_df.columns:
+            conn_df[f'native_{_key}'] = conn_df[_key]
     
     # Determine grouping columns (use custom_group if available, otherwise type)
     group_pre = 'custom_group_pre' if 'custom_group_pre' in conn_df.columns else 'type_pre'
@@ -6488,71 +6501,20 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
                 # Create a copy to avoid modifying the original cache
                 ndf_complete = ndf_complete.copy()
 
-                # Vectorized label mapping (same semantics as the old
-                # row-wise apply, but one get_label call per UNIQUE bodyId/
-                # type instead of two calls per neuron row).
+                # One typing decision for both engines: the type resolver's
+                # registry (comparison.type_resolver.ResidualRegistry) applied
+                # to this dataset's population.  The inline copy that used to
+                # live here governed bodyId-level membership and a collided
+                # pass by hand — it expanded no instance group, and its
+                # `type != bodyId` guard retyped a NON-member that shared an
+                # untyped neuron's bodyId-as-type with its governed cousin,
+                # merging it into the settled label instead of star-tagging it.
+                registry = get_residual_registry(label_mapper, dataset,
+                                                 ndf_complete)
                 body_ids = ndf_complete['bodyId'].astype(str)
-                bid_map = {
-                    b: label_mapper.get_label(dataset, b)
-                    for b in body_ids.unique()
-                }
-                mapped_body = body_ids.map(bid_map)
-                # BodyId mapping wins when it differs from the raw ID.
-                # (None results are treated as unmapped, matching the old
-                # fillna fallback behaviour downstream.)
-                mask_body = mapped_body.notna() & (mapped_body != body_ids)
-
-                type_vals = ndf_complete['type'].fillna('').astype(str)
-                type_map = {
-                    t: label_mapper.get_label(dataset, t)
-                    for t in type_vals[~mask_body].unique()
-                    if t != ''
-                }
-                mapped_type = type_vals.map(type_map)
-                mask_type = (
-                    (~mask_body)
-                    & (type_vals != '')
-                    & (type_vals != body_ids)
-                    & mapped_type.notna()
-                    & (mapped_type != type_vals)
-                )
-
-                std_label = pd.Series('', index=ndf_complete.index, dtype=object)
-                std_label.loc[mask_body] = mapped_body[mask_body]
-                std_label.loc[mask_type] = mapped_type[mask_type]
-
-                # Residual renaming (type-resolver contract, user
-                # directive 2026-10-08): a type name is COLLIDED when the
-                # mapper governs part of its population (some neurons
-                # renamed, others not) or the name is itself a mapper
-                # label.  Its UNMAPPED neurons are RESIDUALS — renamed to
-                # the star-tagged native type by the resolver's naming
-                # contract; never aggregated under the type name (which
-                # would silently merge them into the governed population
-                # or into a settled label of the same spelling), and
-                # never labeled with bodyIds.
-                mapper_labels = set()
-                for md in (getattr(label_mapper, '_source_mapping', None),
-                           getattr(label_mapper, '_target_mapping', None),
-                           getattr(label_mapper, '_intermediate_mapping',
-                                   None)):
-                    if isinstance(md, dict):
-                        mapper_labels.update(str(k) for k in md.keys())
-                governed = mask_body | mask_type
-                governed_by_type = (
-                    pd.Series(governed, index=ndf_complete.index)
-                    .groupby(type_vals).sum().to_dict())
-                collided = (
-                    (type_vals != '')
-                    & (~governed)
-                    & (
-                        (type_vals.map(governed_by_type).fillna(0) > 0)
-                        | type_vals.isin(mapper_labels)
-                    )
-                )
-                if collided.any():
-                    std_label.loc[collided] = type_vals[collided].map(
-                        residual_key)
+                key_map = {b: registry.key_for(b) or ''
+                           for b in body_ids.unique()}
+                std_label = body_ids.map(key_map).fillna('').astype(object)
 
                 ndf_complete['std_label'] = std_label
                 
@@ -6592,23 +6554,20 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
             if label_mapper and 'type' in target_neurons_df.columns:
                 target_neurons_df = target_neurons_df.copy()
                 
-                # Define mapping function (same as above)
-                def get_mapped_label_target(row):
-                    body_id = str(row['bodyId'])
-                    # Use get_label to check all roles
-                    mapped_body = label_mapper.get_label(dataset, body_id)
-                    if mapped_body != body_id:
-                         return mapped_body
-                    
-                    if pd.notna(row['type']):
-                        type_val = str(row['type'])
-                        if type_val != body_id:
-                            mapped_type = label_mapper.get_label(dataset, type_val)
-                            if mapped_type != type_val:
-                                return mapped_type
-                    return ''
-
-                target_neurons_df['std_label'] = target_neurons_df.apply(get_mapped_label_target, axis=1)
+                # Same producer as the local-table branch above, with the
+                # degradation this frame implies: target_neurons_df holds only
+                # the neurons in scope, so it is not a population and residual
+                # classes cannot be evaluated from it (decision D5).  Members
+                # are still retyped — the mapper is not silently ignored.
+                registry = get_residual_registry(label_mapper, dataset, None)
+                target_type_vals = (target_neurons_df['type']
+                                    if 'type' in target_neurons_df.columns
+                                    else pd.Series([None] * len(target_neurons_df),
+                                                   index=target_neurons_df.index))
+                target_neurons_df['std_label'] = [
+                    registry.key_for(b, t) or ''
+                    for b, t in zip(target_neurons_df['bodyId'].astype(str),
+                                    target_type_vals)]
                 mask = target_neurons_df['std_label'] != ''
                 target_neurons_df.loc[mask, 'type'] = target_neurons_df.loc[mask, 'std_label']
             
@@ -6647,8 +6606,17 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
         
         # Map types if missing or empty
         type_map = ndf_complete.set_index('bodyId')['type'].to_dict();
-        
+
         if label_mapper:
+            # The population-built map knows only neurons the table lists.  A
+            # cache-only bodyId in this frame has to be classified from the
+            # name the frame carries, or one native type ends up under two keys
+            # in one table (`T` for the stranger, `T*` for its cousins).
+            registry = get_residual_registry(label_mapper, dataset,
+                                             ndf_complete)
+            mapped_dict = extend_map_with_frame_keys(
+                registry, mapped_dict, frame_type_pairs(conn_df))
+
             # 1. Apply explicit mappings (overwrite types for mapped neurons)
             # IMPORTANT: When separate_hemispheres=True, type_pre/type_post may already have
             # hemisphere suffixes (e.g., "PPL101_L"). mapped_dict contains base types (e.g., "PPL101").
@@ -7783,7 +7751,8 @@ _PL_NEURON_DF_CACHE_MAX = 4
 # =============================================================================
 
 
-def _load_local_neuron_df_cached(dataset_path: str, is_fafb: bool) -> pl.DataFrame:
+def _load_local_neuron_df_cached(dataset_path: str, is_fafb: bool,
+                                text_only: bool = False) -> pl.DataFrame:
     """Load a FAFB/BANC local table once per (path, mtime), cached.
 
     ``is_fafb`` is retained as the private function's historical parameter
@@ -7796,7 +7765,7 @@ def _load_local_neuron_df_cached(dataset_path: str, is_fafb: bool) -> pl.DataFra
         mtime = os.stat(dataset_path).st_mtime_ns
     except OSError:
         mtime = None
-    cache_key = (dataset_path, mtime)
+    cache_key = (dataset_path, mtime, text_only)
     cached = _PL_NEURON_DF_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -7805,7 +7774,21 @@ def _load_local_neuron_df_cached(dataset_path: str, is_fafb: bool) -> pl.DataFra
     # Handle FAFB/BANC local-release tables which might use exact string IDs.
     # NOTE: polars >= 1.0 removed the `dtypes=` kwarg (use schema_overrides).
     if str(dataset_path).lower().endswith('.parquet'):
+        # Column types are already fixed in a parquet table, so `text_only`
+        # costs nothing here but a bodyId cast.
         ndf = pl.read_parquet(dataset_path)
+        if 'bodyId' in ndf.columns:
+            ndf = ndf.with_columns(pl.col('bodyId').cast(pl.Utf8))
+    elif text_only:
+        # Every column as text: a lane that reads only bodyId/label columns
+        # must not fail because one unrelated column holds a comma-joined id
+        # list ('manc_match = "22586, 21696"') past the inference window, nor
+        # because a stray byte sits in some annotation column — the columns
+        # actually read here (bodyId / type / instance) are ASCII.
+        ndf = pl.read_csv(dataset_path, infer_schema_length=0,
+                          encoding='utf8-lossy')
+        if 'bodyId' in ndf.columns:
+            ndf = ndf.with_columns(pl.col('bodyId').cast(pl.Utf8))
     elif is_local_release:
         ndf = pl.read_csv(
             dataset_path,
@@ -7835,181 +7818,205 @@ def _load_local_neuron_df_cached(dataset_path: str, is_fafb: bool) -> pl.DataFra
     return ndf
 
 
-def build_bodyid_label_map(label_mapper, dataset: str, neuron_df: pl.DataFrame) -> dict:
+def neuron_population_provenance(dataset, script_path=None, text_only=False):
+    """``(frame, source_path, version_token)`` for the population accessor.
+
+    The version token (``st_mtime_ns:size``) is what makes a published residual
+    census auditable: it names the table the collision counts were computed
+    from, so a census can be re-derived or disputed against a specific file
+    rather than "the dataset's table" in the abstract.
     """
-    Build a comprehensive bodyId → std_label map from label_mapper.
-    
-    This implements the user's 6-step label mapping approach:
-    Step 3: Convert label_mapper's type/bodyId/instance → std_label map 
-            to a complete bodyId → std_label map using the neuron index file.
-    
-    The label_mapper may contain mappings by:
-    - bodyId: Direct bodyId → std_label
-    - type: type_name → std_label (need to expand to all bodyIds of that type)
-    - instance: instance_name → std_label (need to expand to all bodyIds with that instance)
-    
-    Args:
-        label_mapper: LabelMapper object with source/target/intermediate mappings
-        dataset: Dataset name (e.g., 'hemibrain:v1.2.1')
-        neuron_df: Polars DataFrame with neuron index (must have 'bodyId', 'type', optionally 'instance')
-        
-    Returns:
-        Dict[str, str]: Mapping of bodyId → std_label
+    path = _neuron_table_path(dataset, script_path)
+    frame = None
+    if path is not None:
+        frame = _load_local_neuron_df_cached(
+            path, is_local_connectome_dataset(dataset), text_only=text_only)
+    version = None
+    if path is not None:
+        try:
+            stat = os.stat(path)
+            version = f'{stat.st_mtime_ns}:{stat.st_size}'
+        except OSError:
+            version = None
+    return frame, path, version
+
+
+def neuron_population(dataset, script_path=None, text_only=False):
+    """The full neuron table of one dataset as a Polars frame, or ``None``.
+
+    This is THE population accessor: the resolution ladder the Polars engine
+    used to carry inline, so every lane that needs a type's whole population
+    (the enrichment delegates, enrollment, the refill map, the profile
+    comparator) resolves it the same way — one dataset name in, one frame or
+    ``None`` out.  ``None`` is a meaningful answer, not a failure: a run
+    without the table can still apply its mapper's membership, but cannot
+    evaluate residuals, and the registry says so.
+
+    Prefers a local release's parquet/csv table, then the per-dataset folder,
+    then the legacy root folder, then any ``*_allneurons_neuron_df.csv`` in
+    the dataset folder — the historical discovery order, unchanged.  With no
+    ``script_path`` the repository root is searched, so a post-hoc caller
+    still gets a population instead of a degraded census.
     """
-    if label_mapper is None or neuron_df is None or neuron_df.is_empty():
-        return {}
-    
-    bodyid_label_map = {}
-    
-    # Ensure bodyId is string
-    if 'bodyId' in neuron_df.columns:
-        neuron_df = neuron_df.with_columns(pl.col('bodyId').cast(pl.Utf8))
+    frame, _path, _version = neuron_population_provenance(
+        dataset, script_path, text_only=text_only)
+    return frame
+
+
+def _neuron_table_path(dataset, script_path):
+    """Resolve a dataset's neuron table, or ``None`` when it is absent.
+
+    A missing ``script_path`` falls back to the repository root, not to "no
+    table": post-hoc consumers (the comparison analyzer, a refill invoked
+    from a CLI, a script with no run folder) legitimately have no script path
+    to offer, and resolving the table they CAN see is what keeps a residual
+    census computed instead of disclosed as `NOT EVALUATED`.
+    """
+    if not dataset:
+        return None
+    if not script_path:
+        script_path = os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))
+    dataset_clean = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
+    if is_local_connectome_dataset(dataset):
+        dataset_path = _flywire_neuron_table_path(dataset, script_path)
     else:
-        return {}
-    
-    # Build lookup dictionaries for efficient mapping
-    # type → [bodyIds]
-    type_to_bodyids = {}
-    if 'type' in neuron_df.columns:
-        type_groups = neuron_df.group_by('type').agg(pl.col('bodyId').alias('bodyIds'))
-        for row in type_groups.iter_rows(named=True):
-            if row['type'] is not None:
-                type_to_bodyids[str(row['type'])] = row['bodyIds']
-    
-    # instance → [bodyIds]
-    instance_to_bodyids = {}
-    if 'instance' in neuron_df.columns:
-        instance_groups = neuron_df.group_by('instance').agg(pl.col('bodyId').alias('bodyIds'))
-        for row in instance_groups.iter_rows(named=True):
-            if row['instance'] is not None:
-                instance_to_bodyids[str(row['instance'])] = row['bodyIds']
-    
-    # Helper to normalize dataset name for lookups
-    def sanitize(name: str) -> str:
-        return canonical_dataset_name(name).replace(':', '_').replace('.', '_').replace('-', '_')
-    
-    dataset_sanitized = sanitize(dataset)
-    
-    # Process all mappings (source, target, intermediate)
-    all_mappings = []
-    for mapping_dict in [label_mapper._source_mapping, label_mapper._target_mapping, label_mapper._intermediate_mapping]:
-        for std_label, ds_dict in mapping_dict.items():
-            # Try both original and sanitized dataset names
-            neuron_ids = []
-            if dataset in ds_dict:
-                neuron_ids = ds_dict[dataset]
-            elif dataset_sanitized in ds_dict:
-                neuron_ids = ds_dict[dataset_sanitized]
-            
-            for neuron_id in neuron_ids:
-                all_mappings.append((str(neuron_id), std_label))
-    
-    # Process each mapping and expand to bodyIds
-    # Precompute the set of existing bodyIds once (O(1) lookups) instead of
-    # filtering the whole neuron_df for every mapping (O(M*N) per call).
-    bodyid_set = set(neuron_df['bodyId'].to_list())
+        dataset_path = os.path.join(
+            script_path, 'datasets', dataset_clean,
+            f"{dataset_clean}_allneurons_neuron_df.csv")
 
-    for neuron_id, std_label in all_mappings:
-        # First, check if neuron_id is a direct bodyId
-        # If it matches a bodyId in the neuron_df, map it directly
-        if neuron_id in bodyid_set:
-            bodyid_label_map[neuron_id] = std_label
-            continue
-        
-        # Check if neuron_id is a type name
-        if neuron_id in type_to_bodyids:
-            for bid in type_to_bodyids[neuron_id]:
-                # Don't overwrite existing mappings (first mapping wins)
-                if bid not in bodyid_label_map:
-                    bodyid_label_map[bid] = std_label
-            continue
-        
-        # Check if neuron_id is an instance name
-        if neuron_id in instance_to_bodyids:
-            for bid in instance_to_bodyids[neuron_id]:
-                if bid not in bodyid_label_map:
-                    bodyid_label_map[bid] = std_label
-            continue
-        
-        # If none of the above, just store the mapping in case it's used directly
-        # This handles cases where the ID might be used elsewhere
-        bodyid_label_map[neuron_id] = std_label
-
-    # Residual renaming (type-resolver contract, user directive
-    # 2026-10-08): a type name is COLLIDED when the mapper governs its
-    # population only partially (some neurons of the type are renamed,
-    # others are not) or when the type name is itself a mapper label.
-    # Its UNLABELED neurons are RESIDUALS: the TYPE RESOLVER renames
-    # them to the star-tagged native type — a terminal key that never
-    # merges with the governed population, with a same-spelling settled
-    # label, or across datasets. They are never labeled with bodyIds
-    # (supersedes the interim e591330 bodyId-label fallback).
-    mapper_labels = set()
-    for mapping_dict in (getattr(label_mapper, '_source_mapping', None),
-                         getattr(label_mapper, '_target_mapping', None),
-                         getattr(label_mapper, '_intermediate_mapping', None)):
-        if isinstance(mapping_dict, dict):
-            mapper_labels.update(str(k) for k in mapping_dict.keys())
-
-    for type_name, bids in type_to_bodyids.items():
-        if not bids:
-            continue
-        total = len(bids)
-        mapped = sum(1 for b in bids if b in bodyid_label_map)
-        if mapped >= total:
-            continue  # fully governed — every neuron renamed
-        collided = (mapped > 0) or (type_name in mapper_labels)
-        if not collided:
-            continue  # plain unmapped type: the type fallback stands
-        residual = residual_key(type_name)
-        for b in bids:
-            if b not in bodyid_label_map:
-                bodyid_label_map[b] = residual
-
-    return bodyid_label_map
+    if dataset_path is not None and not os.path.exists(dataset_path):
+        legacy_path = os.path.join(
+            script_path, 'datasets',
+            f"{dataset_clean}_allneurons_neuron_df.csv")
+        if os.path.exists(legacy_path):
+            dataset_path = legacy_path
+        else:
+            subdir_path = os.path.join(script_path, 'datasets', dataset_clean)
+            if os.path.exists(subdir_path):
+                import glob
+                candidates = glob.glob(
+                    os.path.join(subdir_path, "*_allneurons_neuron_df.csv"))
+                if candidates:
+                    dataset_path = candidates[0]
+    if dataset_path is None or not os.path.exists(dataset_path):
+        return None
+    return dataset_path
 
 
-def residual_registry_summary(label_mapper, dataset: str, neuron_df):
-    """Collided native types and their residual neuron counts.
+def extend_map_with_frame_keys(registry, base_map, pairs):
+    """Add the effective key of neurons the population table does not know.
 
-    A type is COLLIDED when the mapper governs part of its population
-    (some neurons renamed, others not) or the name is itself a mapper
-    label.  Returns ``{native_type: {'enrolled': n, 'population': m,
-    'residuals': m - n}}`` for collided types only (empty when no label
-    mapper or no neuron table).
+    ``pairs`` yields ``(bodyId, native_type_as_the_frame_carries_it)`` for the
+    frame's own neurons.  A cache-only bodyId (present in a connection table,
+    absent from `*_allneurons_neuron_df`) has no entry in the population-built
+    map, and falling through to its raw type would put one native type under
+    TWO keys in the same table — `T` for the stranger and `T*` for its
+    cousins.  The registry can still classify it from the name the frame
+    carries, so it joins its own class instead.
+
+    This is also how the mapper applies at all when a dataset has no local
+    neuron table: membership is answered per row, and residuals are not
+    invented (the registry discloses that it could not evaluate them).
     """
-    if label_mapper is None or neuron_df is None:
-        return {}
-    try:
-        neuron_df = neuron_df.with_columns(pl.col('bodyId').cast(pl.Utf8))
-    except Exception:  # noqa: BLE001 — table shape guarded below
-        return {}
-    bodyid_label_map = build_bodyid_label_map(
-        label_mapper, dataset, neuron_df)
-    if not bodyid_label_map:
-        return {}
-    mapper_labels = set()
-    for mapping_dict in (getattr(label_mapper, '_source_mapping', None),
-                         getattr(label_mapper, '_target_mapping', None),
-                         getattr(label_mapper, '_intermediate_mapping', None)):
-        if isinstance(mapping_dict, dict):
-            mapper_labels.update(str(k) for k in mapping_dict.keys())
-    registry = {}
-    type_frame = neuron_df.filter(pl.col('type').is_not_null()).with_columns(
-        pl.col('type').cast(pl.Utf8))
-    for row in type_frame.group_by('type').agg(
-            pl.col('bodyId')).iter_rows(named=True):
-        t = str(row['type'])
-        bids = row['bodyId']
-        total = len(bids)
-        enrolled = sum(1 for b in bids if b in bodyid_label_map)
-        if total == 0 or enrolled >= total:
+    keys = dict(base_map)
+    for bid, native in pairs:
+        bid = str(bid)
+        if bid in keys:
             continue
-        if t not in mapper_labels and enrolled == 0:
+        key = registry.key_for(bid, native)
+        if key:
+            keys[bid] = key
+    return keys
+
+
+def frame_type_pairs(conn_df, sides=(('bodyId_pre', 'type_pre'),
+                                 ('bodyId_post', 'type_post'))):
+    """Unique (bodyId, native type) pairs of a Polars or pandas frame."""
+    out = []
+    if conn_df is None:
+        return out
+    for id_col, type_col in sides:
+        if id_col not in conn_df.columns:
             continue
-        registry[t] = {'enrolled': enrolled, 'population': total,
-                       'residuals': total - enrolled}
-    return registry
+        cols = [id_col, type_col] if type_col in conn_df.columns else [id_col]
+        sub = (conn_df.select(cols).unique() if hasattr(conn_df, 'select')
+               else conn_df[cols].drop_duplicates())
+        records = (sub.to_dicts() if hasattr(sub, 'to_dicts')
+                   else sub.to_dict('records'))
+        for row in records:
+            out.append((row.get(id_col), row.get(type_col)))
+    return out
+
+
+def apply_typing_columns(frame, registry):
+    """Write the column contract of a typed frame: effective key + raw type.
+
+    ``type_pre``/``type_post`` become the registry's effective key (settled
+    label, `T*` residual, raw type, bodyId) and the value they held before —
+    the raw native type — is preserved as ``native_type_pre``/
+    ``native_type_post``.  Both engines, both frame flavours (pandas and
+    Polars), one implementation, because a neuron must not be typed two ways
+    inside one run: the enrichment delegates, the path fetch lanes and the
+    comparison's own edge query all call this.
+
+    Hemisphere suffixes are applied by the caller afterwards, so a suffixed
+    residual lands as ``T*_L`` — which the terminal predicate reads as
+    residual by design (plan decision D4).
+    """
+    if registry is None or frame is None or len(frame) == 0:
+        return frame
+    keys = {}
+    for bid, native in frame_type_pairs(frame):
+        bid = str(bid)
+        if bid in keys:
+            continue
+        key = registry.key_for(bid, native)
+        if key:
+            keys[bid] = key
+    # A TYPE-level frame carries no bodyId columns at all: its rows are native
+    # type names. Only a name-keyed group can govern such a row (a whole type
+    # retyped at once); a bodyId-keyed group cannot, because the row mixes the
+    # type's members with its residuals and the split is not expressible here.
+    if not keys:
+        for name in {str(v) for col in ('type_pre', 'type_post')
+                     if col in frame.columns
+                     for v in (frame[col].dropna().unique()
+                               if hasattr(frame[col], 'dropna')
+                               else frame[col].unique().to_list())}:
+            key = registry.members.get(name)
+            if key:
+                keys[name] = key
+    if not keys:
+        return frame
+    if isinstance(frame, pd.DataFrame):
+        for side in ('pre', 'post'):
+            id_col, type_col = f'bodyId_{side}', f'type_{side}'
+            if type_col not in frame.columns:
+                continue
+            lookup = id_col if id_col in frame.columns else type_col
+            native_col = f'native_type_{side}'
+            if native_col not in frame.columns:
+                frame[native_col] = frame[type_col]
+            mapped = frame[lookup].astype(str).map(keys)
+            frame[type_col] = mapped.where(mapped.notna(), frame[type_col])
+        return frame
+    lut = pl.DataFrame({'_key_id': list(keys), '_key': list(keys.values())})
+    for side in ('pre', 'post'):
+        id_col, type_col = f'bodyId_{side}', f'type_{side}'
+        if type_col not in frame.columns:
+            continue
+        lookup = id_col if id_col in frame.columns else type_col
+        native_col = f'native_type_{side}'
+        if native_col not in frame.columns:
+            frame = frame.with_columns(pl.col(type_col).alias(native_col))
+        frame = (frame
+                 .with_columns(pl.col(lookup).cast(pl.Utf8))
+                 .join(lut.rename({'_key_id': lookup}), on=lookup, how='left')
+                 .with_columns(pl.coalesce([pl.col('_key'),
+                                            pl.col(type_col)]).alias(type_col))
+                 .drop('_key'))
+    return frame
 
 
 def prepare_connection_data(conn_data, level='type'):
@@ -8360,51 +8367,16 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
     group_pre = 'custom_group_pre' if 'custom_group_pre' in conn_df.columns else 'type_pre'
     group_post = 'custom_group_post' if 'custom_group_post' in conn_df.columns else 'type_post'
     
-    # Try to use local dataset first
-    use_local = False
-    ndf_complete = None
-    if dataset and script_path:
-        dataset_clean = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
-        dataset_path = (
-            _flywire_neuron_table_path(dataset, script_path)
-            if is_local_connectome_dataset(dataset) else
-            os.path.join(
-                script_path,
-                'datasets',
-                dataset_clean,
-                f"{dataset_clean}_allneurons_neuron_df.csv"
-            )
-        )
-        
-        # Enhanced dataset discovery logic
-        if dataset_path is not None and not os.path.exists(dataset_path):
-            # Fallback: Try root datasets folder (legacy)
-            legacy_path = os.path.join(
-                script_path,
-                'datasets',
-                f"{dataset_clean}_allneurons_neuron_df.csv"
-            )
-            if os.path.exists(legacy_path):
-                dataset_path = legacy_path
-            else:
-                # Try globbing for any *_allneurons_neuron_df.csv in subdir
-                subdir_path = os.path.join(script_path, 'datasets', dataset_clean)
-                if os.path.exists(subdir_path):
-                    import glob
-                    candidates = glob.glob(os.path.join(subdir_path, "*_allneurons_neuron_df.csv"))
-                    if candidates:
-                        dataset_path = candidates[0]
+    # The dataset's full neuron table, through the one population accessor
+    # (statvis.neuron_population) every residual-capable lane shares.
+    ndf_complete = neuron_population(dataset, script_path)
 
-        if dataset_path is not None and os.path.exists(dataset_path):
-            use_local = True
-            is_local_release = is_local_connectome_dataset(dataset)
-            ndf_complete = _load_local_neuron_df_cached(dataset_path,
-                                                        is_local_release)
-    
     # Step 3: Build complete bodyId → std_label map from label_mapper
     bodyid_label_map = {}
-    if label_mapper and ndf_complete is not None:
-        bodyid_label_map = build_bodyid_label_map(label_mapper, dataset, ndf_complete)
+    if label_mapper is not None:
+        registry = get_residual_registry(label_mapper, dataset, ndf_complete)
+        bodyid_label_map = extend_map_with_frame_keys(
+            registry, registry.bodyid_map(), frame_type_pairs(conn_df))
     
     # Apply bodyId → std_label mapping to connection table
     # For mapped bodyIds: use std_label
@@ -8520,23 +8492,33 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
     # without a custom group must not be dropped from the group aggregation,
     # and it never appears under both its custom group and its raw type.
     if 'custom_group_pre' in conn_df.columns:
+        # Tier 2 is the EFFECTIVE type, not the raw one: a mapper group is a
+        # custom typing, so a neuron belongs to its label's group (and, when
+        # its native type is only partially governed, to its `T*` group) — the
+        # pandas engine already grouped this way because it overwrote
+        # type_pre; std_label_pre is the same value here.
+        _group_tier_pre = ('std_label_pre'
+                           if 'std_label_pre' in conn_df.columns else 'type_pre')
+        _group_tier_post = ('std_label_post'
+                            if 'std_label_post' in conn_df.columns
+                            else 'type_post')
         conn_df = conn_df.with_columns([
             pl.coalesce([
                 pl.when(pl.col('custom_group_pre').is_not_null()
                         & (pl.col('custom_group_pre') != ''))
                 .then(pl.col('custom_group_pre')).otherwise(None),
-                pl.when(pl.col('type_pre').is_not_null()
-                        & (pl.col('type_pre') != ''))
-                .then(pl.col('type_pre')).otherwise(None),
+                pl.when(pl.col(_group_tier_pre).is_not_null()
+                        & (pl.col(_group_tier_pre) != ''))
+                .then(pl.col(_group_tier_pre)).otherwise(None),
                 pl.col('bodyId_pre'),
             ]).alias('custom_group_pre'),
             pl.coalesce([
                 pl.when(pl.col('custom_group_post').is_not_null()
                         & (pl.col('custom_group_post') != ''))
                 .then(pl.col('custom_group_post')).otherwise(None),
-                pl.when(pl.col('type_post').is_not_null()
-                        & (pl.col('type_post') != ''))
-                .then(pl.col('type_post')).otherwise(None),
+                pl.when(pl.col(_group_tier_post).is_not_null()
+                        & (pl.col(_group_tier_post) != ''))
+                .then(pl.col(_group_tier_post)).otherwise(None),
                 pl.col('bodyId_post'),
             ]).alias('custom_group_post'),
         ])
@@ -8957,6 +8939,28 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
     conn_type = conn_type.drop(_SUSPENDED_PROB_EXPORT_COLS)
     if conn_group is not None:
         conn_group = conn_group.drop(_SUSPENDED_PROB_EXPORT_COLS)
+
+    # Column contract (plan decision D2): ``type_pre``/``type_post`` carry the
+    # EFFECTIVE key — settled label, `T*` residual, raw type, bodyId — which is
+    # what every reader aggregates, joins and compares by; the raw native type
+    # stays published beside it as ``native_type_pre``/``native_type_post`` for
+    # provenance (`edge_key_variants.csv`, the per-dataset name hovers, and the
+    # ``key_for(bodyId, native_type)`` answer for a cache-only id the neuron
+    # table does not know).
+    #
+    # ``std_label_pre``/``std_label_post`` were the same value under an
+    # ambiguous name: the pandas engine overwrote ``type_pre`` with it while
+    # Polars exported BOTH, so readers each guessed which column was the key
+    # and disagreed (metrics preferred std here and type there). The type-level
+    # frame above already renamed std_label -> type_pre; the bodyId frame now
+    # matches it.
+    if {'std_label_pre', 'std_label_post'} <= set(conn_df.columns):
+        conn_df = conn_df.with_columns([
+            pl.col('type_pre').alias('native_type_pre'),
+            pl.col('type_post').alias('native_type_post'),
+            pl.col('std_label_pre').alias('type_pre'),
+            pl.col('std_label_post').alias('type_post'),
+        ]).drop(['std_label_pre', 'std_label_post'])
 
     # Return Polars DataFrames directly
     return conn_df, conn_type, conn_group

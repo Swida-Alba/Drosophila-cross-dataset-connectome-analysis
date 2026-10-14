@@ -1723,17 +1723,30 @@ class TestFetchConnectionsWithCaveApi:
         self._install_fake_cave(monkeypatch)
 
         class FakeLabelMapper:
-            def apply_to_dataframe(self, df, dataset):
-                df = df.copy()
-                # row 0 maps both ends to the same label -> intra-type;
-                # row 1 keeps distinct labels and survives.
-                df["std_label_pre"] = ["STD", "STD"]
-                df["std_label_post"] = ["STD", "SAME2"]
-                return df
+            """A mapper's real storage shape: {label: {dataset: [members]}}.
+
+            The fetch lane types its frame through the run's registry — the
+            same producer the enrichment delegates use — so membership is read
+            from the groups instead of a precomputed std_label column. Row 0
+            has both ends in STD (intra-type, excluded), row 1's post end is a
+            member of SAME2 and survives.
+            """
+            is_empty = False
+
+            def __init__(self, dataset, members):
+                groups = {label: {dataset: ids} for label, ids in members.items()}
+                self._source_mapping = groups
+                self._target_mapping = groups
+                self._intermediate_mapping = {}
+
+            def _dataset_keys(self, dataset):
+                return [dataset]
 
         fc = self._fc(tmp_path, use_cache=False,
-                      exclude_intra_type_connections=True,
-                      label_mapper=FakeLabelMapper())
+                     exclude_intra_type_connections=True)
+        fc.label_mapper = FakeLabelMapper(
+            fc.dataset,
+            {"STD": [self.UP, self.DOWN1], "SAME2": [self.DOWN2]})
 
         def same_type_enrich(conn_df):
             conn_df = conn_df.copy()
@@ -1743,10 +1756,13 @@ class TestFetchConnectionsWithCaveApi:
 
         fc._enrich_connections_with_neuron_info = same_type_enrich
         out = fc._fetch_connections_with_cave_api([self.UP])
-        # label mapping applied first, then the intra-type row removed
+        # typing applied first, then the intra-type row removed
         assert len(out) == 1
         assert out.iloc[0]["type_pre"] == "STD"
         assert out.iloc[0]["type_post"] == "SAME2"
+        # the raw native type survives beside the effective key (D2), so the
+        # delegate can still classify a neuron its population table lacks
+        assert out.iloc[0]["native_type_pre"] == "SAME"
 
     def test_importerror_returns_empty_frame(self, monkeypatch, tmp_path):
         self._install_fake_cave(monkeypatch, behavior="importerror")
@@ -2433,10 +2449,20 @@ class TestInitializeNeuronInfo:
         calls = self._fake_getNeurons(monkeypatch)
 
         class FakeMapper:
-            is_empty = False
+            """A real mapper's storage shape: {label: {dataset: [members]}}.
 
-            def get_std_label(self, dataset, value, role):
-                return f"STD_{role}"
+            The enrollment lane types its frames through the run's
+            ``ResidualRegistry``, which reads these groups — the same source
+            the delegate's type table reads.  It no longer calls the
+            role-scoped ``get_std_label``, whose answer for a NON-member is the
+            bare native type, so a partially governed type lost its residuals
+            into the settled label here while its own run's type table said
+            ``T*``.
+            """
+            is_empty = False
+            _source_mapping = {"STD_BOTH": {"test:v1": ["1"]}}
+            _target_mapping = {"STD_BOTH": {"test:v1": ["1"]}}
+            _intermediate_mapping: dict = {}
 
             def get_neurons_for_label(self, label, dataset, role):
                 return []
@@ -2447,12 +2473,50 @@ class TestInitializeNeuronInfo:
         fc, logs = make_fc(**attrs)
         fc.InitializeNeuronInfo()
         assert calls == [["A"], ["B"]]
-        assert fc.source_df.iloc[0]["type"] == "STD_source"
-        assert fc.target_df.iloc[0]["type"] == "STD_target"
+        assert fc.source_df.iloc[0]["type"] == "STD_BOTH"
+        assert fc.target_df.iloc[0]["type"] == "STD_BOTH"
         assert fc.source_fname == "mySrc"
         assert fc.target_fname == "myTgt"
         assert fc.parameter_dict["source name"] == "mySrc"
         assert "parameter" in fc.parameter_df.columns
+
+    def test_enrollment_carries_the_residual_rename(self, monkeypatch, tmp_path):
+        """Plan §2.2: ``source/target_neurons.csv`` type columns carry ``T*``.
+
+        bodyId 1 is the only member of the group over native type ``T``, whose
+        population here is 1 and 2 — so 2 is a RESIDUAL and must enroll as
+        ``T*``, never as bare ``T`` (which would merge it into the governed
+        neuron in every reader of these CSVs: the neuron-count card, the pair
+        report's endpoint census, the path node labels).
+        """
+        table = tmp_path / "datasets" / "test_v1"
+        table.mkdir(parents=True)
+        pd.DataFrame({"bodyId": ["1", "2"], "type": ["T", "T"],
+                      "post": [10, 20]}).to_csv(
+                          table / "test_v1_allneurons_neuron_df.csv",
+                          index=False)
+
+        def fake(query, dataset=None, custom_group_names=None, client=None,
+                 verbose=False, search_columns=None, search_info_sink=None):
+            df = pd.DataFrame({"bodyId": ["2"], "type": ["T"], "instance": ["I"]})
+            return df, None, "_".join(str(q) for q in query), None
+
+        monkeypatch.setattr(coana.sv, "getNeurons", fake)
+
+        class FakeMapper:
+            is_empty = False
+            _source_mapping = {"STD_T": {"test:v1": ["1"]}}
+            _target_mapping = {"STD_T": {"test:v1": ["1"]}}
+            _intermediate_mapping: dict = {}
+
+            def get_neurons_for_label(self, label, dataset, role):
+                return []
+
+        attrs = self._base_attrs(tmp_path)
+        attrs.update(label_mapper=FakeMapper())
+        fc, logs = make_fc(**attrs)
+        fc.InitializeNeuronInfo()
+        assert fc.source_df.iloc[0]["type"] == "T*"
 
     def test_all_neurons_both_sides_rejected(self, monkeypatch, tmp_path):
         self._fake_getNeurons(monkeypatch)

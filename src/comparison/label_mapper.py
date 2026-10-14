@@ -64,7 +64,14 @@ class LabelMapper:
     - Supports CSV format (one file for sources, one for targets, ALL datasets)
     - Supports JSON format with nested group structure
     - Unknown IDs resolve to themselves (identity fallback), so unmapped
-      types keep their raw names through apply_to_dataframe
+      types keep their raw names through apply_to_dataframe.
+      NOTE (2026-10-13 boundary): this class resolves LABELS; it is not the
+      typing decision. A partially governed native type's unlabeled neurons
+      are keyed `T*` by comparison.type_resolver.ResidualRegistry, which only
+      a lane that can see the dataset's neuron population may call — so a lane
+      must never write an exported type column from get_label/apply_to_dataframe
+      alone (that erases the tag; see
+      _plan/issues-2026-10-13-label-mapper-type-space-completeness.md §8).
     - Exports mapping to parameters.json for reproducibility
     - Provides mapping summary for user verification
     

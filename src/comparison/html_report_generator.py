@@ -2572,11 +2572,6 @@ def _generate_label_mapper_section(analyzer, dataset_names) -> str:
     mapper = getattr(analyzer, 'label_mapper', None)
     if mapper is None or mapper.is_empty:
         return ''
-    try:
-        from .type_resolver import is_residual_key
-    except ImportError:  # pragma: no cover - direct package imports
-        from type_resolver import is_residual_key
-
     dataset_names = list(dataset_names or [])
     labels = sorted(mapper.get_all_std_labels('source'))
 
@@ -2601,33 +2596,57 @@ def _generate_label_mapper_section(analyzer, dataset_names) -> str:
             + f'<td>{row_total}</td></tr>')
     header_cells = ''.join(f'<th>{ds}</th>' for ds in dataset_names)
 
-    # Residual census: star-tagged keys in the run's own result frames.
-    residual_names = {}
-    raw_results = getattr(analyzer, 'raw_results', None) or {}
-    for ds, thr_map in raw_results.items():
-        for _thr, df in (thr_map or {}).items():
-            if df is None or len(df) == 0:
-                continue
-            for col in ('type_pre', 'type_post'):
-                if col not in getattr(df, 'columns', []):
-                    continue
-                try:
-                    values = df[col].dropna().astype(str)
-                except Exception:  # noqa: BLE001 — frame shape varies
-                    continue
-                for v in values:
-                    if is_residual_key(v):
-                        residual_names.setdefault(v, set()).add(str(ds))
+    # Residual census: the PUBLISHED record, not a scan of the frames.
+    # Reading names out of the result frames could only ever say "a T* key
+    # appeared"; the registry knows what stands behind it — which native type,
+    # how many neurons the mapper governs, how many are left — which decision
+    # D7 requires, because the key itself is deliberately undecorated and so
+    # carries no dataset in its spelling.
+    census = getattr(analyzer, '_label_mapper_residuals', None)
+    if census is None and hasattr(analyzer, '_label_mapper_residual_census'):
+        try:
+            census = analyzer._label_mapper_residual_census()
+        except Exception:  # noqa: BLE001 — a card never fails a report
+            census = {}
+    census = census or {}
+    residual_rows = []
+    degraded = []
+    for ds, record in sorted(census.items()):
+        if not record.get('population_available', True):
+            degraded.append(str(ds))
+        for native, info in sorted((record.get('collided') or {}).items()):
+            residual_rows.append(
+                '<tr><td><code>' + html.escape(str(info.get('key', '')))
+                + '</code></td><td>' + html.escape(str(native))
+                + '</td><td>' + html.escape(str(ds)) + '</td><td>'
+                + f"{info.get('enrolled', '')}/{info.get('population', '')}"
+                + '</td><td>' + str(info.get('residuals', '')) + '</td></tr>')
     residual_html = ''
-    if residual_names:
-        items = ', '.join(
-            f'{name} ({"/".join(sorted(dss))})'
-            for name, dss in sorted(residual_names.items()))
+    if residual_rows:
         residual_html = (
+            '<h4 style="margin-bottom:4px;">Residual neurons ('
+            + str(len(residual_rows)) + ' key/dataset row(s))</h4>'
             '<p style="color: var(--secondary-color); font-size: 0.9em;">'
-            '<strong>Residual neurons:</strong> unenrolled neurons of '
-            'collided native types are star-tagged by the type resolver '
-            f'and stay dataset-scoped: {items}.</p>')
+            'Neurons the mapper does <strong>not</strong> enroll, of a native '
+            'type it governs only <em>partially</em> (or whose name is itself a '
+            'settled label), are star-tagged <code>T*</code> by the type '
+            'resolver: a terminal key that is never re-resolved and never '
+            'merged with the governed population or a same-spelling label. The '
+            'tag is deliberately undecorated, so this table — also exported as '
+            '<code>comparison_report_used_data/label_mapper_residuals.csv</code>'
+            ' — publishes the composition each row stands for.</p>'
+            '<table><thead><tr><th>Emitted key</th><th>Native type</th>'
+            '<th>Dataset</th><th>Enrolled / population</th><th>Residuals>'
+            '</th></tr></thead><tbody>' + ''.join(residual_rows)
+            + '</tbody></table>')
+    if degraded:
+        residual_html += (
+            '<p style="color: var(--warning-color, #b26a00); font-size: 0.9em;">'
+            '<strong>Residuals NOT evaluated</strong> for '
+            + ', '.join(degraded) + ': that dataset has no local neuron table, '
+            'so a partially governed native type keeps its bare name and its '
+            'neurons can merge with the governed population. Re-run with the '
+            'dataset\'s *_allneurons_neuron_df table available.</p>')
 
     mapper_file = ''
     params = getattr(analyzer, 'parameters', None)
@@ -6916,8 +6935,7 @@ def _filtered_result_types(raw_results, only_thresholds=None):
                     only_thresholds:
                 continue
             if isinstance(result, pd.DataFrame) and not result.empty:
-                for col in ['type_pre', 'type_post', 'from_type', 'to_type',
-                            'std_label_pre', 'std_label_post']:
+                for col in ['type_pre', 'type_post', 'from_type', 'to_type']:
                     if col in result.columns:
                         dataset_types.update(
                             result[col].dropna().unique())

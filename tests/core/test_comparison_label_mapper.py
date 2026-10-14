@@ -626,16 +626,23 @@ class TestUserFirstLabelMapper:
         assert w.get_label(DS2, "unknown_type") == "unknown_type"
         assert not w.is_user_label("unknown_type")
 
-    def test_apply_to_dataframe_uses_all_tiers(self):
+    def test_tier_chain_is_a_lookup_not_a_column_writer(self):
+        """The wrapper answers name questions; it no longer writes a frame.
+
+        ``apply_to_dataframe`` was deleted with the 2026-10-13 boundary: its
+        vocabulary is label-or-identity, so re-deriving it over a frame that
+        already carries the run's effective key erased the `T*` the run had
+        emitted (and was not idempotent). What replaces it is asserted in
+        ``test_residual_registry.py::TestVerifierLane`` and in
+        ``test_comparison_analyzer_coverage.py`` (loaded keys survive
+        verbatim); here the tier chain itself stays the contract.
+        """
         w = self._wrap()
-        df = pd.DataFrame({
-            "type_pre": ["5th-LNv", "5thsLNv_LNd6"],
-            "type_post": ["13531", "unknown_type"],
-        })
-        out = w.apply_to_dataframe(df, DS2)
-        assert list(out["std_label_pre"]) == ["5th-LNv", "5thsLNv_family"]
-        # post side: bodyId member via tier 0b; a total miss passes through
-        assert list(out["std_label_post"]) == ["5th-LNv", "unknown_type"]
+        assert not hasattr(w, 'apply_to_dataframe')
+        assert w.get_label(DS2, "5th-LNv") == "5th-LNv"        # tier 0 identity
+        assert w.get_label(DS2, "13531") == "5th-LNv"          # tier 0b member
+        assert w.get_label(DS2, "14633") == "LNd_CRY+_ITP+"    # the other member
+        assert w.get_label(DS2, "5thsLNv_LNd6") == "5thsLNv_family"  # tier 1
 
     def test_is_empty(self):
         w = self._wrap()

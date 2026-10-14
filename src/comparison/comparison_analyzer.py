@@ -59,10 +59,6 @@ from .comparison_parameters import (
     ComparisonParameters, threshold_cell_value, threshold_folder_token,
 )
 from .label_mapper import LabelMapper
-try:
-    from .type_resolver import is_residual_key
-except ImportError:  # pragma: no cover - direct package imports
-    from type_resolver import is_residual_key
 from .data_loader import DataLoader
 from .metrics import ComparisonMetrics
 from .interactive_heatmap import generate_interactive_heatmap
@@ -181,23 +177,6 @@ class _UserFirstLabelMapper:
                 return policy_label
         return s
 
-    def apply_to_dataframe(self, df, dataset):
-        """Write ``std_label_pre``/``std_label_post`` via :meth:`get_label`
-        (same contract as ``LabelMapper.apply_to_dataframe``)."""
-        if df is None or df.empty:
-            return df
-        df = df.copy()
-        for side in ('pre', 'post'):
-            type_col = f'type_{side}'
-            body_col = f'bodyId_{side}'
-            std_col = f'std_label_{side}'
-            if type_col in df.columns:
-                df[std_col] = df[type_col].apply(
-                    lambda x: self.get_label(dataset, x) if pd.notna(x) else '')
-            elif body_col in df.columns:
-                df[std_col] = df[body_col].apply(
-                    lambda x: self.get_label(dataset, x))
-        return df
 
 
 def _corridor_mode_for_threshold(dataset_name, threshold, parameters) -> str:
@@ -334,6 +313,10 @@ class ComparisonAnalyzer:
         # mapping): one snapshot per run, a merge-key cache, and per-status
         # resolution counts exported with the run's mapping metadata.
         self._mapper_snapshot = None
+        # Per-dataset `T*` composition (decision D7): filled by
+        # _label_mapper_residual_census(), cleared when the mapper
+        # changes.
+        self._label_mapper_residuals: Dict[str, Dict] = {}
         self._merge_key_cache: Dict = {}
         self._mapping_status_counts: Dict[str, int] = {}
         self._conflicted_merge_types: Dict[str, str] = {}
@@ -1021,8 +1004,8 @@ class ComparisonAnalyzer:
                 # Handle DataFrame directly (path/edge analysis results)
                 if isinstance(result, pd.DataFrame) and not result.empty:
                     # Check common type columns
-                    for col in ['type_pre', 'type_post', 'from_type', 'to_type', 
-                                'std_label_pre', 'std_label_post']:
+                    for col in ['type_pre', 'type_post', 'from_type',
+                                'to_type']:
                         if col in result.columns:
                             dataset_types.update(
                                 result[col].dropna().unique())
@@ -1192,14 +1175,13 @@ class ComparisonAnalyzer:
         collided native types) — both pass through verbatim, never
         re-resolved.  Hemisphere-suffix aware (the base of a suffixed
         name may carry the label)."""
-        s = str(type_name)
-        labels = self._user_merge_label_set()
-        if s in labels:
-            return True
-        if is_residual_key(s):
-            return True
-        base, suffix = split_hemi_suffix(s)
-        return bool(suffix) and base in labels
+        # One predicate with the profile lane: a settled label (or its
+        # hemisphere-suffixed base) and a star-tagged residual are both
+        # comparison identities.  `is_residual_key` itself looks through a
+        # trailing _L/_R/_U, which is the spelling the engines emit for a
+        # suffixed residual (`T*_L`).
+        from .type_resolver import is_terminal_identity
+        return is_terminal_identity(type_name, self._user_merge_label_set())
 
     def _get_canonical_type(self, type_name: str, dataset: str) -> str:
         """Get canonical (male-cns) type name for a given type.
@@ -1621,19 +1603,42 @@ class ComparisonAnalyzer:
     # with the header, while a bullet of ANOTHER tagged family ends the
     # block (``- [untyped dropped] …`` is its own note family and must
     # survive — that family has no header line of its own).
-    _STATE_NOTE_PREFIXES = ('[same-name-first]',
-                            '[multi-value type cells]',
-                            '[merge policy]',
-                            '[BANC auto labels]',
-                            '[BANC alignment fallback]',
-                            '[user label mapper]')
+    # One entry per STATE writer: the header tags whose blocks it re-emits on
+    # every run, nested headers included.  A writer replaces ITS OWN family
+    # and nothing else — with one flat "all state notes" list, the last writer
+    # of a run deleted every other family's block: measured on a real
+    # three-dataset clock comparison, where merge-policy notes landing after
+    # the tier-0 note erased `[user label mapper]` and with it the
+    # `[label mapper residuals]` census (and, in the opposite order, the
+    # tier-0 writer erased the policy family).
+    _STATE_NOTE_FAMILIES = (
+        ('[merge policy]', '[BANC auto labels]', '[BANC alignment fallback]',
+         '[same-name-first]', '[multi-value type cells]'),
+        ('[user label mapper]', '[label mapper residuals]'),
+    )
     # Tagged bullet families that are NOT state-owned: their bullets always
     # survive, and one ends an enclosing state block.
     _FOREIGN_BULLET_TAGS = ('[untyped dropped]',)
 
+    @classmethod
+    def _owned_note_tags(cls, blocks: List[str]) -> List[str]:
+        """The header tags these blocks' family covers."""
+        owned = set()
+        for block in blocks:
+            text = str(block).lstrip()
+            if not text.startswith('[') or ']' not in text:
+                continue
+            tag = text[:text.index(']') + 1]
+            owned.add(tag)
+            for family in cls._STATE_NOTE_FAMILIES:
+                if tag in family:
+                    owned.update(family)
+        return sorted(owned)
+
     def _replace_state_notes(self, blocks: List[str]) -> List[str]:
-        """Drop prior copies of the STATE notes from ``user_warning_notes``
-        so a re-export does not accumulate contradictory counts.
+        """Drop prior copies of THIS writer's notes from
+        ``user_warning_notes.txt`` so a re-export neither accumulates
+        contradictory counts nor erases another writer's disclosure.
 
         Block-aware: a state block is its header line plus every following
         line that is not itself a top-level header (so multi-line bullet
@@ -1650,11 +1655,12 @@ class ComparisonAnalyzer:
             return blocks
         import re as _re
         bullet_tag = _re.compile(r'^-\s*\[([^\]]+)\]')
+        owned = self._owned_note_tags(blocks)
         kept: List[str] = []
         skipping = False
         for ln in lines:
             if ln.startswith('['):
-                skipping = ln.startswith(self._STATE_NOTE_PREFIXES)
+                skipping = any(ln.startswith(tag) for tag in owned)
             elif skipping:
                 # A bullet of a foreign family ends the state block; its own
                 # untagged/tagged continuations move with it.
@@ -1769,6 +1775,43 @@ class ComparisonAnalyzer:
                 "not govern (intermediates, unenrolled types) — "
                 "auto_type_mapping*.csv describe that machinery for "
                 f"reference.\n{listing}{more}")
+            # The residual composition belongs in the SAME state block: a
+            # `T*` key is deliberately undecorated (decision D7), so the note
+            # has to carry what each row stands for, per dataset.
+            census = self._label_mapper_residual_census()
+            residual_lines = []
+            for ds_name, rec in sorted(census.items()):
+                if not rec.get('population_available', True):
+                    residual_lines.append(
+                        f'- {ds_name}: residuals NOT evaluated (no local '
+                        'neuron table), so a partially governed native type '
+                        'keeps its bare name here and can merge with the '
+                        'governed population')
+                    continue
+                for native, info in sorted(
+                        (rec.get('collided') or {}).items()):
+                    residual_lines.append(
+                        f"- {ds_name}: {info.get('key')} = "
+                        f"{info.get('residuals')}/{info.get('population')} "
+                        f"neuron(s) of native type {native} the mapper does "
+                        f"not enroll ({info.get('enrolled')} enrolled)")
+            if residual_lines:
+                # Its own [tag], matching the delegate runs' wording: the block
+                # is greppable from either side of a comparison, and it stays
+                # inside the STATE-owned note so a re-export replaces it.
+                body += (
+                    "\n\n[label mapper residuals] Non-enrolled neurons of "
+                    "label-mapper-collided native types are keyed `T*` (the "
+                    "type resolver's terminal identity: never re-resolved, "
+                    "never merged with the governed population or with a "
+                    "same-spelling settled label). Collision is "
+                    "dataset-scoped — a name collided in one dataset may be an "
+                    "untouched native type in another, which keeps its raw "
+                    "name. The tag carries no dataset in its spelling, so this "
+                    "is the composition behind each `T*` row — also exported "
+                    "as comparison_report_used_data/"
+                    "label_mapper_residuals.csv:\n"
+                    + "\n".join(residual_lines))
             os.makedirs(self.parameters.full_output_path, exist_ok=True)
             self._append_user_warning_notes(
                 self.parameters.full_output_path,
@@ -1977,13 +2020,18 @@ class ComparisonAnalyzer:
         # - This is the correct format for comparison metrics
         return self._load_fnc_results(fnc, dataset_name, threshold)
 
-    def _apply_label_mapping_to_dataframe(
+    def _verify_label_mapping_in_dataframe(
         self,
         dataset_name: str,
         threshold: int,
         conn_df: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Apply standardized labels before any comparison-level filtering."""
+        """Check the loaded frames against the recorded mapper; change nothing.
+
+        The producer is the run itself (see ``type_resolver.ResidualRegistry``);
+        by the time a frame reaches this lane its ``type_pre``/``type_post``
+        already carry the effective key.
+        """
         if conn_df is None or conn_df.empty:
             return conn_df
         conn_df = conn_df.copy()
@@ -1992,25 +2040,174 @@ class ComparisonAnalyzer:
         if 'threshold' not in conn_df.columns:
             conn_df['threshold'] = threshold
         if self.label_mapper and not self.label_mapper.is_empty:
-            self._log(f"Applying label mapping to {dataset_name} results")
-            conn_df = self.label_mapper.apply_to_dataframe(
-                conn_df, dataset_name)
-            # Standardized labels are the comparison identity.  Do not let
-            # native type names survive in the columns consumed downstream.
-            if 'std_label_pre' in conn_df.columns:
-                mask = conn_df['std_label_pre'] != ''
-                conn_df.loc[mask, 'type_pre'] = conn_df.loc[
-                    mask, 'std_label_pre']
-            if 'std_label_post' in conn_df.columns:
-                mask = conn_df['std_label_post'] != ''
-                conn_df.loc[mask, 'type_post'] = conn_df.loc[
-                    mask, 'std_label_post']
+            # VERIFY, never retype.  ``type_pre``/``type_post`` reach this
+            # reader already carrying the run's effective key (settled label,
+            # `T*` residual, raw type, bodyId — the delegate's column
+            # contract).  Re-deriving std labels from that column here used to
+            # OVERWRITE the delegate's value with ``LabelMapper.get_label``,
+            # whose vocabulary is label-or-identity: the star the run emitted
+            # was erased at load time and the residuals merged into the bare
+            # native type.  Re-derivation is also not idempotent — a value that
+            # is itself a mapper member name would be renamed a second time.
+            #
+            # The one disagreement a reader can honestly notice is that exact
+            # failure: this dataset's registry says a native type is COLLIDED,
+            # yet the frame keys its neurons by that bare name.  Then the tag
+            # was lost before the frame reached disk (a run produced by a lane
+            # without the population, or by an older build).  Say so; do not
+            # rewrite the data.  A name the mapper simply does not govern is
+            # NOT a disagreement — most keys in a frame are plain native types.
+            registry = self._typing_registry(dataset_name)
+            collided = set((registry.collided if registry is not None
+                            else {}) or {})
+            if collided:
+                try:
+                    from .type_resolver import native_base
+                except ImportError:  # pragma: no cover - src laid bare
+                    from type_resolver import native_base
+                bare = []
+                for col in ('type_pre', 'type_post'):
+                    if col not in conn_df.columns:
+                        continue
+                    for value in conn_df[col].dropna().astype(str).unique():
+                        if value and native_base(value) in collided:
+                            bare.append(f'{col}={value}')
+                if bare:
+                    self._log(
+                        f"Note: {dataset_name} frames key "
+                        f"{len(set(bare))} collided native type(s) by their "
+                        f"BARE name ({', '.join(sorted(set(bare))[:6])}"
+                        f"{'...' if len(set(bare)) > 6 else ''}) — this "
+                        "dataset's registry types those neurons `T*`, so the "
+                        "tag was lost before this frame was written. Keys are "
+                        "used as emitted, never re-derived here.")
         return conn_df
+
+    def _read_local_neuron_frame(self, safe_name: str, with_provenance=False):
+        """This project's cached neuron table for one dataset, or ``None``.
+
+        One lookup ladder (parquet then csv, allneurons then neurons) shared by
+        the bodyId->type join above and by the typing registry below, so the
+        analyzer resolves a population exactly once and the same way twice.
+        """
+        datasets_folder = self._get_datasets_folder()
+        for neuron_file in (
+                os.path.join(datasets_folder, safe_name,
+                             f'{safe_name}_allneurons_neuron_df.parquet'),
+                os.path.join(datasets_folder, safe_name,
+                             f'{safe_name}_allneurons_neuron_df.csv'),
+                os.path.join(datasets_folder, safe_name,
+                             f'{safe_name}_neurons.parquet'),
+                os.path.join(datasets_folder, safe_name,
+                             f'{safe_name}_neurons.csv')):
+            if not os.path.exists(neuron_file):
+                continue
+            try:
+                frame = (pd.read_parquet(neuron_file)
+                         if neuron_file.endswith('.parquet')
+                         else self._read_csv(neuron_file))
+                self._log(f"Loaded neuron info from {neuron_file}", 'debug')
+                if with_provenance:
+                    try:
+                        stat = os.stat(neuron_file)
+                        return frame, neuron_file, (f'{stat.st_mtime_ns}:'
+                                                     f'{stat.st_size}')
+                    except OSError:
+                        return frame, neuron_file, None
+                return frame
+            except Exception as e:
+                self._log(f"Warning: Could not load {neuron_file}: {e}")
+        return None
+
+    def _typing_registry(self, dataset_name: str):
+        """The registry for frames the ANALYZER produces — never for a
+        delegate's loaded frames, which are only verified.
+
+        The edge query returns NATIVE type names, so typing them is producer
+        work, the same producer the enrichment delegates and the path fetch
+        lanes use.  Membership needs only the mapper; a type's residual class
+        needs its whole population, read here from this project's own cached
+        neuron table.  When that table is absent no residual is invented: the
+        registry answers tier 1 only and says so in its notes.
+        """
+        if self.label_mapper is None or getattr(
+                self.label_mapper, 'is_empty', True):
+            return None
+        try:
+            from .type_resolver import get_residual_registry
+        except ImportError:  # pragma: no cover - src laid bare on sys.path
+            from type_resolver import get_residual_registry
+        safe_name = self.parameters._sanitize_name(dataset_name)
+        population, source, version = self._read_local_neuron_frame(
+            safe_name, with_provenance=True) or (None, None, None)
+        return get_residual_registry(self.label_mapper, dataset_name,
+                                     population, source=source,
+                                     version=version)
+
+    def _label_mapper_residual_census(self) -> Dict[str, Dict]:
+        """Per-dataset residual census, for the report and used-data (D7).
+
+        ``T*`` stays an UNDECORATED key, so two datasets' residuals of the same
+        native name share one comparison row. The compensation is that the
+        composition behind every such row is published, dataset by dataset:
+        which native type it is, how many of its neurons the mapper governs,
+        and how many are left as residuals.
+
+        Read back from each delegate run's own ``all_attributes.json`` first —
+        the delegate is what performed the typing — and recomputed here only
+        when a run folder carries no record (the analyzer then reads the same
+        neuron table the delegates use, through the same registry producer).
+        """
+        if self.label_mapper is None or getattr(
+                self.label_mapper, 'is_empty', True):
+            return {}
+        census: Dict[str, Dict] = {}
+        for ds in self.parameters.get_dataset_names():
+            record = None
+            try:
+                thresholds = sorted(
+                    self.parameters.get_thresholds_for_dataset(ds) or [])
+            except Exception:  # noqa: BLE001 - fall back to the global schedule
+                thresholds = sorted(self.parameters.thresholds or [])
+            for threshold in thresholds:
+                attrs_path = os.path.join(
+                    self.parameters.get_dataset_output_path(ds, threshold),
+                    'all_attributes.json')
+                if not os.path.exists(attrs_path):
+                    continue
+                try:
+                    with open(attrs_path, encoding='utf-8') as handle:
+                        attrs = json.load(handle)
+                except (OSError, ValueError, TypeError):
+                    continue
+                candidate = (attrs.get('label_mapper_residuals')
+                             if isinstance(attrs, dict) else None)
+                if isinstance(candidate, dict) and 'collided' in candidate:
+                    record = candidate
+                    break
+            if record is None:
+                registry = self._typing_registry(ds)
+                record = registry.metadata() if registry is not None else None
+            if record:
+                census[str(ds)] = record
+        self._label_mapper_residuals = census
+        return census
+
+    def _type_queried_frame(self, dataset_name: str, conn_df):
+        """Write the effective type key (and keep the raw beside it) on a frame
+        this analyzer just queried.  Idempotent by construction: it is called
+        on fresh native frames only, never on a delegate export.
+        """
+        registry = self._typing_registry(dataset_name)
+        if registry is None or conn_df is None or getattr(conn_df, 'empty', True):
+            return conn_df
+        from statvis import apply_typing_columns
+        return apply_typing_columns(conn_df.copy(), registry)
 
     def _finalize_loaded_result(self, dataset_name: str, threshold: int,
                                 conn_df: pd.DataFrame) -> pd.DataFrame:
         """Normalize a cached/replayed frame exactly like a fresh result."""
-        conn_df = self._apply_label_mapping_to_dataframe(
+        conn_df = self._verify_label_mapping_in_dataframe(
             dataset_name, threshold, conn_df)
         return self._drop_untyped_neurons(dataset_name, threshold, conn_df)
 
@@ -2109,6 +2306,10 @@ class ComparisonAnalyzer:
             conn_df = conn_df.copy()
             conn_df['dataset'] = dataset_name
             conn_df['threshold'] = threshold
+            # This frame is the analyzer's OWN query result and carries native
+            # type names, so typing it is producer work here (the delegate's
+            # loaded frames below are verified instead, never retyped).
+            conn_df = self._type_queried_frame(dataset_name, conn_df)
             
         conn_df = self._finalize_loaded_result(
             dataset_name, threshold, conn_df)
@@ -2283,25 +2484,7 @@ class ComparisonAnalyzer:
         # If type columns don't exist, join with neuron info to get them
         if 'type_pre' not in conn_df.columns or 'type_post' not in conn_df.columns:
             # Load neuron info file
-            neuron_files = [
-                os.path.join(datasets_folder, safe_name, f'{safe_name}_allneurons_neuron_df.parquet'),
-                os.path.join(datasets_folder, safe_name, f'{safe_name}_allneurons_neuron_df.csv'),
-                os.path.join(datasets_folder, safe_name, f'{safe_name}_neurons.parquet'),
-                os.path.join(datasets_folder, safe_name, f'{safe_name}_neurons.csv'),
-            ]
-            
-            neuron_df = None
-            for neuron_file in neuron_files:
-                if os.path.exists(neuron_file):
-                    try:
-                        if neuron_file.endswith('.parquet'):
-                            neuron_df = pd.read_parquet(neuron_file)
-                        else:
-                            neuron_df = self._read_csv(neuron_file)
-                        self._log(f"Loaded neuron info from {neuron_file}")
-                        break
-                    except Exception as e:
-                        self._log(f"Warning: Could not load {neuron_file}: {e}")
+            neuron_df = self._read_local_neuron_frame(safe_name)
             
             if neuron_df is not None and not neuron_df.empty:
                 # Identify bodyId and type columns in neuron_df
@@ -4905,11 +5088,10 @@ class ComparisonAnalyzer:
                 continue
 
             # Edge mode aggregates the bodyId frame directly instead of using
-            # the already-mapped frame returned by _load_fnc_results.  Apply
-            # the same label-mapping -> untyped-filter order here before any
-            # type aggregation; otherwise the checkbox silently did nothing
-            # for edge-mode comparison results.
-            bodyid_df = self._apply_label_mapping_to_dataframe(
+            # the frame returned by _load_fnc_results.  Run the same mapper
+            # check, then the untyped filter, in the same order here, so an
+            # edge-mode comparison cannot disagree with a path-mode one.
+            bodyid_df = self._verify_label_mapping_in_dataframe(
                 dataset_name, lowest_threshold, bodyid_df)
             label_map = self._build_label_map_from_df(bodyid_df)
             self._log(f"Loaded {len(bodyid_df)} bodyId-level connections from threshold={lowest_threshold}")
@@ -7062,10 +7244,11 @@ class ComparisonAnalyzer:
                 self._log(f"Warning: Failed to export auto type mapping: {e}", level='warn')
 
         # User-first type resolution (Phase A): disclose that a user label
-        # mapper governs merge keying (tier 0). Written AFTER the
-        # merge-policy state notes: their ``_replace_state_notes`` pass
-        # drops every STATE-prefixed block already in the file, so an
-        # earlier copy of this note would be wiped.
+        # mapper governs merge keying (tier 0).  Each state writer replaces
+        # only its OWN note family (see ``_STATE_NOTE_FAMILIES``), so this
+        # note no longer has to be written after the merge-policy notes to
+        # survive them — and a re-export that carries no label mapper cannot
+        # delete a disclosure it cannot re-emit.
         self._write_user_mapper_tier0_note()
 
         # Canonical-key unification (2026-10-09): export the variant
@@ -7074,13 +7257,32 @@ class ComparisonAnalyzer:
         try:
             variants = getattr(self.metrics, 'last_edge_display_names', None)
             if variants:
+                from .type_resolver import is_residual_key
                 rows = []
                 for canonical, by_name in sorted(variants.items()):
                     for raw_name, dss in sorted(by_name.items()):
                         for ds in sorted(dss):
-                            rows.append({'canonical_key': canonical,
-                                         'dataset': ds,
-                                         'raw_name': raw_name})
+                            rows.append({
+                                'canonical_key': canonical,
+                                'dataset': ds,
+                                'raw_name': raw_name,
+                                # What KIND of undecorated key this is. A `T*`
+                                # row reads as a typo otherwise: the star is
+                                # the residual tag, not part of the name, and
+                                # the same spelling merges datasets (D7), so
+                                # the class has to be stated per row.
+                                # ``_user_label_governs`` is this object's own
+                                # tier-0 test; ``is_user_label`` lives on the
+                                # alignment wrapper, not on the analyzer's
+                                # LabelMapper, so reading it here used to class
+                                # every settled label as 'canonical'.
+                                'key_class': (
+                                    'label_mapper_residual'
+                                    if is_residual_key(canonical) else
+                                    'user_label'
+                                    if self._user_label_governs(canonical)
+                                    else 'canonical'),
+                            })
                 if rows:
                     self._save_csv(
                         pd.DataFrame(rows),
@@ -7349,10 +7551,17 @@ class ComparisonAnalyzer:
         - Saves the auto-mapped types per dataset (e.g., MeVPLo2 → MTe07 for FAFB)
         - Removes types that don't exist in specific datasets from those dataset entries
         """
-        output = {}
+        from .label_mapper import PRESET_FORMAT_TAG
+        # The grammar tag is REQUIRED by the reader this file is written for
+        # (``LabelMapper(overall_mapping_json=...)`` and the grouping board's
+        # Load… both gate on ``verify_preset_format``), so an export without it
+        # was a file only this build's writer could produce and nothing could
+        # read back.
+        output = {'format': PRESET_FORMAT_TAG}
         dataset_names = self.parameters.get_dataset_names()
-        auto_mapper = self.parameters._auto_type_mapper if self.parameters.auto_type_mapping else None
-        
+        auto_mapper = (self.parameters._auto_type_mapper
+                       if self.parameters.auto_type_mapping else None)
+
         # Helper for smart labels
         def generate_smart_labels(groups, user_labels, suffix=""):
             if user_labels:
@@ -9989,23 +10198,6 @@ class ComparisonAnalyzer:
             name = str(type_val)
             per_dataset[name] = per_dataset.get(name, 0) + int(count)
 
-        # Label-mapper tier (user directive 2026-10-08, report §3.1): the
-        # label mapper is a bodyId-level RETYPING of its neuron set —
-        # when provided, counts are keyed by the mapped label per neuron
-        # (falling back to the type-based key for enrolled-but-unmapped
-        # rows), overwriting the auto type mapper's scope on this card.
-        def _bodyid_labels(dataset: str, neuron_df) -> Dict[str, str]:
-            if (self.label_mapper is None or self.label_mapper.is_empty
-                    or neuron_df is None
-                    or 'bodyId' not in neuron_df.columns):
-                return {}
-            labels = {}
-            for b in neuron_df['bodyId'].dropna().astype(str).unique():
-                lbl = self.label_mapper.get_label(dataset, b)
-                if lbl and lbl != b:
-                    labels[b] = lbl
-            return labels
-
         # Collect neuron data from each dataset
         all_source_data = []
         all_target_data = []
@@ -10120,56 +10312,33 @@ class ComparisonAnalyzer:
                     source_count = len(source_df)
                     source_hemi = _count_hemisphere(source_df)
                     
-                    # Count by type (by LABEL first when a label mapper is
-                    # active — see _bodyid_labels)
+                    # Count by the EFFECTIVE type.  ``source_neurons.csv``
+                    # already carries the run's typing: enrollment writes the
+                    # settled label for a member and the terminal `T*` for a
+                    # non-member of a native type the mapper only partially
+                    # governs, through the same registry the delegates use.  A
+                    # second label lookup here could only answer
+                    # label-or-identity, so every residual was counted under
+                    # its bare native type — summed across datasets, which is
+                    # the silent merge the contract forbids.
                     if 'type' in source_df.columns:
-                        bodyid_labels = _bodyid_labels(dataset, source_df)
-                        if bodyid_labels:
-                            key_series = (
-                                source_df['bodyId'].astype(str)
-                                .map(bodyid_labels)
-                                .fillna(source_df['type'].astype(str)
-                                        .map(lambda t: _count_key(dataset, t))))
-                            for count_key in key_series.dropna().unique():
-                                if count_key == '':
-                                    continue
-                                mask = key_series == count_key
-                                type_cnt = int(mask.sum())
-                                if count_key not in type_counts:
-                                    type_counts[count_key] = {'role': 'source'}
-                                # bodyId-tier rows are label-mapper
-                                # retypings by definition; fallback rows
-                                # keep their type-tier origin.
-                                _set_origin(type_counts, count_key, 'label')
-                                count_col = f'{safe_name}_source'
-                                type_counts[count_key][count_col] = (
-                                    type_counts[count_key].get(count_col, 0)
-                                    + type_cnt)
-                                for t_val in source_df.loc[
-                                        mask, 'type'].dropna().unique():
-                                    _track_member(
-                                        type_counts, count_key, dataset,
-                                        t_val,
-                                        int((source_df.loc[mask, 'type']
-                                             == t_val).sum()))
-                        else:
-                            for type_val in source_df['type'].dropna().unique():
-                                type_cnt = len(source_df[source_df['type'] == type_val])
-                                count_key, origin = _count_key_origin(
-                                    dataset, type_val)
-                                if count_key not in type_counts:
-                                    type_counts[count_key] = {'role': 'source'}
-                                _set_origin(type_counts, count_key, origin)
-                                count_col = f'{safe_name}_source'
-                                type_counts[count_key][count_col] = (
-                                    type_counts[count_key].get(count_col, 0)
-                                    + type_cnt)
-                                # Always track: a family-resolved key without a
-                                # policy (Phase R3) needs the composition note
-                                # too; the >1-distinct-name filter at emission
-                                # keeps single-name rows clean.
-                                _track_member(type_counts, count_key,
-                                              dataset, type_val, type_cnt)
+                        for type_val in source_df['type'].dropna().unique():
+                            type_cnt = len(source_df[source_df['type'] == type_val])
+                            count_key, origin = _count_key_origin(
+                                dataset, type_val)
+                            if count_key not in type_counts:
+                                type_counts[count_key] = {'role': 'source'}
+                            _set_origin(type_counts, count_key, origin)
+                            count_col = f'{safe_name}_source'
+                            type_counts[count_key][count_col] = (
+                                type_counts[count_key].get(count_col, 0)
+                                + type_cnt)
+                            # Always track: a family-resolved key without a
+                            # policy (Phase R3) needs the composition note too;
+                            # the >1-distinct-name filter at emission keeps
+                            # single-name rows clean.
+                            _track_member(type_counts, count_key,
+                                          dataset, type_val, type_cnt)
                     
                     # Count by custom group
                     if 'custom_group' in source_df.columns:
@@ -10189,49 +10358,24 @@ class ComparisonAnalyzer:
                     target_count = len(target_df)
                     target_hemi = _count_hemisphere(target_df)
                     
-                    # Count by type (by LABEL first when a label mapper is
-                    # active — see _bodyid_labels)
+                    # Count by the EFFECTIVE type — see the source-side
+                    # comment above: the enrollment CSV already carries the
+                    # label / `T*` / raw typing from the run's registry, so no
+                    # second label lookup happens here any more.
                     if 'type' in target_df.columns:
-                        bodyid_labels = _bodyid_labels(dataset, target_df)
-                        if bodyid_labels:
-                            key_series = (
-                                target_df['bodyId'].astype(str)
-                                .map(bodyid_labels)
-                                .fillna(target_df['type'].astype(str)
-                                        .map(lambda t: _count_key(dataset, t))))
-                            for count_key in key_series.dropna().unique():
-                                if count_key == '':
-                                    continue
-                                mask = key_series == count_key
-                                type_cnt = int(mask.sum())
-                                if count_key not in type_counts:
-                                    type_counts[count_key] = {'role': 'target'}
-                                _set_origin(type_counts, count_key, 'label')
-                                count_col = f'{safe_name}_target'
-                                type_counts[count_key][count_col] = (
-                                    type_counts[count_key].get(count_col, 0)
-                                    + type_cnt)
-                                for t_val in target_df.loc[
-                                        mask, 'type'].dropna().unique():
-                                    _track_member(
-                                        type_counts, count_key, dataset,
-                                        t_val,
-                                        int((target_df.loc[mask, 'type']
-                                             == t_val).sum()))
-                        else:
-                            for type_val in target_df['type'].dropna().unique():
-                                type_cnt = len(target_df[target_df['type'] == type_val])
-                                count_key, origin = _count_key_origin(
-                                    dataset, type_val)
-                                if count_key not in type_counts:
-                                    type_counts[count_key] = {'role': 'target'}
-                                _set_origin(type_counts, count_key, origin)
-                                count_col = f'{safe_name}_target'
-                                type_counts[count_key][count_col] = (
-                                    type_counts[count_key].get(count_col, 0)
-                                    + type_cnt)
-                                _track_member(type_counts, count_key,
-                                              dataset, type_val, type_cnt)
+                        for type_val in target_df['type'].dropna().unique():
+                            type_cnt = len(target_df[target_df['type'] == type_val])
+                            count_key, origin = _count_key_origin(
+                                dataset, type_val)
+                            if count_key not in type_counts:
+                                type_counts[count_key] = {'role': 'target'}
+                            _set_origin(type_counts, count_key, origin)
+                            count_col = f'{safe_name}_target'
+                            type_counts[count_key][count_col] = (
+                                type_counts[count_key].get(count_col, 0)
+                                + type_cnt)
+                            _track_member(type_counts, count_key,
+                                          dataset, type_val, type_cnt)
                     
                     # Count by custom group  
                     if 'custom_group' in target_df.columns:
@@ -10340,6 +10484,41 @@ class ComparisonAnalyzer:
                     os.path.join(used_dir, 'label_mapper_enrollment.csv'))
                 self._log("Saved: comparison_report_used_data/"
                           "label_mapper_enrollment.csv")
+
+                # Residual census (plan decision D7): the enrolled/population
+                # composition behind every `T*` key, per dataset. Enrollment
+                # rows say what the mapper governs; these say what it left.
+                try:
+                    census = self._label_mapper_residual_census()
+                    residual_rows = []
+                    for ds, rec in sorted(census.items()):
+                        for native, info in sorted(
+                                (rec.get('collided') or {}).items()):
+                            residual_rows.append({
+                                'dataset': ds,
+                                'native_type': native,
+                                'enrolled': info.get('enrolled', ''),
+                                'population': info.get('population', ''),
+                                'residuals': info.get('residuals', ''),
+                                'emitted_key': info.get('key', ''),
+                            })
+                        if not rec.get('population_available', True):
+                            residual_rows.append({
+                                'dataset': ds, 'native_type': '',
+                                'enrolled': '', 'population': '',
+                                'residuals': '',
+                                'emitted_key': 'NOT EVALUATED (no neuron table)',
+                            })
+                    if residual_rows:
+                        self._save_csv(
+                            pd.DataFrame(residual_rows),
+                            os.path.join(used_dir,
+                                         'label_mapper_residuals.csv'))
+                        self._log("Saved: comparison_report_used_data/"
+                                  "label_mapper_residuals.csv")
+                except Exception as e:
+                    self._log(f"Warning: could not write "
+                              f"label_mapper_residuals.csv: {e}")
         except Exception as e:
             self._log(f"Warning: could not write "
                       f"label_mapper_enrollment.csv: {e}")
@@ -12004,10 +12183,9 @@ class ComparisonAnalyzer:
             if df is None or df.empty or 'connection_ratio' not in df.columns:
                 continue
             
-            # Determine edge columns
-            if 'std_label_pre' in df.columns and 'std_label_post' in df.columns:
-                pre_col, post_col = 'std_label_pre', 'std_label_post'
-            elif 'type_pre' in df.columns and 'type_post' in df.columns:
+            # Determine edge columns: type_pre/type_post ARE the effective key
+            # (the delegate's column contract), so no std_label_* ladder.
+            if 'type_pre' in df.columns and 'type_post' in df.columns:
                 pre_col, post_col = 'type_pre', 'type_post'
             else:
                 pre_col, post_col = 'bodyId_pre', 'bodyId_post'
@@ -12120,9 +12298,7 @@ class ComparisonAnalyzer:
             if df is None or df.empty:
                 continue
 
-            if 'std_label_pre' in df.columns and 'std_label_post' in df.columns:
-                pre_col, post_col = 'std_label_pre', 'std_label_post'
-            elif 'type_pre' in df.columns and 'type_post' in df.columns:
+            if 'type_pre' in df.columns and 'type_post' in df.columns:
                 pre_col, post_col = 'type_pre', 'type_post'
             elif 'bodyId_pre' in df.columns and 'bodyId_post' in df.columns:
                 pre_col, post_col = 'bodyId_pre', 'bodyId_post'
@@ -13869,6 +14045,7 @@ class ComparisonAnalyzer:
         """
         self.label_mapper = mapper
         # Clear aligned results since labels may change
+        self._label_mapper_residuals = {}
         self.aligned_results.clear()
         self.query_aligned_results.clear()
         self._network_aligned_cache.clear()

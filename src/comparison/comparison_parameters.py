@@ -2430,7 +2430,10 @@ class ComparisonParameters:
 
         Returns:
             ComparisonParameters instance whose ``full_output_path`` is
-            exactly ``run_dir``.
+            exactly ``run_dir``. A run folder that exports a non-empty
+            ``label_map.json`` also gets its user label mapper reattached
+            (``overall_label_mapper``), because ``parameters.json`` cannot
+            carry one — see ``_label_mapper_from_run_folder``.
         """
         run_dir = os.path.abspath(run_dir)
         params_path = os.path.join(run_dir, 'parameters.json')
@@ -2442,8 +2445,45 @@ class ComparisonParameters:
         params = cls.from_dict(data)
         params.output_folder = os.path.dirname(run_dir)
         params.saveas = os.path.basename(run_dir)
+        restored = cls._label_mapper_from_run_folder(run_dir)
+        if restored is not None and params.overall_label_mapper is None:
+            params.overall_label_mapper = restored
         return params
-    
+
+    @staticmethod
+    def _label_mapper_from_run_folder(run_dir: str):
+        """The run's own ``label_map.json`` as a LabelMapper, or ``None``.
+
+        ``parameters.json`` serializes the scalar parameters only — a
+        LabelMapper is an object, so no re-reading of that file restores the
+        mapping. A re-export therefore ran without the user's mapper, and the
+        tier-0 disclosure a re-export is expected to refresh (`[user label
+        mapper]`, the `[label mapper residuals]` census, the
+        ``key_class='user_label'`` rows, the alignment lane's pass-through of
+        settled labels) silently described a run without any mapper at all.
+
+        ``export_results`` writes ``label_map.json`` in exactly the
+        ``overall_mapping_json`` schema, and the two files' group lists were
+        compared byte-for-byte on the real clock run (21 labels, identical
+        per-dataset members), so reattaching from it is the run's own mapping
+        rather than a reconstruction. One caveat is inherited from the writer:
+        with ``auto_type_mapping=True`` the exported members can be the
+        dataset-specific equivalents the auto mapper resolved, while the
+        LABELS stay the user's — which is what tier 0 keys on.
+
+        An empty export (a run that had no user mapper) is read as ``None``,
+        so nothing is disclosed that did not happen.
+        """
+        path = os.path.join(run_dir, 'label_map.json')
+        if not os.path.exists(path):
+            return None
+        from .label_mapper import LabelMapper
+        try:
+            mapper = LabelMapper(overall_mapping_json=path)
+        except Exception:  # noqa: BLE001 - a foreign label_map.json is not a mapper
+            return None
+        return None if getattr(mapper, 'is_empty', True) else mapper
+
     def _initialize_auto_type_mapping(self) -> None:
         """
         Initialize auto type mapping from male-cns neuron_df.
