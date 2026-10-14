@@ -164,6 +164,55 @@ def create_find_path_tab():
                 "Find Reciprocal Connections", False,
                 hint="Enrich the path graph with reciprocal direct connections.",
             )
+
+            corridor_mode = select_input(
+                "Run Mode (Complete / Fast)",
+                {"complete": "Complete only",
+                 "auto": "Auto (deep runs)",
+                 "both": "Complete + Fast",
+                 "fast": "Fast only (standalone)"},
+                default=get_user_default("corridor_mode"),
+                hint="What runs on this query — complete: the COMPLETE mode "
+                     "only (all intact paths >= the applied threshold; the "
+                     "run itself). auto: COMPLETE, then FAST on deep searches "
+                     "(max intermediate layers >= 4). both: ALWAYS run FAST "
+                     "after the run. fast: STANDALONE FAST — only the "
+                     "corridor lane runs on this query (no Complete run; the "
+                     "folder carries route_scope_paths/ only). FAST mode is "
+                     "upper-bound-guided representative exploration under "
+                     "per-class share quotas — not a guarantee of the "
+                     "strongest actual neuron routes. Fast never modifies "
+                     "other outputs. Full guide via the book icon.",
+                help_doc="pathfinding_algorithms",
+            )
+            corridor_note = ui.label("").classes(
+                "text-caption text-blue-8")
+
+            def _corridor_note_text():
+                mode = corridor_mode.value
+                depth = int(max_interlayer.value or 0)
+                # canonical modes are complete/auto/both/fast — the legacy
+                # on/off checks never matched the selector
+                if mode == "fast":
+                    return ("Fast only: the corridor lane runs standalone "
+                            "on this query — no Complete run (the folder "
+                            "carries route_scope_paths/ only).")
+                if mode == "complete":
+                    return "Fast mode: off (Complete only)."
+                will = (mode == "both"
+                        or (mode == "auto" and depth >= 4))
+                return (f"Fast mode (corridor lane): "
+                        f"{'WILL' if will else 'will NOT'} "
+                        f"run after this search (mode {mode}, "
+                        f"depth {depth}; auto needs >= 4).")
+
+            def _refresh_corridor_note():
+                # Label.set_text (NOT set_value — house rule)
+                corridor_note.set_text(_corridor_note_text())
+
+            _refresh_corridor_note()
+            corridor_mode.on_value_change(
+                lambda _e: _refresh_corridor_note())
             def _on_max_interlayer_change(e):
                 interlayer_warning.set_visibility((e.value or 0) >= 4)
                 _refresh_corridor_note()
@@ -297,39 +346,6 @@ def create_find_path_tab():
                                  "graph is not trimmed. "
                                  "0 = auto (StrongestFirst: 1M budget).",
                         )
-                        corridor_mode = select_input(
-                            "Fast Mode (corridor lane)",
-                            {"complete": "Complete only",
-                             "auto": "Auto (deep runs)",
-                             "both": "Complete + Fast"},
-                            default=get_user_default("corridor_mode"),
-                            hint="Values — complete: run COMPLETE mode only (all intact paths >= the applied threshold; the run itself). auto: also run FAST mode (the corridor lane) after deep searches (max intermediate layers >= 4). both: always run FAST after the run. FAST mode is upper-bound-guided representative exploration under per-class share quotas — not a guarantee of the strongest actual neuron routes; floor/floor_next in its provenance are candidate bounds. Fast writes its own route_scope_paths/ beside the run and never modifies this run's outputs. Full guide via the book icon.",
-                            help_doc="pathfinding_algorithms",
-                        )
-                        corridor_note = ui.label("").classes(
-                            "text-caption text-blue-8")
-
-                        def _corridor_note_text():
-                            mode = corridor_mode.value
-                            depth = int(max_interlayer.value or 0)
-                            # canonical modes are complete/auto/both — the
-                            # legacy on/off checks never matched the selector
-                            will = (mode == "both"
-                                    or (mode == "auto" and depth >= 4))
-                            if mode == "complete":
-                                return "Fast mode: off (Complete only)."
-                            return (f"Fast mode (corridor lane): "
-                                    f"{'WILL' if will else 'will NOT'} "
-                                    f"run after this search (mode {mode}, "
-                                    f"depth {depth}; auto needs >= 4).")
-
-                        def _refresh_corridor_note():
-                            # Label.set_text (NOT set_value — house rule)
-                            corridor_note.set_text(_corridor_note_text())
-
-                        _refresh_corridor_note()
-                        corridor_mode.on_value_change(
-                            lambda _e: _refresh_corridor_note())
                     with ui.column().classes("gap-0"):
                         edge_budget = number_input(
                             "Edge Budget", get_user_default("graph_edge_limit_bodyid"),

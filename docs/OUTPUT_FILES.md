@@ -332,8 +332,12 @@ top-M* type corridors (per source-target type pair &times; hop length,
 phantom-validated, 100-path class budgets, StrongestFirst tie-drain
 semantics). It runs in an isolated subprocess with a 900&nbsp;s
 wall-clock budget and never modifies the run's own outputs; a
-`user_warning_notes.txt` entry appears only on refusal (e.g. ratio-basis
-runs) or failure. Replay slice folders are skipped (the base
+`user_warning_notes.txt` entry appears only on refusal (e.g. a ratio-basis
+run whose Min Connection Ratio is missing or non-positive) or failure.
+Ratio-basis corridors are supported (2026-10-14): each edge is admitted
+on its own F9 input share (>= Min Connection Ratio), the lane ranks type
+pairs by the Et type-level ratio, and every realized bodyId hop clears
+t_r by construction (the structural bodyId floor). Replay slice folders are skipped (the base
 lowest-threshold folder carries the superset corridors).
 
 *   **`route_paths_type.csv`**: one row per validated walk with emitted
