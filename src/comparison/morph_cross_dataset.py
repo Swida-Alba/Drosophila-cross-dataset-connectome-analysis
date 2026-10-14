@@ -37,6 +37,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+try:
+    from ..utils.naming_utils import load_labelmapper_source_groups
+except ImportError:  # pragma: no cover - direct src/ execution
+    from utils.naming_utils import load_labelmapper_source_groups
+
 NULL_K_DEFAULT = 200
 # Floors v3 (plan-unified-morph-qualification-bars): mapping_ref-mode Track-A
 # offset Δ and native floor margin.  The null-mode offset stays the user's
@@ -1581,6 +1586,14 @@ class CrossDatasetMorphComparer:
     native types expand; unmapped members keep their native name), and
     ``overview.csv`` gains a ``label`` column. The native outputs are
     byte-identical to a run without the preset.
+
+    The preset also feeds the query's first resolution lane: a token naming
+    one of its labels resolves to that label's members **in each dataset's own
+    column**, so the same label pairs across the datasets being compared. It
+    claims the token before the auto type mapper, which is what makes a label
+    that is also a native type name resolve as the group. The members still
+    split into dataset-scoped native-type rows; the label-folded view remains
+    ``morph_labeltype_matrix.csv``.
     """
 
     def __init__(self, datasets: Optional[List[str]] = None,
@@ -1623,6 +1636,10 @@ class CrossDatasetMorphComparer:
         self._label_mapper = None
         self._label_mapper_loaded = False
         self._axis_label_of_cache = None
+        # dataset -> (members by label, the preset's full label list), read
+        # once per dataset for the query's group-label lane.
+        self._preset_label_cache: Dict[str, Tuple[Dict[str, List[Any]],
+                                                 set]] = {}
         self.use_cache = bool(use_cache)
         self.verbose = bool(verbose)
         self.n_workers = int(n_workers)
@@ -1741,6 +1758,54 @@ class CrossDatasetMorphComparer:
             notes.append(note)
         return names, notes
 
+    def _preset_labels(self, dataset: str
+                       ) -> Tuple[Dict[str, List[Any]], set]:
+        """The preset's groups for one dataset, and its full label list.
+
+        Both are needed: a label the preset defines but that has no members in
+        THIS dataset must still be claimed by the lane (so the run reports an
+        empty row) rather than fall through and resolve as a same-spelling
+        native type. Empty/empty with no preset attached, which keeps every
+        preset-free run byte-identical.
+        """
+        key = str(dataset)
+        if key not in self._preset_label_cache:
+            if not self.label_mapping_file:
+                self._preset_label_cache[key] = ({}, set())
+            else:
+                try:
+                    groups, names, side = load_labelmapper_source_groups(
+                        self.label_mapping_file, dataset, log=self._log)
+                    labels = {str(x) for x in (
+                        (side or {}).get('custom_label')
+                        or (side or {}).get('std_label') or [])}
+                    self._preset_label_cache[key] = (
+                        dict(zip([str(n) for n in names], groups)), labels)
+                except Exception as exc:  # noqa: BLE001 - preset-free query path
+                    self._log(f'Warning: grouping preset unreadable for '
+                              f'{dataset}: {exc}')
+                    self._preset_label_cache[key] = ({}, set())
+        return self._preset_label_cache[key]
+
+    def _preset_group_ids(self, text: str,
+                          dataset: str) -> Optional[List[int]]:
+        """The preset's group *text* as bodyIds in *dataset*.
+
+        ``None`` means *text* is not one of the preset's labels, so the token
+        keeps its existing resolution. An empty list means it IS a label with
+        no members here, which the caller reports rather than re-resolving.
+        """
+        members, labels = self._preset_labels(dataset)
+        if text not in labels:
+            return None
+        out: List[int] = []
+        for value in members.get(text, []):
+            try:
+                out.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return sorted(dict.fromkeys(out))
+
     def _resolve_members(self, tokens: Sequence[str],
                          dataset: str) -> Tuple[Dict[str, List[int]],
                                                 List[str]]:
@@ -1791,44 +1856,60 @@ class CrossDatasetMorphComparer:
             text = str(token or '').strip()
             if not text:
                 continue
-            search_names, mapper_notes = self._mapper_search_names(
-                text, dataset, mapper, snapshot, alias_cache, bridge_cache)
-            notes.extend(mapper_notes)
-            if search_names is not None and not search_names:
-                continue   # fail-closed / unfulfilled claim: note recorded
-
+            preset_ids = self._preset_group_ids(text, dataset)
             token_body_ids: List[int] = []
             label_default = text
-            if search_names is None:
-                # Raw local path: bodyIds, patterns, same-name, or mapper
-                # off/unavailable.
-                try:
-                    hits, _info = resolve_dataframe_query(
-                        frame, text, search_columns='auto')
-                except Exception as exc:  # noqa: BLE001
-                    hits = []
-                    self._log(f'Warning: resolving {text!r} in {dataset} '
-                              f'failed: {exc}')
-                for hit in hits:
-                    bid = _bid(hit)
-                    if bid is not None:
-                        token_body_ids.append(bid)
+            if preset_ids is not None:
+                # tier 0: a label the grouping board defines is the user's own
+                # name for a set of neurons, so it claims the token BEFORE the
+                # auto type mapper can resolve it as a same-spelling native
+                # type. The members still split into dataset-scoped native-type
+                # rows below -- that split is this run's contract, and the
+                # label-folded view is morph_labeltype_matrix.csv's job.
+                if not preset_ids:
+                    notes.append(f'{text}: custom group with no members '
+                                 f'in {dataset}')
+                    continue
+                notes.append(f"'{text}' is a custom group: expanded to "
+                             f"{len(preset_ids)} neuron(s) in {dataset}")
+                token_body_ids = preset_ids
             else:
-                # Mapped names: exact type-column lookups (the mapper
-                # licensed these names; nothing else).
-                label_default = search_names[0]
-                for name in search_names:
+                search_names, mapper_notes = self._mapper_search_names(
+                    text, dataset, mapper, snapshot, alias_cache, bridge_cache)
+                notes.extend(mapper_notes)
+                if search_names is not None and not search_names:
+                    continue   # fail-closed / unfulfilled claim: note recorded
+
+                if search_names is None:
+                    # Raw local path: bodyIds, patterns, same-name, or mapper
+                    # off/unavailable.
                     try:
                         hits, _info = resolve_dataframe_query(
-                            frame, name, search_columns='type')
+                            frame, text, search_columns='auto')
                     except Exception as exc:  # noqa: BLE001
                         hits = []
-                        self._log(f'Warning: resolving mapped {name!r} in '
-                                  f'{dataset} failed: {exc}')
+                        self._log(f'Warning: resolving {text!r} in {dataset} '
+                                  f'failed: {exc}')
                     for hit in hits:
                         bid = _bid(hit)
                         if bid is not None:
                             token_body_ids.append(bid)
+                else:
+                    # Mapped names: exact type-column lookups (the mapper
+                    # licensed these names; nothing else).
+                    label_default = search_names[0]
+                    for name in search_names:
+                        try:
+                            hits, _info = resolve_dataframe_query(
+                                frame, name, search_columns='type')
+                        except Exception as exc:  # noqa: BLE001
+                            hits = []
+                            self._log(f'Warning: resolving mapped {name!r} in '
+                                      f'{dataset} failed: {exc}')
+                        for hit in hits:
+                            bid = _bid(hit)
+                            if bid is not None:
+                                token_body_ids.append(bid)
 
             token_body_ids = sorted(dict.fromkeys(token_body_ids))
             if not token_body_ids:

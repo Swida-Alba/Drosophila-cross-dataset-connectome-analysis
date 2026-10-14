@@ -582,6 +582,78 @@ class TestCrossDatasetMorphComparer:
             comparer.run()
 
 
+class TestPresetLabelLane:
+    """The grouping board pushes labels into this tab's query box as well, so
+    the cross run has to resolve them -- per dataset, from that dataset's own
+    preset column. Before this lane the token fell through and resolved as a
+    same-spelling native type (or matched nothing)."""
+
+    FRAME = pd.DataFrame({
+        "bodyId": [11, 12, 21, 22, 23, 99],
+        "type": ["APDN3", "APDN3", "aMe12", "aMe12", "aMe12", "clockA"],
+    })
+
+    def _preset(self, tmp_path):
+        import json
+
+        from comparison.label_mapper import PRESET_FORMAT_TAG
+
+        path = tmp_path / "preset.json"
+        path.write_text(json.dumps({
+            "format": PRESET_FORMAT_TAG,
+            "source_mapping": {
+                # 'clockA' is ALSO a native type in the frame (neuron 99), and
+                # 'emptyA' has no members in either column.
+                "custom_label": ["clockA", "emptyA"],
+                "flywire_FAFB_v783": [[11, 12], []],
+                "male-cns:v1.0": [[21, 22, 23], []],
+            }}), encoding="utf-8")
+        return str(path)
+
+    def _comparer(self, tmp_path, preset=True):
+        kwargs = ({"label_mapping_file": self._preset(tmp_path)}
+                  if preset else {})
+        comparer = mcd.CrossDatasetMorphComparer(
+            datasets=["flywire_FAFB_v783", "male-cns:v1.0"],
+            query=["clockA"], output_dir=str(tmp_path), visualize=False,
+            project_root=str(tmp_path), **kwargs)
+        comparer._load_neuron_frame = lambda ds: self.FRAME
+        return comparer
+
+    def test_label_resolves_from_each_datasets_own_column(self, tmp_path):
+        comparer = self._comparer(tmp_path)
+        fafb, notes_a = comparer._resolve_members(["clockA"],
+                                                 "flywire_FAFB_v783")
+        mcns, notes_b = comparer._resolve_members(["clockA"], "male-cns:v1.0")
+        # Members keep the dataset-scoped native-type row split; only WHICH
+        # neurons are in scope came from the group.
+        assert fafb == {"APDN3": [11, 12]}
+        assert mcns == {"aMe12": [21, 22, 23]}
+        assert any("custom group" in n for n in notes_a), notes_a
+        assert any("custom group" in n for n in notes_b), notes_b
+
+    def test_label_beats_a_same_spelling_native_type(self, tmp_path):
+        comparer = self._comparer(tmp_path)
+        members, _notes = comparer._resolve_members(["clockA"],
+                                                    "flywire_FAFB_v783")
+        assert 99 not in [b for ids in members.values() for b in ids], \
+            "the native type 'clockA' won over the preset's group"
+
+    def test_label_with_no_members_here_is_reported_not_re_resolved(
+            self, tmp_path):
+        comparer = self._comparer(tmp_path)
+        members, notes = comparer._resolve_members(["emptyA"],
+                                                   "flywire_FAFB_v783")
+        assert members == {}
+        assert any("no members" in n for n in notes), notes
+
+    def test_no_preset_leaves_the_lane_inert(self, tmp_path):
+        comparer = self._comparer(tmp_path, preset=False)
+        assert comparer._preset_group_ids(
+            "clockA", "flywire_FAFB_v783") is None
+        assert comparer._preset_labels("flywire_FAFB_v783") == ({}, set())
+
+
 # ---------------------------------------------------------------------------
 # type-resolver wiring in _resolve_members
 # ---------------------------------------------------------------------------

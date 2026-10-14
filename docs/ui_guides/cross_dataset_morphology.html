@@ -39,7 +39,7 @@
 <li><b>Null Sample Size</b> (default 200, range 10–1000): how many seeded random target neurons per query feed the null baseline.</li>
 <li><b>3D Overlay Scenes</b> (on): render the bridged overlay scenes.</li>
 <li><b>Fetch Missing Skeletons Online</b> (on): fetch skeletons that are not in the local cache.</li>
-<li><b>Custom Groups (LabelMapper)</b>: the always-visible grouping card doubles as the cross run's <b>tier-0 label overlay</b> (a loaded preset or inline board). Labels are identities and are never re-resolved through the auto type mapper — see <a href="label_mapper.html">the label-mapper guide</a>.</li>
+<li><b>Custom Groups (LabelMapper)</b>: the always-visible grouping card doubles as the cross run's <b>tier-0 label overlay</b> (a loaded preset or inline board). It also feeds the query's first resolution lane: a token naming one of the preset's labels pools <b>that label's members from each dataset's own column</b>, so the same label pairs across the datasets being compared, and it claims the token before the auto type mapper — a label that is also a native type name resolves as the group, and the pooled set is the group's neurons rather than the whole mapped type's population. The members still split into dataset-scoped native-type rows; the label-folded view stays <code>morph_labeltype_matrix.csv</code>. Labels are identities and are never re-resolved through the auto type mapper — see <a href="label_mapper.html">the label-mapper guide</a>.</li>
 </ul>
 <h2>How scoring works</h2>
 <ul>

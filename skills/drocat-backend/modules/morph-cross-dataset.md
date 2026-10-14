@@ -63,9 +63,13 @@ result = comparer.run()   # {"output_folder", "files", "warnings"}
 lane uses (`custom_mapping_file`/`label_mapping_file` in
 `profile_comparator.md`). It rides ALONGSIDE the auto type mapper rather than
 replacing it — the two are different vocabularies (user standard labels vs
-type-mapper results) — and it changes only these outputs: the bodyId axes
-upgrade, and the label-aligned type view is added beside the native one. The
-native-keyed artifacts stay byte-identical, so a run without a preset is
+type-mapper results) — but a token that names one of the preset's labels is
+claimed by the preset first: it pools that label's members from each dataset's
+own column before the mapper can resolve the name as a type, so the neurons in
+scope are the group's, not the mapped type's whole population. Beyond that it
+changes only these outputs: the bodyId axes upgrade, and the label-aligned type
+view is added beside the native one. The native-keyed artifacts stay
+byte-identical, so a run without a preset is
 unaffected.
 
 Outputs per run folder: `overview.csv` (per queried type: the best target-type cell with
