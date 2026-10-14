@@ -215,3 +215,63 @@ class TestPptSafeSvgExport:
         # Sankey goes through Plotly's vector pipeline (nodes/links are paths)
         assert "exportPlotlyToImage" in sankey_html
         assert "vectorizeHeatmapCells" not in sankey_html
+
+
+class TestHeatmapLabelToggleTemplate:
+    """The template-level half of the dead-label-toggle defect
+    (`_plan/plan-2026-10-13-heatmap-label-toggle-dead.md`); the reader-visible half
+    is asserted by running the page in
+    `tests/vispath/test_heatmap_label_toggle.py`.
+
+    The page stores `layout.title`, `xaxis.title`, `yaxis.title` and
+    `trace.colorbar.title` as PLAIN STRINGS, so a two-level `X.title.text` write
+    walks into a string container and plotly's nester throws
+    `container is not an object` - measured on every one of the four keys, in both
+    `Plotly.restyle` and `Plotly.relayout`. One such key is enough to kill the
+    handler, so this is asserted as a class of bug, not as four literals.
+    """
+
+    NESTED_TITLE_KEYS = ("'colorbar.title.text'", "'title.text'",
+                         "'xaxis.title.text'", "'yaxis.title.text'")
+
+    @staticmethod
+    def _toggle_body(heat_html):
+        start = heat_html.index("function toggleLabels()")
+        end = heat_html.index("\n        function ", start + 1)
+        return heat_html[start:end]
+
+    def test_no_nested_title_key_reaches_plotly(self, tmp_path):
+        heat_html = _heatmap_html(tmp_path)
+        for key in self.NESTED_TITLE_KEYS:
+            assert key not in heat_html, (
+                f'{key} is a two-level write into a container the page stores as a '
+                'string; Plotly throws `container is not an object` on it')
+
+    def test_restyle_calls_pass_an_array_trace_index(self, tmp_path):
+        heat_html = _heatmap_html(tmp_path)
+        calls = re.findall(r"Plotly\.restyle\(([^;]*)\);", heat_html)
+        assert calls, "expected the heatmap page to issue a restyle"
+        for call in calls:
+            # the captured group is the argument list, closing paren excluded
+            assert re.search(r",\s*\[[^\]]*\]$", call.strip()), (
+                f'Plotly.restyle wants a trace-index ARRAY, got: {call.strip()}')
+
+    def test_colourbar_title_comes_from_one_source(self, tmp_path):
+        """createHeatmap titles the colourbar with the *selected* metric's display
+        name (plus the scale label); the toggle must restore that same string."""
+        heat_html = _heatmap_html(tmp_path)
+        assert "colorbarTitleText = trace.colorbar.title;" in heat_html
+        body = self._toggle_body(heat_html)
+        assert "'colorbar.title': showLabels ? colorbarTitleText : ''" in body
+        # recomputing from the page-level metricType constant renamed the colourbar
+        # on every round trip (measured: `jaccard` -> `Weight`)
+        assert "metricType.charAt(0).toUpperCase()" not in body
+
+    def test_caption_is_written_after_the_updates(self, tmp_path):
+        """The old handler wrote the caption first, so a refused update left the
+        control asserting a state the picture never reached."""
+        body = self._toggle_body(_heatmap_html(tmp_path))
+        assert body.index("Plotly.relayout(gd, layoutUpdate)") < \
+            body.index("btn.textContent = showLabels"), (
+            "the button caption must be the last thing the toggle writes")
+        assert "showLabels = !showLabels;" in body  # rollback restores this

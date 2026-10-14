@@ -16210,6 +16210,17 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     - Scale switcher: Linear / Log2 / Log10 / Sqrt
     - Colorscale selector with presets (Greens, Purples, Oranges, Blues, Reds, Viridis, etc.)
     - Font size slider
+    - Label toggle ("🏷️ Show/Hide Labels"): hides the tick labels together with the
+      colourbar and axis titles. Pages over 100 rows or columns open with it OFF,
+      because a 245x245 map is unreadable with per-cell labels; the button is the
+      reader's only way to name a row. Revealing them on such a page also grows the
+      canvas to one font line per row and column (capped at 4000 px per side, and
+      reported back to the Plot Size controls), because 245 names do not fit in the
+      default 800 px; hiding them gives the room back unless the reader resized the
+      plot meanwhile. Titles are stored as plain strings by createHeatmap, so the
+      toggle writes the FLAT Plotly keys ('xaxis.title', 'colorbar.title') - a
+      nested 'xaxis.title.text' write into a string container throws
+      `container is not an object` and strands the toggle.
     - Export to SVG with adjustable resolution
     - Zoom/pan controls
     - Save/load layout state
@@ -17216,6 +17227,12 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         let exportScale = 2;
         let squareCellsLocked = false;  // Track if square cells are locked
         let showLabels = !{json.dumps(is_large)};  // Show labels for small matrices, hide for large
+        // The colourbar title createHeatmap actually drew, so the labels toggle
+        // restores that string instead of recomputing a different one
+        let colorbarTitleText = '';
+        // Canvas size to give back when the labels are hidden again (see
+        // fitCanvasForLabels); null while nothing was fitted
+        let labelFitSize = null;
         let showCellValues = false;  // Track if cell values should be displayed in cells (default: false)
         let cellValueFontSize = 10;  // Font size for cell value annotations
         let ignoredValues = new Set();  // Set of values to ignore when displaying cell values
@@ -17795,6 +17812,10 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     titleside: 'right'
                 }}
             }};
+            // Remember the exact title drawn here (selected metric's display name
+            // plus the scale label): createHeatmap re-runs on every metric and
+            // scale switch, so this is always what the reader is looking at.
+            colorbarTitleText = trace.colorbar.title;
             
             // Configure text display for cell values
             console.log('createHeatmap: showCellValues =', showCellValues);
@@ -18349,27 +18370,77 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             createHeatmap();
         }}
         
+        // Revealing the labels on a large map needs room the page does not have at
+        // its default size: 245 names along one axis is one label per 3 px, which
+        // is why such pages open with them hidden. Showing grows the canvas to one
+        // font line per row AND per column (the same pitch on both axes, so the
+        // square-cell lock cannot leave one axis under-spaced), and hiding gives the
+        // room back unless the reader resized the plot in the meantime.
+        const LABEL_FIT_MAX_PX = 4000;
+        
+        function syncPlotSizeControls() {{
+            document.getElementById('widthInput').value = currentWidth;
+            document.getElementById('widthValue').textContent = currentWidth + 'px';
+            document.getElementById('widthSlider').value = Math.min(2400, Math.max(400, currentWidth));
+            document.getElementById('heightInput').value = currentHeight;
+            document.getElementById('heightValue').textContent = currentHeight + 'px';
+            document.getElementById('heightSlider').value = Math.min(2400, Math.max(400, currentHeight));
+        }}
+        
+        function fitCanvasForLabels(showing) {{
+            if (!isLarge) return;
+            const gd = document.getElementById('heatmap');
+            if (!gd.data || !gd.data[0]) return;
+            if (showing) {{
+                labelFitSize = {{w: currentWidth, h: currentHeight}};
+                const margins = gd.layout.margin ||
+                    {{l: dynamicLeftMargin, r: 40, t: 100, b: dynamicBottomMargin}};
+                const pitch = currentFontSize + 2;
+                const neededWidth = Math.round(gd.data[0].x.length * pitch + margins.l + margins.r);
+                const neededHeight = Math.round(gd.data[0].y.length * pitch + margins.t + margins.b);
+                currentWidth = Math.min(LABEL_FIT_MAX_PX, Math.max(currentWidth, neededWidth));
+                currentHeight = Math.min(LABEL_FIT_MAX_PX, Math.max(currentHeight, neededHeight));
+                syncPlotSizeControls();
+            }} else if (labelFitSize) {{
+                // Undo exactly the room this toggle made. The square-cell lock
+                // re-derives the height from the width after a relayout, so the
+                // fitted size cannot be compared against - a manual resize clears
+                // labelFitSize instead (see updatePlotSize*), and then the reader's
+                // own size is left alone.
+                currentWidth = labelFitSize.w;
+                currentHeight = labelFitSize.h;
+                labelFitSize = null;
+                syncPlotSizeControls();
+            }}
+        }}
+        
         function toggleLabels() {{
             showLabels = !showLabels;
             const btn = document.getElementById('toggleLabelsBtn');
-            btn.textContent = showLabels ? '🏷️ Hide Labels' : '🏷️ Show Labels';
             
             // Update the layout to hide/show ALL text elements including colorbar
             const gd = document.getElementById('heatmap');
+            const sizeBeforeFit = {{w: currentWidth, h: currentHeight}};
+            fitCanvasForLabels(showLabels);
             
-            // Update colorbar text (trace-level property)
+            // Update colorbar text (trace-level property). Titles are stored as
+            // PLAIN STRINGS by createHeatmap (colorbar.title, layout.title,
+            // xaxis.title, yaxis.title), so a two-level `X.title.text` key walks
+            // into a string container and Plotly throws `container is not an
+            // object` - in restyle AND in relayout. Write the flat key, matching
+            // how the page declares it.
             const traceUpdate = {{
-                'colorbar.title.text': showLabels ? (metricType.charAt(0).toUpperCase() + metricType.slice(1)) : '',
+                'colorbar.title': showLabels ? colorbarTitleText : '',
                 'colorbar.showticklabels': showLabels
             }};
             
             // Update layout elements
             const layoutUpdate = {{
-                'title.text': showLabels ? originalTitle : '',
+                'title': showLabels ? originalTitle : '',
                 'xaxis.showticklabels': showLabels,
                 'yaxis.showticklabels': showLabels,
-                'xaxis.title.text': showLabels ? (isLarge ? '<b>Target</b> (' + gd.data[0].x.length + ' neurons)' : '<b>Target</b>') : '',
-                'yaxis.title.text': showLabels ? (isLarge ? '<b>Source</b> (' + gd.data[0].y.length + ' neurons)' : '<b>Source</b>') : '',
+                'xaxis.title': showLabels ? (isLarge ? '<b>Target</b> (' + gd.data[0].x.length + ' neurons)' : '<b>Target</b>') : '',
+                'yaxis.title': showLabels ? (isLarge ? '<b>Source</b> (' + gd.data[0].y.length + ' neurons)' : '<b>Source</b>') : '',
                 'xaxis.ticks': showLabels ? 'outside' : '',
                 'yaxis.ticks': showLabels ? 'outside' : '',
                 // Prevent autosize from expanding the plot
@@ -18384,9 +18455,23 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 'height': currentHeight
             }};
             
-            // Update both trace and layout
-            Plotly.restyle(gd, traceUpdate, 0);
-            Plotly.relayout(gd, layoutUpdate);
+            // Update both trace and layout, then describe the result. The caption
+            // used to be written first, so a refused update left the button
+            // claiming a state the picture never reached; on a throw the state is
+            // rolled back and the caption re-derives from it.
+            try {{
+                Plotly.restyle(gd, traceUpdate, [0]);
+                Plotly.relayout(gd, layoutUpdate);
+            }} catch (err) {{
+                showLabels = !showLabels;
+                // the canvas grew for labels this update did not draw - give it back
+                currentWidth = sizeBeforeFit.w;
+                currentHeight = sizeBeforeFit.h;
+                labelFitSize = null;
+                syncPlotSizeControls();
+                console.warn('toggleLabels: update refused, state rolled back', err);
+            }}
+            btn.textContent = showLabels ? '🏷️ Hide Labels' : '🏷️ Show Labels';
         }}
         
         function toggleCellValues() {{
@@ -19179,6 +19264,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         
         function updatePlotSize() {{
             const gd = document.getElementById('heatmap');
+            labelFitSize = null;  // this size is the reader's now, not the toggle's
             currentWidth = parseInt(document.getElementById('widthSlider').value);
             
             // If square cells are locked, auto-adjust height
@@ -19220,6 +19306,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         
         function updatePlotSizeFromInput() {{
             const gd = document.getElementById('heatmap');
+            labelFitSize = null;  // this size is the reader's now, not the toggle's
             const widthInput = parseInt(document.getElementById('widthInput').value);
             
             // Update width
@@ -19525,6 +19612,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         }}
         
         function resetPlotSize() {{
+            labelFitSize = null;
             currentWidth = 800;
             currentHeight = 800;
             document.getElementById('widthSlider').value = 800;
@@ -19711,6 +19799,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 toggle3PointScale();
                 
                 // Restore plot size (clamp to valid range)
+                labelFitSize = null;  // a stored size supersedes any label fit
                 if (settings.width) {{
                     currentWidth = Math.min(3000, Math.max(400, settings.width));
                     document.getElementById('widthSlider').value = Math.min(2400, Math.max(400, currentWidth));
