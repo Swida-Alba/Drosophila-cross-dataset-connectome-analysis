@@ -327,3 +327,82 @@ class TestConfigIntegration:
         assert spec["options"] == cfg.RUN_GUIDE_FORMATS
         assert spec["group"] == "pathfinding_output"
         assert spec["kind"] == "select"
+
+
+class TestGlossaryHasNoSilentCollisions:
+    """A repeated literal key in the column glossary silently deletes the
+    first entry, so the guide publishes one description and hides the other.
+
+    Measured 2026-10-14: twelve such collisions in `ui/output_guide.py`
+    (`bodyId_post`, `status`, `method`, `total_weight`, `applied_folder`), all of
+    them one column used by two file families. Nothing in CI runs a linter, so
+    the class had no gate — this is it. The five collisions are now single
+    entries naming BOTH producers; a new one must be merged the same way, never
+    re-declared.
+    """
+
+    @staticmethod
+    def _duplicate_literal_keys(path: Path):
+        import ast
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            seen = {}
+            for key, value in zip(node.keys, node.values):
+                if not isinstance(key, ast.Constant) or not isinstance(
+                        key.value, str):
+                    continue
+                first_line = seen.get(key.value)
+                if first_line is not None:
+                    found.append((key.value, first_line, key.lineno))
+                else:
+                    seen[key.value] = key.lineno
+        return found
+
+    def test_column_glossary_declares_every_key_once(self):
+        dups = self._duplicate_literal_keys(
+            Path(guide.__file__).resolve())
+        assert not dups, (
+            "repeated literal keys silently drop the earlier description: "
+            + ", ".join(f"{name!r} at line {a} and {b}"
+                        for name, a, b in dups))
+
+    def test_the_merged_entries_name_both_producers(self):
+        """A merge must keep BOTH file families readable.
+
+        A description quietly narrowed back to one context would drop the other
+        file's meaning without any key collision to catch it.
+        """
+        gloss = guide.COLUMN_GLOSSARY
+        assert "ratio" in gloss["bodyId_post"][0], gloss["bodyId_post"]
+        for needle in ("layer", "unified"):
+            assert needle in gloss["total_weight"][0], gloss["total_weight"]
+        assert "match status" in gloss["status"][0], gloss["status"]
+        assert "morphology" in gloss["method"][0], gloss["method"]
+        assert "minsyn_" in gloss["applied_folder"][0], gloss["applied_folder"]
+
+    def test_every_card_column_resolves_to_a_real_entry(self):
+        """A card naming a column the glossary lost reads as a stub.
+
+        Merging a duplicate key is safe only while the surviving entry still
+        answers every card that listed it.
+        """
+        def _cards(node):
+            if isinstance(node, dict):
+                columns = node.get("columns")
+                if isinstance(columns, (list, tuple)):
+                    for column in columns:
+                        if isinstance(column, str):
+                            yield column
+                for value in node.values():
+                    yield from _cards(value)
+            elif isinstance(node, (list, tuple)):
+                for item in node:
+                    yield from _cards(item)
+
+        missing = {column for column in _cards(guide.TOOL_GUIDE_SPECS)
+                   if guide.glossary_entry(column)[0]
+                   .startswith("(see docs/OUTPUT_FILES.md)")}
+        assert not missing, sorted(missing)[:12]

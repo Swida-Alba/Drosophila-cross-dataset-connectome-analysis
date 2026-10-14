@@ -69,8 +69,9 @@ COLUMN_GLOSSARY = {
                     'this census row is for. A hemisphere run appends the '
                     'suffix after the tag (SMP540*_L).', 'string'),
     # ratio-lane disclosure file (plan-connection-ratio-pathfinding §13.2)
-    'bodyId_post': ('Post-synaptic bodyId of a ratio-lane cone edge.',
-                    'string'),
+    # `bodyId_post` is NOT re-declared here: the glossary is one flat dict, so a
+    # second literal key silently deletes the first — the cone-edge wording used
+    # to live here. It now rides on the shared entry (see `bodyId_post` below).
     'total_incoming': ('ALL-post incoming synapse mass of the post '
                        'neuron at min_weight=1 (the F9 threshold-free '
                        'denominator).', 'number'),
@@ -102,7 +103,9 @@ COLUMN_GLOSSARY = {
     "pre_synaptic_color": ("Effective color for this neuron's pre-synaptic sites.", "CSS color"),
     "post_synaptic_color": ("Effective color for this neuron's post-synaptic sites.", "CSS color"),
     "bodyId_pre": ("Pre-synaptic (source) neuron body id of a synapse.", "integer"),
-    "bodyId_post": ("Post-synaptic (target) neuron body id of a synapse.", "integer"),
+    "bodyId_post": ("Post-synaptic (target) neuron body id of a synapse. The "
+                    "ratio lane's cone-edge disclosure file carries the same "
+                    "identity, as text.", "integer"),
     "instance": ("Instance (individual) name of the neuron.", "text"),
     "row": ("Matrix row this neuron feeds: the neuron type at the type "
             "level, the neuron's own display label at the bodyId level, or "
@@ -121,8 +124,12 @@ COLUMN_GLOSSARY = {
     "status": ("Resolution outcome (same_name_identity, taxonomy, "
                "taxonomy_mapped, mapped, bridged, valid_split, "
                "evidence_only, same_name_fallback, conflict, body_id, "
-               "group, pattern, unmatched).", "text"),
-    "method": ("Resolution mechanism that produced the answer.", "text"),
+               "group, pattern, unmatched). On a profile or comparison "
+               "result row the same column is the match status label.",
+               "text"),
+    "method": ("What produced the answer: on a query-resolution row the "
+               "resolution mechanism; on a morphology comparison row the "
+               "similarity method (vector_v2 / nblast).", "text"),
     "evidence": ("For identity rows: confirmed, contradicted or none — "
                  "what the cross-dataset relation says about the identity.",
                  "text"),
@@ -189,7 +196,14 @@ COLUMN_GLOSSARY = {
     "ratio": ("Strength ratio of the paired hemisphere edges.", "number"),
     "present_LR": ("Left-to-right edge present.", "boolean"),
     "present_RL": ("Right-to-left edge present.", "boolean"),
-    "total_weight": ("Total connection weight of the layer/path group.", "number"),
+    # One flat glossary, so `total_weight` is declared ONCE for both producers:
+    # the pathfinding layer/path group total and the comparison unified summary
+    # per threshold. A second literal key used to delete this one silently.
+    "total_weight": ("Summed connection weight. On a pathfinding layer/path "
+                     "group row it is that group's total; on a comparison "
+                     "unified-summary row it is the total at this threshold "
+                     "(per-layer occurrences of the same pair are not "
+                     "double-counted).", "number"),
     # --- Connection scores ----------------------------------------------------
     "connection_ratio": (
         "Fraction of the postsynaptic neuron's input coming from this "
@@ -347,7 +361,8 @@ COLUMN_GLOSSARY = {
     "Checked": ("Whether the target neuron was reached/checked during traversal.", "boolean"),
     "Layer": ("Traversal layer at which the target neuron was reached.", "integer"),
     "viz_layer": ("Layer index assigned to the neuron in the 3D visualization.", "integer"),
-    "status": ("Resolution/match status label.", "text"),
+    # `status` is NOT re-declared here: it is one flat glossary, and a second
+    # literal key silently deletes the first (see the merged entry above).
     "source_status": ("Resolution status of the source neuron profile.", "text"),
     "target_status": ("Resolution status of the target neuron profile.", "text"),
     "weak_source": ("Source profile has fewer than the minimum partner types.", "boolean"),
@@ -404,7 +419,8 @@ COLUMN_GLOSSARY = {
     "intra_type_similarity": (
         "Mean pairwise similarity of the type's members — the intra-type "
         "reference other rows are ranked against.", "0-1"),
-    "method": ("Similarity method used (vector / nblast).", "text"),
+    # `method` is NOT re-declared here either (one flat glossary; a repeated
+    # literal key deletes the first entry — see the merged entry above).
     "metric": ("Distance metric used (cosine / pearson).", "text"),
     "adjacency_score": (
         "Direct adjacency (shared-partner / synaptic-contact) score between "
@@ -530,10 +546,10 @@ COLUMN_GLOSSARY = {
                           "every path in the output has bottleneck >= this value "
                           "and the run is equivalent to a complete run at this "
                           "threshold. Empty when no floor was applied.", "number"),
-    "applied_folder": ("Folder containing the materialized output for this "
-                       "requested threshold. A skipped threshold aliases the "
-                       "real applied folder instead of creating duplicate "
-                       "output.", "integer"),
+    # `applied_folder` is declared once, below, with the F5 τ-folder wording:
+    # the value is the applied THRESHOLD (the folder name rides on it as
+    # minsyn_{applied}), and a repeated literal key here silently deleted one
+    # of the two entries depending on file order.
     "conservation": ("Number/fraction of datasets in which the edge is present.", "text"),
     "conserved_at_lowest": ("Edge present in every dataset at the lowest threshold.", "boolean"),
     "tau": ("StrongestFirst budget LANDING τ: the weakest kept path's "
@@ -755,9 +771,6 @@ COLUMN_GLOSSARY = {
     "total_layer_rows": (
         "Unified summary: raw connection rows including per-layer "
         "occurrences of the same pair.", "integer"),
-    "total_weight": (
-        "Unified summary: sum of connection weights at this threshold.",
-        "float"),
     "mean_weight": (
         "Unified summary: mean connection weight at this threshold.",
         "float"),
@@ -2005,7 +2018,10 @@ TOOL_GUIDE_SPECS = {
              "description": "All analysis parameters (query, datasets, "
                             "top_k/top_m, thresholds, metrics), the mapping "
                             "inputs (custom_mapping_file / label_mapping_file "
-                            "/ group_partners_by_mapping), and — on "
+                            "/ group_partners_by_mapping), the partner-fold "
+                            "census partner_fold_mixed (each partner type the "
+                            "mapper governs only partly, with the residuals "
+                            "and population that kept it raw), and — on "
                             "multi-dataset runs — the anchor disclosure: "
                             "inter_anchors lists the queried items that form "
                             "cross-dataset rows, dropped_inter_anchors names "
@@ -2015,7 +2031,11 @@ TOOL_GUIDE_SPECS = {
              "description": "Human-readable summary listing only the folders "
                             "this run wrote, plus a WARNING block naming each "
                             "dropped inter-dataset anchor when a multi-dataset "
-                            "run lost one (its cross matrices are partial)."},
+                            "run lost one (its cross matrices are partial), "
+                            "and — with a label mapper active — the "
+                            "partner-fold Notes naming each partner type that "
+                            "stayed raw because the mapper governs it only "
+                            "partly."},
             {"pattern": "type_level/results/type_similarity_*.csv",
              "description": "ONE-DATASET runs at the type level: pooled "
                             "profiles compared, one file per direction × "
@@ -4083,8 +4103,8 @@ def render_txt(content: dict) -> str:
         lines.append("")
     lines.append(f"Run folder : {content['folder']}")
     lines.append(f"Generated  : {content['generated']}")
-    lines.append(f"Storage    : this folder appears in Settings -> Storage, "
-                 f"where it can be pruned (source data) or deleted.")
+    lines.append("Storage    : this folder appears in Settings -> Storage, "
+                 "where it can be pruned (source data) or deleted.")
     lines.append("")
 
     key_params = _key_params(content["params"])
