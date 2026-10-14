@@ -6287,6 +6287,22 @@ def _type_probability_series(pairs_df, group_pre: str, group_post: str, aggregat
     return None
 
 
+# PROBABILITY SUSPENSION (2026-10-06): traversal_probability /
+# block_probability stay COMPUTED (the threshold filter and the aggregate
+# methods consume them) but are suspended from every OUTPUT — no export, no
+# display, no ranking. Both engines drop them from what they RETURN, so one
+# enrichment cannot answer with two column sets depending on the engine
+# (`docs/OUTPUT_FILES.md` documents the fields as no longer exported).
+SUSPENDED_PROB_EXPORT_COLS = ['traversal_probability', 'block_probability']
+
+
+def _strip_suspended_prob_columns_pandas(frame):
+    """Return *frame* without the suspended probability columns (pandas)."""
+    return frame.drop(
+        columns=[c for c in SUSPENDED_PROB_EXPORT_COLS
+                 if c in frame.columns])
+
+
 def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset=None, script_path=None, target_neurons_df=None, aggregate_method='product', label_mapper=None, global_incoming_weights=None, separate_hemispheres=False, engine='auto', global_incoming_body_weights=None):
     '''Add traversal probability, connection ratio, and layer information to the connection table
     
@@ -7007,6 +7023,17 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
         if 'nt_type' in conn_type.columns:
             type_keep_cols.append('nt_type')
         conn_type = conn_type[type_keep_cols]
+
+        # PROBABILITY SUSPENSION (2026-10-06), engine parity: the Polars
+        # engine drops the two suspended columns from every returned frame,
+        # including the bodyId one. The `type_keep_cols` selects above covered
+        # only the type (and group) frames here, so a pandas bodyId frame came
+        # back still carrying `traversal_probability`/`block_probability` —
+        # which meant one enrichment said two different things depending on the
+        # engine, and `VisualizeDirectConnections_simple` fed the pandas values
+        # to the path visualization (the suspension covers DISPLAY as well as
+        # export). Ratios are untouched.
+        conn_df = _strip_suspended_prob_columns_pandas(conn_df)
         
         # if len(bodyid_pairs) > 50000:
         #     print(f"  Enrichment complete. Result shape: {conn_type.shape}. Returning results...", flush=True)
@@ -7014,6 +7041,7 @@ def EnrichConnectionTable(conn_table, traversal_probability_threshold=0, dataset
     else:
         # No custom groups - return original type aggregation only
         conn_type = conn_aggregated.rename(columns={group_pre: 'type_pre', group_post: 'type_post'})
+        conn_df = _strip_suspended_prob_columns_pandas(conn_df)
         # if len(bodyid_pairs) > 50000:
         #     print(f"  Enrichment complete. Result shape: {conn_type.shape}. Returning results...", flush=True)
         return conn_df, conn_type, None
@@ -8909,11 +8937,10 @@ def EnrichConnectionTablePolars(conn_table, traversal_probability_threshold=0, d
     # aggregate methods consume them) but are no longer exported — drop
     # them from the returned frames. The pandas engine strips the same
     # columns via its type_keep_cols selects.
-    _SUSPENDED_PROB_EXPORT_COLS = ['traversal_probability', 'block_probability']
-    conn_df = conn_df.drop(_SUSPENDED_PROB_EXPORT_COLS)
-    conn_type = conn_type.drop(_SUSPENDED_PROB_EXPORT_COLS)
+    conn_df = conn_df.drop(SUSPENDED_PROB_EXPORT_COLS)
+    conn_type = conn_type.drop(SUSPENDED_PROB_EXPORT_COLS)
     if conn_group is not None:
-        conn_group = conn_group.drop(_SUSPENDED_PROB_EXPORT_COLS)
+        conn_group = conn_group.drop(SUSPENDED_PROB_EXPORT_COLS)
 
     # Column contract (plan decision D2): ``type_pre``/``type_post`` carry the
     # EFFECTIVE key — settled label, `T*` residual, raw type, bodyId — which is

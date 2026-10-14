@@ -99,6 +99,23 @@ def _expected_type_metrics():
 # ---------------------------------------------------------------------------
 
 class TestBodyIdLevelMetrics:
+    @staticmethod
+    def _survives(body_id_pre, body_id_post, threshold):
+        """Is one bodyId pair still present after the probability filter?
+
+        The suspended probability columns are COMPUTED and consumed here (the
+        `traversal_probability_threshold` filter and the aggregate methods),
+        but no longer handed back on any engine's frame — so the probability
+        math can only be observed through the rows it keeps or drops. This
+        probes the value without re-exporting it.
+        """
+        conn_df, _, _ = EnrichConnectionTable(
+            _synthetic_conn(), traversal_probability_threshold=threshold,
+            global_incoming_weights=_global_incoming(),
+        )
+        return bool(len(conn_df[(conn_df['bodyId_pre'] == body_id_pre)
+                                & (conn_df['bodyId_post'] == body_id_post)]))
+
     def test_pandas_preserves_global_ratio_and_computes_prob(self):
         conn_df, _, _ = EnrichConnectionTable(
             _synthetic_conn(), traversal_probability_threshold=0,
@@ -107,17 +124,24 @@ class TestBodyIdLevelMetrics:
         # bodyId_post is stringified by the enrichment; match as string
         row = conn_df[(conn_df['bodyId_pre'] == 1) & (conn_df['bodyId_post'] == '10')].iloc[0]
         assert row['connection_ratio'] == pytest.approx(5 / 30)
-        assert row['traversal_probability'] == pytest.approx((5 / 30) / 0.3)
-        assert row['block_probability'] == pytest.approx(1 - (5 / 30) / 0.3)
+        # The ratio is the exported half of the pair; the probability it feeds
+        # is min(1, ratio / 0.3) = 0.5556 here, asserted through the filter.
+        expected = (5 / 30) / 0.3
+        assert self._survives(1, '10', expected - 1e-6)
+        assert not self._survives(1, '10', expected + 1e-6), (
+            "the bodyId probability is not min(1, ratio/0.3) any more")
+        # block_probability is the complement, so it cannot move independently.
+        assert not {'traversal_probability', 'block_probability'} \
+            & set(conn_df.columns), \
+            "the suspended pair is back on the returned bodyId frame"
 
     def test_probability_capped_at_1(self):
-        conn_df, _, _ = EnrichConnectionTable(
-            _synthetic_conn(), traversal_probability_threshold=0,
-            global_incoming_weights=_global_incoming(),
-        )
-        # D->W bodyId row has ratio 0.4 -> prob 1.333 -> capped to 1.0
-        row = conn_df[(conn_df['bodyId_pre'] == 7) & (conn_df['bodyId_post'] == '14')].iloc[0]
-        assert row['traversal_probability'] == pytest.approx(1.0)
+        # D->W bodyId row has ratio 0.4 -> prob 1.333, which the cap holds at
+        # 1.0. A threshold just above 1.0 is therefore reachable by NO row: an
+        # uncapped 1.333 would still survive it.
+        assert self._survives(7, '14', 1.0)
+        assert not self._survives(7, '14', 1.0 + 1e-9), (
+            "traversal_probability escaped its 1.0 cap")
 
     def test_polars_bodyid_level_matches_pandas(self):
         conn_df_pd, _, _ = EnrichConnectionTable(
@@ -128,10 +152,16 @@ class TestBodyIdLevelMetrics:
             _synthetic_conn(), traversal_probability_threshold=0,
             global_incoming_weights=_global_incoming(),
         )
-        # PROBABILITY SUSPENSION (2026-10-06): the polars engine no longer
-        # exports traversal_probability/block_probability on the bodyId frame.
-        assert 'traversal_probability' not in conn_df_pl.columns
-        assert 'block_probability' not in conn_df_pl.columns
+        # PROBABILITY SUSPENSION (2026-10-06): NEITHER engine exports
+        # traversal_probability/block_probability on the bodyId frame. The
+        # polars engine dropped them from the start; the pandas engine dropped
+        # them only from its type/group frames, so this test used to assert the
+        # ABSENCE on one engine and read the values from the other — the
+        # divergence itself is now the failure (see
+        # test_bodyid_level_shared_schema).
+        for frame in (conn_df_pd, conn_df_pl):
+            assert not {'traversal_probability', 'block_probability'} \
+                & set(frame.columns)
         pl_pd = conn_df_pl.to_pandas().sort_values(['bodyId_pre', 'bodyId_post']).reset_index(drop=True)
         pd_pd = conn_df_pd.sort_values(['bodyId_pre', 'bodyId_post']).reset_index(drop=True)
         for col in ['weight', 'connection_ratio']:
@@ -407,6 +437,26 @@ class TestEnrichmentEngineParity:
         for col in ('type_pre', 'native_type_pre'):
             assert list(pd_pd[col].astype(str)) == list(pl_pd[col].astype(str)), col
         assert len(pl_pd) == len(pd_pd)
+        # The FULL bodyId column set, not just the typing pair: measured
+        # 2026-10-14 the pandas frame still carried the two suspended
+        # probability columns while polars dropped them, so a reader had to
+        # know which engine enriched the frame before asking whether a
+        # probability exists in it — and `VisualizeDirectConnections_simple`
+        # fed the pandas values into the path visualization, which the
+        # suspension covers (no export, no display, no ranking).
+        assert set(conn_df_pd.columns) == set(conn_df_pl.columns), (
+            f"bodyId schema diverged: "
+            f"only-pandas={sorted(set(conn_df_pd.columns) - set(conn_df_pl.columns))} "
+            f"only-polars={sorted(set(conn_df_pl.columns) - set(conn_df_pd.columns))}")
+        for frame, name in ((conn_df_pd, 'pandas'), (conn_df_pl, 'polars')):
+            assert not ({'traversal_probability', 'block_probability'}
+                        & set(frame.columns)), (
+                f"{name} exports the suspended probability columns on the "
+                "bodyId frame")
+        # Ratios are UNAFFECTED by the suspension — the guard against an
+        # over-broad drop.
+        assert 'connection_ratio' in set(conn_df_pd.columns)
+        assert 'connection_ratio' in set(conn_df_pl.columns)
         for col in sorted(shared):
             # bodyId_pre may be int (pandas, no-local fallback) vs str (polars)
             left = pl_pd[col].astype(str) if col == 'bodyId_pre' else pl_pd[col]
