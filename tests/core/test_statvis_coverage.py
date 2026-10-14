@@ -6,7 +6,9 @@ no reads from datasets/ or cache/.
 """
 import ast
 import os
+import re
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +20,9 @@ import statvis as sv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+# the headless-Chrome driver the heatmap tests share (tests/vispath is not a package)
+sys.path.insert(0, str(PROJECT_ROOT / "tests" / "vispath"))
+from heatmap_cdp import PAGE_READY, REQUIRES_CDP, Page  # noqa: E402
 
 
 # =============================================================================
@@ -991,6 +996,97 @@ class TestVisConnMatInteractiveLocal:
         sv.VisConnMatInteractive(self._cmat(3, 3, seed=6), str(out),
                                  title="wrap", showfig=False, verbose=False)
         assert out.exists()
+
+
+class TestVisConnMatInteractiveLocalRenders:
+    """The deprecated fallback template has to emit a page that draws.
+
+    ``TestVisConnMatInteractiveLocal`` above asserts only that a file was written
+    and contains a few strings - which is how this template stayed green while its
+    emitted script read ``is_sparse`` / ``sparsity`` / ``use_scatter_mode``, names
+    that exist only in the Python scope of ``_VisConnMatInteractive_local``. The
+    first ``createHeatmap()`` died on ``ReferenceError: is_sparse is not defined``
+    and the page rendered nothing (``.js-plotly-plot`` count 0), and its
+    ``toggleLabels`` additionally referenced ``trace``/``layout`` out of
+    ``createHeatmap``'s block. See
+    ``_plan/plan-2026-10-13-heatmap-label-toggle-dead.md`` §6-§7.
+    """
+
+    def _cmat(self, rows, cols, seed=0):
+        rng = np.random.default_rng(seed)
+        return pd.DataFrame(
+            rng.random((rows, cols)),
+            index=[f"r{i}" for i in range(rows)],
+            columns=[f"c{j}" for j in range(cols)],
+        )
+
+    def _export(self, tmp_path, name="fallback", rows=6, cols=5, seed=1):
+        out = tmp_path / f"{name}.html"
+        sv.VisConnMatInteractive(self._cmat(rows, cols, seed), str(out),
+                                 title=name, showfig=False, verbose=False)
+        assert out.exists() and out.stat().st_size > 1000
+        return out
+
+    @staticmethod
+    def _toggle_body(text):
+        start = text.index("function toggleLabels()")
+        end = text.index("\n        function ", start + 1)
+        return text[start:end]
+
+    def test_template_declares_the_names_its_js_reads(self, tmp_path,
+                                                      local_interactive):
+        text = self._export(tmp_path).read_text(encoding="utf-8")
+        assert re.search(r"const is_sparse = (true|false);", text), \
+            "the JS reads is_sparse; the template must emit it from Python"
+        assert re.search(r"const sparsity = [0-9.eE+-]+;", text), \
+            "the JS reads sparsity; the Python name is sparsity_ratio"
+        assert "const use_scatter_mode = false;" in text
+
+    def test_template_carries_no_nested_title_keys(self, tmp_path,
+                                                   local_interactive):
+        text = self._export(tmp_path, name="keys").read_text(encoding="utf-8")
+        for key in ("'colorbar.title.text'", "'title.text'",
+                    "'xaxis.title.text'", "'yaxis.title.text'"):
+            assert key not in text, f"{key} throws on a string-stored title"
+        body = self._toggle_body(text)
+        # the update objects this function built were never applied, and its
+        # Plotly.react referenced out-of-scope consts: the toggle is a re-render
+        assert "createHeatmap();" in body
+        assert "Plotly.react('heatmap'" not in body
+        assert "layoutUpdate" not in body and "traceUpdate" not in body
+
+    @REQUIRES_CDP
+    def test_page_renders_and_the_button_changes_the_labels(self, tmp_path,
+                                                            local_interactive):
+        page = Page(self._export(tmp_path, name="live", rows=12, cols=12))
+        try:
+            assert page.wait(PAGE_READY, timeout=120), \
+                "the fallback page drew no plotly graph at all"
+            read = ("var gd=document.querySelector('.js-plotly-plot');"
+                    "return {ticks: document.querySelectorAll("
+                    "'.xtick text, .ytick text').length,"
+                    " showLabels: showLabels,"
+                    " btn: document.getElementById('toggleLabelsBtn')"
+                    ".textContent.trim()};")
+            load = page.js(read)
+            assert load["ticks"] > 0, f"a small map opens with labels shown: {load}"
+
+            page.js("document.getElementById('toggleLabelsBtn').click();")
+            time.sleep(1.5)
+            hidden = page.js(read)
+            assert hidden["ticks"] < load["ticks"], \
+                f"the press moved no labels: {load} -> {hidden}"
+            assert hidden["showLabels"] is False
+            assert hidden["btn"].startswith("🏷️ Show"), hidden
+
+            page.js("document.getElementById('toggleLabelsBtn').click();")
+            time.sleep(1.5)
+            shown = page.js(read)
+            assert shown["ticks"] == load["ticks"], shown
+            assert shown["btn"].startswith("🏷️ Hide"), shown
+            assert page.errors() == [], page.errors()
+        finally:
+            page.close()
 
 
 class TestVisConnMatInteractiveDendrogram:

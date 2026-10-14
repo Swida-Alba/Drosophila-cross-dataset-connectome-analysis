@@ -3003,9 +3003,17 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
     - Scale switcher: Linear / Log2 / Log10 / Sqrt
     - Colorscale selector with presets (Greens, Purples, Oranges, Blues, Reds, Viridis, etc.)
     - Font size slider
+    - Label toggle ("🏷️ Show/Hide Text"): flips showLabels and re-renders through
+      createHeatmap, which reads the flag into the layout. Unlike the vispath page
+      it leaves the figure and axis titles standing, and it does not resize the
+      canvas for a large matrix.
     - Export to SVG with adjustable resolution
     - Zoom/pan controls
     - Save/load layout state
+
+    The page script reads `is_sparse`, `sparsity` and `use_scatter_mode`; those are
+    Python-side values here, so the template emits them as constants (before that
+    the first createHeatmap() threw ReferenceError and the page drew nothing).
     
     Parameters
     ----------
@@ -3877,8 +3885,16 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
         let useClusteredOrder = false;  // Track current ordering mode
         let currentClusteringMethod = 'ward';  // Current clustering method (ward, average, complete, single)
         let isTransposed = false;  // Track if matrix is transposed
-        const metricType = '{metric_type}';
         const isLarge = {json.dumps(is_large)};
+        // Emitted from the Python scope. The JS below reads these three by name;
+        // `sparsity` and `use_scatter_mode` do not exist in this function at all
+        // (the Python name is `sparsity_ratio`, and this deprecated copy never
+        // builds scatter-mode traces), so without these lines the first
+        // createHeatmap() dies on `ReferenceError: is_sparse is not defined` and
+        // the page renders nothing.
+        const is_sparse = {json.dumps(bool(is_sparse))};
+        const sparsity = {json.dumps(float(sparsity_ratio))};
+        const use_scatter_mode = false;
         const originalTitle = '{_statvis_js_escape(title)}';
         
         // Data filter state
@@ -4304,10 +4320,13 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
                 margin: {{l: 120, r: 40, b: 120, t: 100, pad: 4}}
             }};
             
-            // Add compression hint in title for user awareness
+            // Add compression hint in title for user awareness. layout.title is a
+            // plain string in this build, so the hint extends the string - writing
+            // `layout.title.text` is a property write on a string primitive, which
+            // a classic script drops silently.
             if (is_sparse && !use_scatter_mode) {{
                 const sparsity_pct = Math.round(sparsity * 100);
-                layout.title.text += `<br><sub style='color:#666;'>Matrix ${{
+                layout.title = layout.title + `<br><sub style='color:#666;'>Matrix ${{
                     sparsity_pct
                 }}% sparse - optimized for file size</sub>`;
             }}
@@ -4634,61 +4653,15 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
         function toggleLabels() {{
             showLabels = !showLabels;
             const btn = document.getElementById('toggleLabelsBtn');
+            // createHeatmap reads showLabels into the layout it builds, so
+            // re-rendering IS the toggle. What this function used to do instead was
+            // build two update objects it never applied (carrying the nested
+            // colorbar-title key that throws on the vispath copy), then call
+            // Plotly.react with trace/layout that are consts inside createHeatmap's
+            // block - out of scope here. The caption is written last, from the state
+            // the re-render actually used.
+            createHeatmap();
             btn.textContent = showLabels ? '🏷️ Hide Text' : '🏷️ Show Text';
-            
-            // Update the layout to hide/show ALL text elements including colorbar
-            const gd = document.getElementById('heatmap');
-            
-            // Update colorbar text (trace-level property)
-            const traceUpdate = {{
-                'colorbar.title.text': showLabels ? (metricType.charAt(0).toUpperCase() + metricType.slice(1)) : '',
-                'colorbar.showticklabels': showLabels
-            }};
-            
-            // Update layout elements
-            const layoutUpdate = {{
-                'title.text': showLabels ? originalTitle : '',
-                'xaxis.showticklabels': showLabels,
-                'yaxis.showticklabels': showLabels,
-                'xaxis.title.text': showLabels ? (isLarge ? '<b>Target</b> (' + gd.data[0].x.length + ' neurons)' : '<b>Target</b>') : '',
-                'yaxis.title.text': showLabels ? (isLarge ? '<b>Source</b> (' + gd.data[0].y.length + ' neurons)' : '<b>Source</b>') : '',
-                'xaxis.ticks': showLabels ? 'outside' : '',
-                'yaxis.ticks': showLabels ? 'outside' : '',
-                // Prevent autosize from expanding the plot
-                'autosize': false,
-                // Keep margins fixed to prevent rescaling
-                'margin.l': 120,
-                'margin.r': 40,
-                'margin.t': 100,
-                'margin.b': 120,
-                // Preserve dimensions explicitly
-                'width': currentWidth,
-                'height': currentHeight
-            }};
-            
-            // Add compression hint in title for user awareness
-            if (is_sparse && !use_scatter_mode) {{
-                const sparsity_pct = Math.round(sparsity * 100);
-                layout.title.text += `<br><sub style='color:#666;'>Matrix ${{
-                    sparsity_pct
-                }}% sparse - optimized for file size</sub>`;
-            }}
-            
-            // For scatter mode, lock aspect ratio and adjust margins
-            if (use_scatter_mode) {{
-                layout.xaxis.constrain = 'domain';
-                layout.yaxis.scaleanchor = 'x';
-                layout.plot_bgcolor = 'white';
-                layout.xaxis.showgrid = true;
-                layout.yaxis.showgrid = true;
-                layout.xaxis.gridcolor = 'rgba(0,0,0,0.1)';
-                layout.yaxis.gridcolor = 'rgba(0,0,0,0.1)';
-                layout.margin.t = 100;
-                layout.margin.b = 120;
-            }}
-            
-            // Create or update the heatmap using Plotly.react (handles both creation and updates)
-            Plotly.react('heatmap', [trace], layout);
         }}
         
         function toggleCellValues() {{
@@ -5862,7 +5835,9 @@ def _VisConnMatInteractive_local(cmat, filename, title='', color_scale=[[0, 'rgb
             if (saved.showLabels !== undefined) {{
                 showLabels = saved.showLabels;
                 const btn = document.getElementById('toggleLabelsBtn');
-                if (btn) btn.textContent = showLabels ? '🏷️ Hide Labels' : '🏷️ Show Labels';
+                // this template's caption wording, matching the button markup and
+                // toggleLabels (the vispath copy says "Labels" instead)
+                if (btn) btn.textContent = showLabels ? '🏷️ Hide Text' : '🏷️ Show Text';
             }}
             if (saved.showCellValues !== undefined) {{
                 showCellValues = saved.showCellValues;
