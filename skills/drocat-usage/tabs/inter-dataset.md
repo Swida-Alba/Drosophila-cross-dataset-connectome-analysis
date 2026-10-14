@@ -309,6 +309,18 @@ writes both files.
   combination style).
 - `degree_*`, `top_edges_*`, and `unique_to_*` exports are Standard-only;
   Custom combination runs omit them rather than infer a union threshold.
+- **Custom groups retype, and the leftovers are visible.** With a custom
+  mapping, enrolled neurons are keyed by their group label everywhere; neurons
+  of a native type the grouping covers only PARTLY (or whose name is itself a
+  group label) are emitted as `SMP540*` — a terminal key that never merges
+  with the governed neurons or a same-named label. Every connection table keeps
+  the raw native type beside the resolved one (`native_type_pre`), and what a
+  `T*` row contains is published per dataset in
+  `comparison_report_used_data/label_mapper_residuals.csv`, in the delegate
+  runs' `all_attributes.json`, and in the `[label mapper residuals]` line of
+  `user_warning_notes.txt`. If a dataset has no local neuron table the notes
+  say residuals were NOT evaluated (labels still applied) rather than staying
+  quiet.
 - Use `auto_type_mapping=True` (and `overall_mapping_json`) when type names differ
   between datasets. Path/edge merging resolves through the shared validity-aware
   resolver: licensed renames merge under the canonical key, valid splits expand,

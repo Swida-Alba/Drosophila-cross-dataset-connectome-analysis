@@ -89,9 +89,11 @@ The refill adds back exactly that mass:
   must reproduce the exported table exactly (`table_reproduced`) — on
   any mismatch the refill **refuses** rather than emit wrong numbers.
   On label-mapper runs the emitted pairs are read under the mapper's
-  effective labels (the bodyId export's `std_label_*` columns, falling
-  back to the native `type_*` per row) so the re-derivation keys match
-  the exported table.
+  effective labels directly from `type_pre`/`type_post` of the bodyId
+  export — the delegate publishes the effective key there (with the raw
+  native type in `native_type_*`), and the refill's own map is built by
+  the same registry, so re-derivation and export agree without a
+  std-label fallback.
 - **Certified lower bound** — asked-threshold paths that leave the
   involved-type subgraph cannot be seen; the provenance discloses the
   conservatism gap instead of silently closing it.

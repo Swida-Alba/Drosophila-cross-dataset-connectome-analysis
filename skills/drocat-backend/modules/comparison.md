@@ -108,9 +108,46 @@ labeler = LabelMapper()                # explicit per-dataset override (wins)
 # form, so a no-preset run's exports are unchanged.
 ```
 
+**Label-mapper typing (`T*` residuals) — one producer, and who may call it.**
+`comparison.type_resolver.ResidualRegistry` is the only producer of the
+effective type key: a mapper member takes its settled label (a direct bodyId
+member ahead of any whole-type/instance expansion), a NON-member of a native
+type the mapper governs only partially — or whose name is itself a settled
+label — takes the terminal `T*` key, and everything else keeps its raw type
+(untyped neurons keep their bodyId). `build_type_key_map` /
+`get_residual_registry` expose it; `statvis.apply_typing_columns(frame,
+registry)` writes the resolved key into `type_pre`/`type_post` and preserves the
+raw value as `native_type_pre`/`native_type_post` — the `std_label_*` twin
+column is no longer exported, and readers must never re-derive the key from
+`LabelMapper.get_label` (that lookup answers label-or-identity and would erase
+the `T*` a run emitted). ASSIGN/DECIDE rights follow capability: only a lane
+that can see the dataset's neuron population (`statvis.neuron_population
+(dataset, script_path, text_only=)`) assigns; enrollment
+(`FindNeuronConnection._residual_registry`), the path fetch lanes, the
+refill/corridor/ratio map (`build_effective_type_map`) and the partner-collapse
+fold all do; the analyzer load lane verifies, and its own fresh edge query
+types as a producer (`_type_queried_frame`). The tag is hemisphere-aware
+(`is_residual_key('SMP540*_L')` is True; `is_terminal_identity` is the shared
+tier-0 test) and deliberately undecorated across datasets, so its composition
+must be published: `registry.metadata()`/`.notes()` feed
+`all_attributes.json['label_mapper_residuals']`, the run folder's
+`label_mapper_residuals.csv`, the comparison's used-data census and the report
+card. With no local neuron table, membership still applies and residuals report
+`NOT EVALUATED` instead of silently vanishing.
+
 `ComparisonParameters.for_run_folder(run_dir)` pins parameters to an
 existing run folder (in-place resume / re-export — `from_dict` alone
-re-timestamps the folder). `ComparisonParameters.auto_type_mapping=True` (plus `overall_mapping_json`) is the
+re-timestamps the folder). It also **reattaches the run's user label mapper**
+from that folder's `label_map.json` (2026-10-14): `parameters.json` carries
+scalars only, so without the reattach a re-export runs mapper-less and every
+tier-0 disclosure it is supposed to REFRESH (`[user label mapper]`, the
+`[label mapper residuals]` census, `key_class='user_label'`, the alignment
+lane's label pass-through) would instead describe a run with no mapper. An
+empty export reattaches nothing. The same file is only re-loadable because the
+writer now emits the `format: drocat_custom_groups/v1` tag that
+`verify_preset_format` requires of every preset reader — write-and-read-back is
+the test for any artifact this project both emits and consumes.
+`ComparisonParameters.auto_type_mapping=True` (plus `overall_mapping_json`) is the
 usual way to resolve differing type names; `LabelMapper` is the manual override.
 `CrossDatasetTypeMapper.get_mapped_type()` / `resolve_type_across_datasets()`
 are **compatibility-only** (no status/provenance; `None` on splits/conflicts) —

@@ -490,8 +490,9 @@ explicit matrices), the cross-dataset HTML report (type-count grouping
 and canonical row keys), the mapping flow builders
 (`resolve_flow_status`), and the comparison analyzer/parameters type
 resolution. This lane is separate from the explicit LabelMapper lane
-(`std_label_*`, applied at connection extraction) — see 'The two label
-lanes' in docs/AUTO_TYPE_MAPPING.md. The
+(the effective type key, produced by `comparison.type_resolver.ResidualRegistry`
+at connection extraction and published as `type_pre`/`type_post`) — see 'The
+two label lanes' in docs/AUTO_TYPE_MAPPING.md. The
 legacy `get_mapped_type()` / `resolve_type_across_datasets()` remain as
 compatibility-only wrappers (None for splits/conflicts, no provenance);
 new analysis code must use the resolver.

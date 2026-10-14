@@ -69,6 +69,15 @@ call, inside the per-layer enrichment.
 **Fix:** precompute the `bodyId` set once and use O(1) membership checks
 (O(M + N)).
 
+*Names since then:* the O(M + N) shape is unchanged, but this function is no
+longer a second implementation of the label typing — it delegated to
+`comparison.type_resolver.ResidualRegistry` on 2026-10-13 and was then deleted,
+so the producer is `build_type_key_map` / `get_residual_registry` (see
+`_plan/issues-2026-10-13-label-mapper-type-space-completeness.md` §8). The
+`std_label_pre`/`std_label_post` columns named below are likewise gone: the
+resolved key is exported as `type_pre`/`type_post`, with the raw native type in
+`native_type_pre`/`native_type_post`.
+
 ## Row-wise `map_elements` with a Python dict
 
 The `std_label` global-ratio branch in

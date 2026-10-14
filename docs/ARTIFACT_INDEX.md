@@ -176,6 +176,16 @@ the Excel-only connectivity matrices `conn_mat_*` (`src/coana.py:2208`, `:2216`,
 folder carries an `*_allpaths_info.xlsx` (`src/coana.py:17901`) beside its CSVs — cite the
 CSV.
 
+**Label-mapper typing artifacts.** Every exported connection frame carries the
+effective type key in `type_pre`/`type_post` and the raw native type beside it
+in `native_type_pre`/`native_type_post` (2026-10-13 contract; the `std_label_*`
+pair is no longer exported). What a `T*` row stands for is published per
+dataset in `label_mapper_residuals.csv` (engine run folder and
+`comparison_report_used_data/`) and in the `label_mapper_residuals` record of
+`all_attributes.json`, and `edge_key_variants.csv` labels such rows through its
+`key_class` column. Producers and readers are enumerated in
+`_plan/issues-2026-10-13-label-mapper-type-space-completeness.md` §8.
+
 Skills: `drocat-usage` (`tabs/connectivity-profiling.md`, `find-homologs.md`, `find-path.md`,
 `find-shortest.md`, `network.md`, `find-similar.md`, `inter-dataset.md`, `nb-find-lines.md`,
 `nb-find-neuron.md`, `nb-colabel.md`) and `drocat-backend`

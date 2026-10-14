@@ -126,11 +126,16 @@ A neuron without a type (or without a custom group) is never dropped
 from the type/group aggregation. Both enrichment engines resolve each
 bodyId to exactly one label by the exclusive chain
 
-- type level: `std_label -> type -> bodyId`
-- group level: `custom_group -> type -> bodyId`
+- type level: `settled label -> T* residual -> native type -> bodyId`
+- group level: `custom_group -> (that same effective key) -> bodyId`
 
-first non-empty wins, so a bodyId never appears under both its custom
-group and its raw type. Untyped neurons therefore aggregate under their
+first match wins, so a bodyId never appears under both its custom group
+and its raw type. The resolved key is exported as `type_pre`/`type_post`
+with the raw native type beside it (`native_type_pre`/`native_type_post`),
+and every lane that assigns it — both enrichment engines, the path fetch
+lanes, the enrollment CSVs, the refill map — resolves it through
+`comparison.type_resolver.ResidualRegistry`, so one neuron cannot be typed
+two ways inside one run. Untyped neurons therefore aggregate under their
 bodyId (per-neuron groups) instead of vanishing or merging into an
 'Unknown' bucket, and the derivation callables use the same chain, so
 the type/group paths they emit stay consistent with the edge tables.

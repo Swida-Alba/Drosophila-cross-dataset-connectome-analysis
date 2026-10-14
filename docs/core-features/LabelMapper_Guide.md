@@ -183,23 +183,51 @@ The web UI builds custom mappings **inline on each tab** — no scripting needed
    group history, and passed to the run — as `overall_mapping_json` on the
    Cross-Dataset page, where it acts as a mapping **overlay**: your explicit
    source/target neuron queries stay, and only neurons matching the mapping
-   are renamed to their custom groups (unmapped neurons keep their
-   identifiers) — or as `custom_mapping_file` on the path/network tabs, where
-   mapped neurons are grouped at type level via `EnrichConnectionTable`
-   (custom_group columns).
+   are renamed to their custom groups (a neuron the grouping does not touch
+   keeps its own identifier — unless it belongs to a type the grouping covers
+   only partly, see the residual rule below) — or as `custom_mapping_file` on
+   the path/network tabs, where mapped neurons are grouped at type level via
+   `EnrichConnectionTable` (custom_group columns).
 
-   **Residual neurons of collided native types** (2026-10-08): when a
-   native type's population is only PARTIALLY governed — some of its
-   neurons are mapper members and others are not — or the type name is
-   itself one of the mapper's labels, the type resolver star-tags the
-   unenrolled neurons: they are renamed to `T*` (the native type with a
-   trailing `*`) so they can never silently merge into the governed
-   population or into a settled label of the same spelling. `T*` keys are
-   terminal (dataset-scoped, never resolved further) and disclosed in
-   `user_warning_notes.txt`. Cross-dataset name coincidences are
-   dataset-scoped and unaffected (a FAFB intermediate natively typed
-   `SMP540` keeps its raw name even when BANC's enrolled `SMP540` is
-   retyped).
+   **Residual neurons of collided native types** (2026-10-08, boundary and
+   producer set fixed 2026-10-13): when a native type's population is only
+   PARTIALLY governed — some of its neurons are mapper members and others
+   are not — or the type name is itself one of the mapper's labels, the type
+   resolver star-tags the unenrolled neurons: they are renamed to `T*` (the
+   native type with a trailing `*`) so they can never silently merge into
+   the governed population or into a settled label of the same spelling.
+
+   *Who does the renaming*: `comparison.type_resolver.ResidualRegistry` is
+   the only producer of the key, and only a lane that can see the dataset's
+   neuron **population** assigns it — the enrichment delegates, the path
+   fetch lanes, the enrollment CSVs, the refill/corridor/ratio map and the
+   partner-collapse fold. Readers (the comparison analyzer's load lane,
+   metrics alignment of a typed frame, the pair report) consume the published
+   key and never re-derive it: `LabelMapper.get_label` answers
+   label-or-identity, so re-deriving would erase the `T*` the run emitted.
+   A frame therefore exports `type_pre`/`type_post` (the effective key) and
+   `native_type_pre`/`native_type_post` (the raw native type) — the typing
+   does not cost you the provenance.
+   *Terminality*: `T*` is never re-resolved by the policy/family/canonical
+   tiers. The tag is hemisphere-aware, so a separated-hemisphere run's
+   `SMP540*_L` is still recognized as a residual.
+   *Cross-dataset scope*: the key is deliberately UNDECORATED — two
+   datasets' residuals of the same native name are the same class ("the
+   un-enrolled remainder of `T`") and share one comparison row, while a
+   NON-collided dataset's bare `SMP540` never merges with either. The
+   composition behind each such row is published instead of hidden: the
+   `[label mapper residuals]` line in `user_warning_notes.txt`,
+   `label_mapper_residuals.csv` in the run folder, the
+   `label_mapper_residuals` record in `all_attributes.json`, and
+   `comparison_report_used_data/label_mapper_residuals.csv` in the
+   comparison, each giving enrolled / population / residuals per dataset.
+   *When there is no neuron table* (an online-only dataset): membership still
+   applies — your groups still retype their members — but no residual can be
+   evaluated, and the run says so (`NOT EVALUATED (no neuron table)`) instead
+   of looking complete.
+   Cross-dataset name coincidences of an untouched type are unaffected: a FAFB
+   intermediate natively typed `SMP540` keeps its raw name even when BANC's
+   enrolled `SMP540` is retyped.
 3. **Reuse a mapping later** via the board's **Load…** (parses any mapping
    JSON back onto the board) or the history menu.
 4. **Optional — save a named copy in Settings.** The Settings tab's
@@ -212,6 +240,14 @@ The web UI builds custom mappings **inline on each tab** — no scripting needed
 The `Custom Mapping` preset can be overwritten by saving an updated board;
 runs always consume the exported file, so results are reproducible
 (`label_map.json` / `parameters.json` record the mapping used).
+
+`label_map.json` is itself loadable: it carries the same
+`drocat_custom_groups/v1` format tag the board's **Load…** requires, and
+`ComparisonParameters.for_run_folder` reattaches it, so re-exporting an
+existing run folder refreshes the `[user label mapper]` /
+`[label mapper residuals]` disclosure instead of quietly describing a run that
+had no mapper. (Before 2026-10-14 the export omitted the tag, so nothing —
+including DROCAT's own loader — could read it back.)
 
 ## Display Role: Matrix Axes and Label Views (2026-10-11)
 

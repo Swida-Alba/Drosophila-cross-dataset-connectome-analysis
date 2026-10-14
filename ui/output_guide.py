@@ -46,6 +46,28 @@ NO_WARNINGS_TEXT = "No warnings were recorded for this run."
 # =============================================================================
 
 COLUMN_GLOSSARY = {
+    # label-mapper residual census (label_mapper_residuals.csv, engine run
+    # folder and comparison_report_used_data/ alike)
+    'native_type': ('The dataset\'s OWN type name behind a residual row — '
+                    'the type the label mapper governs only partially (or '
+                    'whose name is itself a settled label).', 'string'),
+    'enrolled': ('How many neurons of this native type the label mapper '
+                 'enrolls; they are retyped to their settled label.',
+                 'integer'),
+    'population': ('How many neurons of this native type the dataset '
+                   'actually has, from its full neuron table — the number '
+                   'that makes a partially governed type collided at all.',
+                   'integer'),
+    'residuals': ('population minus enrolled: the neurons left un-enrolled, '
+                  'emitted under the star-tagged key instead of merging into '
+                  'the governed population.', 'integer'),
+    'emitted_key': ('The key those residual neurons are emitted under: the '
+                    'native type plus a trailing `*` (e.g. SMP540*). It is '
+                    'terminal — never re-resolved by the type mapper, never '
+                    'merged with the bare name or a same-spelling label — and '
+                    'it carries no dataset in its spelling, which is what '
+                    'this census row is for. A hemisphere run appends the '
+                    'suffix after the tag (SMP540*_L).', 'string'),
     # ratio-lane disclosure file (plan-connection-ratio-pathfinding §13.2)
     'bodyId_post': ('Post-synaptic bodyId of a ratio-lane cone edge.',
                     'string'),
@@ -923,7 +945,23 @@ _FIND_NETWORK = {
                         "provenance stamps the pair report and the "
                         "type-level refill read)."},
         {"pattern": "all_attributes.json",
-         "description": "Serialized run attributes (machine-readable)."},
+         "description": "Serialized run attributes (machine-readable). "
+                        "With a label mapper this carries "
+                        "label_mapper_residuals: the typing record "
+                        "(which native types are collided, how many "
+                        "neurons are enrolled, how many are left as "
+                        "T*, and whether a neuron population was "
+                        "available at all)."},
+        {"pattern": "label_mapper_residuals.csv",
+         "description": "(runs with a label mapper) the machine-readable "
+                        "census of star-tagged residual keys - one row "
+                        "per native type the mapper governs only "
+                        "partially, or whose name is itself a settled "
+                        "label. A T* key carries no dataset in its "
+                        "spelling, so this is what each such row "
+                        "stands for.",
+         "columns": ["dataset", "native_type", "enrolled", "population",
+                     "residuals", "emitted_key"]},
         {"pattern": "*_allpaths_type.csv",
          "description": "1-hop path-compatible table (path = "
                         "type_pre->type_post) so network runs get the "
@@ -1040,7 +1078,10 @@ _PATHFINDING_FILES = [
      "preview_title": "Target neurons",
      "columns": ["Checked", "Layer"]},
     {"pattern": "all_attributes.json",
-     "description": "Serialized run attributes (machine-readable). Includes "
+     "description": "Serialized run attributes (machine-readable). With a label "
+                     "mapper it carries label_mapper_residuals (the "
+                     "typing census, also exported as "
+                     "label_mapper_residuals.csv). Includes "
                     "the applied-threshold provenance block: "
                     "requested_threshold, applied_threshold, "
                     "applied_threshold_source, strongest_first_tau, "
@@ -1070,7 +1111,9 @@ _PATHFINDING_FILES = [
     {"pattern": "bodyId_visualization/Heatmap_*.html",
      "description": "BodyId-level connection weight heatmap (Skip BodyId "
                     "off) with interactive Ward dendrograms. Same drawing cap "
-                    "as the type-level heatmap."},
+                    "as the type-level heatmap. Above 100 rows or columns the "
+                    "tick labels start hidden — the page's 🏷️ Show Labels "
+                    "button reveals them."},
     {"pattern": "bodyId_visualization/Sankey_*.html",
      "description": "BodyId-level Sankey flow diagram (Skip BodyId off). "
                     "Same drawing cap as the type-level Sankey."},
@@ -2260,7 +2303,10 @@ TOOL_GUIDE_SPECS = {
                             "preserve the row-wise dataset threshold map."},
             {"pattern": "label_map.json",
              "description": "Label mappings for source/target neurons across "
-                            "datasets (incl. auto type mapping)."},
+                            "datasets (incl. auto type mapping). Declares the "
+                            "drocat_custom_groups/v1 format tag, so it loads "
+                            "back into a LabelMapper (the board's Load…, and "
+                            "for_run_folder's reattach on a re-export)."},
             {"pattern": "run_manifest.json",
              "description": "Self-describing manifest of the whole run: the "
                             "parameters dump, dataset nicknames, applied "
@@ -2362,6 +2408,19 @@ TOOL_GUIDE_SPECS = {
                             "collided native types are star-tagged T* by "
                             "the type resolver.",
              "columns": ["label", "total"]},
+            {"pattern": "comparison_report_used_data/label_mapper_residuals.csv",
+             "description": "(runs with a user label mapper) the composition "
+                            "behind every star-tagged residual key, per "
+                            "dataset: the collided native type, how many of "
+                            "its neurons the mapper enrolls, how many are "
+                            "left, and the `T*` key they are emitted under. "
+                            "Read back from each delegate run's own "
+                            "all_attributes.json. A dataset with no local "
+                            "neuron table appears as one NOT EVALUATED row - "
+                            "its partially governed types keep their bare "
+                            "name and can merge with the governed population.",
+             "columns": ["dataset", "native_type", "enrolled", "population",
+                         "residuals", "emitted_key"]},
             {"pattern": "comparison_report_used_data/*.csv",
              "description": "Aggregated metrics backing the report. Standard "
                             "files use threshold keys; Custom combination files "

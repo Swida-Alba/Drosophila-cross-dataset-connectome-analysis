@@ -684,11 +684,18 @@ DROCAT standardizes neuron type names through TWO independent lanes. They
 never mix implicitly, and the explicit lane always wins:
 
 1. **Explicit LabelMapper lane** — a user-provided `LabelMapper` (UI presets,
-   custom mapping files) is applied at connection-extraction time: the
-   connection builder writes `std_label_pre`/`std_label_post` and overwrites
-   the raw `type` columns BEFORE results are cached (`LabelMapper.
-   apply_to_dataframe`). Runs with an explicit mapper are compared under
-   those labels; auto mapping does not second-guess them.
+   custom mapping files) is a RETYPING, applied by the producer lanes that can
+   see the dataset's neuron population: the enrichment delegates, the path
+   fetch lanes, the enrollment CSVs and the refill/corridor/ratio map all
+   resolve each neuron through `comparison.type_resolver.ResidualRegistry`
+   (the only producer of the effective key) and publish it as
+   `type_pre`/`type_post`, with the raw native type kept beside it as
+   `native_type_pre`/`native_type_post` BEFORE results are cached. Runs with
+   an explicit mapper are compared under those labels; auto mapping does not
+   second-guess them, and readers (the analyzer's load lane, the metrics
+   alignment of an already-typed frame) verify rather than re-derive —
+   re-deriving through `LabelMapper.get_label` would erase the `T*` the run
+   emitted, because that lookup answers label-or-identity only.
 
    **Display role (2026-10-11)**: on the profiling/morphology comparison
    family the preset also acts as the tier-0 axis overlay without touching
@@ -742,11 +749,12 @@ the query chips' group labels instead of the canonical male-cns namespace.
   minimal level); querying the parent alone merges it.
 - **Aggregation rides lane-1 plumbing (Decision 8)** — the policy's
   raw→group-label map is materialized as a *policy-synthesized*
-  `LabelMapper` applied through the same
-  `apply_to_dataframe` → `std_label_*` lane at alignment time. It is
-  separate from the user's mapper, and because it is keyed on raw names
-  (which user-governed types no longer carry at that point), user
-  mappings win without any precedence code.
+  `LabelMapper` applied through the same typing writer at alignment time
+  (`apply_typing_columns` over the registry). It is separate from the
+  user's mapper, and because it is keyed on raw names (which
+  user-governed types no longer carry at that point), user mappings win
+  without any precedence code — and an already-typed frame's `T*` key is
+  never re-mapped, since the tag is a terminal key, not a member name.
 - **Evidence surfaces** — the run exports
   `type_resolution_topology.json` (per-group tree with per-branch
   linker-refined pool sizes and vote support), and
@@ -989,7 +997,10 @@ display = mapper.get_display_name(
 # keys. Which raw per-dataset names each key stands for is disclosed in
 # `comparison_results/edge_key_variants.csv` and the report's
 # "Names by dataset" hovers. Residual neurons of label-mapper-collided
-# native types are star-tagged `T*` (terminal, dataset-scoped).
+# native types are star-tagged `T*`: terminal (never re-resolved, never
+# merged with the governed population or a same-spelling settled label) and
+# deliberately UNDECORATED, so `label_mapper_residuals.csv` publishes the
+# enrolled/population composition each such row stands for, per dataset.
 ```
 
 ### Export Methods
