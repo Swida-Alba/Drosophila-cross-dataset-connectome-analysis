@@ -1934,11 +1934,17 @@ class FastGraph:
                 counter += 1
 
         # D1-B: certify the strongest omitted SIMPLE path with a bounded
-        # best-first pass strictly below tau. Completions are visited in
-        # non-increasing bound order, so once the popped bound falls
-        # below the best sub-tau completion found, that completion is the
-        # EXACT strongest omitted path; a pass that ends uncapped with no
-        # completion proves the emitted set was already complete.
+        # best-first pass over the completions whose bottleneck falls below
+        # tau. Completions are visited in non-increasing bound order, so
+        # once the popped bound falls below the best sub-tau completion
+        # found, that completion is the EXACT strongest omitted path; a
+        # pass that ends uncapped with no completion proves the emitted
+        # set was already complete.
+        # SOUNDNESS: only completions are FILTERED by tau, never prefixes.
+        # A path's bottleneck dips below tau on its weakest edge, which may
+        # be the last one (S -8-> B -3-> T at tau 4), so a prefix still at
+        # or above tau must be walked; skipping it loses exactly the paths
+        # this pass exists to find and retires bites that are real.
         w2_exact = False
         w2_capped = False
         if exact_dropped and truncated and tau is not None:
@@ -1984,8 +1990,11 @@ class FastGraph:
                     if raw_of(v) in path_set:
                         continue
                     new_run = run_b if run_b < w else w
-                    if new_run >= tau:
-                        continue  # completions here stay >= tau
+                    # A prefix still at/above tau MUST be walked: the dip
+                    # can happen on any LATER edge (S-8->B-3->T with tau 4
+                    # is a real omitted path whose first edge is strong).
+                    # Pruning on new_run >= tau would make both the exact
+                    # w2 and the completeness retirement unsound.
                     v_bound = W[remaining].get(v)
                     if v_bound is None:
                         continue

@@ -233,7 +233,7 @@ finalized by `_finalize_threshold_provenance` +
 | `strongest_first_budget` | the effective path budget (0/auto → 1,000,000) |
 | `strongest_first_budget_bitten` | whether the budget actually bit |
 | `strongest_first_tau` | the landing τ (collapse bound); for a complete run, the natural weakest emitted-path bottleneck |
-| `tau_canonical` | the minimal equivalent threshold: `w2+1` when the bite leaves a gap `[w2+1, τ]`, else the landing/natural τ. This IS `applied_threshold` on a budgeted slice |
+| `tau_canonical` | the minimal equivalent threshold: `w2+1` when the bite leaves a gap `[w2+1, τ]`, else the landing/natural τ. This IS `applied_threshold` on a budgeted slice. `tau_canonical_minimal` says whether `w2` was CERTIFIED by the sub-tau pass (D1-B) or is still a walk-relaxed upper bound |
 | `strongest_dropped_bottleneck` | w2 — the strongest path NOT emitted after a bite |
 | `edge_budget` / `edge_budget_applied` | the cap and whether the floor is **binding for this threshold** (`w0 > requested`); a floor at or below the request leaves the output untouched |
 | `edge_budget_landing` (w1) / `edge_weight_floor` (w0) | the tier that determined the floor and the floor itself |

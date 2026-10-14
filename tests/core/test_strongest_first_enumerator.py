@@ -240,3 +240,83 @@ def test_no_budget_strongest_dropped_is_none():
     assert stats['budget_bitten'] is False
     assert stats['strongest_dropped'] is None
     assert stats['tau'] == 20          # natural tau = weakest path
+
+
+# ---------------------------------------------------------------------------
+# D1-B certificate soundness: the sub-tau pass must walk whole prefixes
+# ---------------------------------------------------------------------------
+
+DIP_EDGES = [
+    ('S', 'A', 5), ('S', 'B', 8), ('A', 'T', 6), ('B', 'T', 3),
+    ('A', 'C', 4), ('C', 'T', 9), ('S', 'T', 12),
+]
+
+
+def test_dip_on_a_later_edge_is_not_certified_away():
+    """Regression: the strongest omitted path's dip can sit on a LATER edge
+    (here S-8->B-3->T, bottleneck 3, while tau is 4 and its first edge is
+    strong). The sub-tau pass used to skip every prefix still at/above tau,
+    so it found nothing below tau, declared the emitted set complete and
+    RETIRED a bite that really dropped a path — and the run folder then
+    printed "Complete enumeration" for a truncated run.
+
+    The emitted set is exactly the paths with bottleneck >= tau, so the
+    certificate is what tells a user whether weaker paths exist."""
+    g = _graph(DIP_EDGES)
+    stats = {}
+    kept = list(g.find_paths_strongest_first(
+        ['S'], ['T'], 3, budget=3, stats=stats, yield_bottleneck=True))
+    assert [b for b, _ in kept] == [12, 5, 4]
+    assert stats['tau'] == 4
+    assert stats['budget_bitten'] is True
+    assert stats['strongest_dropped'] == 3      # S -> B -> T, omitted
+    assert stats['w2_exact'] is True
+
+    # the certified value must agree with the walk-relaxed BOUND it replaced
+    bound_stats = {}
+    list(g.find_paths_strongest_first(
+        ['S'], ['T'], 3, budget=3, stats=bound_stats, exact_dropped=False))
+    assert bound_stats['budget_bitten'] is True
+    assert bound_stats['strongest_dropped'] == stats['strongest_dropped']
+
+
+@pytest.mark.parametrize('seed,budget', [(1, 2), (7, 3), (42, 5), (11, 9)])
+def test_random_graphs_budget_certificate_matches_bruteforce(seed, budget):
+    """Property over pseudo-random graphs: whatever the budget does, the
+    certified strongest omitted path equals the truth read off the complete
+    universe, the emitted set is exactly the paths at/above tau, and the
+    bite is retired only when nothing was actually omitted."""
+    import random
+    rng = random.Random(seed)
+    nodes = [f'n{i}' for i in range(10)]
+    edges = [(u, v, rng.randint(1, 15))
+             for u in nodes for v in rng.sample(nodes, 3) if u != v]
+    g = _graph(edges)
+    sources, targets, cutoff = nodes[:2], nodes[-2:], 3
+
+    universe = _universe(g, sources, targets, cutoff)
+    bottlenecks = sorted((_bottleneck(p, g) for p in universe), reverse=True)
+    stats = {}
+    paths = list(g.find_paths_strongest_first(
+        sources, targets, cutoff, budget=budget, stats=stats))
+
+    if not bottlenecks:
+        assert paths == [] and stats['budget_bitten'] is False
+        return
+
+    if len(bottlenecks) <= budget:
+        expected_tau = bottlenecks[-1]
+        dropped = []
+    else:
+        expected_tau = bottlenecks[budget - 1]
+        dropped = [b for b in bottlenecks if b < expected_tau]
+
+    assert stats['tau'] == expected_tau
+    assert stats['budget_bitten'] is bool(dropped)
+    assert stats['strongest_dropped'] == (max(dropped) if dropped else None)
+    assert {tuple(p) for p in paths} == {
+        tuple(p) for p in universe if _bottleneck(p, g) >= expected_tau}
+    if dropped:
+        # a real omission was certified exactly, not left as a bound
+        assert stats['w2_exact'] is True
+        assert stats['w2_capped'] is False

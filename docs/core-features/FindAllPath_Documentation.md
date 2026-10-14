@@ -200,11 +200,13 @@ block to `parameters.txt`, `all_attributes.json` and
 'strongest_first_budget+edge_budget'), `strongest_first_budget` (auto
 1,000,000) and `strongest_first_budget_bitten`, `strongest_first_tau` (the
 landing tau), `tau_canonical` (a threshold that reproduces the
-materialized set — an upper bound of the minimal equivalent threshold,
-not a certified minimum: F-PF-001), `strongest_dropped_bottleneck` (w2,
-an UPPER BOUND on the strongest omitted simple path — walk-relaxed
-prefix bounds can overstate it, and a reached budget with nothing
-actually omitted is possible), `edge_budget`, `edge_budget_applied`,
+materialized set — the MINIMAL equivalent when the engine certified the
+omitted path, otherwise an upper bound of it),
+`strongest_dropped_bottleneck` (w2 — the strongest omitted simple path,
+`strongest_dropped_is_bound` saying which: the walk-relaxed bound can
+overstate it, and a budget reached with nothing actually omitted is
+possible; `tau_canonical_minimal` True marks the certified case, F-PF-001
+/ D1-B), `edge_budget`, `edge_budget_applied`,
 `edge_budget_landing` (w1),
 `edge_weight_floor` (w0), `strongest_retained_bottleneck` (W*), and
 `paths_complete`. Backward-compatible `applied_tau` /
