@@ -2877,6 +2877,40 @@ def test_comparer_run_bodyid_aggregation(tmp_path, pc_fake_repo):
                                          'type-average of bodyId pairs']
 
 
+def test_run_publishes_the_partner_fold_census(tmp_path, pc_fake_repo):
+    """A refused partner fold reaches the run folder.
+
+    `_label_for_type_via_mapper` has always recorded its refusals on
+    ``_partner_fold_mixed`` and its docstring said "so the report can say so",
+    but nothing read the attribute — the disclosure could not fire
+    (_plan/pending_issues.md, same class as LM-007). This seeds the census
+    directly, because the fold decision itself is pinned elsewhere
+    (test_residual_registry) and what is under test here is the export: the
+    README Names the raw partner type and parameters.json carries the row.
+    """
+    comp = _comparer([1, 2], tmp_path, aggregation_level='bodyid')
+    fake = _FakeProfilerFull(
+        profiles={
+            ('1', DS_A): _rich_profile(1, DS_A),
+            ('2', DS_A): _rich_profile(2, DS_A),
+        },
+    )
+    fake.types_for_bodyids[DS_A] = {1: 'T1', 2: 'T1'}
+    comp.profiler = fake
+    comp._partner_fold_mixed = {(DS_A, 'SMP540'): {
+        'label': 'DN1pD', 'residuals': 2, 'population': 3}}
+    res = comp.run()
+
+    out = Path(res['output_path'])
+    readme = (out / 'README.txt').read_text(encoding='utf-8')
+    assert 'partner_fold_mixed' in readme, readme[-800:]
+    assert 'SMP540' in readme and '2/3' in readme
+    params = json.loads((out / 'parameters.json').read_text(encoding='utf-8'))
+    assert params['partner_fold_mixed'] == [
+        {'dataset': DS_A, 'raw_type': 'SMP540', 'label': 'DN1pD',
+         'residuals': 2, 'population': 3}]
+
+
 def test_comparer_run_custom_group_aggregation(tmp_path, pc_fake_repo):
     """A group×group matrix is filed under group_level/, not type_level/.
 

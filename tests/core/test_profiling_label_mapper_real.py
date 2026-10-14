@@ -169,3 +169,18 @@ def test_real_partner_grouping_collapses_profile_keys(
                     n_label_keys += 1
     assert n_label_keys > 0, (
         'no partner key folded into a group label — the collapse no-opped')
+    # And the refusals are PUBLISHED, not merely decided: what the lane kept
+    # raw has to be readable from the run's own record (a census that exists
+    # only in memory is the LM-007 failure class — a disclosure that cannot
+    # fire). This is the wiring check, not a claim that the clock presets
+    # refuse anything: measured 2026-10-14 these real runs record an EMPTY
+    # census (every partner type they touch is fully governed), so the row
+    # shape below is a guard on future rows, and the census's own content is
+    # pinned in tests/core/test_residual_registry.py.
+    params = json.loads(
+        (Path(result['output_path']) / 'parameters.json').read_text(
+            encoding='utf-8'))
+    census = params.get('partner_fold_mixed')
+    assert isinstance(census, list), 'parameters.json lost the fold census'
+    assert {(r['dataset'], r['raw_type']) for r in census} == \
+        set(comparer._partner_fold_mixed)

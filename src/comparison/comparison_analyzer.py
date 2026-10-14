@@ -1600,9 +1600,8 @@ class ComparisonAnalyzer:
     # A "block" is one top-level header line (starting with ``[`` at column
     # 0) plus its following lines: bullets of the SAME family (tagged
     # ``- [merge fan-in] …``, ``- [type granularity] …`` or untagged) move
-    # with the header, while a bullet of ANOTHER tagged family ends the
-    # block (``- [untyped dropped] …`` is its own note family and must
-    # survive — that family has no header line of its own).
+    # with the header, while a bullet of a BULLET-HEADED family (see
+    # ``_BULLET_HEADED_TAGS``) ends the block it sits in.
     # One entry per STATE writer: the header tags whose blocks it re-emits on
     # every run, nested headers included.  A writer replaces ITS OWN family
     # and nothing else — with one flat "all state notes" list, the last writer
@@ -1615,37 +1614,68 @@ class ComparisonAnalyzer:
         ('[merge policy]', '[BANC auto labels]', '[BANC alignment fallback]',
          '[same-name-first]', '[multi-value type cells]'),
         ('[user label mapper]', '[label mapper residuals]'),
+        ('[threshold comparability]',),
+        ('[query resolution]',),
     )
-    # Tagged bullet families that are NOT state-owned: their bullets always
-    # survive, and one ends an enclosing state block.
-    _FOREIGN_BULLET_TAGS = ('[untyped dropped]',)
+    # Families whose note IS one bullet line, with no ``[tag]`` header line of
+    # its own: the bullet is that block's header, so it always ends the block
+    # above it and is removed only by its own writer. Before this was declared,
+    # a `- [threshold comparability]` bullet was cleaned up by whoever happened
+    # to write a state block before it — measured on one run folder across three
+    # re-exports, where the line's count moved 2 -> 1 depending on write order.
+    #
+    # ``[auto threshold]`` and ``[density]`` are declared so they can only ever
+    # ACCUMULATE, never disappear, and deliberately NOT state-owned: two writers
+    # emit `- [auto threshold]` (the degraded/partial note here and
+    # ``_append_density_warnings``), so one writer's replace pass would erase the
+    # other's note in the SAME run — making them replace-safe needs the tag
+    # split first, which changes published text.
+    _BULLET_HEADED_TAGS = ('[untyped dropped]', '[threshold comparability]',
+                           '[query resolution]', '[auto threshold]',
+                           '[density]')
+
+    @classmethod
+    def _note_block_tag(cls, text: Any) -> Optional[str]:
+        """The family tag a note line or block opens with, or ``None``.
+
+        Both spellings count: a top-level ``[STATE]`` header and a
+        bullet-headed family's ``- [tag] …`` line. An untagged bullet or a
+        prose body opens nothing.
+        """
+        import re
+        match = re.match(r'^(?:-\s*)?\[([^\]\n]+)\]', str(text).lstrip())
+        return f'[{match.group(1)}]' if match else None
 
     @classmethod
     def _owned_note_tags(cls, blocks: List[str]) -> List[str]:
         """The header tags these blocks' family covers."""
         owned = set()
         for block in blocks:
-            text = str(block).lstrip()
-            if not text.startswith('[') or ']' not in text:
+            tag = cls._note_block_tag(block)
+            if not tag:
                 continue
-            tag = text[:text.index(']') + 1]
             owned.add(tag)
             for family in cls._STATE_NOTE_FAMILIES:
                 if tag in family:
                     owned.update(family)
         return sorted(owned)
 
-    def _replace_state_notes(self, blocks: List[str]) -> List[str]:
+    def _replace_state_notes(self, blocks: List[str],
+                             out_dir: Optional[str] = None) -> List[str]:
         """Drop prior copies of THIS writer's notes from
         ``user_warning_notes.txt`` so a re-export neither accumulates
         contradictory counts nor erases another writer's disclosure.
 
         Block-aware: a state block is its header line plus every following
-        line that is not itself a top-level header (so multi-line bullet
-        lists are removed whole, never left orphaned).
+        line that is not itself a top-level header or a declared bullet-headed
+        family (so multi-line bullet lists are removed whole, never left
+        orphaned). *out_dir* names the folder whose notes file is pruned — it
+        must be the same folder the caller then appends to, or the replace pass
+        would prune one run folder and grow another.
         """
         note_path = os.path.join(
-            self.parameters.full_output_path, 'user_warning_notes.txt')
+            out_dir or self.parameters.full_output_path,
+            'user_warning_notes.txt')
         if not os.path.exists(note_path):
             return blocks
         try:
@@ -1653,20 +1683,20 @@ class ComparisonAnalyzer:
                 lines = f.read().splitlines()
         except OSError:
             return blocks
-        import re as _re
-        bullet_tag = _re.compile(r'^-\s*\[([^\]]+)\]')
         owned = self._owned_note_tags(blocks)
         kept: List[str] = []
         skipping = False
         for ln in lines:
-            if ln.startswith('['):
-                skipping = any(ln.startswith(tag) for tag in owned)
-            elif skipping:
-                # A bullet of a foreign family ends the state block; its own
-                # untagged/tagged continuations move with it.
-                m = bullet_tag.match(ln)
-                if m and f'[{m.group(1)}]' in self._FOREIGN_BULLET_TAGS:
-                    skipping = False
+            tag = self._note_block_tag(ln)
+            if tag is not None and (ln.startswith('[')
+                                    or tag in self._BULLET_HEADED_TAGS):
+                # A tagged line opens a block: a top-level ``[STATE]`` header,
+                # or — for a bullet-headed family — the bullet itself, which is
+                # that family's only header line. Either way the block is
+                # dropped only when THIS writer owns its family, so a state
+                # pass can no longer swallow another family's bullet as a
+                # continuation of the header above it.
+                skipping = tag in owned
             if skipping:
                 continue
             kept.append(ln)
@@ -1695,6 +1725,15 @@ class ComparisonAnalyzer:
         whichever call creates the file (plan rev-3 item 4).  A file that
         predates the header discipline is healed in place: the title is
         prepended instead of leaving the notes untitled forever.
+
+        A note that is already in the file is never written a second time.
+        Measured on one re-exported run folder: `- [auto threshold]` went 1 ->
+        2 and `- [density]` 2 -> 4, because those families have TWO writers
+        sharing the tag and so cannot be made state-owned (each writer's replace
+        pass would delete the other's note in the same run). Skipping an exact
+        duplicate fixes the noise without that surgery: "accumulate" now means
+        accumulate DISTINCT facts, and a genuinely different count still
+        appears beside the old one — which is the point of the state families.
         """
         if not blocks:
             return
@@ -1708,21 +1747,51 @@ class ComparisonAnalyzer:
                         existing = f.read()
                 except OSError:
                     existing = ''
+            already = [' '.join(str(line).split())
+                       for line in existing.splitlines() if str(line).strip()]
+            fresh = [b for b in blocks
+                     if not self._note_is_present(already, b)]
+            if not fresh:
+                return
             if not existing.strip():
                 with open(note_path, 'w', encoding='utf-8') as f:
                     f.write(header)
-                    f.write('\n'.join(blocks) + '\n')
+                    f.write('\n'.join(fresh) + '\n')
             elif existing.startswith('User warning notes'):
                 with open(note_path, 'a', encoding='utf-8') as f:
-                    f.write('\n' + '\n'.join(blocks) + '\n')
+                    f.write('\n' + '\n'.join(fresh) + '\n')
             else:
                 # Heal a headerless legacy file.
                 with open(note_path, 'w', encoding='utf-8') as f:
                     f.write(header)
                     f.write(existing.rstrip('\n') + '\n')
-                    f.write('\n' + '\n'.join(blocks) + '\n')
+                    f.write('\n' + '\n'.join(fresh) + '\n')
         except Exception as e:
             self._log(f"Warning: could not append user warning notes: {e}")
+
+    @staticmethod
+    def _note_block_lines(block: str) -> tuple:
+        """One block's identity: its non-blank lines, whitespace-collapsed."""
+        return tuple(' '.join(str(line).split())
+                     for line in str(block).splitlines() if str(line).strip())
+
+    @classmethod
+    def _note_is_present(cls, existing_lines: list, block: str) -> bool:
+        """Whether *block*'s lines already appear, consecutively, in the file.
+
+        Matched as a RUN of lines rather than a substring: a block whose text is
+        a prefix of a longer note ("- [density] short" vs
+        "- [density] short plus more") is a different disclosure and must still
+        be written. Writers join their own blocks with a bare newline and
+        separate calls with a blank line, so splitting on blank lines would
+        treat a whole call as one unit and never see the individual notes.
+        """
+        want = cls._note_block_lines(block)
+        if not want:
+            return True
+        span = len(want)
+        return any(tuple(existing_lines[i:i + span]) == want
+                   for i in range(len(existing_lines) - span + 1))
 
     def _write_user_mapper_tier0_note(self) -> None:
         """Disclose the user label mapper's tier-0 governance.
@@ -4171,10 +4240,15 @@ class ComparisonAnalyzer:
         elif level == 'warning':
             self._log('Threshold comparability warning: ' + warnings[0])
         if warnings and out_dir:
+            # State-owned family: a re-export replaces THIS run's warnings
+            # (N in, N out) instead of appending another copy beside the old
+            # one, and never has its count decided by which `[STATE]` block
+            # happened to be written before it.
             self._append_user_warning_notes(
                 out_dir,
-                [f"- [threshold comparability] {warning}"
-                 for warning in warnings])
+                self._replace_state_notes(
+                    [f"- [threshold comparability] {warning}"
+                     for warning in warnings], out_dir))
 
     def _is_untyped_type_value(self, value) -> bool:
         """True when a type label means 'untyped': empty, an explicit
@@ -7534,7 +7608,14 @@ class ComparisonAnalyzer:
                 + ', '.join(conflicts)
                 + " — no automatic target; these tokens may match nothing.")
         if lines:
-            self._append_user_warning_notes(out_dir, lines)
+            # State-owned and single-writer, so a re-export replaces this run's
+            # resolution notes instead of stacking a second copy beside them.
+            # The prune is pointed at the SAME folder the append writes to:
+            # `export_results(output_dir=...)` may name a folder other than
+            # `full_output_path`, and pruning one while appending to another
+            # would duplicate rather than replace.
+            self._append_user_warning_notes(
+                out_dir, self._replace_state_notes(lines, out_dir))
         self._log(
             "Saved: comparison_report_used_data/query_resolution.csv"
             + (f" ({len(same_name)} same-name fallback token(s))"

@@ -8406,14 +8406,12 @@ class HomologFinder:
                 self._log(f"Warning: could not build auto type mapping notes: {e}")
             if mapping_notes:
                 try:
-                    notes_path = output_path / 'user_warning_notes.txt'
-                    with open(notes_path, 'w', encoding='utf-8') as f:
-                        f.write('User warning notes\n')
-                        f.write('==================\n\n')
-                        f.write('Auto type mapping changed how the queried type was '
-                                'matched across datasets:\n\n')
-                        for note in mapping_notes:
-                            f.write(f'- {note}\n')
+                    append_warning_note_blocks(
+                        output_path / 'user_warning_notes.txt',
+                        ['Auto type mapping changed how the queried type was '
+                         'matched across datasets:',
+                         '']
+                        + [f'- {note}' for note in mapping_notes])
                     files_saved.append('user_warning_notes.txt')
                     self._log("⚠️ Auto type mapping expanded or merged the queried "
                               "type - see user_warning_notes.txt and double check")
@@ -10084,6 +10082,37 @@ class HomologFinder:
 _BODY_ID_LABEL_MAPS_CACHE: Dict[str, Tuple[dict, dict, dict]] = {}
 
 
+def append_warning_note_blocks(notes_path, blocks: List[str]) -> None:
+    """Create-or-append ``user_warning_notes.txt``; NEVER truncate it.
+
+    The profiling lane used to write this file with mode ``'w'`` — harmless
+    only while it was the folder's sole writer, and the same precondition the
+    comparison analyzer's truncate bug was filed against
+    (`tests/core/test_warning_notes_accumulate.py`: the auto-mapping writer's
+    ``'w'`` silently deleted the comparability / untyped-drop notes). The
+    analyzer's `_append_user_warning_notes` is the twin of this rule; a folder
+    that predates the header discipline is healed in place rather than left
+    untitled.
+    """
+    header = 'User warning notes\n==================\n\n'
+    existing = ''
+    path = Path(notes_path)
+    if path.exists():
+        try:
+            existing = path.read_text(encoding='utf-8')
+        except OSError:
+            existing = ''
+    body = '\n'.join(blocks)
+    if not existing.strip():
+        path.write_text(header + body + '\n', encoding='utf-8')
+    elif existing.startswith('User warning notes'):
+        path.write_text(existing.rstrip('\n') + '\n\n' + body + '\n',
+                        encoding='utf-8')
+    else:
+        path.write_text(header + existing.rstrip('\n') + '\n\n' + body + '\n',
+                        encoding='utf-8')
+
+
 def _load_body_id_label_maps(dataset: str) -> Tuple[dict, dict, dict]:
     """(bodyId -> type, bodyId -> instance, bodyId -> side) for one dataset."""
     key = str(dataset or "")
@@ -11177,6 +11206,102 @@ class ConnectivityProfileComparer:
         return _body_id_display_label(
             dataset, bid, fallback_type=fallback_type, label_of=label_of)
 
+    def _population_partition(
+        self, type_name: str, dataset: str, label_mapper, labels: frozenset,
+    ) -> Tuple[set, List[object], List[object]]:
+        """Split one native type's WHOLE population by tier-0 membership.
+
+        This is the lane's single membership law, shared by the two readers
+        that need it: the partner fold asks for the governed labels and the
+        residual count, and a query that pastes back an emitted ``T*`` asks for
+        exactly the governed-nothing members. `get_bodyids_for_type` is
+        dataset-wide (it reads the neuron table, or the API when no table is
+        local), which is what makes both answers a real coverage test rather
+        than a spot check.
+
+        Returns ``(labels_resolved, governed_ids, residual_ids)``; all empty
+        when the population itself cannot be read — an unreadable population is
+        never reported as "no residuals".
+        """
+        try:
+            bids = self.profiler.get_bodyids_for_type(
+                str(type_name), dataset) or []
+        except Exception:
+            return set(), [], []
+        if not bids:
+            return set(), [], []
+        resolved: set = set()
+        governed: List[object] = []
+        residual: List[object] = []
+        for bid in bids:
+            target = label_mapper.get_label(dataset, bid)
+            if target in labels:
+                resolved.add(target)
+                governed.append(bid)
+            else:
+                residual.append(bid)
+        return resolved, governed, residual
+
+    def _residual_member_ids(self, key: str,
+                             dataset: str) -> Optional[List[object]]:
+        """The neurons an emitted ``T*`` query key stands for in *dataset*.
+
+        ``None`` means "not this lane's vocabulary" and the caller keeps its
+        ordinary lookup: no tier-0 mapper, a token that is not star-spelled, an
+        unreadable population (the split would be UNKNOWN, not empty), or a base
+        type nothing of is enrolled — an untouched native type keeps its raw
+        name, so its ``T*`` is not a class the run may invent a row for. It also
+        declines when the token is itself a type this release uses (FAFB's
+        `PPL1*`): a trailing star is legal both as a tag and as a name.
+
+        A list IS a decision. Non-empty selects that residual class; empty says
+        the key names nothing here, because every member of the type the preset
+        knows is enrolled.
+        """
+        mapper = getattr(self, '_user_label_mapper', None)
+        if mapper is None:
+            return None
+        try:
+            from .type_resolver import (RESIDUAL_SUFFIX, is_residual_key,
+                                        native_base)
+        except ImportError:  # pragma: no cover - direct package imports
+            from type_resolver import (RESIDUAL_SUFFIX, is_residual_key,
+                                       native_base)
+        if not is_residual_key(key):
+            return None
+        # `T*_L` and `T*` address one class: the engines append the side AFTER
+        # the typing decision, so the tag is stripped before the star.
+        base = native_base(str(key))
+        native = (base[:-len(RESIDUAL_SUFFIX)]
+                  if base.endswith(RESIDUAL_SUFFIX) else '')
+        if not native:
+            return None            # a bare `*` is not a key the registry mints
+        try:
+            bids = self.profiler.get_bodyids_for_type(native, dataset) or []
+            # A release can spell a TYPE with a trailing star (FAFB's `PPL1*`),
+            # and then the exact-type reading owns the token — the residual
+            # vocabulary must not steal a name the dataset actually uses.
+            as_type = (self.profiler.get_bodyids_for_type(str(key), dataset)
+                       or [])
+        except Exception:
+            # The population could not be read, so the split is UNKNOWN rather
+            # than empty — claiming "no residuals" would be an absence claim.
+            return None
+        if as_type:
+            return None
+        if not bids:
+            # Nothing of that name is here, so the star cannot be a tag: it is
+            # the glob the user wrote (a trailing star is legal grammar).
+            return None
+        _resolved, governed, residual = self._population_partition(
+            native, dataset, mapper,
+            self._user_label_governing_labels())
+        if not governed:
+            # Untouched native type here: collision is dataset-scoped, so the
+            # key names no class rather than the whole population.
+            return None
+        return residual
+
     def _label_for_type_via_mapper(
         self, type_name: str, dataset: str,
         label_mapper, labels: frozenset,
@@ -11195,35 +11320,25 @@ class ConnectivityProfileComparer:
         does not know do not block") silently merged the residual population
         into the settled label, which is the exact hazard `T*` exists to stop.
 
-        Mixed types are recorded on ``self._partner_fold_mixed`` so the report
-        can say which partner keys stayed raw and why.
+        Mixed types are recorded on ``self._partner_fold_mixed`` and published
+        by ``_partner_fold_census``: the run's README Notes say which partner
+        keys stayed raw and why, and ``parameters.json -> partner_fold_mixed``
+        carries every one of them.
         """
-        try:
-            bids = self.profiler.get_bodyids_for_type(
-                str(type_name), dataset) or []
-        except Exception:
-            return None
-        if not bids:
-            return None
-        resolved: set = set()
-        ungoverned = 0
-        for bid in bids:
-            target = label_mapper.get_label(dataset, bid)
-            if target in labels:
-                resolved.add(target)
-                if len(resolved) > 1:
-                    return None  # members span several labels: no branch
-            else:
-                ungoverned += 1
+        resolved, governed, residual = self._population_partition(
+            type_name, dataset, label_mapper, labels)
+        if len(resolved) > 1:
+            return None            # members span several labels: no branch
         if not resolved:
             return None
-        if ungoverned:
+        label = next(iter(resolved))
+        if residual:
             self._partner_fold_mixed.setdefault(
                 (str(dataset), str(type_name)),
-                {'label': next(iter(resolved)), 'residuals': ungoverned,
-                 'population': len(bids)})
+                {'label': label, 'residuals': len(residual),
+                 'population': len(governed) + len(residual)})
             return None
-        return next(iter(resolved))
+        return label
 
     def collapse_partners_by_label_mapper(
         self, profiles: Dict[str, 'ConnectivityProfile'], dataset: str
@@ -11420,16 +11535,43 @@ class ConnectivityProfileComparer:
                 if isinstance(item, (int, float)):
                     continue
                 item_str = str(item)
-                if item_str.isdigit() or not self._user_label_governs(item_str):
+                if item_str.isdigit():
                     continue
+                # An emitted `T*` key pasted back into the query names a CLASS,
+                # not a label: the neurons of that native type the mapper does
+                # not enroll. `get_neurons_for_label` cannot answer for it (no
+                # label spells itself with a star), so this token used to be
+                # claimed as a label, resolve to no members, and drop its row.
+                members = self._residual_member_ids(item_str, dataset)
+                reason = 'user label (tier-0 identity)'
+                if members is not None:
+                    reason = ('residual class of the native type behind '
+                              f'{item_str}: the neurons the mapper does not '
+                              'enroll (T* is terminal, never re-resolved)')
+                    members = list(members)
+                else:
+                    try:
+                        from .type_resolver import is_residual_key
+                    except ImportError:  # pragma: no cover - direct imports
+                        from type_resolver import is_residual_key
+                    if is_residual_key(item_str):
+                        # The class rule declined it: `PPL1*` is a name this
+                        # release really uses, and a star whose base has no
+                        # population here is the glob the user wrote. Claiming
+                        # it as a tier-0 identity would resolve to nothing and
+                        # drop a valid row, so the ordinary lanes answer it.
+                        continue
+                    if not self._user_label_governs(item_str):
+                        continue
+                    members = (
+                        self._user_label_mapper.get_neurons_for_label(
+                            item_str, dataset, role='source') or [])
                 handled_labels.add(item_str)
-                members = self._user_label_mapper.get_neurons_for_label(
-                    item_str, dataset, role='source') or []
                 self.mapping_resolution_record.setdefault(
                     dataset, {})[item_str] = {
                     'status': 'user_label', 'targets': [item_str],
                     'members': [str(m) for m in members],
-                    'reason': 'user label (tier-0 identity)',
+                    'reason': reason,
                 }
                 resolution_key = (str(dataset), item_str)
                 if resolution_key not in self._counted_query_resolutions:
@@ -11742,6 +11884,53 @@ class ConnectivityProfileComparer:
             'datasets_with_anchor_row': sorted(str(ds) for ds in per_ds),
             'reason': detail,
         })
+
+    def _partner_fold_census(self) -> List[Dict[str, Any]]:
+        """The refused partner folds, as publishable rows.
+
+        ``_label_for_type_via_mapper`` records every type it left under its raw
+        key because the mapper governs only part of its population; this turns
+        that census into the record the disclosure promises (found 2026-10-14:
+        the docstring said "so the report can say so" while nothing read the
+        attribute, so a user could not see which partner mass stayed unfolded).
+        Sorted by ``(dataset, raw_type)`` so two runs of one folder agree.
+        """
+        census = getattr(self, '_partner_fold_mixed', None) or {}
+        return [{'dataset': dataset, 'raw_type': raw_type,
+                 'label': rec.get('label'),
+                 'residuals': rec.get('residuals'),
+                 'population': rec.get('population')}
+                for (dataset, raw_type), rec in sorted(census.items())]
+
+    def _partner_fold_lines(self, limit: int = 20) -> List[str]:
+        """Capped README/log lines for the census — the shape
+        ``_dropped_anchor_lines`` uses: name the first *limit*, count the rest,
+        and point at the full record in parameters.json."""
+        rows = self._partner_fold_census()
+        lines = [
+            f"  - {row['dataset']} {row['raw_type']}: kept raw — "
+            f"{row['residuals']}/{row['population']} neuron(s) of it are not "
+            f"enrolled under {row['label']}"
+            for row in rows[:limit]]
+        if len(rows) > limit:
+            lines.append(
+                f"  ... and {len(rows) - limit} more — parameters.json"
+                " -> partner_fold_mixed lists all of them.")
+        return lines
+
+    def _partner_fold_note_lines(self, limit: int = 20) -> List[str]:
+        """The README 'Notes:' block for the census: the law, the count, then
+        the capped per-type detail."""
+        rows = self._partner_fold_census()
+        return [
+            "- Partner types the mapper governs only PARTLY stayed under their",
+            f"  raw key ({len(rows)} of them): their residual neurons are not",
+            "  enrolled under the settled label, and a type-level partner has no",
+            "  per-neuron weight with which to split the mass, so no `T*` row is",
+            "  invented for them. Full record: parameters.json ->",
+            "  partner_fold_mixed.",
+            *self._partner_fold_lines(limit=limit),
+        ]
 
     def _dropped_anchor_lines(self, limit: int = 20) -> List[str]:
         """Human-readable lines for the dropped-anchor list, capped.
@@ -12972,6 +13161,7 @@ class ConnectivityProfileComparer:
             'label_mapping_file': self.label_mapping_file,
             'group_partners_by_mapping': self.group_partners_by_mapping,
             'user_label_mapper_active': self._user_label_mapper is not None,
+            'partner_fold_mixed': self._partner_fold_census(),
             'aggregation_level': self.aggregation_level,
             'row_kind': 'neuron' if bodyid_is_main else (
                 'group' if self.aggregation_level == 'custom' else 'type'),
@@ -13071,6 +13261,12 @@ class ConnectivityProfileComparer:
             "  as a type contributes that type's pooled profile rather than one",
             "  row per neuron",
             "- report.html: Overall report linking every metric and heatmap",
+            # The census `_label_for_type_via_mapper` records, published: which
+            # partner types stayed raw because the mapper governs them only
+            # partly, so the reader can see the unfolded mass instead of
+            # wondering why a partner key looks like a raw type.
+            *(self._partner_fold_note_lines()
+              if self._partner_fold_census() else ()),
             "",
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         ])
@@ -13948,6 +14144,7 @@ class ConnectivityProfileComparer:
             'label_mapping_file': self.label_mapping_file,
             'group_partners_by_mapping': self.group_partners_by_mapping,
             'user_label_mapper_active': self._user_label_mapper is not None,
+            'partner_fold_mixed': self._partner_fold_census(),
             'aggregation_level': self.aggregation_level,
             'query_name': self.query_name,
             'datasets': self.datasets,
@@ -14005,6 +14202,8 @@ class ConnectivityProfileComparer:
                "Details in parameters.json -> dropped_inter_anchors:",
                *self._dropped_anchor_lines())
               if dropped_anchors else ()),
+            *(self._partner_fold_note_lines()
+              if self._partner_fold_census() else ()),
             "report.html: hub report — inter-dataset overview (neurons as rows,",
             "  dataset pairs as columns) plus link cards to the per-dataset",
             "  reports; keep plotly.min.js beside it (every report file",

@@ -1063,7 +1063,7 @@ Example: `profiling_MCNS_aMe_20260815_143922/` (query `aMe.*` over male-cns:v1.0
 *   **`report.html`**: Hub report for MULTI-dataset runs — hero/meta chips, link cards to the per-dataset reports, and the inter-dataset section (direction tabs × metric heatmap cards with CSV + VisPath links, plus the resolved-names table). SINGLE-dataset runs write the full tabbed report here instead (inlined Plotly, renders offline)
 *   **`report_{dataset}.html`**: One full heatmap report per dataset (three matrix levels × directions × five metrics, Ward-clustered, per-card CSV + VisPath editor links). Written for MULTI-dataset runs so no single file carries every dataset's BodyId-level matrices
 *   **`plotly.min.js`**: Shared chart library written once per run folder; every report file references it via a relative `src`, so the reports render offline as a folder (a report copied out alone needs its library)
-*   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed). A one-dataset run also records `row_kind` (`type` / `neuron` / `group`) and `levels_computed`, so the artifact set is self-describing. Label-mapper runs add `label_mapping_file` / `custom_mapping_file` (whichever was supplied), `group_partners_by_mapping`, and `user_label_mapper_active`; `mapping_resolution_counts`/`mapping_resolution_record` gain the `user_label` status for query chips that named a preset label (tier-0 identity — the auto type mapper is never consulted for them). MULTI-dataset runs add `inter_anchors` (the queried items that formed a cross-dataset row) and `dropped_inter_anchors` (every queried item that did not, each with `kind`, `datasets_with_anchor_row` and a `reason` — an anchor needs a licensed profile row in at least two datasets, so a partial cross matrix is always named, never implied)
+*   **`parameters.json`**: All analysis parameters (query, datasets, top_k/top_m, thresholds, metrics computed). A one-dataset run also records `row_kind` (`type` / `neuron` / `group`) and `levels_computed`, so the artifact set is self-describing. Label-mapper runs add `label_mapping_file` / `custom_mapping_file` (whichever was supplied), `group_partners_by_mapping`, `user_label_mapper_active`, and `partner_fold_mixed` (every partner type the mapper governs only partly, each with its `label`, `residuals` and `population` — the types whose mass could not be folded, so a raw partner key in a matrix is a disclosed decision rather than a mystery); `mapping_resolution_counts`/`mapping_resolution_record` gain the `user_label` status for query chips that named a preset label (tier-0 identity — the auto type mapper is never consulted for them). MULTI-dataset runs add `inter_anchors` (the queried items that formed a cross-dataset row) and `dropped_inter_anchors` (every queried item that did not, each with `kind`, `datasets_with_anchor_row` and a `reason` — an anchor needs a licensed profile row in at least two datasets, so a partial cross matrix is always named, never implied)
 *   **`README.txt`**: Human-readable summary listing **only the folders this run wrote** (a bodyId-level run lists no `type_level/`); a multi-dataset run that lost anchors adds a `WARNING` block naming them (first 20, the rest in `parameters.json`)
 
 The report header carries disclosure chips when a label mapper is active:
@@ -1074,7 +1074,11 @@ run that lost anchors adds `Inter anchors N queried item(s) dropped`, whose
 details are in `parameters.json → dropped_inter_anchors`. With partner
 grouping on, `profiles/aggregated/*_profile.json` partner keys are in the
 group-label namespace (member types folded in with summed weights); a
-partner type whose members span several labels stays raw.
+partner type whose members span several labels, or whose population the mapper
+governs only partly, stays raw — and says so: the refusals are counted in the
+`README.txt` Notes and listed in full in `parameters.json → partner_fold_mixed`
+(`dataset`, `raw_type`, the `label` it would have folded into, and the
+`residuals`/`population` that made it mixed).
 
 #### Single-Dataset Results (`type_level/` · `group_level/`, `bodyid_level/`)
 Written when exactly one dataset is selected. A level gets a folder **only if

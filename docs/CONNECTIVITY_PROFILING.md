@@ -174,9 +174,14 @@ TIER-0 comparison identities, the same contract as the cross-dataset lanes:
 `group_partners_by_mapping` additionally moves the FEATURE SPACE to the
 groups: each partner type that resolves to a label folds into that label
 with summed weights (direct route for name-keyed presets; a type bridge
-for bodyId-keyed presets — a partner type folds only when every
-mapper-resolved bodyId of the type agrees on one label; a type spanning
-several labels stays raw). BodyId-level vectors keep raw keys.
+for bodyId-level presets — a partner type folds only when the mapper governs
+its WHOLE population and every member agrees on one label; a type spanning
+several labels, or holding any unenrolled neuron, stays raw). Those refusals
+are published, not merely decided: the run's `README.txt` Notes count them and
+name the first 20, and `parameters.json → partner_fold_mixed` carries every
+one as `{dataset, raw_type, label, residuals, population}` — the residual mass
+is what could not be attributed, because a type-level partner stores no
+per-neuron weight with which to split it. BodyId-level vectors keep raw keys.
 
 **Note:** ALL similarity metrics are computed automatically:
 - `jaccard`: Set-based overlap (0-1)
