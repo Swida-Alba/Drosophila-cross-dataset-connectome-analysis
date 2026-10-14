@@ -88,6 +88,7 @@ def create_find_shortest_tab():
                      "Type 'all_neurons' to load every neuron in the dataset.",
                 suggestions=_type_suggest,
                 available_neurons=lambda: dataset.value if dataset is not None else "",
+                expands_group_labels=True,
             ).classes("drocat-fixed-neuron-input")
             target_input = neuron_list_input(
                 label="Target Neurons",
@@ -96,6 +97,7 @@ def create_find_shortest_tab():
                      "Type 'all_neurons' to load every neuron in the dataset.",
                 suggestions=_type_suggest,
                 available_neurons=lambda: dataset.value if dataset is not None else "",
+                expands_group_labels=True,
             ).classes("drocat-fixed-neuron-input")
             source_type_warning = ui.label(
                 "⚠️ Shortest Paths works best with a small source set. Multiple "

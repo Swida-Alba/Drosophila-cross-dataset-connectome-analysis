@@ -1089,6 +1089,7 @@ def neuron_list_input(
     show_clear: bool = True,
     filter_dense: bool = True,
     input_actions: Optional[Callable[[], None]] = None,
+    expands_group_labels: bool = False,
 ) -> ui.element:
     """
     Create a chip-based list input for neurons or driver lines.
@@ -1112,6 +1113,12 @@ def neuron_list_input(
     - ``input_actions``: optional callback invoked INSIDE the input row,
       right of the Match-by select — create action buttons there (they
       share the row with the chip input, which narrows accordingly).
+    - ``expands_group_labels`` (default False): declare that THIS tab's run
+      path expands a custom-group label into its members, so the grouping
+      board may mark a chip that names one. The mark claims the backend will
+      resolve the label, so it is the run path that answers, not the wiring:
+      an input wired as a push target but belonging to a tool that receives no
+      mapping file must stay unmarked.
     - ``suggestions``: optional provider ``typed_text -> [(value, hint)]``
       powering the auto-suggest dropdown (dataset type/instance/bodyId names
       with the searched column as a gray hint). The provider is prefiltered
@@ -2656,7 +2663,9 @@ def neuron_list_input(
         """Mark the chips that name a custom group.
 
         *hints* maps a group label to its tooltip text; a chip whose text is
-        not a key goes back to looking like an ordinary entry.
+        not a key goes back to looking like an ordinary entry. Only an input
+        built with ``expands_group_labels=True`` is ever told — see that
+        parameter.
         """
         group_labels["hints"] = dict(hints or {})
         _refresh_group_presentation()
@@ -2689,6 +2698,11 @@ def neuron_list_input(
         filter_mode.on_value_change(lambda _e: _refresh_group_presentation())
 
     container.set_group_labels = set_group_labels
+    # NO mark unless the owning tab declares the capability: a chip that claims
+    # "this label expands to its members" makes that claim about the RUN, and a
+    # tool that receives no mapping file cannot deliver it. Forgetting the
+    # declaration costs the decoration, never the truth.
+    container._drocat_group_labels_expand = bool(expands_group_labels)
 
     def set_input_enabled(editable: bool) -> None:
         """Enable or disable this input as a unit, keeping its values.

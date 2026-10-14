@@ -16,7 +16,6 @@ from ..config import (
     MORPH_LEVEL_OPTIONS,
     MORPH_METHOD_OPTIONS,
     PROJECT_ROOT,
-    SRC_DIR,
     get_tab_output_dir,
     get_user_default,
 )
@@ -405,6 +404,10 @@ def create_morphology_tab():
                     available_neurons=lambda: list(
                         comparison_datasets.value or [])
                     if comparison_datasets is not None else [],
+                    # Both constructors this box feeds expand a group label
+                    # into its members (the intra lane since c68e70c, the
+                    # cross lane since 2b04be0), so its chips may be marked.
+                    expands_group_labels=True,
                 ).props('id=field-morph-comparison-query').classes(
                     "drocat-fixed-neuron-input")
 

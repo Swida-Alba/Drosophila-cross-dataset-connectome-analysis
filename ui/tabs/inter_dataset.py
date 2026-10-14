@@ -79,6 +79,7 @@ def create_inter_dataset_tab():
                 # cross-dataset entries stay traceable without claiming
                 # datasets a type does not exist in.
                 show_history_datasets=True,
+                expands_group_labels=True,
             ).classes("drocat-fixed-neuron-input")
             target_input = neuron_list_input(
                 label="Target Neurons",
@@ -87,6 +88,7 @@ def create_inter_dataset_tab():
                 suggestions=_type_suggest,
                 available_neurons=lambda: datasets_select.value if datasets_select is not None else [],
                 show_history_datasets=True,
+                expands_group_labels=True,
             ).classes("drocat-fixed-neuron-input")
             mapping_select, _grouper_card, resolve_grouping = custom_grouping_block(
                 label="Custom Mapping",

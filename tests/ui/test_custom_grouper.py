@@ -825,7 +825,15 @@ class TestGroupChipMarking:
     backend expands it into the group's members -- so the input has to be told
     which of its chips are groups, and told again when the board changes."""
 
-    def _board(self, page_name, rows, capture=True, show_filter=False):
+    def _board(self, page_name, rows, capture=True, show_filter=False,
+               expands=True):
+        """Build a board + query input.
+
+        `expands` mirrors what a real tab declares: the mark rides on the
+        capability, never on the wiring, so the False case is the Find Homolog
+        shape (an input the board can push into whose run path resolves no
+        label).
+        """
         from nicegui import Client
         from nicegui.page import page
         from ui.components.common import neuron_list_input
@@ -834,7 +842,8 @@ class TestGroupChipMarking:
         with client:
             query = neuron_list_input(label="Neurons to Compare",
                                       show_filter=show_filter,
-                                      show_upload=False)
+                                      show_upload=False,
+                                      expands_group_labels=expands)
             _selector, card, _resolve = me.custom_grouping_block(
                 tab_key=page_name, datasets_provider=lambda: [DS_A, DS_B],
                 query_inputs={"query": query})
@@ -925,6 +934,54 @@ class TestGroupChipMarking:
         with client:
             query.filter_mode.value = "exact"
         assert '"aMe"' in scripts[-1]
+
+    def test_the_mark_follows_the_capability_not_the_wiring(self, isolated_store):
+        """A wired input whose run resolves nothing keeps an unmarked chip.
+
+        The board pushes into any input that exposes `set_group_labels`, so
+        without a declared capability wiring Find Homolog's source (or
+        Morphology's Find Similar) would look like a one-line accessibility
+        improvement and claim an expansion its tool cannot perform — it gets no
+        mapping file at all. This is the defect class the label-mapper round
+        removed twice elsewhere.
+        """
+        client, grouper, pushes = self._board("grouper-capability", [
+            ("aMe", {DS_A: ["aMe12"]}),
+        ], expands=False)
+        with client:
+            grouper.resync()
+        assert pushes == [], (
+            f"an input that declared no expansion was marked: {pushes}")
+        # The wiring is still there, so pushing members into it works: the
+        # capability gates the CLAIM, not the board's action.
+        query = grouper.query_inputs["query"]
+        assert query is not None
+
+    def test_every_tab_wiring_a_board_declares_its_capability(self):
+        """Structural guard: a tab that wires a query input must say whether its
+        run expands labels, so the claim cannot drift from the run path.
+
+        Read from the tab sources, because a tab that forgets the declaration
+        silently loses the decoration and no runtime test would notice.
+        """
+        import ast
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2] / "ui" / "tabs"
+        tabs = ("connectivity.py", "morphology.py", "find_path.py",
+                "find_shortest.py", "network.py", "inter_dataset.py")
+        missing = []
+        for name in tabs:
+            text = (root / name).read_text(encoding="utf-8")
+            wired = text.count("query_inputs=")
+            declared = text.count("expands_group_labels=True")
+            if not wired:
+                missing.append(f"{name}: no board wiring at all")
+            elif declared < wired:
+                missing.append(
+                    f"{name}: {wired} wired input group(s), "
+                    f"{declared} capability declaration(s)")
+        assert not missing, "; ".join(missing)
 
     def test_badge_names_groups_including_uploaded_ones(self, isolated_store):
         """An uploaded list never becomes a chip, so the count badge is the one

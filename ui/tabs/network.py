@@ -68,6 +68,7 @@ def create_network_tab():
                      "Enter neuron types, bodyIds, or patterns; upload CSV/TSV/Excel for large lists.",
                 suggestions=_type_suggest,
                 available_neurons=lambda: dataset.value if dataset is not None else "",
+                expands_group_labels=True,
             ).classes("drocat-fixed-neuron-input")
             mapping_select, _grouper_card, resolve_grouping = custom_grouping_block(
                 label="Custom Grouping",

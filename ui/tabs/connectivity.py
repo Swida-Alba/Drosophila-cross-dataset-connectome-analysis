@@ -318,6 +318,7 @@ def create_connectivity_tab():
                     suggestions=_comparison_suggest,
                     available_neurons=lambda: list(datasets_select.value or [])
                     if datasets_select is not None else [],
+                    expands_group_labels=True,
                 ).props('id=field-connectivity-comparison-query').classes(
                     "drocat-fixed-neuron-input")
 

@@ -562,9 +562,20 @@ class LiteCustomGrouper:
         a raw type query, yet with this board active the backend expands it
         into the group's members. The input marks the ones that resolve as
         groups, and clears the mark when a label stops existing.
+
+        Wiring is not the question — the owning tab's RUN PATH is. A mark
+        claims the backend resolves the label into members, so it goes only to
+        an input built with `neuron_list_input(expands_group_labels=True)`
+        (read as `_drocat_group_labels_expand`). An input whose tool never
+        receives a mapping file — Find Homolog's source, Morphology's Find
+        Similar — keeps looking like an ordinary entry even if something wires
+        push support to it, and forgetting the declaration loses the mark, not
+        the truth.
         """
         hints = self._group_hints(rows)
         for target in self.query_inputs.values():
+            if not getattr(target, "_drocat_group_labels_expand", False):
+                continue
             setter = getattr(target, "set_group_labels", None)
             if setter is not None:
                 setter(hints)
