@@ -10,11 +10,17 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# (file, must mention drop_untyped / Drop Untyped)
+# The ui_guides migration (8b96cfe) moved the editable page source to
+# docs/ui_guides/src/ and left only the built .html at the old path, so a guard
+# that names a prose surface must read the .md; the .html is listed separately
+# where the *published* page is what the claim is about. Every list is a module
+# constant so test_every_listed_surface_exists can census it — these paths are
+# strings, so a migration silently deletes a guard's coverage instead of
+# reporting a stale list.
 DROP_UNTYPED_FILES = [
     "docs/ui_guides/find_path.html",
     "docs/ui_guides/find_shortest.html",
-    "docs/ui_guides/find_shortest.md",
+    "docs/ui_guides/src/find_shortest.md",
     "docs/ui_guides/cross_dataset.html",
     "docs/core-features/FindAllPath_Documentation.md",
     "docs/OUTPUT_FILES.md",
@@ -27,6 +33,39 @@ DROP_UNTYPED_FILES = [
 
 # The stale name must never be presented as the pipeline's enumerator: any
 # occurrence must carry an explicit not-used clarification nearby.
+STALE_ENUMERATOR_FILES = [
+    "docs/technical/PATHFINDING_PIPELINE.md",
+    "docs/technical/STRONGEST_FIRST_PATHFINDING.md",
+    "docs/ui_guides/src/find_shortest.md",
+    "docs/ui_guides/find_shortest.html",
+    "docs/ui_guides/pathfinding_algorithms.html",
+    "docs/core-features/PathFinding_Methods.md",
+    "skills/drocat-usage/tabs/find-shortest.md",
+    "skills/drocat-backend/modules/vispath.md",
+    "src/coana.py",
+]
+
+ACTUAL_ENUMERATOR_FILES = {
+    "src/coana.py": "find_paths_shortest_strongest_first",
+    "docs/ui_guides/src/find_shortest.md":
+        "find_paths_shortest_strongest_first",
+    "skills/drocat-usage/tabs/find-shortest.md":
+        "find_paths_shortest_strongest_first",
+}
+
+PROVENANCE_FILES = (
+    "docs/OUTPUT_FILES.md",
+    "docs/technical/PATHFINDING_PIPELINE.md",
+    "docs/technical/STRONGEST_FIRST_PATHFINDING.md",
+    "skills/drocat-usage/tabs/find-path.md",
+)
+
+SHORTEST_NEVER_FLOORED_FILES = (
+    "docs/ui_guides/src/find_shortest.md",
+    "docs/technical/PATHFINDING_PIPELINE.md",
+    "skills/drocat-usage/tabs/find-shortest.md",
+)
+
 NOT_USED_MARKERS = ("not used", "not called", "not what the",
                     "does not call", "does not use", "never called",
                     "uncalled", "isn't called", "not the enumerator")
@@ -36,6 +75,26 @@ def _read(rel):
     return (PROJECT_ROOT / rel).read_text(encoding="utf-8")
 
 
+def _listed_surface_paths():
+    """Every path literal these guards read, de-duplicated, in list order."""
+    seen = []
+    for group in (DROP_UNTYPED_FILES, STALE_ENUMERATOR_FILES,
+                  list(ACTUAL_ENUMERATOR_FILES), PROVENANCE_FILES,
+                  SHORTEST_NEVER_FLOORED_FILES):
+        for rel in group:
+            if rel not in seen:
+                seen.append(rel)
+    return seen
+
+
+def test_every_listed_surface_exists():
+    missing = [rel for rel in _listed_surface_paths()
+               if not (PROJECT_ROOT / rel).is_file()]
+    assert not missing, (
+        "stale doc-surface list — a migration moved or deleted these paths, "
+        f"so the guards below silently stopped covering them: {missing}")
+
+
 def test_drop_untyped_documented_across_surfaces():
     for rel in DROP_UNTYPED_FILES:
         text = _read(rel)
@@ -43,18 +102,7 @@ def test_drop_untyped_documented_across_surfaces():
 
 
 def test_stale_enumerator_only_with_not_used_note():
-    files = [
-        "docs/technical/PATHFINDING_PIPELINE.md",
-        "docs/technical/STRONGEST_FIRST_PATHFINDING.md",
-        "docs/ui_guides/find_shortest.md",
-        "docs/ui_guides/find_shortest.html",
-        "docs/ui_guides/pathfinding_algorithms.html",
-        "docs/core-features/PathFinding_Methods.md",
-        "skills/drocat-usage/tabs/find-shortest.md",
-        "skills/drocat-backend/modules/vispath.md",
-        "src/coana.py",
-    ]
-    for rel in files:
+    for rel in STALE_ENUMERATOR_FILES:
         text = _read(rel)
         for match in re.finditer(r"find_paths_shortest_backward", text):
             context = text[max(0, match.start() - 400):
@@ -68,14 +116,7 @@ def test_stale_enumerator_only_with_not_used_note():
 
 
 def test_actual_enumerator_named():
-    checks = {
-        "src/coana.py": "find_paths_shortest_strongest_first",
-        "docs/ui_guides/find_shortest.md":
-            "find_paths_shortest_strongest_first",
-        "skills/drocat-usage/tabs/find-shortest.md":
-            "find_paths_shortest_strongest_first",
-    }
-    for rel, needle in checks.items():
+    for rel, needle in ACTUAL_ENUMERATOR_FILES.items():
         assert needle in _read(rel), rel
 
 
@@ -104,10 +145,7 @@ def test_no_raw_bodyid_viz_names_as_produced_output():
 
 
 def test_provenance_fields_documented():
-    for rel in ("docs/OUTPUT_FILES.md",
-                "docs/technical/PATHFINDING_PIPELINE.md",
-                "docs/technical/STRONGEST_FIRST_PATHFINDING.md",
-                "skills/drocat-usage/tabs/find-path.md"):
+    for rel in PROVENANCE_FILES:
         text = _read(rel)
         for key in ("applied_threshold", "applied_threshold_source",
                     "strongest_retained_bottleneck", "paths_complete"):
@@ -115,9 +153,7 @@ def test_provenance_fields_documented():
 
 
 def test_shortest_never_floored_statement():
-    for rel in ("docs/ui_guides/find_shortest.md",
-                "docs/technical/PATHFINDING_PIPELINE.md",
-                "skills/drocat-usage/tabs/find-shortest.md"):
+    for rel in SHORTEST_NEVER_FLOORED_FILES:
         text = _read(rel).lower()
         assert ("never" in text and "floor" in text), rel
 
