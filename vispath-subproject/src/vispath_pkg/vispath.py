@@ -18682,6 +18682,20 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 margin: {{l: dynamicLeftMargin, r: 40, b: dynamicBottomMargin, t: 100, pad: 4}}
             }};{cell_style_shapes}
 
+            // Pin the ranges to the EXACT cell edges. When the dendrogram band
+            // shares the axes the auto range is padded (measured x[-0.54,20.54],
+            // y[21.11,-1.11]); Plotly then renders the heatmap raster compressed
+            // relative to the axis (506x486 px for a 21x21 grid = 24.1x23.1 px
+            // cells, while the axis maps cells at 24.1x24.5 px). The per-cell
+            // outline rects and the shared-axis dendrogram are placed through
+            // the AXIS, so they drift from the raster by ~1 px per row — the
+            // "outline gap". Exact ranges make raster, outlines and dendrogram
+            // share ONE grid (and are the only framing a cell matrix wants).
+            layout.xaxis.autorange = false;
+            layout.yaxis.autorange = false;
+            layout.xaxis.range = [-0.5, displayXLabels.length - 0.5];
+            layout.yaxis.range = [displayYLabels.length - 0.5, -0.5];
+
             // Square-cells lock rides in the same layout build so every
             // re-render (dendrogram toggles, method switches) stays constrained
             if (squareCellsLocked) {{
