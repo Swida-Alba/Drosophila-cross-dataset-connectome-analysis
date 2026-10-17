@@ -187,7 +187,7 @@ similar-neuron → 3D skeleton), see [references/combinations.md](references/com
   existing `connection_type.csv` rows. See
   `docs/core-features/TypeLevelRefill.md`.
 - `scripts/CorridorDeepDive.py <run_dir>` — Fast mode (the corridor
-  lane; the run itself is Complete mode): re-enumerates at the ASKED
+  lane; the run itself is Complete mode unless the Run Mode control is `fast`): re-enumerates at the ASKED
   threshold restricted to validated top-M* type corridors per
   source-target pair × hop length
   (`--certify-actual` upgrades the selection from bound-guided
@@ -195,10 +195,20 @@ similar-neuron → 3D skeleton), see [references/combinations.md](references/com
   writing `route_scope_paths/` (walk rows with both ratio flavors —
   plain + adjusted — per-path bodyId rows, scope connection table,
   provenance with gap partition, content-hashed plan.json, mirror
-  heatmap/network). Auto-fires after deep runs (Max Intermediate Layers
-  >= 4; the Fast Mode control values are complete/auto/both — legacy
+  heatmap/network, and the lane's OWN second round: the validated chains
+  re-valued at synapse >= 1 through the refill's forward+backward layered
+  filter as `route_full_paths_type.csv` /
+  `route_full_carrying_paths_type.csv` / `route_full_type_pairs.csv`,
+  with denominators in `route_type_incoming.csv` (synapse >= 1) and
+  `route_type_incoming_asked.csv` (the lane's asked tier), plus mirror
+  pages `route_full_type_network.html` / `route_full_type_heatmap.html`).
+  Auto-fires after deep runs (Max Intermediate Layers
+  >= 4; the Run Mode (Complete / Fast) control values are complete/auto/both/fast — `fast`
+  is Fast only, which skips the Complete pipeline entirely so
+  `route_scope_paths/route_paths_type.csv` is the run's only path table;
+  legacy
   off/on normalized); never modifies the run's own outputs.
-  Visualization metric bases (Synapses / Ratio / Ratio (>= N) /
+  Visualization metric bases (Synapses / Ratio / Adj. Ratio (>= <the recorded tier>) /
   Refilled) are selectable on the heatmap toggle and the network +
   Sankey Connection-Metric selectors when the data carries them.
 

@@ -633,6 +633,27 @@ def _and_paths(run_dir):
     return {tuple(r.path.split('->')) for r in frame.itertuples()}
 
 
+def test_and_with_no_ratio_says_which_scale_is_missing(tmp_path):
+    """Q1/Phase 1 (plan 2026-10-16): AND with an empty ratio is the DEFAULT
+    regime under another label — and before this round NOTHING was printed, so
+    an API caller or a saved default reaching it had no signal. The note must
+    name BOTH facts: that the graph is gated by the synapse count alone, and
+    what the reader must do to make the AND real."""
+    _fc, run = _run(tmp_path, 'and_inert', basis='synapse', asked=3,
+                    t_r=0.0, combo='and', edges=AND_EDGES, types=AND_TYPES,
+                    sources=AND_SOURCES, targets=AND_TARGETS)
+    # the regime is the single-knob one: both routes survive
+    assert _and_paths(run) == {('S1', 'M', 'T1'), ('S1', 'X', 'T1')}
+    notes = (run / 'user_warning_notes.txt').read_text(encoding='utf-8')
+    assert 'Both (AND) was selected but Min Connection Ratio is 0' in notes
+    assert 'nothing is co-thresholded' in notes
+    assert 'Min Synapse Count >= 3 only' in notes
+    assert 'Enter a ratio above 0 to make the AND regime real' in notes
+    # and the folder does not claim an active AND combination
+    params = (run / 'parameters.txt').read_text(encoding='utf-8')
+    assert 'and (synapse count + connection ratio)' not in params
+
+
 def test_and_mode_drops_edges_failing_either_threshold(tmp_path):
     _fc, syn_dir = _run(tmp_path, 'syn_only', basis='synapse', asked=3,
                         t_r=0.0, edges=AND_EDGES, types=AND_TYPES,
@@ -662,7 +683,7 @@ def test_and_mode_drops_edges_failing_either_threshold(tmp_path):
     assert '[threshold combination] AND' in notes
     # Round-14: the retained-strength bound is explicitly two-dimensional
     assert ('retained-strength bound is two-dimensional' in notes
-            and 'SYNPASE-side ceiling' in notes
+            and 'SYNAPSE-side ceiling' in notes
             and 'bottleneck is at most' in notes)
 
 
@@ -689,7 +710,7 @@ def test_and_mode_ratio_basis_keeps_synapse_floor(tmp_path):
 
 def test_or_mode_ratio_basis_still_forces_synapse_floor(tmp_path):
     # Default 'or': the historical regime is byte-stable — ratio basis
-    # forces min synapse 1 and no combination stamp appears.
+    # forces min synapse 1, and the combination line states 'or' only.
     fc, run_dir = _run(tmp_path, 'or_ratio', basis='connection_ratio',
                        asked=3, t_r=0.2, edges=AND_EDGES, types=AND_TYPES,
                         sources=AND_SOURCES, targets=AND_TARGETS)
@@ -699,7 +720,14 @@ def test_or_mode_ratio_basis_still_forces_synapse_floor(tmp_path):
     assert _and_paths(run_dir) == {
         ('S1', 'M', 'T1'), ('S1', 'X', 'T1')}
     params = (run_dir / 'parameters.txt').read_text(encoding='utf-8')
-    assert 'threshold combination' not in params
+    combo = [line.split(':', 1)[1].strip()
+             for line in params.splitlines()
+             if line.strip().startswith('threshold combination:')]
+    # The regime IS stated — stamped for every run since plan 2026-10-16
+    # round 2 — but it states 'or' and never an AND co-threshold, and the
+    # folder carries no `w3` AND token (the forced synapse floor is 1).
+    assert combo == ['or'], combo
+    assert 'and (' not in params
     assert 'w3r0_2' not in run_dir.name
 
 

@@ -274,9 +274,18 @@ def test_temp_sibling_separates_concurrent_threads():
     work = Path(tempfile.mkdtemp())
     try:
         names = {}
+        # The naming scheme separates CONCURRENT threads by
+        # `threading.get_ident()`, and CPython recycles an ident once its
+        # thread exits — so two workers that happen not to overlap can
+        # legitimately share a name. The gate is about concurrency, so make
+        # the overlap true: without the barrier the test measured the
+        # scheduler (flaky under the full suite, 2026-10-16).
+        start = threading.Barrier(2)
 
         def worker(key):
+            start.wait()
             names[key] = pu.temp_sibling(str(work / "t.parquet"), "probe")
+            start.wait()
 
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
         for t in threads:

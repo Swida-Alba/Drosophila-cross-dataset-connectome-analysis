@@ -1,9 +1,10 @@
 """Plan 2026-09-07 Phase E: exported UserGuide pathfinding content.
 
-Verifies that all three pathfinding tool specs (find_path, find_shortest,
-inter_dataset) carry the reusable explanation block, that the block renders
-in every output format, that the new file patterns match the artifacts the
-backend now writes, and that the glossary documents the new metadata keys.
+Verifies that the four connection-group tool specs (find_path, find_shortest,
+inter_dataset, find_network) carry an explanation block — the three pathfinding
+ones sharing the reusable block, Network carrying its own — that the block
+renders in every output format, that the new file patterns match the artifacts
+the backend now writes, and that the glossary documents the new metadata keys.
 """
 
 import json
@@ -34,13 +35,31 @@ def _make_run_folder(tmp_path):
     return run
 
 
-def test_all_three_pathfinding_specs_carry_explanation():
+def test_all_four_connection_specs_carry_explanation():
+    """Three pathfinding surfaces share the reusable block; Network must carry
+    its OWN (plan 2026-10-16 Q6): a guide that explains τ, the Edge Budget and
+    the corridor lane describes machinery the reader's folder never has."""
     for tool in ("find_path", "find_shortest", "inter_dataset"):
         spec = og.TOOL_GUIDE_SPECS[tool]
         assert spec.get("explanation"), tool
         headings = [s["heading"] for s in spec["explanation"]]
         assert any("path set was produced" in h for h in headings), tool
         assert any("vocabulary" in h for h in headings), tool
+    spec = og.TOOL_GUIDE_SPECS["find_network"]
+    assert spec.get("explanation"), "find_network"
+    headings = [s["heading"] for s in spec["explanation"]]
+    flat = " ".join(headings)
+    assert "connection set was produced" in flat, headings
+    assert "vocabulary" in flat, headings
+    assert "does not apply" in flat, headings
+    body = " ".join(str(cell) for section in spec["explanation"]
+                    for row in (section.get("table") or []) for cell in row)
+    # its own absences, named — not a pathfinding block with the tool's title
+    for token in ("Max Intermediate Layers", "Fast (corridor) lane",
+                  "refilled_total"):
+        assert token in " ".join(
+            " ".join(p for p in (s.get("paragraphs") or []))
+            for s in spec["explanation"]) + body, token
 
 
 def test_explanation_pipeline_order():

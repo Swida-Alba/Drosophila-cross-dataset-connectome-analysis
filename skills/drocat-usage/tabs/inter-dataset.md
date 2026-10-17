@@ -185,6 +185,19 @@ writes both files.
 - `comparison_mode="path"` uses the pathfinding engine (FindAllPath/FindShortestPath);
   `comparison_mode="edge"` preserves strong direct edges. The `path_mode` selects
   per-pair minimum-hop vs all-paths behavior.
+- **A dataset whose query resolves to no neuron is refused PER UNIT** (2026-10-17).
+  The delegated tools raise rather than write an empty folder, and a type present
+  in one release is routinely absent from another, so the analyzer records that
+  unit (`_empty_query_refusals`), logs it, and compares the datasets that did
+  resolve. The record is published in `comparison_report.html` as an orange
+  banner above the mode caveat — naming the dataset, the threshold, the tool and
+  the query — because a missing column the report says nothing about reads like
+  a biological absence. Any other `ValueError` still propagates: the guard exists
+  for this one message, not for defects. The red **Dataset coverage warning**
+  beside it names the cause for a refused dataset — "its query resolved to no
+  neuron, so the tool refused that unit and wrote no run folder and no run log" —
+  and drops its `dataset_data/<dataset>/run_log.txt` pointer when every missing
+  dataset was refused, because that file was never written (2026-10-17).
 - **Drop Untyped Neurons** (`drop_untyped=True`, checkbox in Advanced Settings):
   the shared predicate `utils.label_utils.is_untyped_type_label` (empty label,
   Unknown/None/NaN sentinel, all-digit bodyId-fallback label), applied by the
@@ -202,6 +215,14 @@ writes both files.
   have one threshold for every dataset. The row is the alignment/comparison
   identity, while the sorted cell union is only a deduplicated raw-run
   schedule. Raw `(dataset, threshold)` jobs shared by rows are reused.
+  A combination cell is typed in the selected **Threshold Basis**: a synapse
+  count (integer) or a connection-ratio **percent** (`0.1` = engine tier
+  `0.001`) — the cell placeholder names the unit. **Suggest from alignment**
+  reads `comparison_results/suggested_threshold_combinations.json`, and that
+  file records the `weight_basis` its tiers were measured in, so the seed
+  converts to percent when (and only when) the suggestion came from the
+  ratio-basis `minratio_*` folders and moves the Threshold Basis selector to
+  match. A suggestion is never re-read in the other basis's unit.
 - Each per-dataset threshold folder carries the threshold/bottleneck provenance
   block (requested vs applied threshold, `applied_threshold_source`,
   StrongestFirst budget/bite/tau, `tau_canonical`, `w2`, Edge Budget `w0`/`w1`,
@@ -376,4 +397,4 @@ keep the pairs found up to their own closure layer).
 
 ## Connection-ratio thresholds (v1)
 
-Threshold Basis = Connection ratio accepts FLOAT tiers (0<t≤1) in Standard, Combinations AND Auto; delegate folders use the `minratio_{decimal}` grammar; Auto's density bootstrap/alignment runs on the float ratio tiers (float64 arrays, distinct-tier ladders). Ratio tiers are dimensionless fractions of each post neuron's total input — like-for-like across datasets. Replay Paths applies under this basis too (float slices); Auto-extend Collapsed Thresholds (F7) runs a float k × τ ladder capped at the (0, 1] ceiling. Export notes: query manifests/views carry the float tiers verbatim (`threshold_combinations.csv`, `effective_thresholds.json`), and `type_resolution_union.csv` absence diagnoses compare the max CONNECTION RATIO (w ÷ the post's full-table total incoming) against the tier, with the strongest leg spelled out in synapses.
+Threshold Basis = Connection ratio accepts FLOAT tiers (engine `0<t<=1`) in Standard, Combinations AND Auto (the API takes engine fractions; the TAB types them in PERCENT — valid `0<t<=100`, and a cell's placeholder says `percent, e.g. 0.1` — like the other three pathfinding surfaces: 0.1 means 0.1% = 0.001 — and divides once in `pathfinding_controls.percent_to_fraction`); delegate folders use the `minratio_{decimal}` grammar; Auto's density bootstrap/alignment runs on the float ratio tiers (float64 arrays, distinct-tier ladders). Ratio tiers are dimensionless fractions of each post neuron's total input — like-for-like across datasets. Replay Paths applies under this basis too (float slices); Auto-extend Collapsed Thresholds (F7) runs a float k × τ ladder capped at the (0, 1] ceiling. Export notes: query manifests/views carry the float tiers verbatim (`threshold_combinations.csv`, `effective_thresholds.json`), and `type_resolution_union.csv` absence diagnoses compare the max CONNECTION RATIO (w ÷ the post's full-table total incoming) against the tier, with the strongest leg spelled out in synapses.

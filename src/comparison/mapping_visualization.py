@@ -1115,7 +1115,12 @@ def _render_mapping_graph(graph, output_path: str, *, open_browser: bool = False
             "metric_option_label": "Synapse Count",
             "_sankey_title_js": "Sankey diagram of pathway connections",
             "_sankey_weight_name": "Synapses",
-            "_sankey_weight_name": "Synapses",
+            # The adjusted-ratio wording (vispath F7.3): the bare-instance
+            # renderer reads all three, and a mapping artifact has no
+            # conditioned tier, so it falls back to the tierless form.
+            "adj_ratio_threshold": None,
+            "adj_ratio_label": "Adj. Ratio (threshold-conditioned)",
+            "adj_ratio_label_plain": "Adj. Ratio (threshold-conditioned)",
         }
 
         def __getattr__(self, name):

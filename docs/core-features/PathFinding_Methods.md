@@ -89,6 +89,13 @@ Emits complete intact paths **strongest-first** under a path budget
     (ratio/0.3, capped) are readout columns only; they no longer filter
     the graph. This restores cone nesting under any future ratio
     predicate and makes ratios comparable across thresholds.
+    *Update (2026-10-16):* what F9 retired was the unconditional filter knob.
+    The ratio IS a threshold again on two paths the reader can choose: a
+    `weight_basis='connection_ratio'` run thresholds the graph by it (the
+    bottleneck becomes the weakest fractional input along the path), and
+    `threshold_combination='and'` co-thresholds with the synapse count, each
+    on its own scale. `traversal_probability` stayed a readout column in every
+    regime. See `ConnectionRatioPaths.md`.
 
 ### Threshold and bottleneck provenance
 

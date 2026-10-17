@@ -2,7 +2,7 @@
 import os
 import ast
 import threading
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 import sys
 import json
 import shutil
@@ -2401,6 +2401,10 @@ class FindNeuronConnection:
                     except Exception:
                         totals = None
                 if totals is not None and len(totals):
+                    if post_col == 'type_post':
+                        self._remember_type_incoming_conditioned(
+                            totals['type_post'],
+                            totals['total_incoming_weight'], thr)
                     key = ('type_post' if post_col == 'type_post'
                            else 'bodyId_post')
                     totals_pl = pl.from_pandas(totals).with_columns(
@@ -2428,6 +2432,14 @@ class FindNeuronConnection:
                 else:
                     totals_gp = df.group_by(post_col).agg(
                         pl.col('weight').sum().alias('_adj_total'))
+                    if post_col == 'type_post':
+                        # The denominator actually used, whatever its source:
+                        # recording the fallback too keeps a chain row's
+                        # adjusted ratio identical to the pair table's
+                        # `connection_ratio_adj` instead of silently
+                        # disagreeing with it.
+                        self._remember_type_incoming_conditioned(
+                            totals_gp[post_col], totals_gp['_adj_total'], thr)
                     df = df.join(totals_gp, on=post_col, how='left')
                     df = df.with_columns(
                         pl.when(pl.col('_adj_total') > 0)
@@ -2467,6 +2479,10 @@ class FindNeuronConnection:
             except Exception:
                 totals = None
         if totals is not None and len(totals):
+            if post_col == 'type_post':
+                _tot = totals.set_index('type_post')['total_incoming_weight']
+                self._remember_type_incoming_conditioned(
+                    _tot.index, _tot.values, thr)
             key = ('type_post' if post_col == 'type_post'
                    else 'bodyId_post')
             adj_den = df[post_col].astype(str).map(
@@ -2478,10 +2494,69 @@ class FindNeuronConnection:
                     'sum')
         else:
             adj_den = df.groupby(post_col)['weight'].transform('sum')
+            if post_col == 'type_post':
+                _grp = df.groupby(post_col)['weight'].sum()
+                self._remember_type_incoming_conditioned(
+                    _grp.index, _grp.values, thr)
             adj_den = adj_den.replace(0, np.nan)
             num = df['weight']
         df['connection_ratio_adj'] = num / adj_den
         return df
+
+    def _remember_type_incoming_conditioned(self, labels, masses, thr):
+        """Keep the threshold-CONDITIONED per-post-TYPE incoming denominator
+        that `_attach_ratio_adj_columns` actually used, so the export phase
+        can publish it as `data_details/type_incoming_conditioned.csv`.
+
+        This is the denominator a CHAIN row's adjusted ratio must divide by
+        (the run's own guide: the denominator is "the dataset-wide incoming
+        mass, inputs >= threshold for adjusted"), and recording it from the
+        frame the pair column was computed from — fetch OR in-frame fallback,
+        whichever ran — is what makes a chain's adjusted ratio and the pair
+        table's `connection_ratio_adj` the same measure by construction
+        rather than by hope.
+
+        At Min Synapse Count 1 the conditioned total IS the all-inputs total,
+        so adj == plain there (gate L1). Absent on ratio-basis runs at
+        Min Synapse Count 1, where `_attach_ratio_adj_columns` copies the
+        plain column without fetching — and the report renders no adjusted
+        column for those runs anyway. Recorded from values already in hand:
+        `_fetch_total_incoming_weight_by_type` is deliberately unmemoized
+        (test_denominator_completeness pins the zero-memoization), so the
+        export must never re-scan the cache for it."""
+        try:
+            pairs = list(zip(labels, masses))
+        except Exception:
+            return
+        store = getattr(self, '_type_incoming_conditioned', None)
+        if store is None:
+            store = self._type_incoming_conditioned = {}
+        # The store describes ONE conditioning tier — the tier the exported
+        # `threshold` column names. One instance runs several threshold slices
+        # (FindAllPathMultiThreshold), and a later slice only re-records the
+        # types it re-fetches, so without this the file shipped tier-5 masses
+        # under another tier's label (measured 2026-10-16 on a [2, 5] sweep:
+        # the w5 slice published TT 93 / TC 11 / a TD row, where the dataset's
+        # tier-5 conditioned totals are TT 98 / TC 16 / no TD). A tier change
+        # therefore starts a fresh map.
+        _incoming_tier = max(1, int(thr or 1))
+        _stored_tier = getattr(self, '_type_incoming_conditioned_threshold', None)
+        if store and _stored_tier not in (None, _incoming_tier):
+            store.clear()
+        got = 0
+        for label, mass in pairs:
+            try:
+                if mass is None or pd.isna(mass):
+                    continue
+                mass = float(mass)
+                if mass <= 0:
+                    continue
+                store[str(label)] = mass
+                got += 1
+            except (TypeError, ValueError):
+                continue
+        if got:
+            self._type_incoming_conditioned_threshold = _incoming_tier
 
     def _apply_hemisphere_suffix_to_conn_df(self, conn_df: pd.DataFrame) -> pd.DataFrame:
         if conn_df is None or conn_df.empty:
@@ -3820,6 +3895,19 @@ class FindNeuronConnection:
     limit is only worth warning about when it was hit. Reset per run.
     '''
 
+    _BODYID_METRIC_NOTE = (
+        'Refilled and the adjusted ratio are measured per TYPE pair for this '
+        'run, so this bodyId-level page has no value to show: the type-level '
+        'page beside this folder carries them, with the pair records under '
+        'type_level_refill/.')
+    '''Caption handed to a bodyId-level VisualizePath page, so a disabled
+    "Refilled (N/A)" option is not the page's only word about the gap (user
+    ruling 2026-10-10 keeps these metrics type-level; a reader of the bodyId
+    page had no way to learn that was by design). The second sentence is a
+    claim about the folder, so `_bodyid_metric_note` only quotes it when this
+    run really wrote the totals — a page must not point at a table that is not
+    there.'''
+
     _min_synapse_excluded: bool = False
     '''
     Internal: set True when the min_synapse_num threshold actually dropped
@@ -3898,7 +3986,9 @@ class FindNeuronConnection:
     '''
 
     parameter_dict = dict()
-    '''dictionary to store all specified parameters'''
+    '''dictionary to store all specified parameters. NOT a dataclass field:
+    ``__post_init__`` re-seeds it per instance, because a class-level dict
+    would be shared by every run and leak one run's stamps into the next.'''
     
     parameter_df = pd.DataFrame()
     '''dataframe to store all specified parameters, converted from parameter_dict'''
@@ -4060,6 +4150,12 @@ class FindNeuronConnection:
     '''
     
     def __post_init__(self):
+        # ``parameter_dict`` is declared as a bare class attribute, so without
+        # this every instance writes into ONE shared dict: a run's stamps
+        # (weight basis, run mode, the queried names) would leak into the next
+        # instance, including one that never reaches the write which replaces
+        # the dict wholesale. Fresh per instance.
+        self.parameter_dict = {}
         if self.verbose is not None:
             self.verbose_mode = 'full' if self.verbose else 'silent'
         # ``use_cache=False`` is an explicit online-only contract.  Do not
@@ -4993,6 +5089,44 @@ class FindNeuronConnection:
                     f'  Warning: could not remove output folder {folder}: {e}',
                     level='full')
         self._run_created_folders = []
+
+    def _refuse_empty_query(self, side, requested=None):
+        '''Raise: a query that resolves to no neuron is a refusal, not a
+        run that found nothing.
+
+        Every tool used to print "Error: … DataFrame is empty" at level
+        'always' and RETURN (plan 2026-10-16 §13): no run folder, no report,
+        no exception, so a headless or batch caller could not tell the refused
+        run from a completed one — measured on the real-data matrix, where a
+        name `male-cns:v1.0` does not resolve produced exactly nothing. The
+        distinction matters to the reader: an empty RESULT writes a folder that
+        says which threshold produced nothing, while this asks a question the
+        dataset cannot answer.
+
+        Nothing is written, which required `InitializeNeuronInfo` to stop
+        creating an explicit `saveas` folder eagerly: measured on real data
+        (2026-10-17) the first version of this refusal left a named EMPTY
+        folder in the output directory — the artifact a refusal exists to
+        avoid. Every writer makes its own folder now.
+
+        `requested` is read defensively: a refusal that crashes while building
+        its own message would be the same defect it exists to report (the first
+        version of this helper raised AttributeError on a harness-built
+        instance, which only a real call could show).
+        '''
+        if requested is None:
+            requested = (getattr(self, f'{side}Neurons', None)
+                         or (self.parameter_dict or {}).get(
+                             f'requested {side} neurons'))
+        raise ValueError(
+            f'{side} query resolved to no neurons in dataset '
+            f'{self.dataset!r}'
+            + (f': {requested!r}' if requested else '') + '.\n'
+            '   Nothing was searched, so no run folder and no report are '
+            'written — this is a refusal, not an empty result.\n'
+            '   Check the name against this dataset (Search Neurons tab); a '
+            'type present in one dataset release is absent from another, and '
+            'cache-only runs only resolve names already in the local cache.')
 
     # ============================================================================
     # Core Database Access
@@ -13120,6 +13254,22 @@ class FindNeuronConnection:
         source_all = self._query_uses_all_neurons(self.sourceNeurons)
         target_all = self._query_uses_all_neurons(self.targetNeurons)
         if source_all and target_all:
+            # One-box tools (FindNetwork / FindDirectConnections) pass the SAME
+            # query as both sides, so their refusal must name the tool: "both
+            # sides cannot be the full set" reads like a fixable pairing choice
+            # to a reader who only ever had one box to fill.
+            same_query = (self.sourceNeurons is self.targetNeurons
+                          or list(self.sourceNeurons or [])
+                          == list(self.targetNeurons or []))
+            if same_query:
+                raise ValueError(
+                    "all_neurons is not available for a single-query tool: its "
+                    "one query set IS both sides, so the token asks the whole "
+                    "dataset to connect to itself. Query the neuron names you "
+                    "want the network of, or use the pathfinding tools with "
+                    "'all_neurons' on ONE side and the names on the other "
+                    "(that forces max_interlayer=0: direct connections only)."
+                )
             raise ValueError(
                 "sourceNeurons=targetNeurons='all_neurons' is not allowed: "
                 "both sides cannot be the full neuron set."
@@ -13280,7 +13430,6 @@ class FindNeuronConnection:
         # (find-paths-complete_..., finddirect_...); eagerly creating the auto-named
         # save_folder here used to leave a stray empty folder like
         # '<dataset>_<src>_to_<tgt>' next to the real output.
-        save_folder_explicit = bool(self.saveas or self.save_folder)
         if self.saveas:
             if os.path.isabs(self.saveas):
                 self.save_folder = self.saveas
@@ -13297,8 +13446,12 @@ class FindNeuronConnection:
             self.save_folder = os.path.join(self.output_dir, folder_name)
         elif not os.path.isabs(self.save_folder): # if save_folder is not absolute path, save in data_folder with specified relative path and name
             self.save_folder = os.path.join(self.output_dir, self.save_folder)
-        if save_folder_explicit:
-            os.makedirs(self.save_folder, exist_ok=True)
+        # The folder is NOT created here, even for an explicit `saveas`: every
+        # writer creates it (the four tools' `_note_run_folder_created` sites
+        # and `SaveNeuronInfo`), and an eager mkdir left an empty named folder
+        # behind when a later step refused — e.g. a query that resolves to no
+        # neuron, whose whole point is that nothing was searched (measured on
+        # real data 2026-10-17: `R13_should_not_exist` appeared, empty).
         # Dataset-level run log: every threshold instance of one comparison
         # run appends to the same file (plan A2). Level-filtered console
         # output still applies; the log keeps the full trace.
@@ -13930,7 +14083,7 @@ class FindNeuronConnection:
                 
                 # Create VisualizePath visualization with path data
                 # This creates: (1) Heatmap, (2) Sankey diagram, (3) Network graph
-                vp = VisualizePath(
+                vp = VisualizePath(adj_ratio_threshold=self._adj_ratio_tier(), 
                     path_file=path_df,
                     output_folder=self.direct_folder,
                     source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
@@ -13996,9 +14149,15 @@ class FindNeuronConnection:
                 bodyId_path_df = pd.DataFrame(bodyId_path_data)
                 
                 # Create VisualizePath visualization for bodyId
-                vp_bodyId = VisualizePath(
+                vp_bodyId = VisualizePath(adj_ratio_threshold=self._adj_ratio_tier(), 
                     path_file=bodyId_path_df,
                     output_folder=os.path.join(self.direct_folder, 'bodyId_visualization'),
+                    # No metric_note here: this tool's OWN type-level page is
+                    # built from a one-hop frame with no refilled total and no
+                    # adjusted ratio (see the path_data above), so the caption
+                    # would point at a page that carries neither. The
+                    # FindPath-family sites get it because their type-level
+                    # page reads the run's refill records.
                     source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
                     intermediate_color=self.intermediate_color if hasattr(self, 'intermediate_color') else '#2ca02c',
                     target_color=self.target_color if hasattr(self, 'target_color') else '#d62728',
@@ -14046,7 +14205,7 @@ class FindNeuronConnection:
                 group_path_df = pd.DataFrame(group_path_data)
                 
                 # Create VisualizePath visualization for custom groups
-                vp_group = VisualizePath(
+                vp_group = VisualizePath(adj_ratio_threshold=self._adj_ratio_tier(), 
                     path_file=group_path_df,
                     output_folder=os.path.join(self.direct_folder, 'custom_groups'),
                     source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
@@ -14090,19 +14249,27 @@ class FindNeuronConnection:
         - VisualizePath network + heatmap (NO Sankey), organized under
           visualization/
 
-        Outputs (nothing else): parameters.txt / all_attributes.json,
-        data_details/ (neurons.csv, connection_type.csv,
-        connection_info_bodyId.csv unless skip_bodyId, custom groups when
-        present, hemisphere_unconserved_edges.csv when filtered),
-        user_warning_notes.txt, visualization/ (network + heatmap HTML and
-        their inputs).
+        Outputs: parameters.txt / all_attributes.json, data_details/
+        (neurons.csv, connection_type.csv, connection_info_bodyId.csv unless
+        skip_bodyId, custom groups when present, hemisphere_unconserved_edges.csv
+        when filtered, and — for a run that refills — data_details/
+        type_level_refill/), user_warning_notes.txt, visualization/ (network +
+        heatmap HTML and their inputs), plus the 1-hop ``*_allpaths_type.csv``
+        and the enrollment CSVs (both so the shared Pair Explorer can read a
+        network folder) and ``path_report.html``.
+
+        The refill round runs on EVERY network run with emitted rows and
+        writes the FULL-scope records, so the tool's own network page
+        carries the Refilled metric in either basis. What a synapse-basis
+        run does NOT get is the ASKED (complete-at-asked) scope: its applied
+        threshold equals its requested one, so there is no cut mass to
+        recover at that tier and no asked page is written.
         '''
         import polars as pl
 
         self._reset_temp_columns()
         if self.source_df.empty:
-            self._vprint("Error: Query neuron DataFrame is empty. Cannot build a network.", level='always')
-            return
+            self._refuse_empty_query('Source/target (network)')
 
         # Phase B1 (Network tab alignment): a network is direct-
         # connections-only — record max_interlayer 0 (the refill's hop
@@ -14118,12 +14285,58 @@ class FindNeuronConnection:
                          '(min connection ratio '
                          f'{self.min_ratio}).', level='always')
 
+        # THE THRESHOLD REGIME, named in the run's own exports (plan 2026-10-16
+        # A4). The path pipeline stamps these from inside _find_paths_core;
+        # a network run reaches the same engine fields through this method, so
+        # it stamps them here — AFTER the floor above, so `min synapse number`
+        # is the value that actually gated the graph and never the pre-floor
+        # input the user typed. Without this a ratio-mode network folder
+        # printed 'min synapse number: 3' while the graph ran at 1, and never
+        # said which basis was in force.
+        _ratio_basis = str(getattr(self, 'weight_basis', 'synapse')) \
+            == 'connection_ratio'
+        _and_mode = str(getattr(self, 'threshold_combination', 'or')
+                        or 'or').lower() == 'and'
+        self.parameter_dict['weight basis'] = (
+            'connection_ratio (bodyId)' if _ratio_basis else 'synapse')
+        self.parameter_dict['min synapse number'] = str(self.min_synapse_num)
+        self.parameter_dict['min connection ratio'] = str(self.min_ratio)
+        if _and_mode and int(self.min_synapse_num) > 1 \
+                and float(self.min_ratio or 0.0) > 0:
+            self.parameter_dict['threshold combination'] = (
+                'and (synapse count + connection ratio)')
+        elif _and_mode:
+            # AND with no effective second knob is the default regime under a
+            # different label — and the stamp must name WHICH knob is empty:
+            # writing "min connection ratio is 0" while `min connection ratio:
+            # 0.05` prints two lines ABOVE this one is a claim the reader can
+            # falsify from the same file (a ratio-basis run at synapse 1).
+            self.parameter_dict['threshold combination'] = (
+                'and (inactive: min connection ratio is 0)'
+                if float(self.min_ratio or 0.0) <= 0 else
+                'and (inactive: Min Synapse Count is 1, so the ratio alone '
+                'gates the graph)')
+        else:
+            self.parameter_dict['threshold combination'] = 'or'
+        self._stamp_visualization_edge_limit()
+        # parameters.csv is written from parameter_df, so the frame must be
+        # rebuilt or the stamps would appear only in parameters.txt.
+        self.parameter_df = pd.DataFrame.from_dict(
+            self.parameter_dict, orient='index', columns=['value'])
+        self.parameter_df.reset_index(inplace=True)
+        self.parameter_df.columns = ['parameter', 'value']
+
         # --- Run folder (no depth component: direct connections only) ---
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Folder token grammar (plan C5): `w<t>`/`r<t>` only, exactly like the
+        # path tabs' floor tokens. The old third `p<t>` component carried the
+        # traversal-probability knob, which has been a suspended readout since
+        # 2026-10-06 — every network folder therefore ended in a dead `p0`
+        # that read as a threshold.
         param_suffix = f"w{self.min_synapse_num}"
-        param_suffix += f"r{_format_decimal_for_folder(self.min_ratio)}"
-        param_suffix += f"p{_format_decimal_for_folder(self.min_traversal_probability)}"
+        if float(self.min_ratio or 0.0) > 0 or _ratio_basis:
+            param_suffix += f"r{_format_decimal_for_folder(self.min_ratio)}"
         param_suffix += f"_{timestamp}"
 
         if self.saveas:
@@ -14141,9 +14354,13 @@ class FindNeuronConnection:
         # _relocate_viz_outputs organizes artifacts relative to allpath_folder
         self.allpath_folder = network_folder
 
-        # Run metadata
-        public_attrs = self._run_export_attributes()
+        # Run metadata. `path_mode`/`run mode` are the two lines a reader uses
+        # to classify a folder from its own metadata (the path modes stamp both
+        # through _write_run_metadata); a network names itself here instead
+        # of leaving all_attributes.json without the key at all (plan B5).
+        public_attrs = self._run_export_attributes(path_mode='network')
         public_attrs['tool'] = 'findnetwork'
+        public_attrs['run_mode'] = 'n/a (direct connections)'
         with open(os.path.join(network_folder, 'all_attributes.json'), 'w', encoding='utf-8') as f:
             json.dump(public_attrs, f, indent=4, default=lambda o: '<not serializable>')
         with open(os.path.join(network_folder, 'parameters.txt'), 'w', encoding='utf-8') as f:
@@ -14151,6 +14368,8 @@ class FindNeuronConnection:
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
                 f.write(f'{key}:{" "*max(1, 30-keylen)}{value}\n')
+            f.write(f'path_mode:{" " * 21}network\n')
+            f.write(f'run mode:{" " * 22}n/a (direct connections)\n')
             f.write('\n')
 
         self.source_df['bodyId'] = self.source_df['bodyId'].astype(str)
@@ -14295,7 +14514,17 @@ class FindNeuronConnection:
                 elif 'nt_type_pre' in conn_type_pd.columns:
                     edge_df['nt_type'] = conn_type_pd['nt_type_pre'].values
 
-                vp = VisualizePath(
+                vp = VisualizePath(adj_ratio_threshold=self._adj_ratio_tier(), 
+                    # L5 (plan 2026-10-16 Q6): this tool's OWN network page
+                    # carries the run's Refilled totals. The refill round ran
+                    # two steps above (in _finalize_network_run_artifacts), so
+                    # the pages are built where the metrics already exist —
+                    # the same ordering law as the Complete mode's pages. BOTH
+                    # bases get a toggle (the full-scope round runs for every
+                    # run with emitted rows); only the ASKED scope is
+                    # ratio-mode — and no number is invented for either.
+                    pair_extra_metrics=self._refilled_pair_metrics(
+                        network_folder),
                     path_file=edge_df,
                     output_folder=network_folder,
                     source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
@@ -14331,8 +14560,11 @@ class FindNeuronConnection:
 
         1. Provenance stamps on ``parameters.txt`` in the grammar the
            type-level refill (``read_run_provenance``) and the pair
-           report's ratio sniffing read: ``weight basis``,
-           ``requested_threshold`` / ``applied_threshold`` (a network has
+           report's ratio sniffing read: ``requested_threshold`` /
+           ``applied_threshold`` (``weight basis`` / ``min synapse number`` /
+           ``min connection ratio`` / ``threshold combination`` are already
+           written from ``parameter_dict`` above — restating any of them
+           here is the duplicate-key defect this round removed) (a network has
            no budget/tau machinery, so applied == asked),
            ``filter_by`` / ``max_interlayer`` (refill scope guards).
         2. Enrollment CSVs ``source_neurons.csv`` / ``target_neurons.csv``
@@ -14341,10 +14573,14 @@ class FindNeuronConnection:
            ``<src>_to_<tgt>_allpaths_type.csv`` in the delegate's exact
            column order, so the runner's pair-report hook gives network
            runs the Pair Explorer (direct connections ARE 1-hop paths).
-        4. The type-level refill hook: ratio-mode runs always fill
-           (complete-at-asked); synapse runs refill only on a budget
-           bite, which a network never has — the hook's own pre-gate
-           handles that.
+        4. The type-level refill hook (measured 2026-10-16): EVERY
+           network run writes the FULL-scope records (synapse >= 1),
+           which is what the run's own network page reads for its
+           Refilled metric; a ratio-basis run additionally gets the
+           complete-at-asked scope, while a synapse run gets no asked
+           scope at all — its applied threshold equals its requested
+           one, so there is no cut mass to recover. The hook's own
+           pre-gate decides; nothing here is assumed.
         """
         ratio = str(getattr(self, 'weight_basis', 'synapse')) == 'connection_ratio'
         asked = self.min_ratio if ratio else self.min_synapse_num
@@ -14353,11 +14589,14 @@ class FindNeuronConnection:
         # The space-form keys (max interlayer / filter by / min synapse
         # number) are already in parameter_dict and parsed by
         # read_run_provenance; these are the underscore-form stamps it
-        # additionally collects.
+        # additionally collects. `weight basis` is NOT re-stamped here: the
+        # parameter_dict block above already wrote the richer rendering
+        # ('connection_ratio (bodyId)'), and a second line with a different
+        # spelling of the same key is what the refill reader's
+        # contradictory-value rule exists to catch.
         with open(os.path.join(network_folder, 'parameters.txt'), 'a',
                   encoding='utf-8') as f:
             f.write('\n' + '\n'.join([
-                f'weight basis: {"connection_ratio" if ratio else "synapse"}',
                 f'requested_threshold: {asked}',
                 f'applied_threshold: {asked}',
                 'applied_threshold_source: requested',
@@ -14420,7 +14659,16 @@ class FindNeuronConnection:
             })
         table = pd.DataFrame(rows, columns=[
             'path', 'weights', 'ratios', 'min_weight', 'min_ratio',
-            'length', 'nt_types', 'coverage']).sort_values('path')
+            'length', 'nt_types', 'coverage'])
+        # SAME ORDER LAW AS THE PATHFINDING TOOLS' path table (review
+        # 2026-10-16): length ascending then min_weight descending, path as
+        # the deterministic tie-break. This file is what the pair report
+        # mounts and what its Path view reads first rows from, so an
+        # alphabetical table made a Network run's "top paths" an accident of
+        # type names (measured: 95, 6, 91 synapses in that order).
+        table = table.sort_values(['length', 'min_weight', 'path'],
+                                  ascending=[True, False, True],
+                                  kind='mergesort')
         table_path = os.path.join(
             network_folder,
             f'{self.source_fname}_to_{self.target_fname}_allpaths_type.csv')
@@ -14707,7 +14955,7 @@ class FindNeuronConnection:
             self._warn_notes.append(
                 '- [threshold combination] retained-strength bound is '
                 'two-dimensional this run: the pruning bound above is the '
-                'SYNPASE-side ceiling (at most '
+                'SYNAPSE-side ceiling (at most '
                 f'{prune_stats["strongest_retained"]:g} synapses); every '
                 'retained path also clears the ratio co-threshold on '
                 f'every hop (>= {float(self.min_ratio):g}), whose measured '
@@ -15001,8 +15249,8 @@ class FindNeuronConnection:
                                 members[str(label)].add(bid)
         else:
             _ids = sorted({b for t in frames for b in
-                           list(t[_PRE].cast(_pl.Utf8).to_list())
-                           + list(t[_POST].cast(_pl.Utf8).to_list())})
+                           list(t['bodyId_pre'].cast(_pl.Utf8).to_list())
+                           + list(t['bodyId_post'].cast(_pl.Utf8).to_list())})
             try:
                 _nt = self._fetch_neurons_local_or_api(
                     _ids, columns=['bodyId', 'type'])
@@ -15536,12 +15784,19 @@ class FindNeuronConnection:
     @staticmethod
     def _type_path_applied_incoming(all_paths, node_label, edge_weights):
         """Per POST-type label: the summed weight of the distinct bodyId
-        edges realizing any hop of any EMITTED bodyId path — the
-        applied-tier incoming mass the emitted network actually carries.
-        Every such edge is >= the applied threshold (emitted bottlenecks
-        are), so this is the denominator that matches the realized
-        Weights scope; the pair report derives its applied-conditioned
-        Adj. ratios from it (data_details/type_incoming_applied.csv)."""
+        edges realizing any hop of any EMITTED bodyId path — the mass this
+        run's emitted network actually carries into each type.
+
+        This is a RUN-INTERNAL cone total, not a threshold-conditioned
+        dataset total (F-EX-003): for every type it equals the sum of the
+        run's own `connection_type.csv` weights for that post type, so it is
+        strictly smaller than the dataset incoming the adjusted ratios must
+        divide by (measured: PPL101 1,283 emitted cone vs 39,137 dataset
+        all-post). Persisted as `data_details/type_incoming_emitted.csv`;
+        its job is the full-scope refill's cache guard
+        (`type_level_refill.py`), which asks whether the stream-derived
+        incoming dominates what this run emitted. Chain-level adjusted
+        ratios divide by `type_incoming_conditioned.csv` instead."""
         seen = set()
         for p in all_paths:
             for i in range(len(p) - 1):
@@ -15751,11 +16006,17 @@ class FindNeuronConnection:
         adjusted-ratio list column on a TYPE-LEVEL paths frame, plus the
         pair-level Refilled totals for VisualizePath's pair_extra_metrics.
 
-        - `connection_ratios_adj`: per-hop weights / the applied-tier
-          incoming of the hop's post type (data_details/
-          type_incoming_applied.csv — the same denominator the pair
-          report's Adj. ratios use). Column absent when that file is
-          missing/unreadable — the toggle then simply hides the metric.
+        - `connection_ratios_adj`: per-hop weights / the CONDITIONED
+          dataset-wide incoming of the hop's post type (data_details/
+          type_incoming_conditioned.csv) — the same denominator the pair
+          report's Adj. ratios use, and the one the run's guide names
+          ("inputs >= threshold" over the dataset, F-EX-003). Column absent
+          when that file is missing/unreadable — the toggle then simply
+          hides the metric. It is deliberately NOT the emitted-cone total
+          (`type_incoming_emitted.csv`): on a sparse two-hop MCNS run that
+          denominator is ~30x smaller than the dataset's, which pushed
+          these shares to 0.98 / 0.37 where the true conditioned shares are
+          0.0118 / 0.0122.
         - returns (paths_df, pair_extra_metrics): the frame gains the
           list column in place; the metrics dict carries 'refilled'
           merged from type_level_refill/refill_connection_type.csv when
@@ -15769,9 +16030,9 @@ class FindNeuronConnection:
                 return paths_df, pair_extra
             import pandas as _pd
             import os as _os
-            # per-hop adjusted ratios from the applied-tier incoming
+            # per-hop adjusted ratios from the conditioned dataset incoming
             in_csv = _os.path.join(str(folder), 'data_details',
-                                   'type_incoming_applied.csv')
+                                   'type_incoming_conditioned.csv')
             if _os.path.exists(in_csv):
                 inc = _pd.read_csv(in_csv)
                 incoming = {str(r['type']): float(r['incoming'])
@@ -15798,32 +16059,47 @@ class FindNeuronConnection:
                         break
                 if ok and adj_lists:
                     paths_df['connection_ratios_adj'] = adj_lists
-            # pair-level refilled totals from the refill PAIR table
-            # (refill_type_pairs.csv carries refilled_total; the
-            # connection-type MIRROR does not — its weight IS the refill
-            # mass). data_details first, then the mirror-root copy.
-            for ref_csv in (
-                    _os.path.join(str(folder), 'data_details',
-                                  'type_level_refill',
-                                  'refill_type_pairs.csv'),
-                    _os.path.join(str(folder), 'type_level_refill',
-                                  'refill_type_pairs.csv')):
-                if not _os.path.exists(ref_csv):
-                    continue
-                ref = _pd.read_csv(ref_csv)
-                if 'refilled_total' not in ref.columns:
-                    continue
-                totals = {}
-                for _, r in ref.iterrows():
-                    totals[(str(r['type_pre']),
-                            str(r['type_post']))] = float(
-                        r['refilled_total'])
-                if totals:
-                    pair_extra['refilled'] = totals
-                break
+            # pair-level refilled totals (L5: any page a connection-group run
+            # writes carries the metrics that run produced — the Network tool
+            # reads the SAME map for its own pages).
+            pair_extra.update(self._refilled_pair_metrics(folder))
         except Exception:  # viz extras are best-effort, never fatal
             pass
         return paths_df, pair_extra
+
+    def _refilled_pair_metrics(self, folder) -> dict:
+        """The pair-level ``Refilled`` totals of this run's refill round.
+
+        Read from a refill PAIR table (refill_type_pairs.csv /
+        refill_full_type_pairs.csv carry ``refilled_total``; the connection-type
+        MIRROR does not — its weight IS the refill mass). ``data_details/``
+        first, then the mirror-root copy: one reader for that law, shared with
+        the refill's own pages.
+
+        SCOPE ORDER (2026-10-16): the FULL scope (synapse >= 1) first, so the
+        main network's Refilled metric means exactly one thing on every run —
+        this pair's mass when nothing is thresholded away — and is defined on
+        every run with emitted rows (a non-bitten run has no asked table at all,
+        which is why the asked-first order shipped 'refilled: null' everywhere).
+        The asked table stays the fallback for shortest-mode runs, whose refill
+        produces the asked view only. The refill PAGES keep their own scope's
+        totals, so a page never borrows a number from another scope.
+        """
+        pair_extra: dict = {}
+        try:
+            if folder is None:
+                return pair_extra
+            _dd = os.path.join(str(folder), 'data_details',
+                               'type_level_refill')
+            _mr = os.path.join(str(folder), 'type_level_refill')
+            pair_extra.update(self._refilled_total_map([
+                os.path.join(_dd, 'refill_full_type_pairs.csv'),
+                os.path.join(_mr, 'refill_full_type_pairs.csv'),
+                os.path.join(_dd, 'refill_type_pairs.csv'),
+                os.path.join(_mr, 'refill_type_pairs.csv')]))
+        except Exception:  # additive metric, never fatal
+            pass
+        return pair_extra
 
     def _write_user_warning_notes(self, folder):
         """
@@ -16947,7 +17223,7 @@ class FindNeuronConnection:
                         getattr(self, 'allpath_folder', None)
                         or getattr(self, 'path_folder', None))
 
-                vp = VisualizePath(
+                vp = VisualizePath(adj_ratio_threshold=self._adj_ratio_tier(), 
                     path_file=paths_to_visualize,
                     pair_extra_metrics=(_pair_extra or None),
                     output_folder=self.path_folder,
@@ -17011,9 +17287,10 @@ class FindNeuronConnection:
                     
                     paths_to_visualize_bodyId['path_block'] = paths_to_visualize_bodyId['path_block'].apply(add_types_to_path)
 
-                vp_bodyId = VisualizePath(
+                vp_bodyId = VisualizePath(adj_ratio_threshold=self._adj_ratio_tier(), 
                     path_file=paths_to_visualize_bodyId,
                     output_folder=os.path.join(self.path_folder, 'bodyId_visualization'),
+                    metric_note=self._bodyid_metric_note(),
                     source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
                     intermediate_color=self.intermediate_color if hasattr(self, 'intermediate_color') else '#2ca02c',
                     target_color=self.target_color if hasattr(self, 'target_color') else '#d62728',
@@ -17093,7 +17370,7 @@ class FindNeuronConnection:
         enumeration is still running).
         """
         try:
-            vp = VisualizePath(
+            vp = VisualizePath(adj_ratio_threshold=self._adj_ratio_tier(), 
                 path_file=edge_df,
                 output_folder=output_folder,
                 source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
@@ -17290,8 +17567,12 @@ class FindNeuronConnection:
         (``_find_paths_core``) with ``path_mode='all'``. See
         ``FindShortestPath`` for the shortest-only variant that reuses the
         exact same pipeline (discovery, enrichment, outputs, visualization).
-        Connection-ratio and traversal-probability settings are retained as
-        readout definitions and do not filter this pathfinding graph.
+        What filters the graph depends on ``weight_basis``: under the default
+        'synapse' basis the Min Synapse Count thresholds it and
+        connection_ratio / traversal_probability are readout columns; under
+        'connection_ratio' the ratio IS the threshold (the synapse floor drops
+        to 1 unless Combine Thresholds = AND keeps both). See
+        docs/core-features/ConnectionRatioPaths.md.
         '''
         return self._find_paths_core(
             path_mode='all',
@@ -17308,10 +17589,12 @@ class FindNeuronConnection:
         Find ONLY the shortest paths between source and target neurons.
 
         For every reachable (source, target) pair the minimum hop-count
-        paths under the Min Synapse Count graph threshold are returned — all
-        tied shortest paths, each once. Connection ratio and traversal
-        probability remain readout columns in pathfinding and do not filter
-        the graph.
+        paths under the run's graph threshold are returned — all tied shortest
+        paths, each once. The threshold follows ``weight_basis`` exactly as in
+        'all' mode: Min Synapse Count on the synapse basis, the connection
+        ratio on the ratio basis (Phase 3 of that lane — the batched discovery
+        path converts its weights to the same F9 ratios, so a shortest run is
+        ratio-scale end to end); traversal probability stays a readout.
 
         Differences from FindAllPath (the rest of the pipeline is shared):
 
@@ -17455,33 +17738,80 @@ class FindNeuronConnection:
         return paths
 
     def _replay_output_folder_for_threshold(self, threshold, base_threshold):
-        """Redirect the run's output folder to ``minsyn_{threshold}`` and
-        write that folder's run attributes/parameters files."""
+        """Redirect the run's output folder to this slice's tier token and
+        write that folder's run attributes/parameters files.
+
+        TWO folder grammars carry the tier and both must be restamped: the
+        standalone run's ``_L{depth}w{synapse}[r{ratio}]_{timestamp}`` (the
+        builder at the folder-creation site) and the cross-dataset delegate's
+        ``minsyn_{int}`` / ``minratio_{decimal}``. A grammar miss used to fall
+        through silently and re-materialize the slice into the BASE folder,
+        so a synapse ``[2, 5]`` sweep published ONE ``_L3w2`` folder whose
+        parameters.txt said ``threshold: 5`` — and when the asked t0 later
+        collapsed, ``shutil.rmtree(t0_folder)`` deleted that slice. A name
+        with no tier token at all (a custom Save-As folder) now gets the slice
+        in a tier-named subfolder rather than overwriting or crashing. The
+        tier token is matched only in the folder NAME's tail (never a parent
+        directory named ``.../L3/``), and the swept basis's token alone is
+        rewritten: a ratio sweep restamps the ``r`` part of an AND-mode
+        ``w2r0_05`` token and keeps the synapse tier, a synapse sweep the
+        other way round.
+        """
         import re
-        base = self.allpath_folder or self.save_folder
-        if getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
-            _dec = (str(float(threshold)).replace('-', 'neg')
-                                         .replace('.', '_'))
-            _m = re.search(
-                r'(_L\d+)r[\dneg]+(?:_[\dneg]+)*?'
-                r'(?=_\d{8}_\d{6}(?:/|$)|/|$)', base)
-            if _m is not None:
-                # Standalone-run grammar: L{d}r{t} folder suffix.
-                new_base = (base[:_m.start()] + _m.group(1)
-                            + 'r' + _dec + base[_m.end():])
+        base = (self.allpath_folder or self.save_folder or '').rstrip('/\\')
+        ratio_mode = (getattr(self, 'weight_basis', 'synapse')
+                      == 'connection_ratio')
+        # Same formatter as the folder builder, so a slice folder is named
+        # exactly what a fresh single-threshold run at this tier would be.
+        _dec = _format_decimal_for_folder(float(threshold))
+        # The tier token always lives at the END of the folder NAME, so
+        # partition first: a parent directory named ``.../L3/`` must never
+        # be read as this run's depth token.
+        _cut = max(base.rfind('/'), base.rfind('\\'))
+        head, name = (base[:_cut + 1], base[_cut + 1:]) if _cut >= 0 \
+            else ('', base)
+        _m = re.match(r'(?P<prefix>.+_L\d+)'
+                      r'(?P<syn>w\d+)?'
+                      r'(?P<ratio>r[\dneg_]+?)?'
+                      r'(?P<stamp>_\d{8}_\d{6})?$', name)
+        if _m is not None:
+            syn = _m.group('syn') or ''
+            ratio = _m.group('ratio') or ''
+            if ratio_mode:
+                ratio = 'r' + _dec
             else:
-                # Cross-dataset delegate grammar: minratio_{decimal}
-                # (the comparison tool's folder builder).
-                new_base, _n = re.subn(
-                    r'minratio_[0-9neg_]+(?=/|$)',
-                    f'minratio_{_dec}', base, count=1)
-                if _n == 0:
-                    raise ValueError(
-                        f'cannot restamp ratio threshold into folder name '
-                        f'{base!r}')
+                syn = f'w{int(threshold)}'
+            new_base = head + _m.group('prefix') + syn + ratio \
+                + (_m.group('stamp') or '')
         else:
-            new_base = re.sub(r'minsyn_\d+(?=/|$)',
-                              f'minsyn_{threshold}', base)
+            pattern = r'minratio_[0-9neg_]+$' if ratio_mode else r'minsyn_\d+$'
+            repl = ('minratio_' + _dec if ratio_mode
+                    else f'minsyn_{int(threshold)}')
+            new_base, _n = re.subn(pattern, repl, name, count=1)
+            if _n == 0:
+                # A custom Save-As folder carries no tier token anywhere, so
+                # the slice cannot be labelled IN its name. The old behaviour
+                # was to skip the redirect silently — every slice then
+                # overwrote one folder — and raising here would kill a
+                # legitimate multi-threshold pass mid-run, so the slice gets
+                # its own tier-named SUBFOLDER and the run says so.
+                _token = ('minratio_' + _dec if ratio_mode
+                          else f'minsyn_{int(threshold)}')
+                new_base = os.path.join(base, _token)
+                _note = (
+                    '- [threshold replay] the run\'s output folder name '
+                    f'{name!r} carries no threshold token, so the slice at '
+                    f'tier {threshold} was written to {_token}/ inside it '
+                    'instead of overwriting the base tier\'s folder (which '
+                    'stays in the folder itself). Name the folder with the '
+                    'tier, or leave Save As empty, to get one flat folder per '
+                    'threshold.')
+                self._vprint(_note, level='always')
+                _notes = getattr(self, '_warn_notes', None)
+                if _notes is not None:
+                    _notes.append(_note)
+            else:
+                new_base = head + new_base
         os.makedirs(new_base, exist_ok=True)
         self.save_folder = new_base
         self.allpath_folder = new_base
@@ -17505,6 +17835,12 @@ class FindNeuronConnection:
                 keylen = len(key)
                 f.write(f'{key}:{" " * max(1, 30 - keylen)}{value}\n')
             f.write(f'path_mode:{" " * 21}all\n')
+            # A slice folder is a folder a reader can return to on its own,
+            # so it answers the same three questions as the run's own folder
+            # (basis above, mode here, lane next): without this line the
+            # Fast-lane state was readable from the base folder but absent
+            # from every replay slice.
+            f.write(f'run mode:{" " * 22}{self._resolved_run_mode()}\n')
             prov = getattr(self, '_last_provenance', None) or {}
             tau = prov.get('strongest_first_tau')
             tau_str = (repr(tau) if isinstance(tau, float)
@@ -17517,11 +17853,12 @@ class FindNeuronConnection:
                           == 'connection_ratio'
                           else 'applied_tau (min path bottleneck)')
             f.write(f'{_tau_label}:{" " * 4}{tau_str}\n')
-            floor = prov.get('edge_weight_floor')
-            floor_str = (repr(floor) if isinstance(floor, float)
-                         else f'{floor:g}' if floor is not None
-                         else 'not applied')
-            f.write(f'edge_weight_floor:{" " * 18}{floor_str}\n')
+            if 'edge_weight_floor' not in self.parameter_dict:
+                floor = prov.get('edge_weight_floor')
+                floor_str = (repr(floor) if isinstance(floor, float)
+                             else f'{floor:g}' if floor is not None
+                             else 'not applied')
+                f.write(f'edge_weight_floor:{" " * 18}{floor_str}\n')
             f.write(f'replayed_from:{" " * 17}{base_threshold}\n')
             f.write('\n')
 
@@ -17931,6 +18268,14 @@ class FindNeuronConnection:
             edge_df['ratio'] = df['connection_ratio']
         elif 'ratio' in df.columns:
             edge_df['ratio'] = df['ratio']
+        # The ADJUSTED flavor, so the refill's own pages carry it like the
+        # corridor mirror's already do (_write_mirror_visualizations maps the
+        # same column): without it the toggle reads "(N/A)" on a page whose
+        # source table HAS the conditioned ratio.
+        if 'connection_ratio_adj' in df.columns:
+            edge_df['ratio_adj'] = df['connection_ratio_adj']
+        elif 'ratio_adj' in df.columns:
+            edge_df['ratio_adj'] = df['ratio_adj']
         if 'traversal_probability' in df.columns:
             edge_df['probability'] = df['traversal_probability']
         elif 'probability' in df.columns:
@@ -17940,6 +18285,35 @@ class FindNeuronConnection:
         elif 'nt_type_pre' in df.columns:
             edge_df['nt_type'] = df['nt_type_pre']
         return edge_df
+
+    @staticmethod
+    def _refilled_total_map(paths):
+        """(type_pre, type_post) -> refilled_total, from the first refill
+        PAIR table that exists and carries the column — the quantity the
+        Refill tables and the network's 'Refilled' metric both print. None
+        entries are skipped, so an unresolvable pair simply has no metric
+        rather than a zero that reads as a measurement."""
+        import os as _os
+        import pandas as _pd
+        for ref_csv in paths:
+            if not _os.path.exists(ref_csv):
+                continue
+            try:
+                frame = _pd.read_csv(ref_csv)
+            except (OSError, ValueError):
+                continue
+            if not {'type_pre', 'type_post',
+                    'refilled_total'} <= set(frame.columns):
+                continue
+            totals = {}
+            for _, r in frame.iterrows():
+                if _pd.notna(r['refilled_total']):
+                    totals[(str(r['type_pre']),
+                            str(r['type_post']))] = float(
+                        r['refilled_total'])
+            if totals:
+                return {'refilled': totals}
+        return {}
 
     def _viz_source_target_sets(self, level: str):
         """Source/target node sets for visualization coloring (type /
@@ -17982,16 +18356,68 @@ class FindNeuronConnection:
                 vp.G_network.nodes[node]['node_type'] = 'intermediate'
 
     def _build_refill_visualizations(self, mirror_dir):
-        """Heatmap + network for the standalone type_level_refill/ folder
-        (type level from refill_connection_type.csv; bodyId twins from
-        the refill_bodyId_pairs.csv records when present) — same recipe
-        as the reciprocal views: build_network + role coloring +
-        create_heatmap + create_network, no Sankey."""
+        """Heatmap + network for the standalone type_level_refill/ folder,
+        for WHICHEVER scope its mirror carries: the asked round
+        (refilled_connection_type.csv -> refill_type_*) and the synapse >= 1
+        round (refilled_full_connection_type.csv -> refill_full_type_*).
+        Both draw the RE-VALUED TOTAL over the run's whole emitted topology;
+        bodyId twins from the refill_bodyId_pairs.csv records when present —
+        same recipe as the reciprocal views: build_network + role coloring +
+        create_heatmap + create_network, no Sankey.
+
+        They used to draw the recovered (delta) mass — `refill_connection_
+        type.csv` / the full mirror's `refill_weight` filtered > 0 — and two
+        things followed: every pair with no sub-threshold mass vanished, so
+        the page's nodes became dead-ends (measured on MCNS
+        aMe12/aMe26 -> PPL101/PPL103: 18 edges against the run's own 23,
+        with KCg and KCg-s1 left as leaves), and the drawn weight (delta)
+        contradicted the share printed beside it (the TOTAL's ratio). The
+        delta still lives in the CSVs, in columns named for it.
+        """
+        # ONE render per folder per run. The round builds these pages where it
+        # writes the mirror (2026-10-16), and the historical visualization-stage
+        # call site stayed in place — measured: EVERY run called this twice on
+        # the same folder (unbitten, budget-bitten and edge-bitten), so the
+        # pages were rendered and overwritten twice. The older site is kept
+        # because the visualization stage keys on the mirror CSVs being ON
+        # DISK, not on this run having written them: a re-run over an existing
+        # folder with the refill round off (or a folder whose mirror came from
+        # an earlier round) still has to get its pages. It simply no longer
+        # re-renders a folder this run already drew — and the mark below is
+        # only made once the render returns, so a crash here lets the second
+        # site retry rather than leave the folder pageless.
+        _built = getattr(self, '_refill_viz_built_dirs', None)
+        if _built is None:
+            _built = self._refill_viz_built_dirs = set()
+        _key = os.path.abspath(str(mirror_dir))
+        if _key in _built:
+            if self.verbose_mode == 'full':
+                self._vprint('  [type-level refill] pages already rendered '
+                             'for this folder — skipping the second build',
+                             level='full')
+            return
         if self.verbose_mode == 'full':
             self._vprint('\nCreating refill visualizations...', level='full')
 
-        def _vp(edge_df):
+        def _vp(edge_df, adj_tier=None, pair_extra=None):
+            # The tier the page's ADJUSTED flavor is conditioned at:
+            # the asked round uses the run's recorded conditioned tier,
+            # the synapse >= 1 round names 1 — where conditioning cuts
+            # nothing, which is exactly why that table carries no
+            # adjusted column (the same rule the corridor's
+            # route_full_type pages and the report's G5 suppression
+            # follow). A page labeled with another round's tier would
+            # be a claim the reader cannot reproduce.
+            #
+            # `pair_extra` carries the pair's REFILLED TOTAL under this
+            # scope — the same number the page now draws as its weight, so
+            # the Refilled metric stays selectable and reads identically to
+            # the run's main network page (where Weight is the emitted mass
+            # and Refilled is this total).
             return VisualizePath(
+                adj_ratio_threshold=(adj_tier if adj_tier is not None
+                                     else self._adj_ratio_tier()),
+                pair_extra_metrics=(pair_extra or None),
                 path_file=edge_df,
                 output_folder=mirror_dir,
                 source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
@@ -18003,24 +18429,119 @@ class FindNeuronConnection:
                 edgeN_limit=self.edgeN_limit,
                 output_format=self.output_format,
                 verbose=(self.verbose_mode == 'full'),
+                # NT colouring on the round's OWN pages, like the run's
+                # main Network (user 2026-10-15): the mirror tables carry
+                # nt_type, so the legend and the option have data.
                 color_edges_by_nt=True,
                 separate_hemispheres=self.separate_hemispheres
             )
 
-        refill_type_frame = pd.read_csv(
-            os.path.join(mirror_dir, 'refill_connection_type.csv'))
-        refill_type_frame = refill_type_frame[
-            refill_type_frame['weight'].fillna(0) > 0]
-        type_edge_df = self._viz_edge_df(
-            refill_type_frame, 'type_pre', 'type_post')
-        if type_edge_df is not None and not type_edge_df.empty:
-            vp_refill_type = _vp(type_edge_df)
-            vp_refill_type.base_filename = 'refill_type'
-            vp_refill_type.build_network()
-            source_nodes, target_nodes = self._viz_source_target_sets('type')
-            self._viz_assign_node_roles(vp_refill_type, source_nodes, target_nodes)
-            vp_refill_type.create_heatmap()
-            vp_refill_type.create_network()
+        # F7.2 (plan-corridor-refill-and-mode-tabs): build the page for
+        # whichever scope this run's mirror actually carries. The asked
+        # mirror only exists when the budget bit, so a non-bitten run —
+        # whose deliverable is the synapse >= 1 re-value — used to get no
+        # refill visualization at all.
+        #
+        # SOURCE = THE TOTALS TABLE, not the delta table: `refilled_
+        # connection_type.csv` (complete-at-asked) carries one row per
+        # EMITTED pair with weight = emitted + recovered, exactly like the
+        # full round's `refilled_full_connection_type.csv`. A page must never
+        # mix scopes — drawing the recovered DELTA beside the TOTAL's ratio
+        # and Refilled value is the defect this rule exists to stop — so an
+        # asked mirror that carries only the delta writes no asked page at
+        # all. (Re-totaling it in place is not available: the delta table is
+        # written from `_TYPE_MIRROR_COLUMNS`, whose `weight` IS the delta and
+        # which carries no emitted/refill component columns at all.)
+        _asked_csv = os.path.join(mirror_dir, 'refilled_connection_type.csv')
+        if not os.path.exists(_asked_csv):
+            _delta = os.path.join(mirror_dir, 'refill_connection_type.csv')
+            if os.path.exists(_delta):
+                _refusal = (
+                    '- [type-level refill] the asked scope carries only '
+                    'the recovered delta with no components to re-total, '
+                    'so no asked network/heatmap was written — a page '
+                    'drawing the delta beside the total\'s ratio and '
+                    'Refilled would contradict itself. The full-scope '
+                    'pages (which do carry totals) are written.')
+                self._vprint(_refusal, level='always')
+                self._warn_notes.append(_refusal)
+            _asked_csv = ''
+        if _asked_csv:
+            refill_type_frame = pd.read_csv(_asked_csv)
+            refill_type_frame = refill_type_frame[
+                refill_type_frame['weight'].fillna(0) > 0]
+            type_edge_df = self._viz_edge_df(
+                refill_type_frame, 'type_pre', 'type_post')
+            if type_edge_df is not None and not type_edge_df.empty:
+                # The run's own data_details holds the asked scope's
+                # refilled totals (mirror_dir is <run>/type_level_refill, so
+                # its parent is the run folder).
+                vp_refill_type = _vp(
+                    type_edge_df,
+                    pair_extra=self._refilled_total_map([
+                        os.path.join(os.path.dirname(mirror_dir.rstrip('/')),
+                                     'data_details', 'type_level_refill',
+                                     'refill_type_pairs.csv'),
+                        os.path.join(mirror_dir, 'refill_type_pairs.csv')]))
+                vp_refill_type.base_filename = 'refill_type'
+                vp_refill_type.build_network()
+                source_nodes, target_nodes = self._viz_source_target_sets(
+                    'type')
+                self._viz_assign_node_roles(
+                    vp_refill_type, source_nodes, target_nodes)
+                vp_refill_type.create_heatmap()
+                vp_refill_type.create_network()
+
+        _full_csv = os.path.join(
+            mirror_dir, 'refilled_full_connection_type.csv')
+        if os.path.exists(_full_csv):
+            # Both rounds draw their scope's RE-VALUED TOTAL, so one
+            # _viz_edge_df/_vp recipe serves both; the pair table's own
+            # delta columns (`refill_weight`, `emitted_weight`) stay out of
+            # the picture and in the CSV.
+            full_frame = pd.read_csv(_full_csv)
+            if 'refilled_total' in full_frame.columns:
+                full_frame = full_frame.rename(
+                    columns={'refilled_total': 'weight'})
+                if 'refilled_connection_ratio' in full_frame.columns:
+                    full_frame = full_frame.rename(
+                        columns={'refilled_connection_ratio':
+                                 'connection_ratio'})
+            elif 'weight' not in full_frame.columns:
+                # Same law as the asked scope above: a pre-2026-10-16 full
+                # mirror carries only the recovered DELTA (`refill_weight`).
+                # Renaming it to `weight` drew the delta beside the total's
+                # ratio and Refilled metric — the mixed-scope page this round
+                # exists to stop — so it now writes no page and says why.
+                _full_refusal = (
+                    '- [type-level refill] the synapse >= 1 scope carries '
+                    'only the recovered delta (no refilled_total column), so '
+                    'no full-scope network/heatmap was written — the page '
+                    'would draw the recovered mass under the total\'s ratio. '
+                    'Re-run the refill round to regenerate the totals table.')
+                self._vprint(_full_refusal, level='always')
+                self._warn_notes.append(_full_refusal)
+                full_frame = None
+            if full_frame is not None:
+                full_frame = full_frame[
+                    full_frame['weight'].fillna(0) > 0]
+                full_edge_df = self._viz_edge_df(
+                    full_frame, 'type_pre', 'type_post')
+                if full_edge_df is not None and not full_edge_df.empty:
+                    # refilled_total is already a column of the full mirror,
+                    # so this page's Refilled metric reads from the same rows
+                    # it draws (no cross-scope borrowing).
+                    vp_refill_full = _vp(
+                        full_edge_df, adj_tier=1,
+                        pair_extra=self._refilled_total_map([_full_csv]))
+                    vp_refill_full.base_filename = 'refill_full_type'
+                    vp_refill_full.build_network()
+                    source_nodes, target_nodes = \
+                        self._viz_source_target_sets('type')
+                    self._viz_assign_node_roles(
+                        vp_refill_full, source_nodes, target_nodes)
+                    vp_refill_full.create_heatmap()
+                    vp_refill_full.create_network()
 
         _refill_body_csv = os.path.join(
             self.allpath_folder, 'data_details', 'type_level_refill',
@@ -18040,6 +18561,66 @@ class FindNeuronConnection:
                 vp_refill_body.create_heatmap()
                 vp_refill_body.create_network()
 
+        # marked only now: a folder that raised mid-render is re-tried by the
+        # visualization-stage site instead of shipping pageless
+        _built.add(_key)
+
+    def _adj_ratio_tier(self):
+        """The tier the adjusted ratios' denominator was conditioned at:
+        the value the engine recorded when it fetched the conditioned
+        totals, else its own rule `max(1, min_synapse_num)`. Visualization
+        labels name it so 'Adj. Ratio (≥ N)' never shows a bare N."""
+        return (getattr(self, '_type_incoming_conditioned_threshold', None)
+                or max(1, int(getattr(self, 'min_synapse_num', 1) or 1)))
+
+    def _bodyid_metric_note(self) -> str:
+        """The caption this run's bodyId-level pages may carry, or '' .
+
+        The note tells the reader where the page's two 'N/A' metrics DO live,
+        so it is only true when the run wrote those records — read through the
+        same folder fallback the type-level page's Refilled toggle uses
+        (`_attach_viz_extra_metrics`), so the two surfaces can never disagree
+        about whether the totals exist. A run whose pages carry no Refilled
+        anywhere (a direct-connection folder, a refill round that raised) gets
+        silence, not a pointer at a table that is not there.
+        """
+        run_folder = (getattr(self, 'allpath_folder', None)
+                      or getattr(self, 'path_folder', None)
+                      or getattr(self, 'direct_folder', None))
+        return (self._BODYID_METRIC_NOTE
+                if self._refilled_pair_metrics(run_folder) else '')
+
+    def _stamp_visualization_edge_limit(self):
+        """Record the DRAWING cap the pages will use, in the folder.
+
+        `edgeN_limit` trims only what an HTML view draws — every path, edge and
+        matrix file keeps the complete result — but a reader holding a folder
+        whose network shows 200 of the run's 396 emitted pairs had nothing in
+        the folder to explain the difference: the cap was a UI/CLI knob, never
+        stamped, and `visualization_data/*_paths_visualized.csv` lists only the
+        rows a trimmed page rendered (review 2026-10-17).
+        """
+        try:
+            limit = int(self.edgeN_limit or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        self.parameter_dict['visualization edge limit'] = (
+            f'{limit} (drawing only; tables keep every edge)' if limit > 0
+            else 'no drawing cap')
+
+    def _resolved_run_mode(self):
+        """The Run Mode knob as its canonical value: 'complete' | 'auto' |
+        'both' | 'fast' (legacy 'off'/'on' normalize). The corridor knobs
+        themselves stay out of every pre-lane export (§3b tier 2), but this
+        one derived value is stamped as `run mode` into parameters.txt /
+        all_attributes.json so a reader can tell 'Complete only was
+        selected' from 'a Fast lane that never ran' — the pair report's
+        tab-presence rule needs that distinction (plan-corridor-refill D3).
+        """
+        mode = str(getattr(self, 'corridor_mode', 'auto') or 'auto').lower()
+        mode = {'off': 'complete', 'on': 'both'}.get(mode, mode)
+        return mode if mode in ('complete', 'auto', 'both', 'fast') else 'auto'
+
     def _maybe_generate_corridor_deep_dive(self):
         """Corridor lane hook (plan-corridor-lane.md §23.2): after a
         materialized run folder carries its final provenance, run the
@@ -18057,17 +18638,12 @@ class FindNeuronConnection:
         completes in ~3 min standalone — verified on the FAFB bound-5
         in-hook anchor). The child resolves connection/neuron tables from
         the run's own parameters.txt (dataset key)."""
-        mode = getattr(self, 'corridor_mode', 'auto')
+        mode = self._resolved_run_mode()
         # NAME UNIFICATION (2026-10-11): canonical values are
         # 'complete' (Complete mode only), 'auto' (Fast on deep runs,
         # max_interlayer >= 4), 'both' (Complete + Fast always). Legacy
-        # 'off'/'on' payloads normalize to the new names (saved settings
-        # and older scripts keep working).
-        if mode == 'off':
-            mode = 'complete'
-        elif mode == 'on':
-            mode = 'both'
-        elif mode == 'fast':
+        # 'off'/'on' payloads normalize inside _resolved_run_mode().
+        if mode == 'fast':
             # STANDALONE FAST (2026-10-14): the hook may be reached on a
             # fast-only folder (defensive) -- the lane always runs
             mode = 'both'
@@ -18153,6 +18729,28 @@ class FindNeuronConnection:
             return True
 
     def _maybe_generate_type_level_refill(self):
+        """Run the refill round ONCE per run folder.
+
+        The hook has two call sites now: inside materialization (before the
+        run's own Network/Heatmap pages are written, so those pages can carry
+        the Refilled metric at all) and after materialization (the historical
+        site, which also covers the replay/multi-threshold paths that never
+        reach the seam). Both must not double the work, and the guard keys on
+        the FOLDER, not on the instance — one instance materializes several
+        threshold slices in a loop. Returns what the round returned: True
+        when notes were appended."""
+        run_dir = getattr(self, 'allpath_folder', None)
+        key = (os.path.abspath(str(run_dir))
+               if run_dir and os.path.isdir(run_dir) else '')
+        if key and getattr(self, '_refill_hook_key', None) == key:
+            return bool(getattr(self, '_refill_hook_added_notes', False))
+        added = self._run_type_level_refill_round()
+        if key:
+            self._refill_hook_key = key
+            self._refill_hook_added_notes = added
+        return added
+
+    def _run_type_level_refill_round(self):
         """DUAL REFILL hook (plan-type-level-refill + 2026-10-08 dual):
         after a materialized FindAllPath ('all' mode) folder carries its
         final provenance, generate the standalone type-level refill
@@ -18286,8 +18884,9 @@ class FindNeuronConnection:
                     or rec.get('full')):
                 # The standalone mirror folder's parameters.csv (same
                 # frame as data_details/parameters.csv, like
-                # find_reciprocal/); the refill visualizations themselves
-                # are built later by the visualization stage.
+                # find_reciprocal/), and the refill's own visualizations —
+                # built HERE because this is the first point in the flow
+                # where the mirror exists (F7.2).
                 try:
                     _mirror_dir = os.path.join(str(run_dir), 'type_level_refill')
                     os.makedirs(_mirror_dir, exist_ok=True)
@@ -18297,6 +18896,20 @@ class FindNeuronConnection:
                 except Exception as exc:  # best-effort mirror extra
                     self._vprint(f'[type-level refill] parameters.csv '
                                  f'not mirrored: {exc}', level='full')
+                # F7.2 (plan-corridor-refill-and-mode-tabs): build the
+                # refill's OWN visualizations HERE, from the mirror this hook
+                # just wrote. The visualization stage that used to own this
+                # ran during materialization — BEFORE this hook — so its
+                # gate found no mirror and a live run never produced
+                # refill_type_*.html / refill_full_type_*.html, while the run
+                # note below promised "connection-table format +
+                # visualizations". Ordering, not a dropped argument, is why
+                # the refill mass was missing from the network views.
+                try:
+                    self._build_refill_visualizations(_mirror_dir)
+                except Exception as exc:  # best-effort, never fatal to a run
+                    self._vprint(f'[type-level refill] visualizations failed: '
+                                 f'{exc!r}', level='full')
                 _full = rec.get('full') or {}
                 if rec.get('status') == 'complete_at_asked':
                     self._warn_notes.append(
@@ -18320,7 +18933,14 @@ class FindNeuronConnection:
                         'non-emitted type pairs are not built; their mass is disclosed '
                         'as non_emitted_pair_mass). '
                         'Refilled data mirrored in the type_level_refill/ '
-                        'folder (connection-table format + visualizations).')
+                        'folder (connection-table format + its own '
+                        'heatmap/network pages, refill_type_*.html / '
+                        'refill_full_type_*.html). The round runs BEFORE the '
+                        'run\'s own visualization stage, so '
+                        'visualization/Network_*.html carries this pair\'s '
+                        'Refilled metric as well as the refill pages; the '
+                        'recovered mass is additionally disclosed in the pair '
+                        'report.')
                 if _full:
                     self._warn_notes.append(
                         '- [refill-full] full-connection scope written '
@@ -18328,8 +18948,8 @@ class FindNeuronConnection:
                         f'bodyId edges / '
                         f'{_full.get("refill_weight_total", 0):,} '
                         'synapses behind the emitted pairs at synapse>=1, '
-                        'emitted chains only) — the Refill tab\'s '
-                        'Refill-full scope.')
+                        'emitted chains only) — the Refill view\'s '
+                        'Refill-full scope (Path → Refill).')
                     if _full.get('chains_revisit'):
                         self._warn_notes.append(
                             '- [refill-full] '
@@ -18399,6 +19019,14 @@ class FindNeuronConnection:
         provenance and 'shortest' was never re-stamped at all).
         """
         try:
+            # The Run Mode stamp lives HERE as well as in the early write:
+            # this re-stamp OVERWRITES parameters.txt and all_attributes.json,
+            # so stamping only the first writer left the finished folder
+            # without it (measured: a live run's parameters.txt carried no
+            # `run mode` line at all). It stays out of `parameter_dict`,
+            # which also feeds data_details/parameters.csv — the lane must add
+            # no byte to the Complete mode's exports (Q4, gate G9).
+            self.run_mode = self._resolved_run_mode()
             final_attrs = self._run_export_attributes(path_mode=path_mode)
             with open(os.path.join(self.allpath_folder,
                                    'all_attributes.json'), 'w', encoding='utf-8') as af:
@@ -18413,6 +19041,7 @@ class FindNeuronConnection:
                     keylen = len(key)
                     f.write(f'{key}:{" " * max(1, 30 - keylen)}{value}\n')
                 f.write(f'path_mode:{" " * 21}{path_mode}\n')
+                f.write(f'run mode:{" " * 22}{self.run_mode}\n')
                 if prov:
                     # Backward-compatible aliases (pre-provenance readers
                     # grep these two lines).
@@ -18429,11 +19058,22 @@ class FindNeuronConnection:
                         else 'applied_tau (min path bottleneck)')
                     f.write(f'{_tau_label}:'
                             f'{" " * 4}{tau_str}\n')
-                    floor = prov.get('edge_weight_floor')
-                    floor_str = (repr(floor) if isinstance(floor, float)
-                                 else f'{floor:g}' if floor is not None
-                                 else 'not applied')
-                    f.write(f'edge_weight_floor:{" " * 18}{floor_str}\n')
+                    # `edge_weight_floor` is NOT restated when this same file
+                    # already carries it: the parameter_dict block above writes
+                    # the key as 'n/a' and this alias wrote it as 'not applied'
+                    # — two spellings of one key in the file the refill reader
+                    # parses by regex (its contradictory-value guard cannot see
+                    # the clash, because both spellings parse to None). Measured
+                    # on a real male-cns run (review 2026-10-16): lines 40 and
+                    # 50 of parameters.txt. `applied_tau (…)` stays: that key is
+                    # genuinely absent from parameter_dict.
+                    if 'edge_weight_floor' not in self.parameter_dict:
+                        floor = prov.get('edge_weight_floor')
+                        floor_str = (repr(floor) if isinstance(floor, float)
+                                     else f'{floor:g}' if floor is not None
+                                     else 'not applied')
+                        f.write(f'edge_weight_floor:{" " * 18}'
+                                f'{floor_str}\n')
                 for line in extra_lines:
                     f.write(f'{line}\n')
                 f.write('\n')
@@ -18451,6 +19091,63 @@ class FindNeuronConnection:
                     mf.write(f'metadata re-stamp failed: {exc!r}\n')
             except OSError:
                 pass
+
+    def _record_zero_path_exit(self, path_mode='all', *, stamp=True,
+                               reason=None):
+        """F-EX-010 (2026-10-14): a run that emits no paths table used to
+        leave a folder whose only documents cited artifacts that were never
+        written — no provenance block in parameters.txt, no statement that
+        the run found ZERO paths, no report.
+
+        Stamps the applied-threshold provenance the exported runs carry
+        (``stamp=False`` where the caller already finalized it), appends the
+        zero-path verdict to the warning notes (before
+        ``_write_user_warning_notes`` runs), and renders the empty-state
+        pair report. Nothing here may raise: the run is already over.
+        """
+        ratio_basis = (getattr(self, 'weight_basis', 'synapse')
+                       == 'connection_ratio')
+        _thr = (f'connection ratio >= {self.min_ratio:g}' if ratio_basis
+                else f'Min Synapse Count >= {int(self.min_synapse_num)}')
+        if stamp:
+            _scope = ('Nothing was enumerated, so nothing was exported — '
+                      'this folder has no data_details/, so the '
+                      'data_details/... pointers elsewhere in these notes '
+                      'have no counterpart here.')
+        else:
+            _absent = [name for name in
+                       ('data_details/ratio_synapse_map.csv',
+                        'data_details/untyped_dropped_records.csv')
+                       if not os.path.exists(
+                           os.path.join(self.allpath_folder, name))]
+            _scope = ('The threshold-conditioned exports in data_details/ '
+                      'describe the cone this run admitted, but no chain '
+                      'realizes a source-to-target route.')
+            if _absent:
+                _scope += (' These notes also point at ' + ', '.join(_absent)
+                           + ', which this run did not write.')
+        _why = reason or ('no target neuron was reachable from any source '
+                          'in the searched network')
+        self._warn_notes.append(
+            '- [no paths] ZERO paths, so no *_allpaths_type.csv was written '
+            f'and the pair report is an empty state: {_why} '
+            f'at {_thr} (Max Interlayer {self.max_interlayer}). {_scope}')
+        if stamp:
+            try:
+                self._finalize_threshold_provenance(path_mode=path_mode)
+                self._write_run_metadata(path_mode)
+            except Exception as exc:  # noqa: BLE001 - exit stamp, never fatal
+                self._vprint(f'  ! zero-path provenance stamp failed: {exc!r}',
+                             level='always')
+        try:
+            try:
+                from src.paths_pair_report import generate_paths_pair_report
+            except ImportError:  # noqa: F401 - direct src/ execution
+                from paths_pair_report import generate_paths_pair_report
+            generate_paths_pair_report(self.allpath_folder, log=None)
+        except Exception as exc:  # noqa: BLE001 - report is additive
+            self._vprint(f'  ! empty-state pair report skipped: {exc!r}',
+                         level='always')
 
     def FindAllPathMultiThreshold(self, thresholds, find_bodyId_path=True,
                                   forward_only=True, use_graph_cache=True,
@@ -18922,6 +19619,12 @@ class FindNeuronConnection:
         # Untyped-neuron drop accumulators (drop_untyped) reset per run so
         # sequential calls never mix records across runs.
         self._reset_untyped_drop_tracking()
+        # The refill hook's once-per-folder guard is per RUN too: a second
+        # FindAllPath into the SAME folder must re-run the round against the
+        # new path tables instead of inheriting the previous enumeration's
+        # records (the seam would otherwise skip it as already done).
+        self._refill_hook_key = None
+        self._refill_hook_added_notes = False
         # Run-truth for the reciprocal note: the field says what was
         # REQUESTED, this says whether the enrichment actually executed
         # (an explicit method-level False overrides a True field).
@@ -18997,6 +19700,12 @@ class FindNeuronConnection:
                 'synapse count threshold is active (Min Synapse Count 1 — '
                 'the adjusted denominator IS the threshold-free one).')
         else:
+            # L4 (plan 2026-10-16): the basis is stamped in BOTH regimes. A
+            # folder that only ever names 'connection_ratio' leaves a reader
+            # guessing whether the synapse gate they remember was the default
+            # or something the run forgot to record — and FindNetwork already
+            # stamped this unconditionally, so the path tools were the drift.
+            self.parameter_dict['weight basis'] = 'synapse'
             _keep_ratio = (_and_mode
                            and float(getattr(self, 'min_ratio', 0) or 0) > 0)
             if (getattr(self, 'min_ratio', 0)
@@ -19006,6 +19715,23 @@ class FindNeuronConnection:
                     'ℹ️  Min Connection Ratio / Min Traversal Prob. filters '
                     'are disabled (ratio is a readout column) — the saved '
                     'values are ignored.', level='always')
+            elif _and_mode and not _keep_ratio:
+                # Combine Thresholds = Both (AND) with NO ratio is not a
+                # second threshold — it is the default regime wearing a
+                # different label. Say so in the run's own notes: the UI marks
+                # the field, but an API caller (or a saved default) reaching
+                # this branch got no signal at all, and 'and' with ratio 0
+                # admits every edge exactly like 'or'.
+                self._vprint(
+                    '⚠️  Threshold combination AND with min_ratio = 0: the '
+                    'ratio co-threshold is inactive, so the graph is gated by '
+                    'Min Synapse Count alone.', level='always')
+                self._warn_notes.append(
+                    '- [threshold combination] Both (AND) was selected but '
+                    'Min Connection Ratio is 0, so nothing is co-thresholded: '
+                    f'the cone is gated by Min Synapse Count >= '
+                    f'{int(self.min_synapse_num)} only. Enter a ratio above 0 '
+                    'to make the AND regime real.')
             if _keep_ratio:
                 if not (0.0 < float(self.min_ratio) <= 1.0):
                     raise ValueError(
@@ -19021,12 +19747,26 @@ class FindNeuronConnection:
             else:
                 self.min_ratio = 0.0
                 self.min_traversal_probability = 0.0
+            # Under 'or' the ratio really is readout-only. Under AND it is a
+            # LIVE threshold — and writing "they no longer filter" into the
+            # same file as the note two lines above ("an edge enters only when
+            # BOTH thresholds pass") is a contradiction a reader can hold up to
+            # the light (measured on a real male-cns AND run, 2026-10-16).
             _rd_note = (
                 '- [ratio definition] connection_ratio = weight / ALL-POST '
                 'incoming weight of the target (threshold-free, all sources '
                 'in the dataset); traversal_probability = ratio / 0.3 '
-                '(capped at 1). Ratio and probability are readout columns '
-                '— they no longer filter the pathfinding graph.')
+                '(capped at 1). '
+                + ('This run co-thresholds with the ratio: every retained edge '
+                   f'clears connection_ratio >= {float(self.min_ratio or 0):g} '
+                   'as well as the synapse count — traversal_probability '
+                   'remains a readout column.'
+                   if _keep_ratio else
+                   'Ratio and probability are readout columns here — they do '
+                   'not filter the pathfinding graph (Threshold Basis = '
+                   'Connection ratio, or Combine Thresholds = Both (AND) with '
+                   'a ratio above 0, makes the ratio a live threshold).')
+            )
             if int(getattr(self, 'min_synapse_num', 1) or 1) > 1:
                 _rd_note += (
                     ' connection_ratio_adj (threshold-conditioned share) = '
@@ -19036,10 +19776,14 @@ class FindNeuronConnection:
                     'design.')
             self._warn_notes.append(_rd_note)
 
-        # Round-13: stamp the AND combination wherever it is active, so the
-        # run self-documents that BOTH thresholds gated the graph.
-        if _and_mode and ((int(self.min_synapse_num) > 1
-                           and float(self.min_ratio or 0.0) > 0)):
+        # Round-13 stamped the combination ONLY WHERE AND WAS ACTIVE, so a
+        # pathfinding folder never answered the regime question at all — while
+        # every network folder did, 'or' included (plan C5/L4: the folder is
+        # what a reader returns to, and 'which knob gated the graph, and in
+        # which combination' is part of that). Stamp it always, naming which
+        # knob is empty when AND is not real.
+        if _and_mode and (int(self.min_synapse_num) > 1
+                          and float(self.min_ratio or 0.0) > 0):
             self.parameter_dict['threshold combination'] = (
                 'and (synapse count + connection ratio)')
             self._warn_notes.append(
@@ -19050,14 +19794,23 @@ class FindNeuronConnection:
                 'Strong-but-thin-ratio and high-ratio-but-thin edges are '
                 'both excluded (the default regime keeps the knobs '
                 'alternative: one threshold governs the cone).')
+        elif _and_mode:
+            self.parameter_dict['threshold combination'] = (
+                'and (inactive: min connection ratio is 0)'
+                if float(self.min_ratio or 0.0) <= 0 else
+                'and (inactive: Min Synapse Count is 1, so the ratio alone '
+                'gates the graph)')
+        else:
+            self.parameter_dict['threshold combination'] = 'or'
+        # The drawing cap belongs in the folder too: it is the only reason a
+        # page can show fewer edges than the run emitted.
+        self._stamp_visualization_edge_limit()
         
         # Check if source or target dataframes are empty
         if self.source_df.empty:
-            self._vprint("Error: Source neuron DataFrame is empty. Cannot find paths.", level='always')
-            return
+            self._refuse_empty_query('Source')
         if self.target_df.empty:
-            self._vprint("Error: Target neuron DataFrame is empty. Cannot find paths.", level='always')
-            return
+            self._refuse_empty_query('Target')
         
         # Handle deprecated parameter
         if exclude_searched_neurons is not None:
@@ -19139,6 +19892,21 @@ class FindNeuronConnection:
         
         # Save all attributes and parameters to the allpaths folder
         # Filter out internal/private attributes (starting with '_') and large cached data
+        # The Run Mode is stamped HERE (not as the raw knob): a Fast-only
+        # folder and a Complete-only folder were otherwise indistinguishable
+        # once the lane refused to run, and the pair report's tab-presence
+        # rule depends on telling them apart.
+        #
+        # Q4 scoped the stamp to these TWO metadata files ("nothing else
+        # changes byte-wise"), so it is a line of its own here rather than a
+        # `parameter_dict` entry: that dict also feeds
+        # data_details/parameters.csv and type_level_refill/parameters.csv,
+        # and a key appearing there would let the lane's presence show up in
+        # the Complete mode's own exports (gate G9). all_attributes.json
+        # picks it up from the `run_mode` attribute below, which
+        # _run_export_attributes already carries (only the lane KNOBS are
+        # withheld there, §3b Tier 2).
+        self.run_mode = self._resolved_run_mode()
         public_attrs = self._run_export_attributes(path_mode=path_mode)
         with open(os.path.join(self.allpath_folder,
                                'all_attributes.json'), 'w',
@@ -19151,6 +19919,7 @@ class FindNeuronConnection:
                 keylen = len(key)
                 f.write(f'{key}:{" "*max(1, 30-keylen)}{value}\n')
             f.write(f'path_mode:{" "*21}{path_mode}\n')
+            f.write(f'run mode:{" "*22}{self.run_mode}\n')
             f.write('\n')
 
         # STANDALONE FAST MODE (corridor_mode='fast', 2026-10-14): the
@@ -19172,6 +19941,7 @@ class FindNeuronConnection:
             try:
                 from route_plan import run_lane
                 run_lane(run_dir=self.allpath_folder, fnc=self,
+                         corridor_mode='fast',
                          trigger='fast-only (standalone)')
                 self._vprint('  ✓ Fast-only corridor lane complete '
                              '(route_scope_paths/)', level='always')
@@ -19183,6 +19953,12 @@ class FindNeuronConnection:
                     f'- [fast-only] corridor lane {label}: {exc}')
                 self._vprint(f'  ⚠️ Fast-only corridor lane {label}: {exc}',
                              level='always')
+            # The disclosure must reach DISK: nothing downstream writes the
+            # notes for this branch (its `return None` ends the core), and a
+            # folder whose only caveat lives in memory is the F-EX-010 defect
+            # the fast-only round exists to avoid (found by the branch's own
+            # test, 2026-10-16).
+            self._write_user_warning_notes(self.allpath_folder)
             return None
 
         # FlyWire identifiers are canonicalized losslessly before any graph
@@ -19791,6 +20567,9 @@ class FindNeuronConnection:
         if targetNum_checked == 0:
             self._vprint('\033[33mNo target neurons found in the searched network. Cannot construct paths.\033[0m', level='always')
             self._save_path_neuron_enrollment(self.allpath_folder)
+            # F-EX-010: after the enrollment CSVs (the empty-state report
+            # counts them) and before the notes (this appends to them).
+            self._record_zero_path_exit(path_mode)
             self._write_user_warning_notes(self.allpath_folder)
             self._progress(5, 5, 'Finishing (no targets found in the network)')
             return
@@ -21214,6 +21993,12 @@ class FindNeuronConnection:
                 self._save_df_to_csv_polars(empty_conn, os.path.join(csv_folder, 'connection_type.csv'))
             
             self._vprint(f'  ✓ Saved to: {csv_folder}/', level='full')
+            # F-EX-010: provenance was already finalized for this slice —
+            # only the verdict note and the empty-state report are owed.
+            self._record_zero_path_exit(
+                path_mode, stamp=False,
+                reason='no enumerated chain survived the type-level '
+                       'path construction')
             self._write_user_warning_notes(self.allpath_folder)
             return
         
@@ -21787,11 +22572,13 @@ class FindNeuronConnection:
         # there about the skip_bodyId `del`.)
         _realized_w = self._type_path_realized_hop_weights(
             all_paths, _node_type_label, _edge_w_lut)
-        # Applied-tier incoming per post type (2026-10-07): the mass the
+        # Emitted-cone incoming per post type (2026-10-07): the mass the
         # EMITTED network carries into each type — every realized edge is
-        # >= the applied threshold, so this is the denominator matching
-        # the realized Weights scope. Persisted for the pair report's
-        # applied-conditioned Adj. ratios.
+        # >= the applied threshold. NOTE (F-EX-003): this is a RUN-INTERNAL
+        # total, not a threshold-conditioned dataset total. It guards the
+        # full-scope refill against an incomplete cache and is never an
+        # adjusted-ratio denominator; renamed from `type_incoming_applied
+        # .csv`, which invited exactly that misuse.
         try:
             _in_applied = self._type_path_applied_incoming(
                 all_paths, _node_type_label, _edge_w_lut)
@@ -21802,12 +22589,36 @@ class FindNeuronConnection:
                      for _label, _mass in sorted(_in_applied.items())]
                 ).to_csv(
                     os.path.join(details_folder,
-                                 'type_incoming_applied.csv'),
+                                 'type_incoming_emitted.csv'),
                     index=False)
         except Exception as _in_app_exc:
             self._warn_notes.append(
-                '- [applied incoming] type_incoming_applied.csv not '
+                '- [emitted incoming] type_incoming_emitted.csv not '
                 f'written ({_in_app_exc!r}).')
+        # Conditioned dataset-wide incoming per post type (F-EX-003): the
+        # denominator the CHAIN-level adjusted ratios divide by. Written
+        # whenever the adjusted pair ratios were fetched, so a Min-Synapse-1
+        # run gets it too — there it equals the all-inputs total and
+        # adj == plain by construction, the law gate L1 checks.
+        try:
+            _in_cond = dict(getattr(
+                self, '_type_incoming_conditioned', {}) or {})
+            if _in_cond:
+                import pandas as _pd_in_cond
+                _pd_in_cond.DataFrame(
+                    [{'type': _label, 'incoming': _mass,
+                      'threshold': int(getattr(
+                          self, '_type_incoming_conditioned_threshold', 1))}
+                     for _label, _mass in sorted(_in_cond.items())]
+                ).to_csv(
+                    os.path.join(details_folder,
+                                 'type_incoming_conditioned.csv'),
+                    index=False)
+        except Exception as _in_cond_exc:
+            self._warn_notes.append(
+                '- [conditioned incoming] '
+                'type_incoming_conditioned.csv not '
+                f'written ({_in_cond_exc!r}).')
         # Round-10: the SAME canonical map the export-phase recompute used
         # for type_coverage — one N per type across every file of the run.
         _type_n = type_membership_n
@@ -21907,6 +22718,7 @@ class FindNeuronConnection:
                 # ratios/coverage remain the conn-table truth in
                 # data_details/connection_type.csv.
                 _weights_changed_paths = 0
+                _unresolvable_paths = 0
                 # Engine issue 2026-10-05 (I2): the realized per-hop Ratios
                 # apply on EVERY weight basis, not just the ratio lane. The
                 # streaming join stamps each hop with the MEAN over the
@@ -21933,13 +22745,13 @@ class FindNeuronConnection:
 
                     def _patch_weights(df):
                         nonlocal _weights_changed_paths
+                        nonlocal _unresolvable_paths
                         # PROBABILITY SUSPENSION (2026-10-06): only Weights /
                         # min_weight and the ratio-lane Ratios / Min ratio are
                         # patched — the probabilities / path_prob arms are
                         # removed (those columns are no longer exported).
                         new_w, new_mw = [], []
                         new_r = new_mr = None
-                        _unresolvable_paths = 0
                         _ratio_cols_ok = all(
                             c in df.columns for c in
                             ('ratios', 'min_ratio'))
@@ -22088,7 +22900,19 @@ class FindNeuronConnection:
                     df_paths.write_csv(output_path_type_csv)
                     self._vprint(f'  ✓ Sorted {os.path.basename(output_path_type_csv)}', level='full')
             except Exception as e:
+                # Disclosed, not merely logged: this handler swallows the
+                # whole read/coverage/patch/sort block, so on a failure the
+                # exported type-level paths file stays in streaming order
+                # with no per-hop realized columns. A level='full' line is
+                # invisible to a reader who runs with the default verbosity
+                # and then finds an unsorted CSV months later.
                 self._vprint(f'  ⚠️ Warning: Failed to sort type-level paths file: {e}', level='full')
+                self._warn_notes.append(
+                    '- [type-path sort] the type-level paths file could not '
+                    f'be finalized ({e!r}): it is exported as written by the '
+                    'streaming pass, so its row order (and any per-hop '
+                    'Weights/Ratios/Coverage re-scoping) may be missing; '
+                    'path CONTENT is unaffected.')
         
         # Set path_df_type to empty as we've already saved it
         # This prevents the later code from trying to save it again or use it in memory
@@ -22271,7 +23095,31 @@ class FindNeuronConnection:
         path_df_type, path_df_type_excluded = sv.path_filter(path_df_type, self._normalized_keyword_filter())
         
         EXCEL_ROW_LIMIT = 1_048_576
-        
+
+        # REFILL-BEFORE-RENDER ORDERING (2026-10-16, user): every page this
+        # stage writes offers a Refilled connection metric (weight/ratio/adj
+        # ratio and Refilled are the selector's options), and that value only
+        # exists once the second round has written its pair table. The round
+        # used to run AFTER materialization, so a freshly produced folder
+        # shipped the option disabled on its own Network/Heatmap — 'refilled':
+        # null on every edge — and the number appeared only in the report.
+        # Everything the round reads is on disk here: the emitted path table,
+        # connection_type.csv, both incoming tiers, the enrollment CSVs. This
+        # sits before the FIRST visualization of the stage (the custom-group
+        # pages) so no page is rendered from a missing metric. A REPLAY SLICE
+        # must not be re-stamped: its parameters.txt was just written by
+        # _replay_output_folder_for_threshold with the `replayed_from` gate
+        # line, and _write_run_metadata does not reproduce that line — a blind
+        # re-stamp erases it and the slice's round then reads asked == applied
+        # and refuses (measured: a canon slice went 'refilled' ->
+        # 'no_refill_needed'). The post-materialization re-stamp and hook call
+        # still run; the hook's per-folder guard turns that later call into a
+        # no-op rather than a second enumeration.
+        if not _run_folder_is_replay_slice(self.allpath_folder):
+            self._write_run_metadata(path_mode)
+        if self._maybe_generate_type_level_refill():
+            self._write_user_warning_notes(self.allpath_folder)
+
         # Save group-level paths if they exist
         if len(path_df_group) > 0:
             # Create custom group visualizations if available
@@ -22289,7 +23137,7 @@ class FindNeuronConnection:
             if 'probabilities' in group_paths_to_viz.columns and 'traversal_probabilities' not in group_paths_to_viz.columns:
                 group_paths_to_viz['traversal_probabilities'] = group_paths_to_viz['probabilities']
             
-            vp_group = VisualizePath(path_file=group_paths_to_viz, pair_extra_metrics=(_group_pair_extra or None), output_folder=os.path.join(self.allpath_folder, 'custom_groups'), verbose=(self.verbose_mode == 'full'))
+            vp_group = VisualizePath(adj_ratio_threshold=self._adj_ratio_tier(), path_file=group_paths_to_viz, pair_extra_metrics=(_group_pair_extra or None), output_folder=os.path.join(self.allpath_folder, 'custom_groups'), verbose=(self.verbose_mode == 'full'))
             self._vprint(f'💾 Saving path_group data (rows: {len(path_df_group):,})...', level='full')
             # Check if we should save as CSV (matches type-level data format OR group data too large)
             save_group_as_csv = use_csv or (len(path_df_group) >= EXCEL_ROW_LIMIT * 0.9)
@@ -22698,6 +23546,16 @@ class FindNeuronConnection:
 
                 vp = VisualizePath(
                     path_file=paths_to_visualize,
+                    # F7.1 (plan-corridor-refill-and-mode-tabs): this is the
+                    # run's OWN type-level Network/Heatmap page. It computed
+                    # the refill's per-pair metrics two lines above and then
+                    # dropped them, so a run WITH refilled mass published
+                    # "Refilled (N/A)" — the reader had to open the report to
+                    # see mass the run already had. The Adj tier label comes
+                    # from the recorded conditioned threshold, like every
+                    # other visualization surface.
+                    adj_ratio_threshold=self._adj_ratio_tier(),
+                    pair_extra_metrics=(_pair_extra or None),
                     output_folder=self.allpath_folder,
                     source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
                     intermediate_color=self.intermediate_color if hasattr(self, 'intermediate_color') else '#2ca02c',
@@ -22882,7 +23740,13 @@ class FindNeuronConnection:
             # 2026-10-06); the views draw the REFILL mass, mirroring the
             # reciprocal pattern of visualizing the special edges only.
             _refill_mirror_dir = os.path.join(self.allpath_folder, 'type_level_refill')
-            if os.path.exists(os.path.join(_refill_mirror_dir, 'refill_connection_type.csv')):
+            # Either scope counts: the asked mirror only exists when the
+            # budget bit, and a non-bitten run's deliverable is the
+            # synapse >= 1 re-value (F7.2).
+            _refill_mirrors = [os.path.join(_refill_mirror_dir, name) for name
+                               in ('refill_connection_type.csv',
+                                   'refilled_full_connection_type.csv')]
+            if any(os.path.exists(p) for p in _refill_mirrors):
                 try:
                     self._build_refill_visualizations(_refill_mirror_dir)
                 except Exception as e:
@@ -22952,6 +23816,7 @@ class FindNeuronConnection:
                 vp_bodyId = VisualizePath(
                     path_file=paths_to_visualize_bodyId,
                     output_folder=os.path.join(self.allpath_folder, 'bodyId_visualization'),
+                    metric_note=self._bodyid_metric_note(),
                     source_color=self.source_color if hasattr(self, 'source_color') else '#1f77b4',
                     intermediate_color=self.intermediate_color if hasattr(self, 'intermediate_color') else '#2ca02c',
                     target_color=self.target_color if hasattr(self, 'target_color') else '#d62728',

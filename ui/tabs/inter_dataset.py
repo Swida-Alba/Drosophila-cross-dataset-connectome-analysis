@@ -11,6 +11,7 @@ from ..components.common import (
     checkbox_input, dir_input, section_header, param_grid, tool_page,
     apply_filter_mode,
 )
+from ..components import pathfinding_controls as pc
 from ..components.mapping_editor import custom_grouping_block
 from ..components.output_panel import OutputPanel
 from ..runner import ScriptRunner
@@ -120,24 +121,35 @@ def create_inter_dataset_tab():
                          "and a high unreachable number (e.g. 99) gives an effectively "
                          "unlimited search.",
                 )
-                corridor_mode = select_input(
-                    "Fast Mode (corridor lane)",
-                    {"complete": "Complete only",
-                     "auto": "Auto (deep runs)",
-                     "both": "Complete + Fast"},
-                    default=get_user_default("corridor_mode"),
-                    hint="Values — complete: run COMPLETE mode only (all intact paths >= the applied threshold; the run itself). auto: also run FAST mode per dataset after deep searches (max intermediate layers >= 4). both: always run FAST after each per-dataset run. Fast writes route_scope_paths/ beside each delegate run folder and never modifies the compared runs' outputs. Full guide via the book icon.",
-                    help_doc="pathfinding_algorithms",
-                )
+                # One Run Mode control for all four pathfinding surfaces
+                # (plan 2026-10-16 B1/B2): same label, same four values, and
+                # the live line that says whether 'auto' will actually fire —
+                # here 'deep' is per dataset, so the line reads the sweep's
+                # own Max Intermediate Layers.
+                run_mode = pc.run_mode_block(
+                    depth_getter=lambda: int(max_interlayer.value or 0),
+                    extra=" Per dataset: a delegate whose depth clears the "
+                          "gate runs its own lane.")
+                # 'auto' depends on the DEPTH as well as the selection, and
+                # this tab changes the depth in three places — typing, and the
+                # two programmatic resets on the path-mode switch — so the
+                # line is refreshed on every one of them (a stale WILL/will-
+                # NOT here would be a claim about a lane the run never runs).
+                max_interlayer.on_value_change(lambda _e: run_mode.refresh())
                 threshold_basis = select_input(
-                    "Threshold Basis", ["Synapse count", "Connection ratio"],
-                    "Synapse count",
+                    "Threshold Basis", pc.THRESHOLD_BASIS_OPTIONS,
+                    # the same saved default the three path tabs read (Q3):
+                    # a key that Settings can now store must not be hardcoded
+                    # back to the built-in on the fourth surface
+                    pc.THRESHOLD_BASIS_CHOICES.get(
+                        get_user_default("threshold_basis"), "Synapse count"),
                     hint="Synapse count: the same integer min-synapse "
                          "threshold for every delegate. Connection ratio: "
                          "FLOAT min-connection-ratio tiers (a fraction of "
                          "each post neuron's total input — comparable "
-                         "across datasets). Auto and replay run on "
-                         "float ratio tiers.",
+                         "across datasets). Auto and replay run on the "
+                         "selected basis too — synapse counts (floor 3) or "
+                         "ratio tiers (floor 0.1%) — never on the other one.",
                 )
                 # Shortest-mode coverage early-stop (per queried type,
                 # per delegate): deepening stops once BOTH sides are
@@ -235,15 +247,18 @@ def create_inter_dataset_tab():
             # visible, so each basis keeps its own valid defaults and units —
             # a synapse default like 3 is an invalid ratio tier (> 1).
             thresholds_ratio = neuron_list_input(
-                label="Connection-Ratio Thresholds",
-                initial=[0.001, 0.005],
-                unit_label="tier",
+                label="Connection-Ratio Thresholds (%)",
+                initial=[0.1, 0.5],
+                unit_label="tier %",
                 show_filter=False,
                 show_upload=False,
-                hint="FLOAT min-connection-ratio tiers in (0, 1] — e.g. "
-                     "0.0005, 0.001, 0.005. Each tier is a fraction of the "
-                     "post neuron's TOTAL input (F9), comparable across "
-                     "datasets. One tier per chip.",
+                hint="Min-connection-ratio tiers in PERCENT — the SAME unit as "
+                     "the single Min Connection Ratio (%) field on the other "
+                     "three pathfinding surfaces: 0.1 means 0.1% (engine "
+                     "0.001), 0.05 means 0.05%. Each tier is the share of the "
+                     "post neuron's TOTAL input (F9) an edge must carry, "
+                     "comparable across datasets. One tier per chip; the "
+                     "percent is divided by 100 in one shared helper.",
             ).classes("w-full drocat-full-row-control").props(
                 'data-threshold-editor="ratio"')
             thresholds_ratio.set_visibility(False)
@@ -281,9 +296,10 @@ def create_inter_dataset_tab():
 
             def _sync_threshold_hint_texts():
                 """The auto-mode floor line names the active basis (the
-                bootstrap floor is 0.001 under the connection ratio)."""
+                bootstrap floor is 0.1% under the connection ratio)."""
                 ratio = threshold_basis.value == "Connection ratio"
-                floor = ("min connection ratio tier 0.001" if ratio
+                floor = ("min connection ratio tier 0.1% (= 0.001 raw)"
+                         if ratio
                          else "Min Synapse Count 3")
                 auto_threshold_hint.set_text(
                     f"Auto: one bootstrap pathfinding run per dataset "
@@ -348,6 +364,13 @@ def create_inter_dataset_tab():
                     }
 
                 with combination_table:
+                    # the cell unit follows the basis: a ratio-basis cell is a
+                    # PERCENT (0.1 = the engine tier 0.001), never an integer
+                    _cell_hint = (
+                        "percent, e.g. 0.1"
+                        if threshold_basis.value == "Connection ratio"
+                        else "positive integer")
+
                     with ui.row().classes("w-full items-center gap-2"):
                         ui.label("Query").classes("w-36 text-xs font-medium")
                         for dataset in selected:
@@ -368,7 +391,7 @@ def create_inter_dataset_tab():
                             for dataset in selected:
                                 inp = ui.input(
                                     value=row_state["values"].get(dataset, ""),
-                                    placeholder="positive integer",
+                                    placeholder=_cell_hint,
                                 ).props("dense outlined type=number").classes(
                                     "flex-1 min-w-[120px]"
                                 )
@@ -393,7 +416,10 @@ def create_inter_dataset_tab():
                         ).props("outline dense")
                         seed.tooltip(
                             "Prefill rows with density-equivalent thresholds from "
-                            "a completed run's threshold_alignment output.")
+                            "a completed run's threshold_alignment output. The "
+                            "suggestion carries the basis it was measured in, so "
+                            "this also moves the Threshold Basis selector (and "
+                            "shows the numbers in that basis's own unit).")
 
             def _add_combination_row(_event=None):
                 _capture_combination_rows()
@@ -459,12 +485,33 @@ def create_inter_dataset_tab():
                     ui.notify("The suggestion file has no complete rows.",
                               type="warning")
                     return
+                # The suggestion is measured in the basis of the run that
+                # wrote it (synapse counts, or RAW ratio fractions off the
+                # minratio_* folders). Seeding those numbers into the other
+                # basis's board was a unit error — 0.05 became "0.05
+                # synapses" — so the file's own basis decides, and the
+                # selector follows it (set_value does not fire the change
+                # handler, so the chip editor is re-synced by hand).
+                _seed_ratio = (str(payload.get("weight_basis")
+                                   or "synapse").strip().lower()
+                               == "connection_ratio")
+                _wanted = ("Connection ratio" if _seed_ratio
+                           else "Synapse count")
+                _switched = threshold_basis.value != _wanted
+                if _switched:
+                    threshold_basis.set_value(_wanted)
+                    _sync_threshold_basis()
                 _capture_combination_rows()
                 selected = set(_combination_datasets())
                 combination_rows.clear()
                 for i, row in enumerate(rows, start=1):
+                    # the alignment file stores engine fractions; the board is
+                    # typed in percent, so a seeded cell is converted on the way
+                    # IN (and `_to_engine` converts the submitted value back)
                     cell = {
-                        ds: str(row["thresholds"][ds])
+                        ds: (str(pc.fraction_to_percent(row["thresholds"][ds]))
+                             if _seed_ratio
+                             else str(row["thresholds"][ds]))
                         for ds in selected
                         if ds in row.get("thresholds", {})
                     }
@@ -476,7 +523,10 @@ def create_inter_dataset_tab():
                 _rebuild_combination_table()
                 ui.notify(
                     f"Seeded {len(rows)} aligned combination(s) from "
-                    f"{_os.path.basename(path)}.", type="positive")
+                    f"{_os.path.basename(path)}"
+                    + (f" — Threshold Basis switched to {_wanted}, because "
+                       f"that is what the suggestion was measured in."
+                       if _switched else "."), type="positive")
 
             with combination_panel:
                 ui.label(
@@ -530,6 +580,18 @@ def create_inter_dataset_tab():
                 selected = _combination_datasets()
                 mode = threshold_mode_value["value"]
                 ratio_mode = (threshold_basis.value == "Connection ratio")
+
+                def _to_engine(values):
+                    """THE percent -> engine boundary of this surface (L1).
+
+                    The ratio chips and the combination cells are typed in
+                    PERCENT, exactly like the Min Connection Ratio (%) field on
+                    Complete / Shortest / Network; the engine, the folder token
+                    and every stored artifact keep the fraction. Dividing in
+                    more than one place is what let a typed '1' mean 1 % on one
+                    page and 100 % (an empty graph) on another."""
+                    return ([pc.percent_to_fraction(v) for v in values]
+                            if ratio_mode else list(values))
                 if mode == "auto":
                     # Auto mode never requires threshold chips: an empty box
                     # is valid and the bootstrap floor defaults to Min
@@ -545,14 +607,15 @@ def create_inter_dataset_tab():
                         ]
                     except (TypeError, ValueError) as exc:
                         raise ValueError(
-                            "Invalid thresholds format. Use positive "
-                            "integers (or floats in (0, 1] in ratio mode)."
+                            "Invalid thresholds format. Use positive integers "
+                            "(or PERCENT numbers in ratio mode)."
                         ) from exc
                     if ratio_mode and any(
-                            not (0 < value <= 1) for value in values):
+                            not (0 < value <= 100) for value in values):
                         raise ValueError(
-                            "Ratio thresholds must be floats in (0, 1] — "
-                            "e.g. 0.0005, 0.001.")
+                            "Ratio thresholds are typed in PERCENT and must "
+                            "lie in (0, 100] — e.g. 0.05, 0.1, 0.5 "
+                            "(= 0.0005, 0.001, 0.005 raw).")
                     if not ratio_mode and any(value <= 0 for value in values):
                         raise ValueError(
                             "Synapse thresholds must be positive integers."
@@ -568,8 +631,9 @@ def create_inter_dataset_tab():
                             "datasets (it derives thresholds from cross-"
                             "dataset overlap)."
                         )
-                    return mode, sorted(set(values)) or (
-                        [0.001] if ratio_mode else [3]), None
+                    _auto_values = sorted(set(values)) or (
+                        [0.1] if ratio_mode else [3])
+                    return mode, _to_engine(_auto_values), None
                 if mode == "standard":
                     try:
                         if ratio_mode:
@@ -595,16 +659,17 @@ def create_inter_dataset_tab():
                         ) from exc
                     if ratio_mode:
                         if not values or any(
-                                not (0 < v <= 1) for v in values):
+                                not (0 < v <= 100) for v in values):
                             raise ValueError(
-                                "Ratio thresholds must be floats in "
-                                "(0, 1] — e.g. 0.0005, 0.001.")
+                                "Ratio thresholds are typed in PERCENT and "
+                                "must lie in (0, 100] — e.g. 0.05, 0.1, 0.5 "
+                                "(= 0.0005, 0.001, 0.005 raw).")
                     elif not values or any(value <= 0 for value in values):
                         raise ValueError(
                             "Please enter at least one positive synapse "
                             "threshold."
                         )
-                    return mode, sorted(set(values)), None
+                    return mode, _to_engine(sorted(set(values))), None
                 _capture_combination_rows()
                 if len(selected) < 2:
                     raise ValueError(
@@ -633,11 +698,13 @@ def create_inter_dataset_tab():
                                 f"for {dataset}: {raw_value!r}."
                             ) from exc
                         if ratio_mode:
-                            if not (0 < value <= 1):
+                            if not (0 < value <= 100):
                                 raise ValueError(
-                                    f"Combination {index} ratio threshold "
-                                    f"for {dataset} must be in (0, 1]."
+                                    f"Combination {index} ratio threshold for "
+                                    f"{dataset} is typed in PERCENT and must "
+                                    f"lie in (0, 100] (0.1 = 0.1% = 0.001 raw)."
                                 )
+                            value = pc.percent_to_fraction(value)
                         elif value <= 0:
                             raise ValueError(
                                 f"Combination {index} threshold for {dataset} "
@@ -796,13 +863,13 @@ def create_inter_dataset_tab():
 
                 with param_grid(3):
                     # F9: ratio/probability filters are disabled (ratio is a
-                    # readout column now). The entrances stay in the code,
-                    # hidden, for the future ratio-weighted mode.
+                    # readout column now). Only these single-knob FILTER
+                    # entrances stay hidden; the ratio basis itself is live
+                    # here (weight_basis below), and the tiers it compares
+                    # come from the ratio threshold editor above.
                     min_ratio = number_input(
                         "Min Connection Ratio", 0, 0, 1, 0.01,
-                        hint="Disabled: connection_ratio is a readout column "
-                             "(weight / all-post incoming weight) — it no longer "
-                             "filters.",
+                        hint=pc.DORMANT_RATIO_HINT,
                     ).set_visibility(False)
                     min_prob = number_input(
                         "Min Traversal Prob.", 0, 0, 1, 0.01,
@@ -849,6 +916,8 @@ def create_inter_dataset_tab():
                         max_interlayer.value = 2
                         edge_budget.enable()
                         edge_budget.value = get_user_default("graph_edge_limit_bodyid") or 1000000
+                    # the reset above moved the depth the live line quotes
+                    run_mode.refresh()
                     _sync_xcoverage()
                     if notify:
                         ui.notify(
@@ -903,7 +972,7 @@ def create_inter_dataset_tab():
             "comparison_mode": comparison_mode.value,
             "path_mode": path_mode.value,
             "max_interlayer": int(max_interlayer.value),
-            "corridor_mode": corridor_mode.value,
+            "corridor_mode": run_mode.value,
             "thresholds": thresholds,
             "threshold_mode": threshold_mode,
             "threshold_dataset_order": list(datasets),

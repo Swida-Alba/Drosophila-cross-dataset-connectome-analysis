@@ -60,7 +60,11 @@ python skills/drocat-usage/scripts/run_direct.py \
 
 - Enriched network (FindAllPath-style) tables and summaries; optionally an
   interactive Cytoscape HTML when `edgeN_limit` keeps it small.
-- `<src>_to_<tgt>_allpaths_type.csv` — the 1-hop path-compatible table;
+- `<src>_to_<tgt>_allpaths_type.csv` — the 1-hop path-compatible table,
+  ordered like the pathfinding tools' path table (length ascending, then
+  `min_weight` descending, `path` as the tie-break — 2026-10-16; it used to
+  be alphabetical, which made the report's "top paths" an accident of type
+  names).
   the runner's post-run hook keys on it, so every network run also gets
   `path_report.html` + `paths_pair_breakdown/` (the Pair Explorer) exactly
   like the pathfinding tools.
@@ -73,12 +77,30 @@ python skills/drocat-usage/scripts/run_direct.py \
 ## Notes
 
 - `FindNetwork` initializes the queried neuron set before looking for connections;
-  a zero-match query is a different failure than an empty result.
+  a query that resolves to no neuron RAISES and writes nothing — no run folder,
+  no report (2026-10-17). That is deliberately not an empty result: a run whose
+  threshold cuts everything still writes its folder and names the threshold that
+  did it.
+- `parameters.txt` stamps the drawing cap the pages used
+  (`visualization edge limit: 200 (drawing only; tables keep every edge)` /
+  `no drawing cap`): the Network tab writes only type-level pages, and a folder
+  showing fewer pairs than the run emitted must explain the difference itself.
 - Use `skip_bodyId=True` first, then enable bodyId-level work incrementally.
 - Ratio basis (`weight_basis="connection_ratio"`): the threshold rides
   `min_ratio` and the backend floors `min_synapse_num` to 1 ('or' mode;
   `"and"` co-thresholds on both scales). A network is direct-connections-only
   (`max_interlayer` is recorded as 0).
+- The tool's OWN `visualization/Network_*.html` carries the **Refilled** connection metric: `FindNetwork` hands `VisualizePath` the run's full-scope pair totals through the same reader the path tools use (`_refilled_pair_metrics`), and the refill round runs before the render, so the toggle is never a borrowed number from another page.
+- Edges are coloured by predicted transmitter. A pair the dataset leaves
+  unannotated is drawn in the palette's **Unknown** gray (`#95A5A6`) and listed
+  as **Unknown Edges** in the group selector — never in the base link colour,
+  which is a light blue and therefore read as a transmitter (2026-10-17). The
+  refill pages beside the run colour by the same vocabulary: the mirror's
+  `nt_type` is read from the NT matrix and then from
+  `data_details/connection_type.csv`, so a Network run — which writes no NT
+  matrix at all — still publishes transmitters on its refill pages instead of an
+  empty column.
+- `all_neurons` is REFUSED on this tab (and by the engine when the one query equals its own other side): the single query IS both sides, so the token asks the whole dataset to connect to itself. For 'everything adjacent to my query', use Complete Paths with `max_interlayer=0`.
 - The type-level refill is ALWAYS produced for network runs: the
   full-scope records (every emitted chain re-valued at synapse ≥ 1) land
   in `data_details/type_level_refill/` + the `type_level_refill/` mirror.

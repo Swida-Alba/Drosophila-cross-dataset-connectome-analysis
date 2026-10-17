@@ -85,10 +85,17 @@ already exist but are force-disabled for pathfinding (F9: ratio is a
 readout). This lane is NOT a re-enabled filter — it is a separate weight
 basis (the bottleneck itself becomes the weakest fractional input along
 the path). In-pipeline integration (a `weight_basis` field, UI selector,
-dual-basis exports, pair-report support) is planned in the plan file's
-§12-§16 and needs its own approval round. The type-level refill is
-permanently disabled for ratio runs (its semantics are synapse-budget
-recovery). Related: `TypeLevelRefill.md`, `ConnectionRatio_Filter.md`,
+dual-basis exports, pair-report support) has since SHIPPED: the
+**Threshold Basis** selector is offered by all three tabs that threshold
+a graph — Complete Paths, Shortest Paths and Network — from one shared
+control (`ui/components/pathfinding_controls.py`), so the basis is
+reachable from the UI, not only from the API, and each run's
+`parameters.txt` names the basis in force. The ratio threshold is typed
+in PERCENT on all three (one shared conversion site). Earlier text here
+described the selector as "planned" and said the type-level refill was
+"permanently disabled for ratio runs"; both are obsolete — the refill
+runs for ratio-basis runs, as recorded in the Phase 3 notes below.
+Related: `TypeLevelRefill.md`, `ConnectionRatio_Filter.md`,
 `PathFinding_Methods.md`.
 
 
@@ -107,11 +114,19 @@ The in-pipeline lane now covers everything Phase 1-3 planned:
   (the weakest distinct ratio tier above w2 — NOT `int(w2)+1`, which
   would collapse every sub-1 ratio to 1), `L{d}r{t}` slice folders,
   float `replayed_from` gates, and float threshold-collapse discipline.
+  Each slice is its OWN folder with the swept basis's tier token restamped in
+  the folder NAME (review 2026-10-16: the ratio `r{decimal}` token and the
+  synapse `w{int}` token are both restamped, an AND-mode `w{int}r{decimal}`
+  only the swept one, the delegate `minsyn_`/`minratio_` folder replaced in
+  place, and a `Save As` name with no tier token gets a `minsyn_{t}`/
+  `minratio_{d}` SUBFOLDER plus a note). Before that fix a standalone sweep
+  skipped the redirect and re-materialized every slice into the base folder —
+  see `skills/drocat-backend/modules/coana-connectivity.md`.
   Verified against fresh per-threshold runs (set equality incl. the
   canonical collapse folder). In the Cross-Dataset tool, the Replay
   Paths checkbox applies under the ratio basis too.
 - **Type-level refill** runs for ratio-basis budget-bitten runs: float
-  threshold parsing, ratio-weighted re-enumeration, SYNPASE-mass refill
+  threshold parsing, ratio-weighted re-enumeration, synapse-mass refill
   records (dual-basis), the table-reproduction anchor intact. Refills
   fire for ordinary and most replay-slice ratio folders; a canonical
   collapse folder whose stamps say complete (while its set is a drained

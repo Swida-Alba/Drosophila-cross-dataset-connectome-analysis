@@ -197,6 +197,19 @@ vp.visualize()
   `visualization/visualization_data/type_paths_visualized.csv` (type level) and
   `bodyId_visualization/visualization_data/bodyId_paths_visualized.csv`
   (bodyId level). Missing artifact types stay absent.
+- **The trim must carry the pair-level metrics** (audit 2026-10-16). A trimmed
+  page's edge records are re-derived from the PATH ROW
+  (`_path_edge_records`: weight/ratio/probability), while `ratio_adj` and every
+  `pair_extra_metrics` name live on the graph the caller built — so before this
+  rule a run over the cap drew both metrics as `N/A` on a folder whose data
+  files had them (measured on `R3_complete_and`: 396 emitted pairs, limit 200,
+  `refilled` non-null on 0/200 edges and `ratio_adj` on 0/200). The records now
+  copy the caller's own metric names (plus `ratio_adj`) off `G_network`. A run
+  small enough to skip the trim always showed them, which is why every unit test
+  passed: the law is pinned on an EMITTED page whose fixture forces the trim
+  (`tests/vispath/test_metric_labels.py`), with the pre-fix record builder
+  re-run as the control
+  (`_plan/probes/2026-10-16-review/trim_metric_control.py`).
 
 ## Metric bases (V1, 2026-10-10)
 
@@ -209,9 +222,42 @@ metric toggle and the network/Sankey Connection-Metric selectors expose
 whichever of these the input provides; hover always lists every metric;
 Sankey labels stay weight-based (metrics on hover); NT coloring, when
 enabled, overrides edge COLORS only. Feed pair-level metrics via
-`VisualizePath(pair_extra_metrics={metric: {(src, dst): value}})`;
+`VisualizePath(pair_extra_metrics={metric: {(src, dst): value}})` —
+METRIC-keyed, the shape both DROCAT callers pass and the constructor's own
+comment now states;
 per-hop adjusted ratios ride the path frame's `connection_ratios_adj`
 list column (positional, like `connection_ratios`).
+
+### The transmitter (NT) buckets on the network page
+
+`color_edges_by_nt=True` writes one Cytoscape rule per transmitter the data
+carries (`edge[nt_type = "GLUT"]`), and — since the user report of 2026-10-17 —
+one more for the bucket `nt_bucket()` calls `'unknown'`: `None` / `NaN` / blank /
+'None' / 'nan' / 'n/a' cells all land there, in the palette's
+`NT_COLORS['unknown']` gray (`#95A5A6`), with an `Unknown Edges` entry in the
+group selector so the reader can recolour or hide it. Before that rule existed an
+unannotated edge matched nothing and kept the page's base link colour — on DROCAT
+runs `rgba(100,150,240,.5)`, a light blue — so "this pair carries no transmitter
+information" was drawn in the same visual language as a real transmitter.
+
+Two boundaries, both pinned in `tests/vispath/test_nt_unknown_edges.py`: the
+bucket rule is emitted ONLY when the page has some real vocabulary to be gray
+relative to (a run with no transmitter column at all keeps its uniform edge
+colour rather than a page that claims everything is unknown), and it is not
+emitted at all when `color_edges_by_nt` is off (the payload then keeps the raw
+column, blank included).
+
+### `metric_note`: a page's own word about a metric it cannot carry
+
+`VisualizePath(metric_note='…')` renders one muted line under the Connection
+Metric select on the network and Sankey pages, and renders NOTHING when it is
+empty (the default) — so a page that has every metric never shows an
+explanation of a gap it does not have. DROCAT uses it where a bodyId-level page
+greys out Refilled and the adjusted ratio: both are computed per TYPE pair, so
+the page says who measures them and where the records live, rather than leaving
+`(N/A)` as the only signal (review 2026-10-17). The caption is caller data: it
+goes through `html_escape`, and `tests/vispath/test_metric_labels.py` pins that
+it lands under `id="metricSelect"` on both page kinds.
 
 ## Notes
 

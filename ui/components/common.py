@@ -2771,7 +2771,7 @@ def number_input(
 
 def select_input(
     label: str,
-    options: List[str],
+    options: List[str] | dict,
     default: Optional[str] = None,
     hint: str = "",
     help_doc: Optional[str] = None,
@@ -2779,6 +2779,8 @@ def select_input(
 ) -> ui.select:
     """Create a dropdown select input with tooltip.
 
+    options: a list, or a {stored value: shown label} dict — NiceGUI keeps the
+    value, so a payload can read `.value` without a translation table.
     help_doc: name of a docs/ui_guides/*.html file; a small "guide" link is
     rendered under the select so the option list can be explained in depth.
     inline: use a compact fixed-width wrapper for placing the select beside
@@ -2787,9 +2789,10 @@ def select_input(
     wrapper_classes = "gap-0 drocat-inline-select" if inline else "gap-0 w-full"
     with ui.column().classes(wrapper_classes):
         select_classes = "drocat-select" if inline else "w-full drocat-select"
+        first = next(iter(options)) if isinstance(options, dict) else options[0]
         sel = ui.select(
             options=options,
-            value=default or options[0],
+            value=default or first,
             label=label,
         ).classes(select_classes)
         if hint:

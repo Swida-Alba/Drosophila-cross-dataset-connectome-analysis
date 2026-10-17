@@ -114,7 +114,12 @@ def test_inter_dataset_threshold_editor_uses_query_rows_in_core_parameters():
     assert '("standard", "Standard")' in source
     assert '("combinations", "Custom combination")' in source
     assert '"outline no-caps"' in source
-    assert ('[0.001] if ratio_mode else [3]' in source
+    # The Auto bootstrap floor follows the basis IN THE UNIT THE TAB TYPES:
+    # 0.1% (the engine tier 0.001) on the ratio basis, synapse 3 otherwise —
+    # the percent unification (plan 2026-10-16) moved this literal from
+    # [0.001]; the conversion to the engine value happens once, in
+    # `_to_engine`, not here.
+    assert ('[0.1] if ratio_mode else [3]' in source
             and 'sorted(set(values))' in source)
     assert '"min-height: 3rem; font-size: 1.0rem; font-weight: 700;"' in source
     assert 'icon="delete_outline"' in source

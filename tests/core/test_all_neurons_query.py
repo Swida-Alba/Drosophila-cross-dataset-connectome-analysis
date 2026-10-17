@@ -171,7 +171,26 @@ class TestAllNeuronsQueryResolution:
             max_interlayer=2,
             tmp_path=tmp_path,
         )
-        with pytest.raises(ValueError, match="not allowed"):
+        # Q4 (plan 2026-10-16): a query set that equals its own other side is
+        # the SHAPE of the one-box tools (Network passes its single query as
+        # both), so the sentence must teach that instead of naming a pairing
+        # the reader never chose.
+        with pytest.raises(ValueError, match="single-query tool"):
+            connection.InitializeNeuronInfo()
+        assert calls == []
+
+    def test_two_distinct_sides_keep_the_pairing_message(
+            self, monkeypatch, tmp_path):
+        """Two boxes, both carrying the token: the reader DID pick both sides,
+        so the generic sentence is the honest one."""
+        connection, calls, _ = _make_connection(
+            monkeypatch,
+            source=["all_neurons"],
+            target=["aMe12", "all_neurons"],
+            max_interlayer=2,
+            tmp_path=tmp_path,
+        )
+        with pytest.raises(ValueError, match="both sides cannot be the full"):
             connection.InitializeNeuronInfo()
         assert calls == []
 

@@ -87,6 +87,15 @@ python skills/drocat-usage/scripts/run_direct.py \
 ## Notes
 
 - The UI keeps the early network preview disabled (`visualize_before_reconstruct=False`).
+- A source or target query that resolves to no neuron in the selected dataset
+  RAISES and writes nothing — no run folder, no report (2026-10-17). This is not
+  an empty result: a run that searched and found nothing still writes its folder
+  and says which threshold produced nothing. Same law as the Complete Paths tab.
+- `parameters.txt` stamps the drawing cap the HTML pages used
+  (`visualization edge limit: 200 (drawing only; tables keep every edge)` /
+  `no drawing cap`), and `bodyId_visualization/` pages grey out Refilled and the
+  adjusted ratio by design — with a caption under the metric selector pointing at
+  `visualization/` and `type_level_refill/` whenever this run wrote those records.
 - Start with `max_interlayer=5` (this tab's default; the shared default elsewhere
   is 2) and `skip_bodyId=True`; verify counts before enabling bodyId-level output.
 - **Drop Untyped Neurons** (`drop_untyped=True`, checked by default): the same
@@ -118,7 +127,10 @@ python skills/drocat-usage/scripts/run_direct.py \
   as the size census. Applied only after a successful run; path outputs
   are byte-identical across modes; recorded in `meta.json`
   (`retention`), the run metadata, and `user_warning_notes.txt`.
-- `min_ratio` remains available as readout. **Probability SUSPENDED (2026-10-06, unverifiable fidelity):** traversal/path-probability values are no longer exported, displayed, or used for ranking. The probability
+- `min_ratio` is a THRESHOLD on this tab when the ratio basis is chosen (the
+  tab's Threshold Basis / Min Connection Ratio (%) / Combine Thresholds controls
+  are the shared ones, typed in PERCENT, since 2026-10-16); in the synapse
+  'Any one' regime it stays a readout column. **Probability SUSPENDED (2026-10-06, unverifiable fidelity):** traversal/path-probability values are no longer exported, displayed, or used for ranking. The probability
   readout is withheld (was `min_traversal_probability`-related columns).
   columns for compatibility, but their filters are disabled in Shortest Paths;
   they do not appear as `r[]p[]` filename notes.
@@ -144,4 +156,4 @@ knobs per shortest delegate (`None` in `all` mode).
 
 ## Connection-ratio basis
 
-Shortest Paths supports `weight_basis='connection_ratio'` (Phase 3): the ratio threshold applies at the target-rooted discovery, per-pair min-hop paths rank by ratio bottleneck (batched and monolithic lanes drain identically — parity fixed 2026-10-06: the batched graphs previously ordered on synapse weights, biting the budget on the wrong scale), folders use the `L{d}r{t}` suffix; `threshold_combination='and'` (Combine Thresholds = Both) co-thresholds discovery with Min Synapse Count (edge must clear BOTH; token `L{d}w{t}r{t_r}`) (type-table readouts are realized-scope on EVERY weight basis (engine fix 2026-10-05) — per-hop Weights count only the bodyId edges backing that sequence at that position, and per-hop Ratios divide that realized mass by the post type's full-membership incoming mass, the same canonical denominator as connection_type.csv). Multi-threshold replay remains 'all'-mode only (as in synapse basis). At Min Synapse Count > 1, `connection_ratio_adj` (threshold-conditioned share) is exported like in Complete Paths.
+Shortest Paths supports `weight_basis='connection_ratio'` (Phase 3; **reachable from the tab since 2026-10-16** — it offers the same shared Threshold Basis / Min Connection Ratio (%) / Combine Thresholds controls as Complete Paths, so the engine lane that was long API-only now has an entrance, and the folder's `parameters.txt` names the basis in force): the ratio threshold applies at the target-rooted discovery, per-pair min-hop paths rank by ratio bottleneck (batched and monolithic lanes drain identically — parity fixed 2026-10-06: the batched graphs previously ordered on synapse weights, biting the budget on the wrong scale), folders use the `L{d}r{t}` suffix; `threshold_combination='and'` (Combine Thresholds = Both) co-thresholds discovery with Min Synapse Count (edge must clear BOTH; token `L{d}w{t}r{t_r}`) (type-table readouts are realized-scope on EVERY weight basis (engine fix 2026-10-05) — per-hop Weights count only the bodyId edges backing that sequence at that position, and per-hop Ratios divide that realized mass by the post type's full-membership incoming mass, the same canonical denominator as connection_type.csv). Multi-threshold replay remains 'all'-mode only (as in synapse basis). At Min Synapse Count > 1, `connection_ratio_adj` (threshold-conditioned share) is exported like in Complete Paths.

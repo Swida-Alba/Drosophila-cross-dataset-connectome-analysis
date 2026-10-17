@@ -19,7 +19,7 @@ fill the data** — even complete runs (`applied == requested`) run the
 second round at the asked tier with the forced min-synapse floor
 (`refill_synapse_floor`, 1 unless AND-specified), producing the
 complete-at-asked table (`refill_weight_total` 0, provenance status
-`complete_at_asked`) and the standalone mirror, so the Refill tab shows
+`complete_at_asked`) and the standalone mirror, so the Path → Refill view shows
 the full asked-threshold chain set. Synapse-basis complete runs keep the
 gate and get a `no_refill_needed` provenance record only.
 Multi-threshold replay folders are evaluated per slice: a canon slice's
@@ -39,8 +39,8 @@ re-enumerated slices carry their own fresh provenance.
   rows (non-bitten synapse runs included). Tables:
   `refill_full_type_pairs.csv` (data_details) and
   `refill_full_paths_type.csv` / `refill_full_carrying_paths_type.csv`
-  / `refilled_full_connection_type.csv` (mirror). The report's Refill
-  tab carries a Refill-asked | Refill-full scope switch. Realization
+  / `refilled_full_connection_type.csv` (mirror). The report's Path → Refill view
+  carries a Refill-asked | Refill-full scope switch. Realization
   is per-chain (2026-10-11: restricted to the emitted chains) by the
   **LAYERED PER-POSITION BODY-SET FILTER** (2026-10-13, universal at
   every applied threshold — it replaced the 2026-10-11 DP/DFS
@@ -184,15 +184,26 @@ format, parallel to `find_reciprocal/`:
 
 | File | Content |
 |---|---|
-| `refill_paths_type.csv` | The REFILLED type-level paths (the second path-building round's product): asked-threshold enumeration restricted to paths carrying refill edges and to emitted pairs, aggregated into type sequences. Exact `*_allpaths_type.csv` column order — the pair report's Refill tab mounts a second Pair Explorer over this file. Realized per-hop masses; per-hop ratios over the all-post denominator; coverage `n/N` = distinct bodyIds realizing the node over the type's induced-node-set membership. |
-| `complete_at_asked_paths_type.csv` | The COMPLETE-AT-ASKED view: the PAIR EXPLORER'S chains (the emitted type routes) re-valued at the asked threshold — a VALUE change only, no structural change — with each hop's realized mass split three ways (`emitted_weights` + `refill_weights` + `skipped_weights` == `weights`). Per-run stamp `complete_at_asked` in the provenance (true / false at the drain tau / null in shortest mode). The Refill tab's default view. |
+| `refill_paths_type.csv` | The REFILLED type-level paths (the second path-building round's product): asked-threshold enumeration restricted to paths carrying refill edges and to emitted pairs, aggregated into type sequences. Exact `*_allpaths_type.csv` column order — the pair report's Path → Refill view mounts a second Pair Explorer over this file. Realized per-hop masses; per-hop ratios over the all-post denominator; coverage `n/N` = distinct bodyIds realizing the node over the type's induced-node-set membership. |
+| `complete_at_asked_paths_type.csv` | The COMPLETE-AT-ASKED view: the PAIR EXPLORER'S chains (the emitted type routes) re-valued at the asked threshold — a VALUE change only, no structural change — with each hop's realized mass split three ways (`emitted_weights` + `refill_weights` + `skipped_weights` == `weights`). Per-run stamp `complete_at_asked` in the provenance (true / false at the drain tau / null in shortest mode). The DEFAULT view of the Path → Refill view. |
 | *(refill_type_pairs.csv)* | Gains `unfired_residual` (last column): >=asked mass on the emitted pair that entered the induced graph but fired on NO chain (off-route mass +, when the refill guard bit, guard-missed mass +, since the route scope, pruned non-emitted-pair mass on the pair). 0 on clean runs; empty in shortest mode. |
-| `refill_connection_type.csv` | The REFILL mass only, `connection_type.csv` column order; `connection_ratio` = refill mass over the threshold-free all-post denominator, `connection_ratio_adj` the threshold-conditioned variant; `nt_type`/`block_probability`/`conn_layer` stay empty (not derivable for refilled edges). |
+| `refill_connection_type.csv` | The REFILL mass only, `connection_type.csv` column order; `connection_ratio` = refill mass over the threshold-free all-post denominator, `connection_ratio_adj` the threshold-conditioned variant; `nt_type` is carried (the pages colour by transmitter like the run's own network), `block_probability`/`conn_layer` stay empty (not derivable for refilled edges). |
 | `refilled_connection_type.csv` | Complete-at-asked: one row per emitted pair, `weight = refilled_total` (emitted + refill) with the pair's refilled ratios. |
 | `refilled_connection_bodyId.csv` | Complete-at-asked bodyId edges (emitted-rederived + refill), canonical connection-table columns plus `traversal_count`/`min_hop`/`max_hop`; non-derivable enrichment columns stay empty. |
-| `refill_type_heatmap.html` / `refill_type_network.html` | The refill mass drawn like the reciprocal views (built by the run flow's visualization stage; the CLI mirror writes the CSVs only). |
+| `refill_type_heatmap.html` / `refill_type_network.html` | The asked scope's emitted topology RE-VALUED (weight = `refilled_total`, so the page never draws the recovered delta beside the total's ratio). Built by the refill round ITSELF, in-run, right after it writes the mirror — the round runs BEFORE the run renders its own pages, which is why `visualization/Network_*.html` carries the Refilled metric too. Written only when that scope carries totals: the mirror grammar's delta table (`refill_connection_type.csv`) has a `weight` that IS the delta and no component columns at all, so a delta-only asked mirror writes NO asked page and `user_warning_notes.txt` says why (there is nothing to re-total it from — review 2026-10-16 removed a branch that pretended otherwise). The same law covers the full-scope pages: a pre-2026-10-16 `refilled_full_connection_type.csv` carrying only `refill_weight`/`emitted_weight` and no `refilled_total` gets no page and its own note, instead of the old rename that drew the delta as the weight. The post-hoc CLI writes the CSVs only. |
 | `refill_bodyId_heatmap.html` / `refill_bodyId_network.html` | BodyId-level twins, when bodyId refill records exist. |
 | `parameters.csv` | The run's parameters (same frame as `data_details/parameters.csv`). |
+
+Because these pair records exist, the run's own **bodyId-level** pages can point
+at them: `Refilled` and the adjusted ratio are measured per TYPE pair, so a
+`bodyId_visualization/` page greys both out — and when the run wrote refill
+totals, a caption under its Connection Metric selector says who measures them and
+where the records live (`visualization/`, `type_level_refill/`). The caption is
+quoted only when `data_details/type_level_refill/*_type_pairs.csv` really carries
+a `refilled_total` (`FindNeuronConnection._bodyid_metric_note`, review
+2026-10-17): a folder with no refill round gets no pointer at records it lacks.
+`FindDirectConnections` never quotes it — neither of its pages carries either
+metric.
 
 ## Real-data verification (FAFB v783, aMe12 → PPL101, L2, asked 3)
 
@@ -232,4 +243,4 @@ exported table is never guarded.
 
 ## Ratio-basis runs (Phase 3)
 
-`weight_basis='connection_ratio'` runs refill like synapse runs: thresholds parse as FLOATS, the re-enumeration runs on ratio weights, and the records carry SYNPASE recovery masses (dual-basis: `refill_weight` is synapse mass, `refilled_connection_ratio` the F9 ratio). Streamed edge sources are materialized once (the ratio lane needs two passes). The post-hoc CLI works on ratio run folders unchanged.
+`weight_basis='connection_ratio'` runs refill like synapse runs: thresholds parse as FLOATS, the re-enumeration runs on ratio weights, and the records carry SYNAPSE recovery masses (dual-basis: `refill_weight` is synapse mass, `refilled_connection_ratio` the F9 ratio). Streamed edge sources are materialized once (the ratio lane needs two passes). The post-hoc CLI works on ratio run folders unchanged.

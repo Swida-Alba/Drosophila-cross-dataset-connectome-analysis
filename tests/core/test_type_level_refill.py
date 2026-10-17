@@ -1,3 +1,4 @@
+import ast
 """Type-level refill (plan: _plan/plan-type-level-refill.md, Phase 1).
 
 Every test drives the POST-HOC API (run folder in -> records out) on runs
@@ -275,9 +276,22 @@ def test_gate_reads_replayed_from(tmp_path):
             'aggregate method': 'product',
         })
         fc.FindAllPathMultiThreshold([1, 3])
-    canon = [p for p in sorted((tmp_path / 'minsyn_11').glob(
-        'find-paths-*')) if p.is_dir()]
-    assert canon, 'canon slice folder missing'
+    # The slice lives in the run's OWN output directory, restamped in the
+    # folder NAME (plan 2026-10-16 review). The replay redirect used to run
+    # `minsyn_\d+(?=/|$)` over the whole PATH, so here it renamed the output
+    # DIRECTORY (minsyn_1 -> minsyn_11) and left the folder's own tier token
+    # at w{asked} — a slice published beside a directory the user never chose
+    # and a name that contradicted its parameters.txt.
+    out_dir = tmp_path / 'minsyn_1'
+    assert out_dir.is_dir(), (
+        'the run\'s output directory was renamed by a slice restamp')
+    published = [p for p in sorted(out_dir.glob('find-paths-*'))
+                 if p.is_dir()]
+    canon = [p for p in published if re.search(r'_L\d+w11_\d{8}_\d{6}$',
+                                               p.name)]
+    assert canon, (
+        f'no slice folder carries the canonical tier in its NAME: '
+        f'{[p.name for p in published]}')
     rec = refill(canon[0])
     assert rec['status'] == 'refilled'
     assert rec['requested_threshold'] == 1
@@ -808,12 +822,124 @@ def test_auto_hook_ratio_basis_refills(tmp_path):
         assert rec.get('table_reproduced') is True
         assert rec.get('requested_threshold') == 0.2
         rows = pd.read_csv(out / 'refill_type_pairs.csv')
-        assert (rows['refill_weight'] >= 0).all()   # synapse masses
+        # gate L4: the pair lane books mass in SYNAPSES even on a
+        # ratio-basis run — integers, never fractional ratio sums
+        assert (rows['refill_weight'] >= 0).all()
+        assert all(float(v).is_integer() for v in rows['refill_weight']), \
+            list(rows['refill_weight'])
     # either way the hook no longer refuses ratio runs outright
+    asked_in = out / 'type_incoming_asked.csv'
+    if asked_in.exists():
+        # a ratio-basis run can leave the conditioned map EMPTY — the file
+        # must still carry its header, or the report's loader loses the
+        # denominator (EmptyDataError on a lone newline).
+        assert list(pd.read_csv(asked_in, nrows=0).columns) == [
+            'type_post', 'incoming_threshold']
     notes = run_dir / 'user_warning_notes.txt'
     if notes.exists():
         assert 'does not apply to ratio-basis' not in notes.read_text(
             encoding='utf-8')
+
+
+def _ratio_full_scope_run(tmp_path):
+    """A ratio-basis run whose full scope (synapse >= 1) carries
+    sub-threshold mass — the shape that produced F-EX-002(i)."""
+    with universe_types() as shim:
+        fc, _calls, _logs = _make_pipeline_fc(
+            shim, tmp_path, edges=EDGES, max_interlayer=MAX_INTERLAYER,
+            min_synapse=ASKED, source_ids=tuple(SOURCES),
+            target_ids=tuple(TARGETS))
+        fc.skip_bodyId = False
+        fc.target_df = fc.target_df.assign(
+            Checked=[True] * len(fc.target_df))
+        fc.graph_edge_limit_bodyid = 7
+        fc.max_paths_bodyid = 0
+        fc.parameter_dict.update({
+            'min synapse number': '1', 'filter by': 'bodyId',
+            'exclude intra-type connections': 'False',
+            'max interlayer': str(MAX_INTERLAYER),
+            'separate hemispheres': 'False', 'hemisphere filter': 'both',
+            'aggregate method': 'product'})
+        fc.weight_basis = 'connection_ratio'
+        fc.min_ratio = 0.2
+        fc._refill_edges_override = list(EDGES)
+        fc._refill_neuron_frame_override = pd.DataFrame({
+            'bodyId': list(TYPE_MAP), 'type': list(TYPE_MAP.values())})
+        fc.FindAllPath()
+        return Path(fc.allpath_folder)
+
+
+def test_ratio_basis_full_scope_path_tables_are_synapse_units(tmp_path):
+    """Gate L4 (F-EX-002(i)): on a ratio-basis run the full-scope PATH
+    tables must carry SYNAPSE masses like the pair table always did. The
+    defect: `e_u_full` enumerates on the F9 ratio, and the path builders
+    summed that raw, so a chain published 16-digit ratio sums under the
+    report's "Weights (synapse >= 1)" header and its ratios collapsed to
+    0.00%."""
+    run_dir = _ratio_full_scope_run(tmp_path)
+    mirror = run_dir / 'type_level_refill'
+    full_csv = mirror / 'refill_full_paths_type.csv'
+    carry_csv = mirror / 'refill_full_carrying_paths_type.csv'
+    assert full_csv.exists() and carry_csv.exists()
+
+    def _mass_frame(csv):
+        frame = pd.read_csv(csv)
+        assert len(frame) > 0, csv
+        for row in frame.itertuples():
+            for col in ('weights', 'emitted_weights', 'refill_weights',
+                        'total_weights'):
+                if col not in frame.columns:
+                    continue
+                vals = ast.literal_eval(str(getattr(row, col)))
+                # an integer-valued synapse count, never a ratio sum
+                assert all(float(v).is_integer() and float(v) >= 0
+                           for v in vals), (csv.name, col, vals)
+        return frame
+
+    full = _mass_frame(full_csv)
+    carry = _mass_frame(carry_csv)
+    # the three-way split reconciles hop for hop on both tables
+    for row in full.itertuples():
+        w = ast.literal_eval(str(row.weights))
+        e = ast.literal_eval(str(row.emitted_weights))
+        r = ast.literal_eval(str(row.refill_weights))
+        assert [a + b for a, b in zip(e, r)] == w, row.path
+    for row in carry.itertuples():
+        w = ast.literal_eval(str(row.weights))          # sub-threshold
+        e = ast.literal_eval(str(row.emitted_weights))
+        t = ast.literal_eval(str(row.total_weights))
+        assert [a + b for a, b in zip(e, w)] == t, row.path
+    # F-EX-002(ii): the carrying view's subject is the sub-threshold band,
+    # so its total must be one of the complete table's totals per chain
+    full_by_path = {r.path: r.weights for r in full.itertuples()}
+    for row in carry.itertuples():
+        assert str(row.path) in full_by_path, row.path
+        assert (ast.literal_eval(str(row.total_weights))
+                == ast.literal_eval(str(full_by_path[row.path]))), row.path
+
+    # UNIT CROSS-CHECK against independent ground truth: ratios must equal
+    # the synapse mass over the ALL-POST incoming computed straight from the
+    # fixture's EDGES. (A quotient of weights/ratios cannot discriminate a
+    # unit — a ratio-unit numerator over a synapse denominator yields the
+    # same denominator — so the mass itself is checked against the edge
+    # list, which is exactly what the ratio-unit bug made impossible.)
+    all_post: dict = defaultdict(float)
+    for u, v, w in EDGES:
+        all_post[TYPE_MAP[v]] += w
+    checked = 0
+    for row in full.itertuples():
+        seq = str(row.path).split('->')
+        w = ast.literal_eval(str(row.weights))
+        r = ast.literal_eval(str(row.ratios))
+        for i, ratio in enumerate(r):
+            post = seq[i + 1]
+            if not ratio or post not in all_post:
+                continue
+            assert abs(float(w[i]) - float(ratio) * all_post[post]) \
+                <= 1e-6 * max(1.0, all_post[post]), (row.path, post, w[i],
+                                                     ratio, all_post[post])
+            checked += 1
+    assert checked, 'no rows to cross-check against EDGES'
 
 
 def test_read_run_provenance_parses_ratio_basis(tmp_path):
@@ -1117,9 +1243,24 @@ def test_standalone_mirror_folder(tmp_path):
     paths_csv = mirror / 'refill_paths_type.csv'
     assert list(pd.read_csv(paths_csv, nrows=0).columns) == [
         'path', 'weights', 'ratios', 'min_weight',
-        'min_ratio', 'length', 'nt_types', 'coverage']
+        'min_ratio', 'length', 'nt_types', 'coverage',
+        'emitted_weights', 'total_weights']
     pf = pd.read_csv(paths_csv)
     assert len(pf) > 0
+    # F-EX-002(ii): `weights` is the table's SUBJECT (the sub-threshold
+    # mass), so the context columns must reconstruct the total exactly —
+    # emitted + sub-threshold == total, hop for hop, on every row.
+    for r in pf.itertuples():
+        emit_w = ast.literal_eval(str(r.emitted_weights))
+        sub_w = ast.literal_eval(str(r.weights))
+        tot_w = ast.literal_eval(str(r.total_weights))
+        assert len(emit_w) == len(sub_w) == len(tot_w) == r.length
+        assert all(e + s == t for e, s, t in zip(emit_w, sub_w, tot_w)), r.path
+        # the subject is never larger than the total it came from
+        assert all(s <= t for s, t in zip(sub_w, tot_w)), r.path
+        # the emitted class alone is never the whole story here: a carrying
+        # row exists because it recovered mass
+        assert any(s > 0 for s in sub_w), r.path
     # every path carries >=1 hop whose type pair is a REFILL pair (the
     # refill edges already carry the emitted-pairs restriction; a path's
     # ENDPOINT pair is not an edge pair and must not be checked)
@@ -1144,6 +1285,30 @@ def test_standalone_mirror_folder(tmp_path):
     assert paths_csv.read_bytes() == before
 
 
+def test_empty_mirror_tables_still_publish_their_header(tmp_path):
+    """A published CSV is parseable or it is not written. An UNBITTEN run
+    has no sub-threshold chain to carry, so its full-scope mirror and the
+    conditioned-denominator file are empty — and a header-less empty file
+    (one newline) raised EmptyDataError in the report's loader, which
+    logged the view as unreadable and dropped the conditioned denominator
+    with it."""
+    _fc, run_dir = make_run(tmp_path, 'mirror_unbitten', edge_budget=0)
+    mirror = run_dir / 'type_level_refill'
+    records = run_dir / 'data_details' / 'type_level_refill'
+    carry = mirror / 'refill_full_carrying_paths_type.csv'
+    assert carry.exists()
+    first = carry.read_text(encoding='utf-8').splitlines()
+    assert first and first[0] == (
+        'path,weights,ratios,min_weight,min_ratio,length,nt_types,coverage,'
+        'emitted_weights,total_weights'), first[:1]
+    frame = pd.read_csv(carry)          # parses: 0 rows, full column set
+    assert len(frame) == 0
+    asked_in = records / 'type_incoming_asked.csv'
+    assert asked_in.exists()
+    assert list(pd.read_csv(asked_in, nrows=0).columns) == [
+        'type_post', 'incoming_threshold']
+
+
 def test_refill_visualizations_built(tmp_path):
     """The visualization stage draws the mirrored refill mass like the
     reciprocal views: type heatmap/network (+ bodyId twins) into the
@@ -1166,7 +1331,7 @@ def test_refill_visualizations_built(tmp_path):
         {'type_pre': 'TS', 'type_post': 'TA', 'weight': 40, 'nt_type': '',
          'connection_ratio': 0.1, 'conn_layer': '',
          'connection_ratio_adj': 0.2},
-    ]).to_csv(mirror / 'refill_connection_type.csv', index=False)
+    ]).to_csv(mirror / 'refilled_connection_type.csv', index=False)
     details = tmp_path / 'data_details' / 'type_level_refill'
     details.mkdir(parents=True)
     pd.DataFrame([
@@ -1180,6 +1345,165 @@ def test_refill_visualizations_built(tmp_path):
     for name in ('refill_type_heatmap.html', 'refill_type_network.html',
                  'refill_bodyId_heatmap.html', 'refill_bodyId_network.html'):
         assert (mirror / name).exists(), name
+
+
+def test_refill_visualizations_both_scopes_and_metrics(tmp_path):
+    """F7.1/F7.2/F7.3 on the refill's OWN pages.
+
+    The pages are built where the mirror is written, in the refill round
+    itself — the materialization stage now runs the round BEFORE it renders
+    (2026-10-16), but the refill's own scope pages still belong to the round
+    that owns their data. Three laws, each checked against the wrong
+    hypothesis:
+      - a page exists for EVERY scope the mirror carries, and for no scope
+        it does not (presence, not a hardcoded pair of names);
+      - the asked page names the run's conditioned tier and the full page
+        names 1 — a page labeled with another round's tier is a claim the
+        reader cannot reproduce;
+      - the 'Refilled' metric carries the pair's refilled_total instead of
+        the (N/A) these pages used to show on the very subject they draw."""
+    fc = object.__new__(coana.FindNeuronConnection)
+    fc.allpath_folder = str(tmp_path)
+    fc.verbose_mode = 'quiet'
+    fc.showfig = False
+    fc.edgeN_limit = 500
+    fc.output_format = 'html'
+    fc.network_layout = 'hierarchical'
+    fc.separate_hemispheres = False
+    fc.skip_bodyId = True
+    fc.min_synapse_num = 3          # -> _adj_ratio_tier() == 3
+    fc.source_df = pd.DataFrame({'bodyId': ['S1'], 'type': ['TS']})
+    fc.target_df = pd.DataFrame(
+        {'bodyId': ['T1'], 'type': ['TT'], 'Checked': [True]})
+
+    mirror = tmp_path / 'type_level_refill'
+    mirror.mkdir(parents=True)
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 40,
+         'nt_type': 'acetylcholine',
+         'connection_ratio': 0.1, 'conn_layer': '',
+         'connection_ratio_adj': 0.2},
+    ]).to_csv(mirror / 'refill_connection_type.csv', index=False)
+    # CURRENT shape: a bitten run ALSO mirrors the complete-at-asked TOTALS.
+    # Without this file the asked page would draw the recovered DELTA (40)
+    # beside the TOTAL's ratio and Refilled (46) — the exact mixed-scope page
+    # the round forbids, so it now writes no asked page instead.
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 46,
+         'nt_type': 'acetylcholine',
+         'connection_ratio': 0.115, 'conn_layer': '',
+         'connection_ratio_adj': 0.23},
+    ]).to_csv(mirror / 'refilled_connection_type.csv', index=False)
+    # the full-scope mirror: the SAME pair, sub-threshold band + totals
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'emitted_weight': 40,
+         'refill_weight': 6, 'refilled_total': 46,
+         'refilled_connection_ratio': 0.115, 'pair_offchain_mass': 4},
+    ]).to_csv(mirror / 'refilled_full_connection_type.csv', index=False)
+    details = tmp_path / 'data_details' / 'type_level_refill'
+    details.mkdir(parents=True)
+    # the run's own transmitter matrix (the vocabulary source, issue 6)
+    pd.DataFrame([{'type_pre': 'TS', 'TA': 'acetylcholine'}]).to_csv(
+        tmp_path / 'data_details' / 'conn_mat_type_nt.csv', index=False)
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'refill_weight': 6,
+         'refilled_total': 46},
+    ]).to_csv(details / 'refill_type_pairs.csv', index=False)
+
+    fc._build_refill_visualizations(str(mirror))
+
+    asked_net = (mirror / 'refill_type_network.html').read_text(
+        encoding='utf-8')
+    full_net = (mirror / 'refill_full_type_network.html').read_text(
+        encoding='utf-8')
+    for name in ('refill_type_heatmap.html', 'refill_type_network.html',
+                 'refill_full_type_heatmap.html',
+                 'refill_full_type_network.html'):
+        assert (mirror / name).exists(), name
+    # per-scope tier in the label (no bare placeholder, no borrowed tier)
+    assert 'Adj. Ratio (&ge; 3)' in asked_net, asked_net[:200]
+    assert 'Adj. Ratio (&ge; 1)' in full_net, full_net[:200]
+    assert '(&ge; N)' not in asked_net and '(&ge; N)' not in full_net
+    # the Refilled metric carries this pair's refilled_total on BOTH pages
+    assert 'Refilled (N/A)' not in asked_net, 'asked page still N/A'
+    assert 'Refilled (N/A)' not in full_net, 'full page still N/A'
+    assert '"refilled": 46' in asked_net.replace('  ', ' '), asked_net[:400]
+    assert '"refilled"' in full_net
+    # the drawn WEIGHT is the same total — a page that draws the recovered
+    # delta (40) while its ratio/Refilled read the total's (46) is the mixed
+    # scope this rule exists to stop, so pin the number the page renders
+    assert '"weight": 46' in asked_net.replace('  ', ' '), asked_net[:400]
+    # NT parity with the run's own Network (user 2026-10-15): the round's
+    # pages carry the transmitter per edge, so the legend/colouring option
+    # has data instead of an empty legend.
+    assert 'acetylcholine' in asked_net, 'asked page lost the transmitter'
+    for page in (asked_net, full_net):
+        assert '"nt_type"' in page
+
+    # PRESENCE LAW: a full-only mirror builds no asked page (the budget did
+    # not bite, so there is no asked table to draw) — the old gate skipped
+    # the whole stage and produced neither.
+    only = tmp_path / 'only_full' / 'type_level_refill'
+    only.mkdir(parents=True)
+    (tmp_path / 'only_full' / 'type_level_refill').parent.mkdir(
+        exist_ok=True)
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'emitted_weight': 40,
+         'refill_weight': 6, 'refilled_total': 46,
+         'refilled_connection_ratio': 0.115, 'pair_offchain_mass': 4},
+    ]).to_csv(only / 'refilled_full_connection_type.csv', index=False)
+    fc.allpath_folder = str(only.parent)
+    fc._build_refill_visualizations(str(only))
+    assert (only / 'refill_full_type_network.html').exists()
+    assert not (only / 'refill_type_network.html').exists(), \
+        'an asked page was invented for a run with no asked mirror'
+
+    # SOURCE LAW (2026-10-16): when the round also mirrored its
+    # complete-at-asked table, the asked page draws THAT (one row per
+    # emitted pair, weight = refilled_total) and not the delta table —
+    # otherwise a pair that recovered nothing disappears and its node is
+    # drawn as a dead-end.
+    both = tmp_path / 'both' / 'type_level_refill'
+    both.mkdir(parents=True)
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 40,
+         'nt_type': 'acetylcholine', 'connection_ratio': 0.1,
+         'conn_layer': '', 'connection_ratio_adj': 0.2},
+    ]).to_csv(both / 'refill_connection_type.csv', index=False)
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 46,
+         'nt_type': 'acetylcholine', 'connection_ratio': 0.115,
+         'conn_layer': '', 'connection_ratio_adj': 0.23},
+        {'type_pre': 'TA', 'type_post': 'TT', 'weight': 30,
+         'nt_type': 'glutamate', 'connection_ratio': 0.075,
+         'conn_layer': '', 'connection_ratio_adj': 0.15},
+    ]).to_csv(both / 'refilled_connection_type.csv', index=False)
+    fc.allpath_folder = str(both.parent)
+    fc._build_refill_visualizations(str(both))
+    asked_edges = _page_edges(both / 'refill_type_network.html')
+    assert {k for k in asked_edges if k[0] == 'TS'} == {('TS', 'TA')}, \
+        asked_edges.keys()
+    assert ('TA', 'TT') in asked_edges, (
+        'the zero-recovery pair was dropped again — the dead-end the user '
+        'reported')
+    assert asked_edges[('TS', 'TA')]['weight'] == 46, asked_edges[('TS', 'TA')]
+
+
+def test_refilled_total_map_skips_unresolved_pairs(tmp_path):
+    """`refilled_total` is None when a hop's post-type incoming cannot be
+    resolved — the metric must then be absent, not a zero that reads as a
+    measured 0 (the same law the report's cells follow)."""
+    fc = object.__new__(coana.FindNeuronConnection)
+    csv = tmp_path / 'refill_type_pairs.csv'
+    pd.DataFrame([
+        {'type_pre': 'A', 'type_post': 'B', 'refill_weight': 1,
+         'refilled_total': 10.0},
+        {'type_pre': 'A', 'type_post': 'C', 'refill_weight': 2,
+         'refilled_total': None},
+    ]).to_csv(csv, index=False)
+    got = fc._refilled_total_map([str(csv)])
+    assert got == {'refilled': {('A', 'B'): 10.0}}, got
+    assert fc._refilled_total_map([str(tmp_path / 'nope.csv')]) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1292,13 +1616,16 @@ def test_shortest_mode_no_complete_table(tmp_path):
             'complete_at_asked_paths_type.csv').exists()
 
 
-def test_type_incoming_applied_written(tmp_path):
-    """The realized patch persists the applied-tier per-post incoming
-    mass (data_details/type_incoming_applied.csv) — the denominator the
-    pair report's applied-conditioned Adj. ratios use; every emitted
-    pair's post type is covered."""
+def test_type_incoming_emitted_written(tmp_path):
+    """The realized patch persists the EMITTED-CONE per-post incoming mass
+    (data_details/type_incoming_emitted.csv) — this run's own emitted
+    network, the full-scope refill's cache-guard input. Every emitted pair's
+    post type is covered. Renamed from `type_incoming_applied.csv`, which
+    invited the pair report to use it as an adjusted-ratio denominator
+    (F-EX-003: it is a subset of the dataset total, so it inflated chain
+    shares ~30x); chain ratios divide by type_incoming_conditioned.csv."""
     _fc, run_dir = make_run(tmp_path, 'inapp_floor', edge_budget=7)
-    csv = run_dir / 'data_details' / 'type_incoming_applied.csv'
+    csv = run_dir / 'data_details' / 'type_incoming_emitted.csv'
     assert csv.exists()
     frame = pd.read_csv(csv)
     assert list(frame.columns) == ['type', 'incoming']
@@ -1322,7 +1649,44 @@ def test_type_incoming_applied_written(tmp_path):
         assert abs(got.get(ty, 0) - mass) < 1e-6, (ty, mass)
 
 
+def test_type_incoming_conditioned_matches_the_pair_table(tmp_path):
+    """F-EX-003 D3a: the engine publishes the CONDITIONED per-post-type
+    incoming it ACTUALLY used for `connection_ratio_adj`
+    (data_details/type_incoming_conditioned.csv), so a chain row's adjusted
+    ratio and the pair table divide by the same number. Path-independent by
+    design: whether the denominator came from the dataset fetch or the
+    in-frame last-resort fallback, the published file must equal the
+    denominator implied by the pair table's own adjusted ratios."""
+    _fc, run_dir = make_run(tmp_path, 'incond1', asked=1)
+    csv = run_dir / 'data_details' / 'type_incoming_conditioned.csv'
+    assert csv.exists()
+    frame = pd.read_csv(csv)
+    assert list(frame.columns) == ['type', 'incoming', 'threshold']
+    assert set(frame['threshold']) == {1}
+    cond = frame.set_index('type')['incoming'].to_dict()
+    ct = pd.read_csv(run_dir / 'data_details' / 'connection_type.csv')
+    for tup in ct.itertuples():
+        denom = float(tup.weight) / float(tup.connection_ratio_adj)
+        assert abs(cond[str(tup.type_post)] - denom) < 1e-6, (
+            tup.type_post, denom)
+
+    # Raising Min Synapse Count conditions the denominator DOWN, never up,
+    # and it always dominates this run's emitted-cone file.
+    _fc2, run2 = make_run(tmp_path, 'incond14', asked=14)
+    hi = pd.read_csv(
+        run2 / 'data_details' / 'type_incoming_conditioned.csv')
+    assert set(hi['threshold']) == {14}
+    hi_map = hi.set_index('type')['incoming'].to_dict()
+    for ty, mass in hi_map.items():
+        if ty in cond:
+            assert mass <= cond[ty] + 1e-6, ty
+    emit = pd.read_csv(run2 / 'data_details' / 'type_incoming_emitted.csv')
+    for row in emit.itertuples():
+        assert row.incoming <= hi_map.get(row.type, 0.0) + 1e-6, row.type
+
+
 def test_ratio_mode_refill_floor_synapse_ge_1(tmp_path):
+    """Ratio-mode refill floor synapse >= 1."""
     """RATIO-MODE FLOOR (2026-10-07, user directive): plain ratio-basis
     refills always run at synapse >= 1 — the run's own forced floor. A
     sub-1 edge in the stream (which the run's min_weight=1 fetch never
@@ -1653,3 +2017,540 @@ def test_load_shortest_store_slice_sum(tmp_path):
     assert by_layer["connections_L1"] == {("a1", "b1"): 9.0,
                                           ("b1", "c1"): 3.0}
     assert by_layer["connections_L0"] == {("a1", "b1"): 4.0}
+
+
+def test_mirror_tables_carry_the_runs_transmitter_vocabulary(staged_runs,
+                                                             tmp_path):
+    """Issue 6 (user, 2026-10-15): the refill's mirror tables hardcoded
+    `nt_type: ''`, so its pages had an empty NT legend while the run's own
+    Network was NT-coloured — two visuals disagreeing about the same edges.
+    The vocabulary now comes from the run's own
+    data_details/conn_mat_type_nt.csv (the same curated source), and the
+    historical empty string is kept when that file is absent."""
+    import shutil
+    _fc, src = staged_runs['bite']
+    run = tmp_path / src.name
+    shutil.copytree(src, run)
+    nt_csv = run / 'data_details' / 'conn_mat_type_nt.csv'
+    if nt_csv.exists():
+        nt_csv.unlink()
+
+    # without the matrix: empty strings, nothing invented. The mirror
+    # tables land in <run>/type_level_refill/ when no out_dir is forced —
+    # that is the in-run shape the pages are built from.
+    mirror = run / 'type_level_refill'
+    compute_type_level_refill(run, edges=EDGES, type_map=TYPE_MAP,
+                              write=True)
+    asked = pd.read_csv(mirror / 'refill_connection_type.csv')
+    assert set(asked['nt_type'].fillna('')) == {''}
+
+    # with the run's matrix: every listed pair carries its transmitter
+    types = sorted(set(TYPE_MAP.values()))
+    pd.DataFrame([{'type_pre': pre, **{post: 'acetylcholine'
+                                       for post in types}}
+                  for pre in types]).to_csv(nt_csv, index=False)
+    compute_type_level_refill(run, edges=EDGES, type_map=TYPE_MAP,
+                              write=True)
+    asked2 = pd.read_csv(mirror / 'refill_connection_type.csv')
+    assert (asked2['nt_type'].astype(str) == 'acetylcholine').all(), \
+        asked2[['type_pre', 'type_post', 'nt_type']].head()
+    full = pd.read_csv(mirror / 'refilled_full_connection_type.csv')
+    assert 'nt_type' in full.columns, full.columns.tolist()
+    assert (full['nt_type'].astype(str) == 'acetylcholine').all(), full
+
+def test_the_type_level_visualization_is_handed_the_refill_metrics():
+    """F7.1 → G6's missing link (§8.6): the run's own type-level Network /
+    Heatmap call must be handed the refill pair metrics — and since the
+    2026-10-16 ordering fix the round RUNS BEFORE that render, so the
+    pass-through carries an actual number instead of an empty dict. Pinned
+    on the source pair (computed → handed, in that order) and on behavior in
+    `test_the_run_pages_carry_the_refilled_metric_in_run`."""
+    import inspect
+
+    import coana
+
+    src = inspect.getsource(coana.FindNeuronConnection._materialize_paths)
+    refill_first = src.index('_maybe_generate_type_level_refill()')
+    computed = src.index('_attach_viz_extra_metrics(')
+    passed = src.index('pair_extra_metrics=(_pair_extra or None)', computed)
+    assert refill_first < computed, (
+        'the refill round moved back after the metrics read — the run would '
+        'again ship its own network page with the Refilled option disabled')
+    assert computed < passed, 'the type-level viz dropped the pair metrics'
+    assert 'VisualizePath(' in src[computed:passed]
+    # ... and the helper's own contract (returned, not swallowed). The pair
+    # read itself moved OUT into `_refilled_pair_metrics` (L5, 2026-10-16) so
+    # `FindNetwork`'s own pages read the metrics through the SAME reader — the
+    # law survives as "the helper delegates" plus "the reader keeps its order".
+    helper = inspect.getsource(
+        coana.FindNeuronConnection._attach_viz_extra_metrics)
+    reader = inspect.getsource(
+        coana.FindNeuronConnection._refilled_pair_metrics)
+    assert "pair_extra.update(self._refilled_pair_metrics(folder))" in helper
+    assert "self._refilled_total_map([" in reader
+    # the FULL scope leads: one meaning for 'Refilled' on every run
+    order = reader[reader.index('_refilled_total_map(['):]
+    assert order.index('refill_full_type_pairs.csv') < \
+        order.index("refill_type_pairs.csv"), order[:400]
+
+
+def _page_edges(html_path):
+    """The embedded cytoscape edge list of a vispath network page, keyed by
+    (source, target) — what the page ACTUALLY draws, not what the CSVs
+    claim."""
+    text = Path(html_path).read_text(encoding='utf-8', errors='replace')
+    i = text.find('[{"data": {"source":')
+    assert i >= 0, f'{html_path}: no embedded edge array found'
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] == '[':
+            depth += 1
+        elif text[j] == ']':
+            depth -= 1
+            if depth == 0:
+                arr = json.loads(text[i:j + 1])
+                break
+    return {(e['data']['source'], e['data']['target']): e['data']
+            for e in arr if 'source' in e.get('data', {})}
+
+
+class _RecordingVisualizePath:
+    """Stand-in for VisualizePath that records the edge frame each page is
+    handed — what the page draws, without paying for a render."""
+
+    calls = []
+
+    def __init__(self, *args, **kwargs):
+        type(self).calls.append(kwargs)
+        self.G_network = None
+        self.edge_limit_trimmed = False
+
+    def build_network(self):
+        pass
+
+    def create_heatmap(self):
+        pass
+
+    def create_network(self):
+        pass
+
+    def visualize(self, **kwargs):
+        pass
+
+
+def _drawn_edges(call):
+    """(source, target) -> the row the page was handed for that pair."""
+    frame = call['path_file']
+    rows = frame if isinstance(frame, list) else frame.to_dict('records')
+    return {(str(r['source']), str(r['target'])): r for r in rows}
+
+
+def test_the_run_pages_are_handed_the_refilled_metric_in_run(tmp_path):
+    """Issue 2b (user, 2026-10-16): 'can we embed the refill to the main
+    network too, like the ratio, adj ratio? there is a refill selection
+    disabled in the network's connection metric.'
+
+    The run's own Network/Heatmap read their metrics through
+    `_attach_viz_extra_metrics`, so the law is testable without a render: on
+    a FRESH offline folder — one that has never been post-processed — that
+    helper must return the pair's Refilled totals, because the round now runs
+    before the render. Measured before the fix: `refilled: null` on all 23
+    edges of this query's own network page."""
+    _fc, run = make_run(tmp_path, 'refill_in_run')
+    fc = object.__new__(coana.FindNeuronConnection)
+    fc.allpath_folder = str(run)
+    paths = pd.DataFrame([
+        {'path': 'S1->M->T1', 'path_block': 'S1->M->T1',
+         'weights': '[40, 30]'}])
+    _frame, pair_extra = fc._attach_viz_extra_metrics(paths, str(run))
+    refilled = (pair_extra or {}).get('refilled') or {}
+    assert refilled, (
+        'a fresh run folder still hands its own pages an empty Refilled map')
+    full = pd.read_csv(run / 'data_details' / 'type_level_refill'
+                       / 'refill_full_type_pairs.csv')
+    want = {(r.type_pre, r.type_post): float(r.refilled_total)
+            for r in full.itertuples()}
+    assert refilled == want, (refilled, want)
+
+
+def test_a_delta_only_mirror_writes_no_self_contradicting_page(tmp_path):
+    """A folder whose mirror carries ONLY the recovered delta has no asked
+    total to draw. Before this rule it fell back to the delta table and
+    printed the total's ratio and Refilled beside it (weight 40 / ratio 0.115)
+    — the mixed-scope page the user reported. Now: no asked page, one note,
+    and the full-scope page (which does carry totals) still written."""
+    fc = object.__new__(coana.FindNeuronConnection)
+    fc.allpath_folder = str(tmp_path)
+    fc.verbose_mode = 'quiet'
+    fc.showfig = False
+    fc.edgeN_limit = 500
+    fc.output_format = 'html'
+    fc.network_layout = 'hierarchical'
+    fc.separate_hemispheres = False
+    fc.skip_bodyId = True
+    fc.min_synapse_num = 3
+    fc.source_df = pd.DataFrame({'bodyId': ['S1'], 'type': ['TS']})
+    fc.target_df = pd.DataFrame(
+        {'bodyId': ['T1'], 'type': ['TT'], 'Checked': [True]})
+    fc._warn_notes = []
+    fc._vprint = lambda msg="", level="full", end="\n", flush=False: None
+
+    mirror = tmp_path / 'type_level_refill'
+    mirror.mkdir()
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 6,
+         'connection_ratio': 0.115},
+    ]).to_csv(mirror / 'refill_connection_type.csv', index=False)
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 46,
+         'refilled_connection_ratio': 0.115},
+    ]).to_csv(mirror / 'refilled_full_connection_type.csv', index=False)
+
+    fc._build_refill_visualizations(str(mirror))
+
+    assert not (mirror / 'refill_type_network.html').exists(), (
+        'the asked page drew the delta beside the total\'s ratio again')
+    assert (mirror / 'refill_full_type_network.html').exists(), (
+        'the scope that carries totals lost its page')
+    assert any('asked' in n and 'no asked' in n for n in fc._warn_notes), (
+        fc._warn_notes)
+
+
+def test_refill_pages_draw_the_whole_topology_with_refilled_values(tmp_path):
+    """Issue 2a (user, 2026-10-16, measured on
+    find-paths-complete_MCNS_aMe12_etc_to_PPL101_etc_L1w5_20261016_132625):
+    `refill_full_type_network.html` showed dead-ends (KCg, KCg-s1 had no
+    outgoing edge) because the page drew the recovered DELTA and dropped every
+    pair that recovered nothing — 18 edges against the run's own 23 — while
+    the ratio beside the delta weight was the TOTAL's share.
+
+    Law: a refill page is the run's topology RE-VALUED. Same pair set, weight
+    = refilled_total, and the Refilled metric equals that weight; the asked
+    page reads the complete-at-asked mirror, not the delta table."""
+    fc = object.__new__(coana.FindNeuronConnection)
+    fc.allpath_folder = str(tmp_path)
+    fc.verbose_mode = 'quiet'
+    fc.showfig = False
+    fc.edgeN_limit = 500
+    fc.output_format = 'html'
+    fc.network_layout = 'hierarchical'
+    fc.separate_hemispheres = False
+    fc.skip_bodyId = True
+    fc.min_synapse_num = 3
+    fc.source_df = pd.DataFrame({'bodyId': ['S1'], 'type': ['TS']})
+    fc.target_df = pd.DataFrame(
+        {'bodyId': ['T1'], 'type': ['TT'], 'Checked': [True]})
+
+    mirror = tmp_path / 'type_level_refill'
+    mirror.mkdir()
+    # the delta mirror (what the page USED to draw) — TS->TB recovered nothing
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 40,
+         'nt_type': 'acetylcholine', 'connection_ratio': 0.1,
+         'conn_layer': '', 'connection_ratio_adj': 0.2},
+    ]).to_csv(mirror / 'refill_connection_type.csv', index=False)
+    # the complete-at-asked mirror: every emitted pair, totals
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 46,
+         'nt_type': 'acetylcholine', 'connection_ratio': 0.115,
+         'conn_layer': '', 'connection_ratio_adj': 0.23},
+        {'type_pre': 'TS', 'type_post': 'TB', 'weight': 30,
+         'nt_type': 'glutamate', 'connection_ratio': 0.075,
+         'conn_layer': '', 'connection_ratio_adj': 0.15},
+    ]).to_csv(mirror / 'refilled_connection_type.csv', index=False)
+    # the pair tables the PAGES read their Refilled metric from, one per
+    # scope, each carrying that scope's own total (a page never borrows the
+    # other scope's number) — without them the metric is simply absent, and
+    # the law below requires it to be present and equal to the drawn weight
+    details = tmp_path / 'data_details' / 'type_level_refill'
+    details.mkdir(parents=True)
+    for name in ('refill_type_pairs.csv', 'refill_full_type_pairs.csv'):
+        pd.DataFrame([
+            {'type_pre': 'TS', 'type_post': 'TA', 'emitted_weight': 40,
+             'refill_weight': 6, 'refilled_total': 46},
+            {'type_pre': 'TS', 'type_post': 'TB', 'emitted_weight': 30,
+             'refill_weight': 0, 'refilled_total': 30},
+        ]).to_csv(details / name, index=False)
+    # the full round: one pair recovers mass, the other none (the dead-end)
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'emitted_weight': 40,
+         'refill_weight': 6, 'refilled_total': 46,
+         'refilled_connection_ratio': 0.115, 'pair_offchain_mass': 4},
+        {'type_pre': 'TS', 'type_post': 'TB', 'emitted_weight': 30,
+         'refill_weight': 0, 'refilled_total': 30,
+         'refilled_connection_ratio': 0.075, 'pair_offchain_mass': 0},
+    ]).to_csv(mirror / 'refilled_full_connection_type.csv', index=False)
+
+    _RecordingVisualizePath.calls = []
+    monkey = _ShimMonkey()
+    monkey.setattr(coana, 'VisualizePath', _RecordingVisualizePath)
+    try:
+        fc._build_refill_visualizations(str(mirror))
+    finally:
+        monkey.undo()
+
+    by_name = {}
+    for call in _RecordingVisualizePath.calls:
+        by_name[call['path_file'].iloc[0]['source']] = call
+    pages = {('asked' if c.get('adj_ratio_threshold') == 3 else 'full'): c
+             for c in _RecordingVisualizePath.calls}
+    assert len(pages) == 2, [c.get('adj_ratio_threshold') for c in
+                             _RecordingVisualizePath.calls]
+    for scope, call in pages.items():
+        drawn = _drawn_edges(call)
+        assert set(drawn) == {('TS', 'TA'), ('TS', 'TB')}, (
+            f'{scope}: a pair with no recovered mass vanished again '
+            f'({sorted(drawn)})')
+        assert drawn[('TS', 'TB')]['weight'] == 30, drawn[('TS', 'TB')]
+        assert drawn[('TS', 'TA')]['weight'] == 46, drawn[('TS', 'TA')]
+        # weight and ratio on ONE basis: TB's ratio is 30/denominator, and
+        # the delta (0) must never be the drawn weight beside it
+        assert drawn[('TS', 'TB')]['ratio'] == 0.075, drawn[('TS', 'TB')]
+        refilled = (call.get('pair_extra_metrics') or {}).get('refilled')
+        # presence first: `refilled in (None, {}) or all(...)` passed on an
+        # absent metric, so a page that dropped the metric entirely could
+        # never fail the law it was written to hold
+        assert refilled, f'{scope}: the page carries no Refilled metric at all'
+        assert set(refilled) == set(drawn), (
+            f'{scope}: metric pairs {sorted(refilled)} vs drawn '
+            f'{sorted(drawn)}')
+        assert all(abs(refilled[k] - drawn[k]['weight']) < 1e-9
+                   for k in drawn), (
+            f'{scope}: the metric and the drawn weight disagree')
+
+
+def test_the_refill_pages_render_once_per_folder(tmp_path):
+    """Both call sites are live: the round builds the pages where it writes
+    the mirror (2026-10-16), and the historical visualization-stage site
+    stayed — measured on three regimes (unbitten, budget-bitten,
+    edge-bitten), so EVERY run rendered and overwrote its refill pages twice.
+
+    The builder is now idempotent per folder. The visualization-stage site is
+    kept on purpose: it keys on the mirror CSVs being ON DISK, not on this run
+    having written them, so a folder that arrives at the visualization stage
+    with a mirror this round did not render (a refill-disabled re-run over an
+    existing folder) still gets its pages.
+    Wrong hypothesis: a second call that renders again, or a guard keyed so
+    broadly that a DIFFERENT folder is skipped too."""
+    fc = object.__new__(coana.FindNeuronConnection)
+    fc._warn_notes = []
+    fc.verbose_mode = 'quiet'
+    fc.showfig = False
+    fc.edgeN_limit = 500
+    fc.output_format = 'html'
+    fc.network_layout = 'hierarchical'
+    fc.separate_hemispheres = False
+    fc.skip_bodyId = True
+    fc.min_synapse_num = 3
+    fc.source_df = pd.DataFrame({'bodyId': ['S1'], 'type': ['TS']})
+    fc.target_df = pd.DataFrame(
+        {'bodyId': ['T1'], 'type': ['TT'], 'Checked': [True]})
+    fc._vprint = lambda msg="", level="full", end="\n", flush=False: None
+
+    def _mirror(dir_path):
+        dir_path.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([
+            {'type_pre': 'TS', 'type_post': 'TA', 'weight': 46,
+             'connection_ratio': 0.115, 'nt_type': ''},
+        ]).to_csv(dir_path / 'refilled_full_connection_type.csv', index=False)
+
+    _RecordingVisualizePath.calls = []
+    monkey = _ShimMonkey()
+    try:
+        monkey.setattr(coana, 'VisualizePath', _RecordingVisualizePath)
+        first = tmp_path / 'type_level_refill'
+        _mirror(first)
+        fc.allpath_folder = str(tmp_path)
+        fc._build_refill_visualizations(str(first))
+        n_after_first = len(_RecordingVisualizePath.calls)
+        fc._build_refill_visualizations(str(first))
+        n_after_second = len(_RecordingVisualizePath.calls)
+        other = tmp_path / 'slice2' / 'type_level_refill'
+        _mirror(other)
+        fc.allpath_folder = str(tmp_path / 'slice2')
+        fc._build_refill_visualizations(str(other))
+        n_after_other = len(_RecordingVisualizePath.calls)
+    finally:
+        monkey.undo()
+
+    assert n_after_first > 0, 'the first call rendered nothing at all'
+    assert n_after_second == n_after_first, (
+        f'the same folder rendered {n_after_second - n_after_first} more '
+        'objects on the second call — the double render is back')
+    assert n_after_other > n_after_second, (
+        'a DIFFERENT folder was skipped: the guard is not per folder')
+
+
+def _viz_fc(tmp_path, **over):
+    """A FindNeuronConnection with just the attributes the refill page
+    builder reads (the same shape the page laws above use)."""
+    fc = object.__new__(coana.FindNeuronConnection)
+    fc.allpath_folder = str(tmp_path)
+    fc.verbose_mode = 'quiet'
+    fc.showfig = False
+    fc.edgeN_limit = 500
+    fc.output_format = 'html'
+    fc.network_layout = 'hierarchical'
+    fc.separate_hemispheres = False
+    fc.skip_bodyId = True
+    fc.min_synapse_num = 3
+    fc.source_df = pd.DataFrame({'bodyId': ['S1'], 'type': ['TS']})
+    fc.target_df = pd.DataFrame(
+        {'bodyId': ['T1'], 'type': ['TT'], 'Checked': [True]})
+    fc._warn_notes = []
+    fc._vprint = lambda msg="", level="full", end="\n", flush=False: None
+    for key, value in over.items():
+        setattr(fc, key, value)
+    return fc
+
+
+def test_a_delta_only_full_mirror_writes_no_page_either(tmp_path):
+    """The asked scope refuses a delta-only mirror (law above); the FULL scope
+    must answer the same way (plan 2026-10-16 review).
+
+    `refilled_full_connection_type.csv` written before 2026-10-16 carried only
+    the recovered delta, and the builder RENAMED `refill_weight` to `weight`
+    and drew it — the page then showed recovered mass under the total's ratio,
+    exactly the mixed-scope defect the asked rule exists to stop. Two shapes
+    are therefore distinct: a mirror with a total (refilled_total, or the
+    delta-and-total `weight` the mirror grammar uses) draws; a mirror whose
+    only mass column is the delta writes no page and says so.
+
+    Wrong hypothesis: the pre-fix rename wrote refill_full_type_network.html
+    with weight 6 (the delta) for a pair whose ratio was the total's share."""
+    fc = _viz_fc(tmp_path)
+    mirror = tmp_path / 'type_level_refill'
+    mirror.mkdir()
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'emitted_weight': 40,
+         'refill_weight': 6},
+    ]).to_csv(mirror / 'refilled_full_connection_type.csv', index=False)
+
+    _RecordingVisualizePath.calls = []
+    monkey = _ShimMonkey()
+    try:
+        monkey.setattr(coana, 'VisualizePath', _RecordingVisualizePath)
+        fc._build_refill_visualizations(str(mirror))
+    finally:
+        monkey.undo()
+
+    assert not _RecordingVisualizePath.calls, (
+        'the delta-only full mirror was drawn again — a page whose weight is '
+        'the recovered mass under the total\'s ratio')
+    assert not (mirror / 'refill_full_type_network.html').exists()
+    assert any('synapse >= 1 scope carries' in n for n in fc._warn_notes), (
+        fc._warn_notes)
+
+
+def test_a_crash_mid_render_leaves_the_folder_unmarked(tmp_path):
+    """The idempotence mark is made only when the render RETURNS (plan
+    2026-10-16 review).
+
+    The mark used to happen before any page was drawn, so a raise inside the
+    render (a bad mirror frame, a vispath failure) was swallowed by the
+    visualization stage's advisory `except` and the second site skipped the
+    folder as 'already rendered' — the run then shipped a refill folder with
+    CSVs and no pages at all, and the reader had no way to get them short of a
+    full re-run.
+
+    Wrong hypothesis: marking up front, where the retry below renders nothing
+    and the pages stay missing."""
+    fc = _viz_fc(tmp_path)
+    mirror = tmp_path / 'type_level_refill'
+    mirror.mkdir()
+    pd.DataFrame([
+        {'type_pre': 'TS', 'type_post': 'TA', 'weight': 46,
+         'connection_ratio': 0.115, 'nt_type': ''},
+    ]).to_csv(mirror / 'refilled_connection_type.csv', index=False)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError('forced render failure')
+
+    _RecordingVisualizePath.calls = []
+    monkey = _ShimMonkey()
+    try:
+        monkey.setattr(coana, 'VisualizePath', _RecordingVisualizePath)
+        fc._viz_edge_df = _boom
+        with pytest.raises(RuntimeError):
+            fc._build_refill_visualizations(str(mirror))
+        assert not _RecordingVisualizePath.calls
+        del fc._viz_edge_df          # the retry is the second call site
+        fc._build_refill_visualizations(str(mirror))
+    finally:
+        monkey.undo()
+
+    assert _RecordingVisualizePath.calls, (
+        'the retry after a crash rendered nothing — the folder is still '
+        'marked as built even though it has no pages')
+
+
+# ---------------------------------------------------------------------------
+# 8. The transmitter vocabulary the refill mirror publishes
+# ---------------------------------------------------------------------------
+
+def _details(run_dir, **files):
+    dd = Path(run_dir) / 'data_details'
+    dd.mkdir(parents=True, exist_ok=True)
+    for name, frame in files.items():
+        frame.to_csv(dd / f'{name}.csv', index=False)
+    return dd
+
+
+def test_the_refill_mirror_carries_the_transmitter_the_run_itself_shows(
+        tmp_path):
+    """`refilled_*_connection_type.csv`'s `nt_type` must be the SAME vocabulary
+    the run's own network page colours by.
+
+    A Network-tab run writes no `conn_mat_type_nt.csv` at all, so the matrix was
+    the only source and the mirror's transmitter column came out EMPTY on every
+    row — while `data_details/connection_type.csv`, the file the page reads,
+    carried GLUT/ACH/SER for 130 of the run's 148 pairs. The refill page
+    therefore had no transmitter to show or colour by (user report 2026-10-17).
+    """
+    from type_level_refill import _pair_nt_lookup
+
+    run = tmp_path / 'find-network_run'
+    _details(run, connection_type=pd.DataFrame({
+        'type_pre': ['A', 'B', 'C'], 'type_post': ['B', 'C', 'D'],
+        'weight': [10, 20, 30],
+        'nt_type': ['GLUT', None, 'ACH'],
+    }))
+    pair_nt, type_nt = _pair_nt_lookup(run)
+    assert pair_nt == {('A', 'B'): 'GLUT', ('B', 'C'): '',
+                       ('C', 'D'): 'ACH'}, pair_nt
+    # a pair the run LISTS with no transmitter stays unannotated: the run's own
+    # page draws it blank, and the refill page beside it cannot call it 'GLUT'
+    assert pair_nt[('B', 'C')] == '', pair_nt
+    # the per-type vocabulary is only for pairs NO source mentions at all
+    assert type_nt == {'A': 'GLUT', 'C': 'ACH'}, type_nt
+    # e.g. a pair the refill re-valued from a bodyId edge the type table lacks
+    assert pair_nt.get(('D', 'E')) is None
+    assert ('D' not in pair_nt) and type_nt.get('A') == 'GLUT'
+
+
+def test_the_nt_matrix_still_wins_where_both_sources_speak(tmp_path):
+    """Both sources merge, matrix first: the pathfinding tools have always
+    published `conn_mat_type_nt.csv`, and its per-pair cell is the curated
+    value. The edge table may only ADD pairs the matrix never listed."""
+    from type_level_refill import _pair_nt_lookup
+
+    _details(tmp_path,
+             conn_mat_type_nt=pd.DataFrame({
+                 'type_pre': ['A'], 'B': ['GLUT'], 'C': ['SER']}),
+             connection_type=pd.DataFrame({
+                 'type_pre': ['A', 'A', 'B'], 'type_post': ['B', 'C', 'D'],
+                 'weight': [1, 2, 3],
+                 'nt_type': ['ACH', 'ACH', 'SER']}))
+    pair_nt, _type_nt = _pair_nt_lookup(tmp_path)
+    assert pair_nt[('A', 'B')] == 'GLUT', 'the matrix must win on its own cells'
+    assert pair_nt[('A', 'C')] == 'SER', pair_nt
+    assert pair_nt[('B', 'D')] == 'SER', (
+        f'the edge table must still fill a pair the matrix never listed: {pair_nt}')
+
+
+def test_no_transmitter_source_means_no_claim(tmp_path):
+    """With neither file the maps stay empty, so the writers keep their
+    historical empty cell rather than inventing a label."""
+    from type_level_refill import _pair_nt_lookup
+
+    assert _pair_nt_lookup(tmp_path) == ({}, {})

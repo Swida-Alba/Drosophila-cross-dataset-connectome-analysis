@@ -1762,9 +1762,30 @@ def _generate_dataset_coverage_callout(analyzer, dataset_names,
                if coverage.get(ds, {}).get('status') != 'ok']
     if not no_data:
         return ''
+    # A REFUSED unit and an empty result both read as "no data" here, but only
+    # one of them has a run log to read: the delegated tool raises before its
+    # folder exists, so telling the reader to open `run_log.txt` sends them to a
+    # file that was never written (measured on the 2026-10-17 refusal run, whose
+    # dataset_data/<ds>/ holds only APPLIED_THRESHOLDS.md + threshold_meta.json).
+    refused = {str(r.get('dataset'))
+               for r in (getattr(analyzer, '_empty_query_refusals', None)
+                         or [])}
+
+    def _cause(ds):
+        ds = str(ds)
+        if ds not in refused:
+            return ''
+        return (' — its query <strong>resolved to no neuron</strong>, so the '
+                'tool refused that unit and wrote no run folder and no run log '
+                '(see the refusal note above). This is not a search that found '
+                'nothing.')
+
     items = ', '.join(
         f"<strong>{html.escape(str(nickname_map.get(ds, ds)))}</strong> "
-        f"({html.escape(str(ds))})" for ds in no_data)
+        f"({html.escape(str(ds))}){_cause(ds)}" for ds in no_data)
+    log_hint = '' if all(str(ds) in refused for ds in no_data) else (
+        ' Check <code>dataset_data/&lt;dataset&gt;/run_log.txt</code>'
+        ' and the run manifest\'s <code>dataset_coverage</code> block.')
     return f"""
         <div class="section" style="border-left:6px solid #b91c1c; background:#fef2f2; padding:12px 16px; margin:12px 0;">
             <strong style="color:#b91c1c;">⚠️ Dataset coverage warning</strong>
@@ -1772,8 +1793,7 @@ def _generate_dataset_coverage_callout(analyzer, dataset_names,
                 {items} produced <strong>no data</strong> in this run.
                 Every analysis below ran on the remaining datasets only —
                 headers and threshold provenance may still list the missing
-                dataset(s). Check <code>dataset_data/&lt;dataset&gt;/run_log.txt</code>
-                and the run manifest's <code>dataset_coverage</code> block.
+                dataset(s).{log_hint}
             </div>
         </div>
 """

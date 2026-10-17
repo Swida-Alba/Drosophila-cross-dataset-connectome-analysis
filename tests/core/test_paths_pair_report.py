@@ -488,6 +488,54 @@ def test_vispath_links_in_payload_and_pane(tmp_path):
     assert "item.href" in text and "vispath network" in text
 
 
+def test_refill_mirror_links_follow_the_scope(tmp_path):
+    """F7.2: each Refill SCOPE links its OWN visualization pages.
+
+    The complete layout used to name the asked pages for BOTH scopes, so the
+    synapse >= 1 view pointed at a picture of a different mass — the same
+    one-key-two-meanings shape the audit closed elsewhere. The asked pair is
+    kept in `refill`/`refill_complete`, and `refill_full`/`complete_full`
+    must carry `refill_full_type_*` instead."""
+    run = tmp_path / "find-paths-complete_FAFB_A_to_B_L1w3_20260101_000000"
+    _write_csv(run, [_row("A->M->B", 10)])
+    mirror = run / "type_level_refill"
+    details = run / "data_details" / "type_level_refill"
+    details.mkdir(parents=True)
+    mirror.mkdir()
+    for name in ("refill_type_network.html", "refill_type_heatmap.html",
+                 "refill_bodyId_network.html", "refill_full_type_network.html",
+                 "refill_full_type_heatmap.html"):
+        (mirror / name).write_text("<html></html>", encoding="utf-8")
+    (mirror / "refill_full_paths_type.csv").write_text(
+        "path,weights,ratios,min_weight,min_ratio,length,nt_types,coverage,"
+        'emitted_weights,refill_weights\n'
+        'A->M->B,"[12, 8]","[0.1, 0.2]",8,0.1,2,"","[1/1, 1/1, 1/1]",'
+        '"[10, 6]","[2, 2]"\n', encoding="utf-8")
+    # the CARRYING table too: the full scope has two views, and the links are
+    # asserted on both (a fixture with one of them would silently narrow the
+    # law to the complete-at-full view)
+    (mirror / "refill_full_carrying_paths_type.csv").write_text(
+        "path,weights,ratios,min_weight,min_ratio,length,nt_types,coverage,"
+        'emitted_weights,total_weights\n'
+        'A->M->B,"[2, 2]","[0.02, 0.04]",2,0.02,2,"","[1/1, 1/1, 1/1]",'
+        '"[10, 6]","[12, 8]"\n', encoding="utf-8")
+    (details / "refill_full_type_pairs.csv").write_text(
+        "type_pre,type_post,refilled_connection_ratio\nA,M,0.1\n",
+        encoding="utf-8")
+
+    payload = _payload(generate_paths_pair_report(run, log=None).read_text(
+        encoding="utf-8"))
+    hrefs = {k: [v["href"] for v in (payload.get(k) or {}).get("vispath", [])]
+             for k in ("refill_full", "complete_full")}
+    assert hrefs["refill_full"], "no full-scope dataset built"
+    for key in ("refill_full", "complete_full"):
+        links = hrefs[key]
+        assert any("refill_full_type_network.html" in h for h in links), \
+            f"{key} links {links}"
+        assert not any(h.endswith("refill_type_network.html")
+                       for h in links), f"{key} links the ASKED pages: {links}"
+
+
 def test_multi_select_template_and_explorer(single_run):
     """Round 8 item 3: source/target selects are multiple; the explorer
     renders the cross product of the selections."""
@@ -740,19 +788,32 @@ def test_global_pair_matrix_and_network_cross_unit_join(cross_run):
         "dsA/minsyn_3": 2, "dsA/minsyn_5_applied_floor": 1, "dsB/minsyn_3": 2}
     assert row["cons"] == 3 and row["total"] == 5
     assert glob["pair_units_hist"] == {"3": 1}
-    # 2026-10-07: the network carries ONE representative route per pair
-    # per unit — the SHORTEST, then strongest (max min_weight): dsA3 and
-    # dsB pick S->X->T, dsA5floor picks S->Y->T; S->Z->T is never drawn
-    edges = {(e["f"], e["t"]): e["c"] for e in glob["network"]["edges"]}
-    assert edges[("S", "X")] == 2 and edges[("X", "T")] == 2
-    assert edges[("S", "Y")] == 1 and edges[("Y", "T")] == 1
-    assert ("S", "Z") not in edges
-    assert glob["edge_stats"] == {"total": 4, "shown": 4}
+    # F-EX-009: the drawing carries the run's WHOLE emitted edge set, so
+    # S->Z->T is present even though no unit picked it as its
+    # representative route (shortest, then strongest: dsA3 and dsB choose
+    # S->X->T, dsA5floor only has S->Y->T). `c` = chains using the edge,
+    # `w` = synapse mass over those chains, `rep` marks the subset the
+    # "Representative routes" toggle draws.
+    edges = {(e["f"], e["t"]): e for e in glob["network"]["edges"]}
+    assert set(edges) == {
+        ("S", "X"), ("X", "T"), ("S", "Y"), ("Y", "T"), ("S", "Z"), ("Z", "T")}
+    assert edges[("S", "X")]["w"] == 22 and edges[("S", "X")]["c"] == 2
+    assert edges[("X", "T")]["w"] == 22 and edges[("X", "T")]["c"] == 2
+    # 8 (dsA3) + 8 (dsA5floor)
+    assert edges[("S", "Y")]["w"] == 16 and edges[("S", "Y")]["c"] == 2
+    assert edges[("S", "Z")]["w"] == 5 and edges[("S", "Z")]["c"] == 1
+    assert {k for k, e in edges.items() if e["rep"]} == {
+        ("S", "X"), ("X", "T"), ("S", "Y"), ("Y", "T")}
+    assert glob["edge_stats"] == {"total": 6, "shown": 6}
+    assert glob["node_stats"] == {"total": 5, "shown": 5}
     by_id = {n["id"]: n for n in glob["network"]["nodes"]}
     assert by_id["S"]["cls"] == "source" and by_id["T"]["cls"] == "target"
     # each intermediate is touched by exactly one pair -> unique (gray)
     assert by_id["X"]["cls"] == "unique"
     assert by_id["X"]["col"] == 1
+    # Z is an intermediate in a NON-representative chain; whole-run roles
+    # keep it in the relay column instead of the source column
+    assert by_id["Z"]["col"] == 1 and by_id["Z"]["cls"] == "unique"
 
 
 def test_global_node_role_precedence(tmp_path):
@@ -1038,7 +1099,7 @@ def test_overview_query_coverage_card_and_refill_card(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Percent convention + COLUMN SPEC + Refill tab (plan
+# Percent convention + COLUMN SPEC + Refill view (plan
 # plan-pair-report-refill-tab-and-per-hop-ratios, 2026-10-05)
 # ---------------------------------------------------------------------------
 def test_percent_formatter_pins():
@@ -1097,6 +1158,357 @@ def test_per_hop_adjusted_list_and_report_percent_forms(tmp_path):
     assert by_path["S8->M8a->T8"]["pr"] == 0.4
 
 
+def test_chain_adj_divides_by_the_conditioned_dataset_incoming(tmp_path):
+    """F-EX-003 D3a: a CHAIN row's Adj. ratio divides that chain's realized
+    hop mass by the conditioned dataset-wide incoming
+    (data_details/type_incoming_conditioned.csv). It must NOT divide by the
+    emitted-cone total (type_incoming_emitted.csv) — that file sums this
+    run's own emitted pairs, so dividing by it rendered 476 as 37.10% where
+    the dataset denominator gives 1.22%. At Min Synapse Count 1 the
+    conditioned total IS the all-inputs total, so the adjusted list equals
+    the plain Ratios list (gate L1)."""
+    from paths_pair_report import (
+        _load_type_incoming_conditioned, generate_paths_pair_report,
+    )
+    run = (tmp_path /
+           "find-paths-complete_MCNS_aMe12_to_PPL101_L1w1_20260101_000000")
+    rows = [_row("aMe12->KCg-d->PPL101", 476, weights="[1336, 476]")]
+    rows[0]["ratios"] = "[0.011793993538021505, 0.012162403863351816]"
+    rows[0]["min_ratio"] = 0.011793993538021505
+    _write_csv(run, rows)
+    dd = run / "data_details"
+    dd.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"type_pre": "aMe12", "type_post": "KCg-d", "weight": 1336,
+         "nt_type": "acetylcholine",
+         "connection_ratio": 0.011793993538021505, "conn_layer": "0->1",
+         "connection_ratio_adj": 0.011793993538021505},
+        {"type_pre": "KCg-d", "type_post": "PPL101", "weight": 495,
+         "nt_type": "acetylcholine",
+         "connection_ratio": 0.012647877967141069, "conn_layer": "1->2",
+         "connection_ratio_adj": 0.012647877967141069},
+    ]).to_csv(dd / "connection_type.csv", index=False)
+    pd.DataFrame([
+        {"type": "KCg-d", "incoming": 113278.0, "threshold": 1},
+        {"type": "PPL101", "incoming": 39137.0, "threshold": 1},
+    ]).to_csv(dd / "type_incoming_conditioned.csv", index=False)
+    # The emitted cone is present and must change nothing.
+    pd.DataFrame([
+        {"type": "KCg-d", "incoming": 1359.0},
+        {"type": "PPL101", "incoming": 1283.0},
+    ]).to_csv(dd / "type_incoming_emitted.csv", index=False)
+
+    assert _load_type_incoming_conditioned(run) == {
+        "KCg-d": 113278.0, "PPL101": 39137.0}
+    payload = _payload(
+        generate_paths_pair_report(run, log=None).read_text(encoding="utf-8"))
+    r = [x for g in payload["pairs"][0]["table"]["groups"]
+         for x in g["rows"]][0]
+    # 1336/113278 and 476/39137 — the plain shares, because N=1 conditions
+    # nothing; the cone would have given [98.31%, 37.10%].
+    assert r["pradj"] == r["ratios"] == "[1.18%, 1.22%]"
+
+
+def test_carrying_view_payload_carries_the_sub_threshold_subject(tmp_path):
+    """F-EX-002(ii): the carrying tables state their subject, and the
+    report must render that mass under a label that says so, with the
+    emitted/total context beside it. The payload rows carry `emitted` +
+    `total` only when the table has the split, so the Pair Explorer's own
+    tables stay unchanged."""
+    from paths_pair_report import generate_paths_pair_report
+    run = (tmp_path /
+           "find-paths-complete_MCNS_aMe12_to_PPL101_L1w5_20260101_000000")
+    _write_csv(run, [_row("aMe12->KCg-d->PPL101", 476,
+                          weights="[1336, 476]")])
+    (run / "data_details").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"type_pre": "aMe12", "type_post": "KCg-d", "weight": 1166,
+                   "nt_type": "ACH", "connection_ratio": 0.0103,
+                   "conn_layer": "0->1", "connection_ratio_adj": 0.0213},
+                  {"type_pre": "KCg-d", "type_post": "PPL101", "weight": 117,
+                   "nt_type": "ACH", "connection_ratio": 0.003,
+                   "conn_layer": "1->2", "connection_ratio_adj": 0.0042}]
+                 ).to_csv(run / "data_details" / "connection_type.csv",
+                          index=False)
+    carrying = run / "type_level_refill"
+    carrying.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{
+        "path": "aMe12->KCg-d->PPL101",
+        "weights": "[170, 359]",            # the SUB-THRESHOLD band
+        "ratios": "[0.0015, 0.002]",
+        "min_weight": 170.0, "min_ratio": 0.0015, "length": 2,
+        "nt_types": "", "coverage": "[6/6, 18/206, 2/2]",
+        "emitted_weights": "[1166, 117]",
+        "total_weights": "[1336, 476]",
+    }]).to_csv(carrying / "refill_full_carrying_paths_type.csv",
+               index=False)
+
+    payload = _payload(
+        generate_paths_pair_report(run, log=None).read_text(encoding="utf-8"))
+    assert payload["refill_full"], "carrying view not mounted"
+    rows = [r for g in payload["refill_full"]["pairs"][0]["table"]["groups"]
+            for r in g["rows"]]
+    assert rows[0]["weights"] == "[170, 359]"        # subject, not total
+    assert rows[0]["emitted"] == "[1166, 117]"
+    assert rows[0]["total"] == "[1336, 476]"
+    # the MAIN explorer's rows never grow these keys
+    main = [r for g in payload["pairs"][0]["table"]["groups"]
+            for r in g["rows"]]
+    assert "total" not in main[0] or main[0]["total"] == ""
+    # and the JS labels the column for what it holds (decision 2)
+    html = (run / "path_report.html").read_text(encoding="utf-8")
+    assert "Weights — sub-threshold (synapse &gt;= 1)" in html or \
+        "Weights — sub-threshold (synapse >= 1)" in html
+    assert "Total (emitted + sub-threshold)" in html
+
+
+def test_adj_header_names_the_denominators_own_tier(tmp_path):
+    """F-EX-012's header sibling: the Adj column's label must carry the
+    threshold recorded INSIDE type_incoming_conditioned.csv. The run's
+    applied_threshold is a different number (the emitted-set floor) — on the
+    bitten FAFB run it read tier 4 over a denominator conditioned at 3."""
+    from paths_pair_report import (
+        _conditioned_threshold, generate_paths_pair_report,
+    )
+    run = (tmp_path /
+           "find-paths-complete_FAFB_R8_to_LNv_L3w4_20260101_000000")
+    _write_csv(run, [_row("R8->optic->LNva", 91, weights="[382, 91]")])
+    dd = run / "data_details"
+    dd.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"type": "optic", "incoming": 54843.0, "threshold": 3},
+                  {"type": "LNva", "incoming": 27944.0, "threshold": 3}]
+                 ).to_csv(dd / "type_incoming_conditioned.csv", index=False)
+    (run / "parameters.txt").write_text(
+        "min synapse number:            3\n"
+        "weight basis:                  synapse\n"
+        "requested_threshold:           3\n"
+        "applied_threshold:             4\n"
+        "applied_threshold_source:      edge_budget\n", encoding="utf-8")
+    assert _conditioned_threshold(run) == "3"
+    html = generate_paths_pair_report(run, log=None).read_text(
+        encoding="utf-8")
+    payload = _payload(html)
+    assert payload["run"]["meta"]["adj_tier"] == "3"
+    assert payload["run"]["meta"]["applied_threshold"] == "4"
+    # the header is built from adj_tier, and no site prefers the applied cut
+    js = html[html.index("function adjHeader"):]
+    assert "adjHeader(RUN.adj_tier || RUN.min_synapse)" in js
+    assert "adjHeader(RUN.applied" not in js
+
+
+def test_pair_level_ratio_quantizes_like_the_exports(tmp_path):
+    """The same pair's ratio rendered 0.001329 in one tab's payload and
+    0.0013286659682653 in another's: export tables publish ratios at 6
+    decimals, so the loader quantizes to the same precision."""
+    from paths_pair_report import _load_pair_level_ratios
+    dd = tmp_path / "data_details"
+    dd.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"type_pre": "aMe12", "type_post": "KCg-s1",
+                   "weight": 164, "nt_type": "ACH",
+                   "connection_ratio": 0.0013286659682653,
+                   "conn_layer": "0->1"}]
+                 ).to_csv(dd / "connection_type.csv", index=False)
+    got, source = _load_pair_level_ratios(tmp_path)
+    assert source == "plain"
+    assert got[("aMe12", "KCg-s1")] == 0.001329
+
+
+def test_zero_path_run_gets_an_empty_state_report(tmp_path):
+    """F-EX-010: a run that wrote no paths table used to leave a folder
+    whose only document pointed at artifacts that never existed. It now
+    gets path_report.html stating the threshold that produced nothing, what
+    was enrolled, and which sidecar folders are absent."""
+    from paths_pair_report import (
+        generate_paths_pair_report, is_pathfinding_run,
+    )
+    run = (tmp_path / "find-paths-complete_MCNS_aMe12_etc_to_PPL101_etc"
+           "_L1r0_01_20260101_000000")
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source name:                   aMe12_etc\n"
+        "target name:                   PPL101_etc\n"
+        "min synapse number:            1\n"
+        "min connection ratio:          0.01\n"
+        "weight basis:                  connection_ratio (bodyId)\n"
+        "max interlayer:                1\n"
+        "dataset:                       male-cns:v1.0\n"
+        "filter by:                     bodyId\n"
+        "run date:                      20260101_000000\n", encoding="utf-8")
+    pd.DataFrame([{"bodyId": 1, "type": "aMe12", "isInPath": False},
+                  {"bodyId": 2, "type": "aMe26", "isInPath": False}]
+                 ).to_csv(run / "source_neurons.csv", index=False)
+    pd.DataFrame([{"bodyId": 3, "type": "PPL101", "Checked": False}]
+                 ).to_csv(run / "target_neurons.csv", index=False)
+    assert is_pathfinding_run(run) is True
+
+    report = generate_paths_pair_report(run, log=None)
+    assert report.name == REPORT_NAME
+    text = report.read_text(encoding="utf-8")
+    assert "This run found no paths" in text
+    # the threshold that produced nothing, in the run's own basis
+    assert "connection ratio ≥" in text and "0.01" in text
+    assert "male-cns:v1.0" in text and "aMe12_etc → PPL101_etc" in text
+    # enrollment survives the early exit and is counted
+    assert "2 bodyIds / 2 type labels" in text
+    assert "1 bodyIds / 1 type labels" in text
+    # what is NOT here is named, and nothing is promised as a link
+    for absent in ("data_details/", "paths_pair_breakdown/",
+                   "route_scope_paths/", "type_level_refill/"):
+        assert f'<span class="code">{absent}</span>' in text, absent
+    assert "not reached" in text        # no StrongestFirst tau exists
+    # the empty state never links a file the folder does not hold
+    assert 'href="data_details/' not in text
+    # a ratio run's Min Synapse 1 is the forced FLOOR, not a second gate:
+    # the AND clause appears only when the run really combined thresholds
+    assert 'AND Min Synapse Count' not in text
+    (run / 'parameters.txt').write_text(
+        (run / 'parameters.txt').read_text(encoding='utf-8')
+        + 'threshold combination:       and\n', encoding='utf-8')
+    text2 = generate_paths_pair_report(run, log=None).read_text(
+        encoding='utf-8')
+    assert 'connection ratio ≥ 0.01 AND Min Synapse Count ≥ 1' in text2
+
+    # negative control: a non-pathfinding folder still raises
+    other = tmp_path / "plot-3d_something_20260101_000000"
+    other.mkdir()
+    (other / "parameters.txt").write_text("dataset: x\n", encoding="utf-8")
+    assert is_pathfinding_run(other) is False
+    with pytest.raises(FileNotFoundError):
+        generate_paths_pair_report(other, log=None)
+
+
+def test_lane_only_run_is_never_described_as_finding_nothing(tmp_path):
+    """Gate G8 (D2): `corridor_mode='fast'` skips the whole Complete
+    pipeline, so the folder legitimately has no allpaths table while its
+    lane carries the deliverable. The empty state used to open with "Path
+    enumeration stopped before any path was written" for such a run — a
+    false statement about a run that produced paths. Measured on a live
+    fast-only run (7 validated walks) before the fix."""
+    from paths_pair_report import generate_paths_pair_report
+    run = (tmp_path / "find-paths-complete_MCNS_aMe12_to_PPL101_L2w1"
+           "_20260101_000000")
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "min synapse number:            1\n"
+        "weight basis:                  synapse\n"
+        "run mode:                      fast\n"
+        "max interlayer:                2\n"
+        "dataset:                       male-cns:v1.0\n"
+        "source name:                   aMe12\n"
+        "target name:                   PPL101\n", encoding="utf-8")
+    lane = run / "route_scope_paths"
+    lane.mkdir()
+    (lane / "route_provenance.json").write_text(json.dumps({
+        "status": "complete", "asked": 1, "bound": 3, "run_mode": "fast",
+        "corridor_mode": "fast", "trigger": "fast-only (standalone)",
+        "validated_walks": 7, "scope_pairs": 6, "weight_basis": "synapse"}),
+        encoding="utf-8")
+
+    text = generate_paths_pair_report(run, log=None).read_text(
+        encoding="utf-8")
+    assert "Complete mode produced no paths" in text
+    assert "Path enumeration stopped before any path was written" not in text
+    assert ">This run found no paths<" not in text
+    assert "7 validated walks" in text
+    assert "Fast-lane-only run" in text
+    # the lane's own folder is NOT in the "not written" list
+    assert '<span class="code">route_scope_paths/</span>' not in text
+    # ... but a genuinely missing sidecar still is
+    assert '<span class="code">paths_pair_breakdown/</span>' in text
+
+    # negative control: the same folder WITHOUT a completed lane keeps the
+    # honest zero-path wording
+    (lane / "route_provenance.json").write_text(json.dumps(
+        {"status": "refused", "reason": "no typed edges at asked 1"}),
+        encoding="utf-8")
+    text2 = generate_paths_pair_report(run, log=None).read_text(
+        encoding="utf-8")
+    assert "This run found no paths" in text2
+    assert "Complete mode produced no paths" not in text2
+
+
+def test_report_javascript_parses_and_edge_hover_counts_paths(tmp_path,
+                                                              single_run):
+    """The report's whole UI lives in one inline <script> string, so a JS
+    syntax error silently kills EVERY tab (measured 2026-10-15: one missing
+    `+` in a column title left #page-content empty in a real browser, with
+    the Python suite fully green). Node parses the emitted script when it is
+    on PATH. The edge hover is pinned too: the all-edges view feeds synapse
+    MASS into the width channel, so the hover must read the preserved
+    traversal count (`t_count`), never the mass it is scaling."""
+    import shutil
+    import subprocess
+
+    from paths_pair_report import generate_paths_pair_report
+    report = generate_paths_pair_report(single_run, log=None)
+    html = report.read_text(encoding="utf-8")
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
+    assert scripts, "no inline report script"
+    js = scripts[-1]
+    probe = tmp_path / "report.js"
+    probe.write_text(js, encoding="utf-8")
+    node = shutil.which("node")
+    if node:
+        proc = subprocess.run([node, "--check", str(probe)],
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr[:2000]
+    # the mass-scaled view keeps the chain count for the hover, and BOTH
+    # renderers (vis-network and the static-SVG fallback) read it
+    assert "t_count: e.c" in js
+    assert js.count("(e.t_count != null ? e.t_count : e.c) + ' paths'") == 2
+    assert "title: e.c + ' paths'" not in js
+    assert "title.textContent = e.c + ' paths'" not in js
+
+
+def test_mode_bar_and_selection_structural_pins():
+    """G1/G2 as source pins (the JS is one string to every other test).
+
+    G1 (D1): the bar used to be built while `scope` was still 'asked', so a
+    full-only run filtered out its own view buttons and rendered a single
+    already-active scope chip — a switch with one option hiding a real,
+    unreachable view. The scope must be resolved BEFORE the view filter, and
+    a row renders only with >= 2 destinations.
+    G2 (F6): mount() used to jump to the biggest pair on every re-mount, so
+    switching the refill view collapsed a multi-selection to one pair.
+    """
+    import inspect
+    import paths_pair_report as M
+    js = inspect.getsource(M)
+    js = js[js.index("function makeModeSwitch(spec) {"):]
+    js = js[:js.index("var RefillModes = makeModeSwitch({")]
+    init = js[:js.index("      set: function(mode)")]
+
+    # scope resolution precedes the inScope() view filter
+    assert init.index("if (this.scope === 'asked' && !hasAsked") \
+        < init.index("function inScope(key)"), \
+        "the bar filters views before it resolves the scope (D1)"
+    # one row per choice, each gated on having >= 2 destinations
+    assert "if (hasAsked && hasFull) {" in init
+    assert "if (views.length > 1) {" in init
+    # ... and the single-destination case states the scope as text instead
+    assert "the only scope this run produced" in init
+    assert "the only view this scope produced" in init
+    # the old shape (a lone scope button + an unconditional view loop) is gone
+    assert "scopeBtn(" not in init
+    set_tail = js[js.index("      set: function(mode)"):]
+    # exactly one active chip per row (F2: two lit chips read as two views)
+    assert "button[data-mode]').forEach" in set_tail
+    assert "button[data-scope]').forEach" in set_tail
+    assert "(b.dataset.mode === mode)\n            || (b.dataset.scope" \
+        not in set_tail
+
+    # G2 — selection survives a re-mount; the biggest pair is only a
+    # first-mount fallback.
+    shell = inspect.getsource(M)
+    mount = shell[shell.index("    mount: function() {"):]
+    mount = mount[:mount.index("    rememberSel:")]
+    assert "if (this.sel && this.restoreSel()) { return; }" in mount
+    assert mount.index("if (this.sel && this.restoreSel())") \
+        < mount.index("var biggest = cfg.data.reduce"), \
+        "mount() still jumps to the biggest pair over a live selection"
+    tail = shell[shell.index("    setPair: function(pairId)"):]
+    assert "this.rememberSel();" in tail[:tail.index("    selectPair")]
+
+
 def test_column_spec_header_cell_alignment_source_pins():
     """The renderer builds headers AND cells from one COLUMN SPEC —
     pinned structurally (the 2026-10-05 screenshot mismatch class)."""
@@ -1119,7 +1531,7 @@ def test_column_spec_header_cell_alignment_source_pins():
 
 
 def test_refill_tab_present_with_hint_state(tmp_path):
-    """The Refill tab is a standalone page: always present, hint state
+    """The Refill view is a standalone page: always present, hint state
     when no records. With records it mounts a SECOND Pair Explorer
     (RefillExplorer) over the refilled type-level paths — selects →
     per-pair pane with the same capped tables — while the per-connection
@@ -1132,7 +1544,13 @@ def test_refill_tab_present_with_hint_state(tmp_path):
     report = generate_paths_pair_report(run, log=None)
     text = report.read_text(encoding="utf-8")
     assert 'id="tpl-refill"' in text
-    assert "TAB.show('refill')" in text
+    # Option B (Q1): Refill is a destination INSIDE Analysis, not a top-level
+    # button. The section template still exists, the router reaches it through
+    # the mode x view bar, and the old #tab=refill address still resolves.
+    assert "TAB.show('refill')" not in text, "a top-level Refill button is back"
+    assert 'id="analysis-bar"' in text
+    assert "'complete|refill'" in text
+    assert "refill: ['complete', 'refill']" in text
     assert "No refill records — the budget did not bite" in text
 
     # legacy layout: records WITHOUT the refilled paths table
@@ -1201,13 +1619,14 @@ def test_refill_tab_present_with_hint_state(tmp_path):
     assert 'id="refill-pane"' in text
     assert 'id="refill-mode-bar"' in text
     assert "var RefillExplorer = makeExplorer(REFILL_CFG);" in text
-    assert "var RefillModes = {" in text
+    assert "var RefillModes = makeModeSwitch({" in text
     assert "Select refilled pairs" in text
     assert 'href="type_level_refill/refill_paths_type.csv"' in text
     assert ('href="type_level_refill/complete_at_asked_paths_type.csv"'
             in text)
-    # D2: complete-at-asked is the DEFAULT mode
-    assert "this.sets.complete ? 'complete'" in text
+    # D2: complete-at-asked is the DEFAULT mode (now the switch machine's
+    # per-scope preference list, not a hardcoded `this.sets.complete ?`)
+    assert "defaults: {asked: ['complete', 'refill']," in text
     # the per-connection pair table stays an exported file only
     assert "<th>Refilled ratio (adj)</th>" not in text
     assert "<th>Split</th>" not in text
@@ -1337,4 +1756,130 @@ def test_ratio_basis_labels_and_adj_column_removed(tmp_path):
     assert "var RATIO_BASIS" in text
     assert "ratio_basis: RATIO_BASIS" in text
     assert "!RUN.ratio_basis && !RUN.suppress_adj && hasAdj" in text    # Adj removed
-    assert "RUN.ratio_basis\n            ? (RUN.min_synapse || 1)" in text
+    assert "RUN.ratio_basis ? (RUN.min_synapse || 1)" in text
+    # G7 (plan-corridor-refill-and-mode-tabs): a run whose tier is unknown
+    # prints WORDS, never "synapse ≥ undefined"
+    assert "'Weights (admitted synapse mass)'" in text
+    assert "\u2265 ' + undefined" not in text
+
+
+def test_pane_row_mapper_carries_every_field_the_cells_read():
+    """The pane rebuilds its rows through ONE mapper (`bucket.push({...})` in
+    `renderCappedTable`), and the 2026-10-15 defect was a field the cells
+    read that the mapper never copied: the Universe column rendered `—` on
+    every row (payload fine), the carrying view's Emitted list vanished, and
+    `#` fell back to the display rank — while the payload-level tests stayed
+    green, because the loss happened in the RENDER.
+
+    The law: every `row.<name>` read inside the COLUMN SPEC must be a key of
+    that mapper (or one of the two fields the renderer derives itself). A new
+    column therefore cannot ship without its mapper entry."""
+    import inspect
+    import re
+
+    import paths_pair_report as ppr
+    src = inspect.getsource(ppr)
+    cols = src[src.index('var COLS = ['):src.index('].filter(Boolean);')]
+    reads = set(re.findall(r'\brow\.([a-z_][a-z0-9_]*)', cols))
+    assert reads, 'the COLUMN SPEC block moved — update this law'
+    mapper_start = src.index('renderCappedTable: function(pairs)')
+    mapper = src[mapper_start:]
+    mapper = mapper[:mapper.index('renderNetworkCard:')]
+    push = mapper[mapper.index('bucket.push({'):]
+    push = push[:push.index('});')]
+    keys = set(re.findall(r'([a-z_][a-z0-9_]*):', push))
+    # derived by the cell itself: the display rank fallback and the union's
+    # pair label injected per rendered row
+    derived = {'rank'}
+    missing = sorted(reads - keys - derived)
+    assert not missing, (
+        f'cells read {missing} but the pane row mapper does not carry it — '
+        'add it to bucket.push({...}) in renderCappedTable')
+    # and the two list columns must not collide with the group capacity the
+    # header counts (the pre-2026-10-15 `total: g.total` collision)
+    assert "total_list: r.total" in push, push[:300]
+    assert 'capacityByLen' in mapper
+    # BOTH pane footers (single pair and union) carry the mirror links: the
+    # union one lacked them, so picking two sources silently dropped every
+    # vispath link (found by the CDP gate, 2026-10-15).
+    assert src.count('(RUN.vispath || []).forEach') == 2, \
+        'a pane footer lost its vispath links'
+
+
+def test_the_tab_is_named_path_and_the_page_id_survives(tmp_path):
+    """Rename 2026-10-15 (user): the visible tab reads 'Path' (the page holds
+    the Pair Explorer / Refill destinations). The PAGE id stays 'analysis' —
+    it is an address every citation, alias and deep link already uses — and
+    `#tab=path` answers as the new name, so neither spelling dead-ends."""
+    import inspect
+
+    import paths_pair_report as ppr
+    src = inspect.getsource(ppr)
+    assert 'data-page="analysis" role="tab"\n    onclick="TAB.show(\'analysis\')">Path</button>' in src, \
+        'the tab label is not Path'
+    assert "if (page === 'path') { page = 'analysis'; }" in src
+    run = tmp_path / "find-paths-complete_FAFB_A_to_B_L1w3_20260101_000000"
+    _write_csv(run, [_row("A->M->B", 10)])
+    text = generate_paths_pair_report(run, log=None).read_text(
+        encoding="utf-8")
+    assert ">Path</button>" in text
+
+
+def test_the_empty_state_advice_names_the_gate_that_actually_ran(tmp_path):
+    """The 'What usually moves this' card told every reader to lower a RATIO
+    gate (plan 2026-10-16 review round 2).
+
+    The line was written before the basis split: for a synapse-basis run the
+    report printed "Lower the threshold — a ratio gate of 5 asks every hop to
+    carry that share of the post neuron's all-post incoming mass", naming a
+    knob the run never gated on and calling a SYNAPSE COUNT a share. The
+    advice now follows `weight basis`, like the threshold row beside it.
+
+    Wrong hypothesis: a ratio run losing its own wording — asserted in the
+    ratio case below."""
+    from paths_pair_report import generate_paths_pair_report
+
+    def _empty(name, params):
+        run = tmp_path / name
+        run.mkdir()
+        (run / "parameters.txt").write_text(params, encoding="utf-8")
+        pd.DataFrame([{"bodyId": 1, "type": "aMe12", "isInPath": False}]
+                     ).to_csv(run / "source_neurons.csv", index=False)
+        pd.DataFrame([{"bodyId": 3, "type": "PPL101", "Checked": False}]
+                     ).to_csv(run / "target_neurons.csv", index=False)
+        return report_text(run)
+
+    def report_text(run):
+        return generate_paths_pair_report(run, log=None).read_text(
+            encoding="utf-8")
+
+    synapse = _empty(
+        "find-paths-complete_MCNS_aMe12_to_PPL101_L1w5_20260101_000000",
+        "source name:                   aMe12\n"
+        "target name:                   PPL101\n"
+        "min synapse number:            5\n"
+        "min connection ratio:          0\n"
+        "weight basis:                  synapse\n"
+        "max interlayer:                1\n"
+        "dataset:                       male-cns:v1.0\n"
+        "filter by:                     bodyId\n"
+        "run date:                      20260101_000000\n")
+    assert "Lower Min Synapse Count" in synapse, synapse[:1200]
+    assert "a gate of 5 synapses" in synapse
+    assert "ratio gate" not in synapse, (
+        'the synapse-basis empty state still preaches about a ratio gate')
+
+    ratio = _empty(
+        "find-paths-complete_MCNS_aMe12_to_PPL101_L1r0_01_20260101_000000",
+        "source name:                   aMe12\n"
+        "target name:                   PPL101\n"
+        "min synapse number:            1\n"
+        "min connection ratio:          0.01\n"
+        "weight basis:                  connection_ratio (bodyId)\n"
+        "max interlayer:                1\n"
+        "dataset:                       male-cns:v1.0\n"
+        "filter by:                     bodyId\n"
+        "run date:                      20260101_000000\n")
+    assert "a ratio gate of 0.01" in ratio
+    assert "Lower Min Synapse Count" not in ratio, (
+        'the ratio run was handed the synapse advice')

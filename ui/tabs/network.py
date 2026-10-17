@@ -11,6 +11,7 @@ from ..components.common import (
     dataset_selector, neuron_list_input, number_input, select_input,
     checkbox_input, dir_input, apply_filter_mode, section_header, param_grid, tool_page,
 )
+from ..components import pathfinding_controls as pc
 from ..components.mapping_editor import custom_grouping_block
 from ..components.output_panel import OutputPanel
 from ..runner import ScriptRunner
@@ -47,7 +48,11 @@ def create_network_tab():
             "ℹ️ This tool builds a LIMITED network of direct connections among "
             "the queried neurons only (no intermediate neurons are involved). "
             "For a more complete network that also involves intermediate neurons, "
-            "use the Complete Paths tab with Find Reciprocal Connections enabled."
+            "use the Complete Paths tab with Find Reciprocal Connections enabled. "
+            "Because the induced sub-network is fetched whole, it has no path "
+            "budget to bite: Max Intermediate Layers, Max Paths, the Edge "
+            "Budget, the applied tau and the Fast (corridor) lane do not apply "
+            "here — their absence is the model, not a missing option."
         ).classes("text-caption text-amber-8 w-full")
 
         with ui.card().classes("w-full drocat-card").props('id="card-network-dataset"'):
@@ -81,41 +86,27 @@ def create_network_tab():
         with ui.card().classes("w-full drocat-card").props('id="card-network-core"'):
             section_header("Core Parameters", "tune")
             with param_grid(3):
-                threshold_basis = select_input(
-                    "Threshold Basis", ["Synapse count", "Connection ratio"],
-                    default=("Connection ratio"
-                             if get_user_default("threshold_basis")
-                             == "connection_ratio" else "Synapse count"),
+                # The SAME threshold regime as Complete/Shortest Paths (one
+                # definition each; the percent conversion happens in exactly
+                # one place). Ratio mode floors the synapse count to 1 — the
+                # ratio IS the threshold — and AND keeps both.
+                threshold_basis = pc.threshold_basis_select(
                     hint="Which edge-weight basis thresholds the network: raw "
                          "synapse counts, or the connection ratio (synapses / "
                          "all-post incoming weight of the post neuron — "
-                         "comparable across datasets).",
-                )
+                         "comparable across datasets).")
                 min_synapse = number_input(
                     "Min Synapse Count", get_user_default("min_synapse_num"), 1, 100,
                     hint="Minimum number of synapses for a connection to be included. Filters out weak/noisy connections.",
                 )
-                min_ratio_threshold = number_input(
-                    "Min Connection Ratio (%)", 1.0, 0.0, 100.0, 0.01,
-                    hint="Ratio-mode threshold in PERCENT: keep edges "
-                         "carrying at least this share of the post "
-                         "neuron's TOTAL input (F9 all-post denominator). "
-                         "Default 1% (= 0.01); finer tiers (e.g. 0.05%) "
-                         "stay typeable as decimals.",
-                ).set_visibility(False)
-                threshold_combination = select_input(
-                    "Combine Thresholds", ["Any one (default)", "Both (AND)"],
-                    default=("Both (AND)"
-                             if get_user_default("threshold_combination")
-                             == "and" else "Any one (default)"),
+                min_ratio_threshold = pc.min_ratio_percent_input()
+                threshold_combination = pc.threshold_combination_select(
                     hint="How Min Synapse Count and Min Connection Ratio "
                          "combine when both are set. Default: they are "
                          "alternatives — one threshold governs the network. "
-                         "Both (AND): an edge enters only when it clears "
-                         "BOTH thresholds (each on its own scale); both "
-                         "inputs stay visible and the folder token carries "
-                         "both tiers.",
-                )
+                         "Both (AND): an edge enters only when it clears BOTH "
+                         "thresholds (each on its own scale); both inputs stay "
+                         "visible and the folder token carries both tiers.")
                 edge_limit = number_input(
                     "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
                     hint="Drawing-only cap: at most this many unique edges are "
@@ -125,17 +116,13 @@ def create_network_tab():
                 )
 
             def _sync_threshold_basis():
-                ratio_mode = threshold_basis.value == "Connection ratio"
-                and_mode = threshold_combination.value == "Both (AND)"
-                # AND mode needs BOTH knobs visible whichever basis is
-                # active (same contract as Complete Paths); single-knob
-                # regimes keep the historical visibility.
-                min_synapse.set_visibility(not ratio_mode or and_mode)
-                min_ratio_threshold.set_visibility(ratio_mode or and_mode)
+                pc.sync_threshold_visibility(threshold_basis, min_synapse,
+                                             min_ratio_threshold,
+                                             threshold_combination)
 
-            threshold_basis.on_value_change(lambda _e: _sync_threshold_basis())
-            threshold_combination.on_value_change(
-                lambda _e: _sync_threshold_basis())
+            for _el in (threshold_basis, threshold_combination,
+                        min_ratio_threshold):
+                _el.on_value_change(lambda _e: _sync_threshold_basis())
             _sync_threshold_basis()
 
         with ui.card().classes("w-full drocat-card").props('id="card-network-output"'):
@@ -169,50 +156,19 @@ def create_network_tab():
                     "Skip BodyId in Output", get_user_default("skip_bodyId"),
                     hint="Exclude individual bodyId-level connection tables. Type-level tables are always saved.",
                 )
+                # The drawing is this tool's only interactive output, so the
+                # auto-open switch the path tabs have belongs here too
+                # (it was missing, and the engine default silently disabled
+                # it: FindNetwork passes showfig straight to VisualizePath).
+                show_fig = checkbox_input(
+                    "Show Figure", get_user_default("showfig_analysis"),
+                    hint="Open the interactive HTML visualization automatically after completion.",
+                )
 
         with ui.card().classes("w-full drocat-card").props('id="card-network-hemisphere"'):
             section_header("Hemisphere Analysis", "sync_alt")
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                separate_hemi = checkbox_input(
-                    "Hemisphere-aware", False,
-                    hint="Split type/group aggregation into _L/_R/_U hemisphere labels.",
-                )
-                hemi_filter = select_input(
-                    "Hemisphere", ["both", "left", "right"], "both",
-                    hint="'both': all neurons. 'left'/'right': restrict to that hemisphere. "
-                         "Neurons WITHOUT an explicit hemisphere (no _L/_R instance suffix "
-                         "or Soma side) are always included in every option.",
-                    inline=True,
-                )
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                symmetry_analysis = checkbox_input(
-                    "Symmetry Analysis", False,
-                    hint="Generate ipsilateral vs contralateral symmetry outputs.",
-                )
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                keep_hemi_conserved = checkbox_input(
-                    "Keep Only Hemisphere-Conserved Edges", False,
-                    hint="Keep only edges conserved between hemispheres (requires Hemisphere-aware).",
-                )
-            def _sync_hemisphere_options():
-                if separate_hemi.value:
-                    keep_hemi_conserved.enable()
-                    symmetry_analysis.enable()
-                    hemi_filter.set_enabled(True)
-                else:
-                    # dependent options are unchecked AND disabled so a
-                    # greyed-out value never reaches the backend: the
-                    # backend applies hemisphere_filter independently of
-                    # separate_hemispheres, so a stale 'left'/'right'
-                    # would silently restrict the queried network.
-                    keep_hemi_conserved.value = False
-                    symmetry_analysis.value = False
-                    hemi_filter.value = 'both'
-                    keep_hemi_conserved.disable()
-                    symmetry_analysis.disable()
-                    hemi_filter.set_enabled(False)
-            separate_hemi.on_value_change(lambda _e: _sync_hemisphere_options())
-            _sync_hemisphere_options()
+            # Identical on all three connection tabs by design (shared module).
+            hemi = pc.hemisphere_block()
 
         # --- Advanced Settings (kept at the bottom, in its own card) ---
         with ui.card().classes("w-full drocat-card").props('id="card-network-advanced"'):
@@ -222,12 +178,12 @@ def create_network_tab():
                 with param_grid(2):
                     # F9: ratio/probability filters are disabled (ratio is a
                     # readout column now). The entrances stay in the code,
-                    # hidden, for the future ratio-weighted mode.
+                    # hidden, for the future ratio-weighted mode; the payload's
+                    # ratio comes from the percent field in Core (shared with
+                    # the path tabs — one unit, one conversion point).
                     min_ratio = number_input(
                         "Min Connection Ratio", 0, 0, 1, 0.01,
-                        hint="Disabled: connection_ratio is a readout column "
-                             "(weight / all-post incoming weight) — it no longer "
-                             "filters.",
+                        hint=pc.DORMANT_RATIO_HINT,
                     ).set_visibility(False)
                     min_traversal = number_input(
                         "Min Traversal Prob.", 0, 0, 1, 0.01,
@@ -271,6 +227,14 @@ def create_network_tab():
             ui.notify("Please enter at least one query neuron", type="warning")
             return
 
+        # The token is checked on the RAW chips, exactly as the two path tabs
+        # check theirs: under the non-exact filter modes `apply_filter_mode`
+        # rewrites a chip into a pattern (`.*all_neurons.*`), and the token is
+        # matched by equality — so testing the rewritten list would let the
+        # one query set the engine always rejects through the gate.
+        if pc.refuses_all_neurons(neurons):
+            return
+
         # Resolve custom grouping first: an invalid inline board aborts the
         # run before the output panel enters its running state.
         mapping_path, mapping_ok = resolve_grouping()
@@ -280,14 +244,6 @@ def create_network_tab():
         output_panel.clear()
         output_panel.set_running(True)
 
-        # Threshold-basis semantics identical to Complete Paths: 'or'
-        # (default) — ratio mode, the ratio IS the threshold (the backend
-        # floors the synapse count to 1); synapse mode, the ratio is a
-        # readout (sent 0). AND: BOTH knobs ride the payload and the
-        # backend co-thresholds the network.
-        ratio_mode = threshold_basis.value == "Connection ratio"
-        and_mode = threshold_combination.value == "Both (AND)"
-
         constructor_params = {
             "dataset": dataset.value,
             # FindNetwork uses the queried set as both source and target
@@ -295,15 +251,11 @@ def create_network_tab():
             "sourceNeurons": query,
             "targetNeurons": query,
             "output_dir": output_dir.value,
-            "weight_basis": "connection_ratio" if ratio_mode else "synapse",
-            "threshold_combination": "and" if and_mode else "or",
-            "min_synapse_num": (
-                int(min_synapse.value)
-                if (and_mode or not ratio_mode) else 1),
-            "min_ratio": (
-                # the field is in PERCENT — convert to the raw fraction
-                float(min_ratio_threshold.value) / 100.0
-                if (and_mode or ratio_mode) else 0.0),
+            # One derivation, shared with the two path tabs: the percent
+            # field converts in exactly one place, and 'or' vs Both (AND)
+            # means the same thing on all three pages.
+            **pc.ratio_payloads(threshold_basis, threshold_combination,
+                                min_synapse, min_ratio_threshold),
             # F9: ratio/probability filters disabled — hidden UI, sent 0.
             "min_traversal_probability": 0.0,
             "search_columns": search_columns.value,
@@ -312,15 +264,13 @@ def create_network_tab():
             "edgeN_limit": int(edge_limit.value),
             "output_format": output_format.value,
             "skip_bodyId": skip_bodyid.value,
+            "showfig": show_fig.value,
             "drop_untyped": drop_untyped.value,
             "custom_source_name": custom_group_name.value or '',
             "custom_target_name": custom_target_name.value or '',
             "cache_only": cache_only.value,
             "saveas": saveas.value.strip() or "",
-            "separate_hemispheres": separate_hemi.value,
-            "hemisphere_filter": hemi_filter.value,
-            "keep_only_hemisphere_conserved_connections": keep_hemi_conserved.value,
-            "symmetry_analysis": symmetry_analysis.value,
+            **hemi.payload(),
         }
         if mapping_path:
             constructor_params["custom_mapping_file"] = mapping_path

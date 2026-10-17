@@ -64,6 +64,15 @@ def _export(tmp_path, name, rows, cols=None, seed=0, **kwargs):
 
 #: One read of everything the toggle is allowed to move, so an assertion can
 #: compare picture and control in the same instant.
+#: The square-cells lock is applied 250 ms after window load (a setTimeout in
+#: the emitted page, by design). PAGE_READY says nothing about it, so a probe
+#: that reads the layout straight after load is racing the timer — green on a
+#: quiet host, red under the full suite (2026-10-16). Wait for the lock itself.
+SQUARE_LOCKED = ("var g=document.querySelector('.js-plotly-plot');"
+                 "return !!(g && g._fullLayout && g.layout"
+                 " && g.layout.xaxis"
+                 " && g.layout.xaxis.scaleanchor === 'y');")
+
 STATE = r"""
 var gd = document.querySelector('.js-plotly-plot');
 return {
@@ -278,6 +287,7 @@ class TestLabelToggleBehaviour:
         page = Page(_export(tmp_path, 'square', LARGE_N, seed=4, square_cells=True))
         try:
             assert page.wait(PAGE_READY), 'square page never rendered'
+            assert page.wait(SQUARE_LOCKED), 'square lock never landed'
             load = page.js(STATE)
             assert load['anchor'] == 'y' and load['ratio'] == '1', load
             for _ in range(3):

@@ -41,6 +41,7 @@ network + heatmap visualizations without Sankey).
   <tr><td>Min Connection Ratio (%)</td><td>1.0</td><td>Ratio-mode threshold in percent (0.01 raw = 1%): keep edges carrying at least this share of the post neuron's total input. Visible in ratio mode or AND mode</td></tr>
   <tr><td>Combine Thresholds</td><td>Any one</td><td>'or': one threshold governs (synapse mode → synapse count, ratio mode → ratio). Both (AND): an edge must clear BOTH thresholds, each on its own scale</td></tr>
   <tr><td>Visualization Edge Limit</td><td>500</td><td>Drawing-only cap on rendered edges; never changes which connections are fetched or exported</td></tr>
+  <tr><td>Show Figure</td><td>off</td><td>Open the network / heatmap figures in the browser as they are generated (the same entry the path tabs offer; it changes only whether a window opens)</td></tr>
   <tr><td>Network Layout</td><td>distributed</td><td>HTML graph layout (distributed / circular / shell / spring)</td></tr>
   <tr><td>Search Columns</td><td>auto</td><td>Columns searched when resolving neuron names (Advanced Settings)</td></tr>
   <tr><td>Use Cache / Cache Only / Drop Untyped Neurons</td><td>on / off / checked</td><td>Advanced Settings: reuse cached connections, force offline, and drop edges touching untyped neurons (same shared predicate as the path tabs)</td></tr>
@@ -77,15 +78,26 @@ pathfinding tools generate: the run writes a 1-hop path-compatible
 table (`*_allpaths_type.csv`), and the same post-run hook
 builds `path_report.html` +
 `paths_pair_breakdown/` from it — per-pair breakdown with
-coverage hovers and a Refill tab.
+coverage hovers and a Path → Refill view.
 
-The **type-level refill is always produced**: every network run
-writes the full-scope refill records (the `type_level_refill/`
-mirror) — every emitted chain re-valued at the synapse &ge; 1 full
-connection scope. Ratio-basis runs additionally get the
-complete-at-asked records; synapse-basis runs get refill-asked records
-when a budget bit, which a network never has — so for networks the
-refill is full-scope only.
+The **type-level refill round runs inside every network run**: the
+full-scope records (every emitted pair re-valued at synapse &ge; 1)
+are written to `data_details/type_level_refill/` (its
+`refill_provenance.json` and `refill_full_type_pairs.csv`) and
+mirrored as `type_level_refill/refilled_full_connection_type.csv`
+plus the refill pages. The run's OWN network page reads those pair
+totals as its **Refilled** connection metric — the same reader the
+path tools use, so the metric means one thing across the group.
+Ratio-basis runs additionally get the complete-at-asked records;
+synapse-basis runs get no asked-scope refill, because a network's
+applied threshold always equals its requested one — there is no
+budget to cut mass and nothing to recover at the asked tier.
+The <b>refill pages colour edges by transmitter</b> exactly like the
+run's own network page: they read the same vocabulary, and a pair the
+run leaves unannotated stays unannotated there too — drawn in the
+palette's <b>Unknown</b> gray and selectable as <b>Unknown Edges</b> in
+the group selector, so "no transmitter information" never looks like a
+transmitter colour.
 
 ## Output
 
@@ -94,12 +106,13 @@ male-cns, `FAFB` = flywire FAFB, ...) and a sanitized query
 name (e.g. `aMe.*` → `aMe`):
 
 ```
-{output_dir}/find-network_MCNS_aMe_w3r0p0_20260815_142745/
+{output_dir}/find-network_MCNS_aMe_w3r0_20260815_142745/
   parameters.txt, all_attributes.json
   *_allpaths_type.csv              # 1-hop path table (pair-report input)
   source_neurons.csv, target_neurons.csv   # enrollment (refill reader)
   path_report.html, paths_pair_breakdown/  # per-pair explorer report
-  type_level_refill/               # (ratio-mode runs; complete-at-asked)
+  type_level_refill/               # refill mirror: full scope always,
+                                   # asked scope on ratio-mode runs
   data_details/
     neurons.csv                     # all queried neurons
     connection_type.csv             # type-level mutual connections
@@ -107,6 +120,7 @@ name (e.g. `aMe.*` → `aMe`):
     connection_info_bodyId.csv      # (when Skip BodyId is off)
     connection_custom_groups.csv    # (when a custom grouping is used)
     hemisphere_unconserved_edges.csv (when the conserved filter is on)
+    type_level_refill/              # refill records + provenance.json
   visualization/
     Network_*.html, Heatmap_*.html  # NO Sankey
     visualization_data/             # *_data_connections.csv,
@@ -114,6 +128,32 @@ name (e.g. `aMe.*` → `aMe`):
                                     # network_edges_input.csv
   user_warning_notes.txt            # (when any output-affecting option applied)
 ```
+
+## What this tab does not offer
+
+The tab carries no Max Intermediate Layers, no Max Paths, no Edge
+Budget and no Run Mode, and its `parameters.txt` names none of them.
+That is the model, not a missing option: a network is the direct
+connections inside one query set, so there is no search to deepen, no
+path-output budget that could bite, no tau to report and no second
+(corridor) lane to run — the emitted table is complete at its
+threshold by construction. `parameters.txt` therefore says
+`path_mode: network` and `run mode: n/a (direct connections)` instead
+of leaving a reader to infer it, and a run that finds no connections
+gets an empty-state `path_report.html` in this tool's own words (no
+depth or lane advice, which it could not act on). Two consequences a
+reader should know: `all_neurons` is refused here (the single query IS
+both sides, so the token would ask the whole dataset to connect to
+itself — use Complete Paths with Max Intermediate Layers 0 for
+"everything adjacent to my query"), and Sankey is never drawn (a flow
+diagram assumes a source→target direction this tool does not). A query
+that resolves to no neuron at all <b>refuses the run</b> — it raises and
+writes no folder, so a typo is never mistaken for a network with no edges
+(an empty result still writes, and names what produced nothing). The
+drawing cap is recorded with the rest of the run: `parameters.txt` carries
+`visualization edge limit: 200 (drawing only; tables keep every edge)`, or
+`no drawing cap`, which is how a folder explains a page that shows fewer
+pairs than the run emitted.
 
 ## Find Network vs Complete Paths + Find Reciprocal
 

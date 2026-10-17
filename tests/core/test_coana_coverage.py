@@ -3135,3 +3135,112 @@ def test_materialize_paths_writes_pair_coverage_summary():
     src = inspect.getsource(coana.FindNeuronConnection._materialize_paths)
     assert 'pair_bodyid_coverage.csv' in src
     assert '_pair_endpoint_bodyids(' in src
+
+
+# ---------------------------------------------------------------------------
+# F-EX-010 (2026-10-14): a zero-path run must document itself
+# ---------------------------------------------------------------------------
+
+def test_zero_path_exit_stamps_provenance_and_writes_empty_report(
+        monkeypatch, tmp_path):
+    """The pre-enumeration exit used to leave a folder with the enrollment
+    CSVs, a warning file citing `data_details/...` artifacts that were never
+    written, no applied-threshold provenance block and no report. It now
+    stamps the same provenance keys an exported run carries, states the
+    zero-path verdict, and renders the empty-state pair report."""
+    fc, _ = _make_path_fc(monkeypatch, tmp_path, [("S", "A", 10)],
+                          {"S": "TS", "A": "TA"}, target_ids=("T",))
+    folder = (tmp_path / "find-paths-complete_MCNS_S_to_T_L1w1"
+              "_20260101_000000")
+    folder.mkdir()
+    fc.allpath_folder = str(folder)
+    before = len(fc._warn_notes)
+
+    fc._record_zero_path_exit(path_mode='all')
+
+    assert len(fc._warn_notes) == before + 1
+    note = fc._warn_notes[-1]
+    assert note.startswith('- [no paths] ZERO paths')
+    assert 'Min Synapse Count >= 1' in note
+    assert 'no data_details/' in note
+
+    params = (folder / 'parameters.txt').read_text(encoding='utf-8')
+    for key in ('requested_threshold', 'applied_threshold',
+                'applied_threshold_source', 'paths_complete'):
+        assert f'{key}:' in params, key
+    report = folder / 'path_report.html'
+    assert report.exists()
+    text = report.read_text(encoding='utf-8')
+    assert 'This run found no paths' in text
+    # the empty state never links an artifact the folder does not hold
+    assert 'href="data_details/' not in text
+
+
+def test_zero_path_exits_are_wired(monkeypatch):
+    """Both no-path exits call the recorder BEFORE the warning notes are
+    written, so the verdict lands in user_warning_notes.txt (a source pin:
+    the class of defect this item is — the exit moved on and the document
+    stayed behind)."""
+    import inspect
+    import coana
+    core = inspect.getsource(coana.FindNeuronConnection._find_paths_core)
+    assert 'self._record_zero_path_exit(path_mode)' in core
+    rec = 'self._record_zero_path_exit(path_mode)'
+    notes = 'self._write_user_warning_notes(self.allpath_folder)'
+    assert core.count(rec) == 1, "a second exit appeared and is unwired"
+    i = core.index(rec)
+    j = core.index(notes, i)
+    # `core.index(notes, i)` can never return a smaller index, so `i < j` was
+    # true by construction and proved nothing. The real law is adjacency: the
+    # notes write follows the recorder with only the comment between them, so
+    # an exit that grew work in between (or moved the recorder after the
+    # write, which is the defect this item records) fails here.
+    between = core[i + len(rec):j]
+    # whitespace or the comment alone may sit between the two calls
+    assert not between.strip() or between.strip().startswith('#'), (
+        f'statement(s) were interposed between the recorder and the notes '
+        f'write: {between[:200]!r}')
+    export = inspect.getsource(coana.FindNeuronConnection._materialize_paths)
+    assert 'self._record_zero_path_exit(' in export
+    k = export.index('self._record_zero_path_exit(')
+    assert 'stamp=False' in export[k:k + 220]
+
+def test_fast_only_run_skips_the_complete_pipeline(monkeypatch, tmp_path):
+    """§8.3 — the fast-only ENGINE branch, which nothing executed in-suite.
+
+    `corridor_mode='fast'` is the one mode that never runs the Complete
+    pipeline. Its contract, asserted here by driving the real branch with the
+    lane stubbed at its boundary: the lane is invoked with
+    `corridor_mode='fast'` + the fast-only trigger on this run folder, no
+    allpaths table is written, `parameters.txt` carries `run mode: fast`, and
+    the skipped pipeline is disclosed in the run's notes."""
+    import route_plan
+    import coana
+
+    recorded = {}
+
+    def fake_lane(**kwargs):
+        recorded.update(kwargs)
+        return True
+
+    monkeypatch.setattr(route_plan, 'run_lane', fake_lane, raising=True)
+    fc, _logs = _make_path_fc(monkeypatch, tmp_path,
+                              [("S", "A", 10), ("A", "T", 10)],
+                              {"S": "TS", "A": "TA", "T": "TT"})
+    fc.corridor_mode = 'fast'
+    coana.clear_findallpath_cache()
+    try:
+        fc.FindAllPath()
+        folder = Path(fc.allpath_folder)
+        assert recorded.get('corridor_mode') == 'fast', recorded
+        assert recorded.get('trigger') == 'fast-only (standalone)', recorded
+        assert recorded.get('run_dir') == str(fc.allpath_folder)
+        # no Complete-mode export exists in this folder (not even empty ones)
+        assert not list(folder.glob('*_allpaths_type.csv'))
+        params = (folder / 'parameters.txt').read_text(encoding='utf-8')
+        assert 'run mode:' in params and 'fast' in params.split('run mode:')[1][:40]
+        notes = (folder / 'user_warning_notes.txt')
+        assert notes.exists(), 'the skipped pipeline is not disclosed'
+        assert 'fast-only' in notes.read_text(encoding='utf-8')
+    finally:
+        coana.clear_findallpath_cache()

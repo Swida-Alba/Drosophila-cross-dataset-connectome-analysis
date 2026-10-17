@@ -236,8 +236,9 @@ COLUMN_GLOSSARY = {
                   "REALIZED bottleneck on every weight basis (a mass "
                   "share; can fall below the applied bodyId-level "
                   "threshold).", "0-1"),
-    "coverage": ("Per endpoint of the pair: distinct enrolled bodyIds "
-                 "contributing to the pair over the type's enrolled "
+    "coverage": ("Per node of the path (per endpoint of the pair in a 1-hop "
+                 "table): distinct enrolled bodyIds "
+                 "contributing at that position over the type's enrolled "
                  "size (`n/N`).", "list of fractions"),
     "label": ("A user label mapper's settled label — the retyped "
               "identity of its enrolled neurons (tier 0).", "text"),
@@ -279,14 +280,23 @@ COLUMN_GLOSSARY = {
                          "its column in the report's layered network.", "integer"),
     # --- Corridor lane (post-hoc route-scoped pass; plan-corridor-lane
     # --- §23.5; route_scope_paths/ mirror folder) ---
-    "applied_tau": ("Per-(pair,h)-class StrongestFirst tau of the walk's "
-                    "enumeration (>= the asked threshold; tie-drained).",
+    # G11 (plan-corridor-refill-and-mode-tabs): this is the walk's OWN
+    # landing tau — the value the drain reached when the walk was accepted.
+    # The CLASS-level quantities are route_floor_h / floor_next in
+    # route_provenance.json, and they are candidate bounds, not strengths.
+    "applied_tau": ("This walk's StrongestFirst landing tau (>= the asked "
+                    "threshold; tie-drained) — per WALK, not the "
+                    "(pair,h)-class certificate and NOT the run-global "
+                    "applied_threshold / applied_tau in parameters.txt.",
                     "number"),
     "route_h": ("Hop length of the validated walk (length of the class).",
                 "integer"),
     "route_ub": ("Plan upper bound: min over the walk's hops of the "
                  "type-pair max edge weight.", "number"),
-    "route_floor_h": ("Class floor: the lowest accepted walk's UB — paths "
+    "route_floor_h": ("Class floor: the lowest accepted walk's UB, with "
+                      "`floor_next` (the first skipped candidate's UB) as its "
+                      "companion — the class ADMISSION certificate, and a "
+                      "candidate bound rather than a strength. Paths "
                       "below the floor are outside the kept corridors by "
                       "certificate.", "number"),
     "plan_rank": ("Acceptance rank of the walk within its (pair,h) class "
@@ -312,6 +322,50 @@ COLUMN_GLOSSARY = {
                       "integer"),
     "refilled_total": ("emitted_weight + refill_weight: the refilled "
                        "type-level connection strength.", "integer"),
+    # Per-hop CLASS lists on the two second-round path tables (the lane's
+    # synapse >= 1 round and the complete mode's refill-full): the emitted
+    # class is the mass already above the run's cut, the refill class is the
+    # recovered sub-threshold band, and the two reconstruct the total.
+    "emitted_weights": ("Per-hop EMITTED-class mass, -w1-w2-: the bodyId "
+                        "edges already at or above the run's applied cut, at "
+                        "that hop position. emitted_weights + refill_weights "
+                        "== weights hop for hop.", "list"),
+    "refill_weights": ("Per-hop REFILL-class mass, -w1-w2-: the sub-threshold "
+                       "band the second round recovered at that position.",
+                       "list"),
+    "total_weights": ("Per-hop TOTAL mass at the scope, -w1-w2-: "
+                      "emitted_weights + the table's own weights column "
+                      "(a carrying table's weights ARE the sub-threshold "
+                      "band, so the emitted list is its context).", "list"),
+    "skipped_weights": ("Per-hop SKIPPED-class mass, -w1-w2-: the part of a "
+                        "hop that neither the emitted band nor the second "
+                        "round's recovery carries — the third of the "
+                        "complete-at-asked split (emitted_weights + "
+                        "refill_weights + skipped_weights = that hop's "
+                        "realized mass at its position).", "list"),
+    "incoming": ("The incoming mass of that post TYPE. Which universe the "
+                 "file names is the whole difference: "
+                 "`type_incoming_conditioned.csv` is the threshold-CONDITIONED "
+                 "dataset total (the adjusted ratios' denominator), while "
+                 "`type_incoming_emitted.csv` is this run's own EMITTED-cone "
+                 "total and is never a denominator.", "mass"),
+    "incoming_threshold": ("The conditioning tier the round that wrote this "
+                           "table divided by (its `incoming` counts only "
+                           "edges at or above it).", "integer"),
+    "distinct_source_bodyids": ("Distinct SOURCE endpoint bodyIds the run's "
+                                "bodyId paths put on this type pair.",
+                                "integer"),
+    "distinct_target_bodyids": ("Distinct TARGET endpoint bodyIds the run's "
+                                "bodyId paths put on this type pair.",
+                                "integer"),
+    "universe_type_weights": ("The WHOLE admitted type-pair weight this hop's "
+                              "mass is drawn from (the renamed "
+                              "`universe_pair_mass`): every chain mass on the "
+                              "pair is a lower bound of it; never summed "
+                              "across hops.", "integer"),
+    "pair_offchain_mass": ("Mass of the type pair that no chain of the "
+                           "second round realizes: refilled_total + this == "
+                           "universe_type_weights.", "integer"),
     "emitted_pair_count": ("BodyId pairs behind the emitted weight "
                            "(re-derived).", "integer"),
     "refill_pair_count": ("BodyId pairs behind the refill weight.", "integer"),
@@ -343,7 +397,11 @@ COLUMN_GLOSSARY = {
                    "suspended"),
     "min_weight": ("Smallest edge weight along the path.", "integer"),
     "length": ("Number of hops (edges) in the path.", "integer"),
-    "nt_type": ("Predicted neurotransmitter type (ACh, GABA, glutamate, ...).", "text"),
+    "nt_type": ("Predicted neurotransmitter type (ACh, GABA, glutamate, ...). "
+                "An empty cell is no annotation, not a value: the network and "
+                "Sankey pages draw such an edge in the palette's Unknown gray "
+                "and list it under the group selector's 'Unknown Edges' — never "
+                "in a transmitter's colour.", "text"),
     "nt_types": ("Neurotransmitter types along the path.", "text"),
     "conn_layer": ("Layer transition label of the connection, e.g. '0->1'.", "text"),
     "node": ("Neuron body id the shortest-discovery label describes.", "integer or text"),
@@ -908,7 +966,7 @@ _NEURON_TABLE_NOTE = (
 # Probability columns SUSPENDED (2026-10-06, unverifiable fidelity).
 _PATH_COLUMNS = [
     "path", "weights", "ratios", "min_weight",
-    "min_ratio", "length", "nt_types",
+    "min_ratio", "length", "nt_types", "coverage",
 ]
 
 _CONNECTION_TYPE_COLUMNS = [
@@ -933,8 +991,109 @@ _PROFILING_METRIC_COLUMNS = [
     "jaccard", "weighted_jaccard", "cosine", "rank_corr", "rank_union",
 ]
 
+# The Network run guide's own explanation (plan 2026-10-16 Q6/Q8). The
+# pathfinding block cannot be reused: this tool has no path set, no budget, no
+# tau and no lane, so text that explains those would describe a run the reader
+# never made — and the absence is exactly what the tab promises to state.
+_NETWORK_EXPLANATION = [
+    {
+        "heading": "What a Network run is — and what it is not",
+        "paragraphs": [
+            "A Network run keeps the DIRECT connections whose BOTH endpoints "
+            "are in the queried set: the induced sub-network of the query, in "
+            "both directions. Neurons outside the query never appear, and no "
+            "intermediate neuron is ever searched for — a pair with no direct "
+            "edge stays absent here even when a path exists through a third "
+            "neuron. That is the model, not a failure: to include "
+            "intermediates, run Complete Paths or Shortest Paths over the "
+            "same sets.",
+        ],
+        "table": None,
+        "pipeline": None,
+    },
+    {
+        "heading": "How the connection set was produced",
+        "paragraphs": [
+            "The stages, in order — each can only narrow the previous one:",
+        ],
+        "table": None,
+        "pipeline": [
+            "one threshold: Min Synapse Count, or the Min Connection Ratio "
+            "(typed in PERCENT, sent as a fraction) on Threshold Basis = "
+            "Connection ratio runs; Combine Thresholds = Both (AND) gates "
+            "edges by BOTH, each on its own scale",
+            "the induced-set filter: both endpoints must be queried",
+            "optional hemisphere-conserved edge filter (requires "
+            "Hemisphere-aware)",
+            "applied threshold == requested threshold — this tool has no "
+            "graph floor and no path budget that could raise it",
+            "visualization-only edge limit (drawing only — never affects the "
+            "CSV outputs)",
+        ],
+    },
+    {
+        "heading": "Threshold vocabulary",
+        "paragraphs": [
+            "The pair mass is a synapse count; the ratio columns are shares "
+            "of the post neuron's (or post type's) incoming mass. ‘This run’ "
+            "values come from the folder's own parameters.txt.",
+        ],
+        "table": [
+            ["Name", "Key", "Meaning"],
+            ["weight basis", "weight basis",
+             "'synapse' or 'connection_ratio (bodyId)' — the currency the "
+             "threshold and the pair weights are read in."],
+            ["threshold combination", "threshold combination",
+             "'and' only when BOTH thresholds really gated the graph; 'or' "
+             "means one basis governed it."],
+            ["requested / applied threshold",
+             "requested_threshold / applied_threshold",
+             "Always equal: nothing in this tool raises a threshold."],
+            ["paths_complete", "paths_complete",
+             "True by construction — the emitted table is every direct "
+             "connection at the threshold, not a budgeted subset."],
+            ["refilled_total", "data_details/type_level_refill/"
+             "refill_full_type_pairs.csv",
+             "This pair's mass when nothing is thresholded away (synapse "
+             ">= 1): the emitted mass plus any sub-threshold edges."],
+        ],
+        "values_column": True,
+        "pipeline": None,
+    },
+    {
+        "heading": "The refill folders this run carries",
+        "paragraphs": [
+            "The type-level refill round runs inside this run too, so the "
+            "folder's own network page can carry the Refilled metric. Two "
+            "scopes: the FULL scope (synapse >= 1) is written on every run, "
+            "while the ASKED scope (complete-at-asked) is written by a "
+            "ratio-basis run. A page never borrows a number from the other "
+            "scope, and the recovered delta alone lives in "
+            "refill_connection_type.csv.",
+        ],
+        "table": None,
+        "pipeline": None,
+    },
+    {
+        "heading": "What does not apply to this tool",
+        "paragraphs": [
+            "Max Intermediate Layers, Max Paths (BodyId), the Edge Budget, "
+            "the applied tau and the Fast (corridor) lane have no entrance on "
+            "this tab, and no column or provenance key in this folder names "
+            "them. Their absence is the model: a direct-connection set is "
+            "complete at its threshold, so no search depth, output budget or "
+            "second lane exists to bite. Sankey is likewise never drawn — "
+            "a flow diagram needs a source→target direction this tool does "
+            "not assume.",
+        ],
+        "table": None,
+        "pipeline": None,
+    },
+]
+
 _FIND_NETWORK = {
     "title": "Find Network",
+    "explanation": _NETWORK_EXPLANATION,
     "summary": (
         "Direct connections among the neurons matching one query set "
         "(patterns supported)."
@@ -952,11 +1111,43 @@ _FIND_NETWORK = {
          "preview_title": "Resolved neuron set"},
         {"pattern": "data_details/parameters.csv",
          "description": "Run parameters as a table."},
+        {"pattern": "data_details/connection_info_bodyId.csv",
+         "description": "The direct connections at bodyId resolution "
+                        "(written unless Skip BodyId is on): the endpoints "
+                        "behind every type-pair mass, so a type row can be "
+                        "traced to the neuron pairs that carry it.",
+         "columns": ["bodyId_pre", "bodyId_post", "weight", "type_pre",
+                     "type_post"]},
+        {"pattern": "data_details/connection_custom_groups.csv",
+         "description": "(runs with a custom grouping) the same connections "
+                        "aggregated over the mapped group labels instead of "
+                        "types — the group columns exist only when a "
+                        "grouping was applied."},
+        {"pattern": "data_details/hemisphere_unconserved_edges.csv",
+         "description": "(Hemisphere-aware + Keep Only Hemisphere-Conserved) "
+                        "the edges this run REMOVED because they were not "
+                        "conserved across hemispheres: the exclusion is "
+                        "auditable rather than silent."},
+        {"pattern": "data_details/untyped_dropped_records.csv",
+         "description": "(Drop Untyped Neurons, when it drops anything) the "
+                        "edges removed for touching an untyped label, with "
+                        "the label that caused it; the counts also appear in "
+                        "user_warning_notes.txt."},
         {"pattern": "parameters.txt",
-         "description": "Human-readable record of all run parameters "
-                        "(includes the weight-basis / applied-threshold "
-                        "provenance stamps the pair report and the "
-                        "type-level refill read)."},
+         "description": "Human-readable record of all run parameters. It "
+                        "names the regime the folder ran in — `weight basis`, "
+                        "`min synapse number` (the value that actually gated "
+                        "the graph, AFTER any ratio floor), `min connection "
+                        "ratio`, `threshold combination` (stamped for EVERY "
+                        "regime — 'or' included, and an AND whose second "
+                        "knob is empty names which one), `path_mode: "
+                        "network` and `run mode: n/a (direct connections)` — "
+                        "plus the applied-threshold stamps the pair report "
+                        "and the type-level refill read, and `visualization "
+                        "edge limit`, the cap the HTML pages draw with "
+                        "(`200 (drawing only; tables keep every edge)`, or "
+                        "`no drawing cap`) so a page showing fewer pairs than "
+                        "the run emitted explains itself (2026-10-17)."},
         {"pattern": "all_attributes.json",
          "description": "Serialized run attributes (machine-readable). "
                         "With a label mapper this carries "
@@ -979,7 +1170,10 @@ _FIND_NETWORK = {
          "description": "1-hop path-compatible table (path = "
                         "type_pre->type_post) so network runs get the "
                         "same Pair Explorer report as the pathfinding "
-                        "tools.",
+                        "tools — and the same ORDER law: length ascending, "
+                        "then min_weight descending (strongest connection "
+                        "first, path as the tie-break), because the report's "
+                        "Path view reads the first rows as the top rows.",
          "preview": True,
          "preview_title": "1-hop path table",
          "columns": ["path", "weights", "ratios", "min_weight",
@@ -997,17 +1191,94 @@ _FIND_NETWORK = {
                         "the pathfinding tools)."},
         {"pattern": "paths_pair_breakdown/pair_breakdown_paths.csv",
          "description": "Per-pair breakdown rows behind path_report.html."},
-        {"pattern": "type_level_refill/refill_provenance.json",
-         "description": "Type-level refill record — ALWAYS produced for "
-                        "network runs: the full-scope records re-value "
-                        "every emitted chain at synapse >= 1 (ratio runs "
-                        "additionally carry complete-at-asked; synapse "
-                        "runs add refill-asked only on a budget bite)."},
+        # Measured on a real network run of each regime (probe 2026-10-16):
+        # the provenance record lives under data_details/, and the FULL scope
+        # is written by EVERY network run while the ASKED scope is written by
+        # ratio-basis runs only. The old entry pointed at
+        # type_level_refill/refill_provenance.json, which no tool ever wrote,
+        # so the guide silently described nothing.
+        {"pattern": "data_details/type_level_refill/refill_provenance.json",
+         "description": "Type-level refill record — produced by EVERY network "
+                        "run: the full-scope records re-value every emitted "
+                        "pair at synapse >= 1. A ratio-basis run additionally "
+                        "carries the asked (complete-at-asked) scope; a "
+                        "synapse run has no asked scope, because its applied "
+                        "threshold == its requested one and nothing was cut."},
+        {"pattern": "data_details/type_level_refill/refill_full_type_pairs.csv",
+         "description": "One row per emitted type pair: emitted weight, "
+                        "recovered weight and refilled_total at the FULL "
+                        "scope — the map the run's own network page reads for "
+                        "its Refilled metric."},
+        {"pattern": "data_details/type_level_refill/refill_type_pairs.csv",
+         "description": "(ratio-basis runs) the same census at the ASKED "
+                        "scope."},
+        {"pattern": "type_level_refill/refilled_full_connection_type.csv",
+         "description": "The full-scope connection table — one row per "
+                        "EMITTED type pair, with `emitted_weight` + "
+                        "`refill_weight` and their sum `refilled_total` "
+                        "(the drawn weight) plus `refilled_connection_ratio` "
+                        "and `pair_offchain_mass`. There is no `weight` "
+                        "column here; the refill pages rename "
+                        "`refilled_total` into the path-table grammar. "
+                        "The input the full-scope refill pages are drawn "
+                        "from, so a pair that recovered nothing keeps its "
+                        "edge instead of becoming a dead end."},
+        {"pattern": "type_level_refill/refill_full_type_network.html",
+         "description": "Network of the FULL-connection scope: one edge per "
+                        "emitted type pair, weight = refilled_total, so the "
+                        "page keeps the run's topology instead of leaving "
+                        "dead-end nodes where a pair recovered nothing. It "
+                        "colours edges by transmitter like the run's own "
+                        "network page, from the same vocabulary — and an "
+                        "unannotated pair is drawn in the palette's Unknown "
+                        "gray, not the link colour."},
+        {"pattern": "type_level_refill/refill_full_type_heatmap.html",
+         "description": "Heatmap of the same full-connection scope."},
+        # The same round with the same mirrors as the pathfinding tools: a
+        # network run emits 1-hop chains, so the PATH mirrors are chains too.
+        {"pattern": "type_level_refill/refill_full_paths_type.csv",
+         "description": "Every emitted chain re-valued at synapse >= 1 "
+                        "(complete at full scope), in the path-table column "
+                        "family; mass columns are synapse counts on every "
+                        "weight basis."},
+        {"pattern": "type_level_refill/refill_full_carrying_paths_type.csv",
+         "description": "The chains that carry sub-threshold mass at full "
+                        "scope — `weights` is that sub-threshold band, with "
+                        "`emitted_weights` and `total_weights` beside it. "
+                        "Header-only when nothing carries such mass."},
+        {"pattern": "type_level_refill/parameters.csv",
+         "description": "Refill-analysis parameters (run parameters)."},
+        {"pattern": "data_details/type_level_refill/type_incoming_asked.csv",
+         "description": "The asked-tier conditioned dataset incoming per post "
+                        "type (the denominator the full-scope round divided "
+                        "by), written beside the pair records."},
+        {"pattern": "type_level_refill/refill_type_network.html",
+         "description": "(ratio-basis runs) the emitted topology re-valued at "
+                        "the asked tier."},
+        {"pattern": "type_level_refill/refilled_connection_type.csv",
+         "description": "(ratio-basis runs) complete-at-asked type pairs in "
+                        "the connection-table grammar: `weight` is the "
+                        "TOTAL (emitted + recovered) and `connection_ratio` "
+                        "is that total's share — the table the asked-scope "
+                        "refill pages are drawn from."},
+        {"pattern": "type_level_refill/refill_connection_type.csv",
+         "description": "(ratio-basis runs, budget-bitten) the same "
+                        "connection-table grammar holding the RECOVERED "
+                        "DELTA only: `weight` here is the mass the "
+                        "threshold cut, not the pair's total. It carries no "
+                        "component columns, so it is census data, never page "
+                        "input — a folder with only this table gets no asked "
+                        "network/heatmap and says why in "
+                        "user_warning_notes.txt."},
+        {"pattern": "visualization/Network_*.html",
+         "description": "Interactive network graph of the found connections. "
+                        "Its Connection metric offers Refilled beside ratio "
+                        "and adj. ratio: the pair's full-scope mass, read "
+                        "from this run's own refill tables (absent when the "
+                        "run wrote none)."},
         {"pattern": WARNING_FILENAME,
          "description": "Warnings/notes collected during the run "
                         "(rendered in the Warnings section above)."},
-        {"pattern": "visualization/Network_*.html",
-         "description": "Interactive network graph of the found connections."},
         {"pattern": "visualization/Heatmap_*.html",
          "description": "Connection weight heatmap with interactive Ward "
                         "dendrograms."},
@@ -1025,7 +1296,16 @@ _FIND_NETWORK = {
 
 _PATHFINDING_FILES = [
     {"pattern": "*_allpaths_type.csv",
-     "description": "Primary path table (type-level, UI default).",
+     "description": "Primary path table (type-level, UI default). Rows are "
+                    "written strongest-first — `length` ascending, then "
+                    "`min_weight` descending — by the same pass that adds "
+                    "`coverage` and re-scopes the realized per-hop "
+                    "`weights`/`ratios`; the report and the visualizations "
+                    "read the FIRST rows as the top paths, so the order is "
+                    "what makes that claim. A folder whose finalize pass "
+                    "failed keeps streaming order and says so with a "
+                    "`[type-path sort]` line in "
+                    "user_warning_notes.txt.",
      "preview": True,
      "preview_title": "Path table (type-level)",
      "columns": _PATH_COLUMNS},
@@ -1066,11 +1346,52 @@ _PATHFINDING_FILES = [
                     "run's own type paths, plan_hash."},
     {"pattern": "route_scope_paths/route_type_heatmap.html",
      "description": "Corridor mirror heatmap: the validated scope drawn "
-                    "like the refill views (Synapses / Ratio / Ratio "
-                    "(>= N) toggle)."},
+                    "like the refill views (Synapses / Ratio / Adj. Ratio "
+                    "(>= N), N named from the recorded conditioned tier)."},
     {"pattern": "route_scope_paths/route_type_network.html",
      "description": "Corridor mirror network of the validated scope "
                     "(hover shows weight + both ratio flavors)."},
+    # The lane's SECOND ROUND (Q2): the same validated chains re-valued at
+    # synapse >= 1, so a Fast run answers the scope pair the Complete mode
+    # does. One namespace (route_scope_paths/), the complete mode's names.
+    {"pattern": "route_scope_paths/route_full_paths_type.csv",
+     "description": "Corridor lane's second round: every validated walk "
+                    "re-valued at SYNAPSE >= 1 (no tier) on the lane's own "
+                    "hop pairs, with the per-hop emitted / refill split "
+                    "(emitted_weights + refill_weights == weights). The "
+                    "lane has no budget that raises an applied threshold, "
+                    "so its sub-threshold band is [1, asked). Ratios are "
+                    "the chain's realized hop mass over the post type's "
+                    "full-membership incoming; at this floor the "
+                    "conditioned denominator IS the plain one, so there is "
+                    "no adjusted column here.",
+     "preview": True,
+     "preview_title": "Corridor walks (synapse >= 1)",
+     "columns": ["emitted_weights", "refill_weights"]},
+    {"pattern": "route_scope_paths/route_full_carrying_paths_type.csv",
+     "description": "Only the lane walks that carry sub-threshold mass at "
+                    "synapse >= 1: weights = the recovered band, with "
+                    "emitted_weights and total_weights beside it "
+                    "(emitted + weights == total_weights)."},
+    {"pattern": "route_scope_paths/route_full_type_pairs.csv",
+     "description": "Per hop pair at the lane's >= 1 scope: emitted_weight "
+                    "/ refill_weight / refilled_total, its share of the "
+                    "post type's incoming, universe_type_weights (the whole "
+                    "type-pair mass the hops are drawn from) and "
+                    "pair_offchain_mass (mass no lane chain realizes)."},
+    {"pattern": "route_scope_paths/route_type_incoming_asked.csv",
+     "description": "The lane's threshold-CONDITIONED incoming per post type "
+                    "at its own asked tier — the denominator the corridor "
+                    "report view's Adj. ratios divide by."},
+    {"pattern": "route_scope_paths/route_type_incoming.csv",
+     "description": "The lane's incoming per post type at synapse >= 1 — "
+                    "the denominator every >= 1 table's ratios reproduce "
+                    "from."},
+    {"pattern": "route_scope_paths/route_full_type_heatmap.html",
+     "description": "Heatmap of the lane's synapse >= 1 second round "
+                    "(drawn from route_full_type_pairs.csv's totals)."},
+    {"pattern": "route_scope_paths/route_full_type_network.html",
+     "description": "Network of the lane's synapse >= 1 second round."},
     {"pattern": "route_scope_paths/README.md",
      "description": "Corridor lane self-describing summary (resolved mode, "
                     "per-class disclosure, runtime)."},
@@ -1104,7 +1425,13 @@ _PATHFINDING_FILES = [
                     "(W*), paths_complete."},
     {"pattern": "parameters.txt",
      "description": "Human-readable record of all run parameters, including "
-                    "the same applied-threshold provenance keys."},
+                    "the same applied-threshold provenance keys. Every folder "
+                    "answers for itself: `weight basis`, the tier that "
+                    "actually gated the graph, `path_mode`, `run mode` and — "
+                    "for a folder that is one threshold slice of a "
+                    "multi-threshold sweep — `replayed_from: {base tier}`, "
+                    "whose own `requested_threshold`/`applied_threshold` are "
+                    "the SLICE's tier (the folder name carries it too)."},
     {"pattern": "data_details/untyped_dropped_records.csv",
      "description": "Connections removed by the Drop Untyped Neurons filter "
                     "(written only when the filter actually dropped rows) "
@@ -1120,7 +1447,11 @@ _PATHFINDING_FILES = [
     {"pattern": "bodyId_visualization/Network_*.html",
      "description": "BodyId-level interactive network graph (written when "
                     "Skip BodyId is off). Shares the drawing cap with the "
-                    "type-level visualization."},
+                    "type-level visualization. Refilled and the adjusted "
+                    "ratio are greyed out here by design — both are measured "
+                    "per type pair — and when this run wrote those records the "
+                    "page says so under its metric selector and points at "
+                    "visualization/ and type_level_refill/."},
     {"pattern": "bodyId_visualization/Heatmap_*.html",
      "description": "BodyId-level connection weight heatmap (Skip BodyId "
                     "off) with interactive Ward dendrograms. Same drawing cap "
@@ -1177,7 +1508,13 @@ _PATHFINDING_FILES = [
      "description": "BodyId-level edge table (written when Skip BodyId is "
                     "off)."},
     {"pattern": "visualization/Network_*.html",
-     "description": "Interactive network graph of the found paths."},
+     "description": "Interactive network graph of the found paths. Its "
+                    "connection-metric selector offers Weight / Connection "
+                    "Ratio / Adj. Ratio / Refilled: Refilled is the pair's "
+                    "mass once the second round re-values the emitted chains "
+                    "(synapse >= 1), and the run's own round writes it before "
+                    "this page is rendered, so the option is live in a fresh "
+                    "folder."},
     {"pattern": "visualization/Heatmap_*.html",
      "description": "Connection weight heatmap."},
     {"pattern": "visualization/Sankey_*.html",
@@ -1225,8 +1562,8 @@ _PATHFINDING_FILES = [
     # whenever refill records exist; entries surface when files exist).
     {"pattern": "type_level_refill/refill_paths_type.csv",
      "description": "Refilled type-level paths (the second path-building "
-                    "round) in the allpaths format; the report's Refill "
-                    "tab mounts a second Pair Explorer over it."},
+                    "round) in the allpaths format; the report's Path → "
+                    "Refill view mounts a second Pair Explorer over it."},
     {"pattern": "type_level_refill/refill_connection_type.csv",
      "description": "Refill mass only, in the connection-table format "
                     "(when the budget bit).",
@@ -1238,12 +1575,128 @@ _PATHFINDING_FILES = [
     {"pattern": "type_level_refill/refilled_connection_bodyId.csv",
      "description": "Complete-at-asked bodyId edges (emitted-rederived "
                     "+ refill) with traversal counts and hop spans."},
+    {"pattern": "type_level_refill/refilled_full_connection_type.csv",
+     "description": "The full-scope (synapse >= 1) connection census: one "
+                    "row per EMITTED type pair with `emitted_weight`, "
+                    "`refill_weight`, their sum `refilled_total`, "
+                    "`refilled_connection_ratio` and `pair_offchain_mass`. "
+                    "No `weight` column — the refill pages rename "
+                    "`refilled_total` into the path-table grammar.",
+     "columns": ["type_pre", "type_post", "emitted_weight", "refill_weight",
+                 "refilled_total", "refilled_connection_ratio",
+                 "pair_offchain_mass"]},
     {"pattern": "type_level_refill/refill_type_network.html",
-     "description": "Refill mass network visualization."},
+     "description": "The emitted topology re-valued at the asked tier: one "
+                    "edge per emitted type pair, weight = refilled_total "
+                    "(emitted + recovered). The recovered delta alone lives "
+                    "in refill_connection_type.csv — and because that table "
+                    "has no component columns, a folder carrying ONLY the "
+                    "delta writes no asked page at all and records the "
+                    "refusal in user_warning_notes.txt."},
     {"pattern": "type_level_refill/refill_type_heatmap.html",
-     "description": "Refill mass heatmap visualization."},
+     "description": "The same re-valued scope as a heatmap "
+                    "(complete-at-asked pair table)."},
+    # F7.2: the round's OWN pages are built where its data exists — in-run,
+    # right after the mirror is written — for BOTH scopes, so a run whose
+    # budget did not bite still gets a refill visualization.
+    {"pattern": "type_level_refill/refill_full_type_network.html",
+     "description": "Network of the FULL-connection scope (synapse >= 1): "
+                    "the emitted chains re-valued — weight = refilled_total "
+                    "(emitted + sub-threshold recovery) over every emitted "
+                    "pair, so the page keeps the run's topology instead of "
+                    "leaving dead-end nodes where a pair recovered nothing. "
+                    "Built from refilled_full_connection_type.csv, and — same "
+                    "law as the asked scope — only when that table carries a "
+                    "total: a pre-2026-10-16 folder whose mirror has just "
+                    "refill_weight gets no page and its own note."},
+    {"pattern": "type_level_refill/refill_full_type_heatmap.html",
+     "description": "Heatmap of the same full-connection scope."},
+    {"pattern": "type_level_refill/refill_bodyId_network.html",
+     "description": "The bodyId twins of the round's pages, drawn from "
+                    "data_details/type_level_refill/refill_bodyId_pairs.csv "
+                    "when the run did not skip bodyId: one edge per "
+                    "bodyId pair the second round recovered or re-valued.",
+     },
+    {"pattern": "type_level_refill/refill_bodyId_heatmap.html",
+     "description": "Heatmap of the same bodyId-level refill scope."},
     {"pattern": "type_level_refill/parameters.csv",
      "description": "Refill-analysis parameters (run parameters)."},
+    {"pattern": "type_level_refill/refill_full_paths_type.csv",
+     "description": "Every emitted chain re-valued at synapse >= 1 (complete "
+                    "at full scope), in the allpaths column family. Mass "
+                    "columns are SYNAPSE COUNTS on every weight basis — the "
+                    "ratio basis enumerates on F9 shares but the path tables "
+                    "take the same synapse anchor the pair tables do.",
+     "preview": True,
+     "preview_title": "Full-scope chains (re-valued)",
+     "columns": _PATH_COLUMNS},
+    {"pattern": "type_level_refill/refill_full_carrying_paths_type.csv",
+     "description": "The chains that carry sub-threshold mass at full scope. "
+                    "`weights` states the table's SUBJECT — the sub-threshold "
+                    "(refill-class) mass only — with `emitted_weights` and "
+                    "`total_weights` beside it (emitted + weights == total). "
+                    "Header-only when nothing carries sub-threshold mass.",
+     "columns": ["weights", "emitted_weights", "total_weights"]},
+    {"pattern": "type_level_refill/complete_at_asked_paths_type.csv",
+     "description": "The pair explorer's chains re-valued at the ASKED "
+                    "threshold (a value change only): chains realized solely "
+                    "below the applied tier are excluded, and each hop's "
+                    "realized mass is split three ways "
+                    "(`emitted_weights` + `refill_weights` + "
+                    "`skipped_weights`).",
+     "columns": ["emitted_weights", "refill_weights", "skipped_weights"]},
+    {"pattern": "data_details/type_level_refill/refill_full_type_pairs.csv",
+     "description": "The full-scope (synapse >= 1) pair census the refill "
+                    "pages read: one row per EMITTED type pair with "
+                    "`emitted_weight` + `refill_weight` and their sum "
+                    "`refilled_total` (the drawn weight) beside it, plus the "
+                    "total's share and the pair's off-cone mass.",
+     "columns": ["emitted_weight", "refill_weight", "refilled_total",
+                 "refilled_connection_ratio", "pair_offchain_mass"]},
+    {"pattern": "data_details/type_level_refill/type_incoming_asked.csv",
+     "description": "The asked-tier conditioned dataset incoming per post TYPE "
+                    "the full-scope round divided by — one row per type. "
+                    "Distinct from `type_incoming_conditioned.csv`, which is "
+                    "the run's own conditioning tier.",
+     "columns": ["type_post", "incoming_threshold"]},
+    {"pattern": "data_details/type_incoming_conditioned.csv",
+     "description": "The threshold-CONDITIONED dataset-wide incoming per post "
+                    "type (`type`, `incoming`, `threshold`), where threshold "
+                    "= max(1, Min Synapse Count). This is the denominator the "
+                    "adjusted pair ratio and a chain row's adjusted share "
+                    "divide by, so the two are the same measure by "
+                    "construction. At Min Synapse Count 1 the conditioning "
+                    "cuts nothing and the file is not written.",
+     "columns": ["type", "incoming", "threshold"]},
+    {"pattern": "data_details/type_incoming_emitted.csv",
+     "description": "The incoming mass this run's EMITTED network carries per "
+                    "post type — a run-internal cone total, never a ratio "
+                    "denominator (dividing by it inflates adjusted shares and "
+                    "lets them saturate). Its job is the full-scope refill's "
+                    "cache guard.",
+     "columns": ["type", "incoming"]},
+    {"pattern": "data_details/pair_bodyid_coverage.csv",
+     "description": "Per-pair DISTINCT endpoint bodyIds over the run's bodyId "
+                    "paths (`source_type`, `target_type`, "
+                    "`distinct_source_bodyids`, `distinct_target_bodyids`) — "
+                    "computed from the in-memory path set, so a Skip-BodyId "
+                    "run still carries it.",
+     "columns": ["source_type", "target_type",
+                 "distinct_source_bodyids", "distinct_target_bodyids"]},
+    {"pattern": "data_details/layer_*.csv",
+     "description": "The discovery cone's interlayer sheets, one file per hop "
+                    "(`layer_N.csv` = the neurons at hop N of the search: "
+                    "`bodyId`, `type`, `instance`). What was searched, not a "
+                    "result table.",
+     "columns": ["bodyId", "type", "instance"]},
+    {"pattern": "visualization/visualization_data/*_data_connMatrix_*.csv",
+     "description": "Long-form connection matrices backing the interactive "
+                    "heatmap — one file per metric (`_weight`, `_ratio`, "
+                    "`_nt_type`; the `_prob` matrix is suspended and no "
+                    "longer written)."},
+    {"pattern": "bodyId_visualization/visualization_data/*_data_connMatrix_*.csv",
+     "description": "The bodyId-level twins of the long-form connection "
+                    "matrices backing `bodyId_visualization/`'s heatmap."},
     # Post-hoc pair-report additions (scripts/PathsPairReport.py writes
     # these INTO the run folder after the fact; the entries surface in the
     # run guide only when the files exist).
@@ -1251,9 +1704,15 @@ _PATHFINDING_FILES = [
      "description": "Per-source-target-pair HTML report (written "
                     "automatically after pathfinding runs; also via "
                     "scripts/PathsPairReport.py): Overview / Global / "
-                    "Pair Explorer / Data tabs, interactive networks; "
-                    "capped views link to the lossless breakdown CSVs "
-                    "below."},
+                    "Path / Data pages — Path holds the mode "
+                    "(Complete / Fast (corridor)) and view (Pair Explorer / "
+                    "Refill) destinations this run produced; interactive "
+                    "networks; capped views link to the lossless breakdown "
+                    "CSVs below. The report is written for the TOOL that "
+                    "produced the folder: the run-name grammar decides, and a "
+                    "folder under a custom Save As name is read from its own "
+                    "`path_mode` stamp, so a renamed Network run still gets "
+                    "Network wording instead of generic search advice."},
     {"pattern": "dataset_data/*/path_report.html",
      "description": "Per-delegate single-unit pair report inside each "
                     "cross-dataset dataset_data/<dataset>/<delegate>/ "
@@ -1373,14 +1832,21 @@ _PATHFINDING_EXPLANATION = [
             "validated top-M* type-level corridors (per source-target type "
             "pair x hop length): the strongest type-level routes and the "
             "weak-but-real [asked, applied) mass along them, which the "
-            "budget cut. The Fast Mode control selects when it runs: "
+            "budget cut. The Run Mode control selects when it runs: "
             "'Complete only' never; 'Auto (deep runs)' when "
-            "max_interlayer >= 4; 'Complete + Fast' always. Fast writes "
+            "max_interlayer >= 4; 'Complete + Fast' always; 'Fast only' "
+            "skips the Complete pipeline entirely, so route_scope_paths/ "
+            "is the run's only path table. Fast writes "
             "only its own route_scope_paths/ folder beside the run (plus "
             "data_details/route_plan/plan.json) and never modifies this "
             "run's outputs; a user_warning_notes entry appears only when "
-            "Fast refuses or fails. See the Fast (corridor) tab in "
-            "path_report.html and the route_scope_paths/ file list above.",
+            "Fast refuses or fails. Browse it under Path → Fast "
+            "(corridor) in path_report.html (Pair Explorer for the lane's "
+            "validated walks, Refill for its synapse >= 1 second round) "
+            "and, when the corridor ran, in the route_scope_paths/ file "
+            "list above. A run that found no paths "
+            "writes path_report.html as an empty state naming the "
+            "threshold that produced nothing.",
         ],
         "table": None,
         "pipeline": None,
@@ -1562,7 +2028,10 @@ _PATHFINDING_EXPLANATION = [
              "user_warning_notes.txt."],
             ["Visualization Edge Limit", "drawing only",
              "Caps unique edges drawn per HTML view; fetched connections, "
-             "the graph, and the path tables are unaffected."],
+             "the graph, and the path tables are unaffected. The cap the "
+             "folder was rendered with is stamped as `visualization edge "
+             "limit` (`200 (drawing only; tables keep every edge)` / `no "
+             "drawing cap`)."],
         ],
         "pipeline": None,
     },
@@ -1654,8 +2123,11 @@ _PATHFINDING_EXPLANATION = [
             "(mass 0). Refill-FULL runs at SYNAPSE >= 1 ONLY — no ratio "
             "tier, no synapse tier — re-valuing the SAME emitted chains: "
             "the full-connection scope, produced for EVERY all-mode run "
-            "(non-bitten synapse runs included). The report's Refill tab "
-            "carries a Refill-asked | Refill-full scope switch. Mass that "
+            "(non-bitten synapse runs included). The report's Path → "
+            "Refill view carries a Refill-asked | Refill-full scope switch "
+            "and, within each scope, the Complete-at-… / Refill-carrying "
+            "views; the Fast mode's lane answers the same scope pair under "
+            "Path → Fast (corridor). Mass that "
             "can fire on no chain is disclosed per pair as "
             "unfired_residual (asked) and pruned non-emitted-pair mass as "
             "non_emitted_pair_mass; the full scope enumerates PER CHAIN "
@@ -2276,8 +2748,9 @@ TOOL_GUIDE_SPECS = {
         "files": [
             {"pattern": "path_report.html",
              "description": "Per-source-target-pair HTML report, written "
-                            "automatically after the run: Overview / Global "
-                            "/ Pair Explorer / Data pages with capped "
+                            "automatically after the run: Overview / Global / "
+                            "Path / Data pages (Path holds the "
+                            "mode x view destinations) with capped "
                             "top-paths tables (bodyId coverage per path) "
                             "and offline interactive networks."},
             {"pattern": "paths_pair_breakdown/pair_breakdown_paths.csv",
@@ -2622,6 +3095,20 @@ TOOL_GUIDE_SPECS = {
                              "rank similarity per dataset-pair/threshold-pair). "
                              "Combination-mode rows are explicitly diagnostic, "
                              "not scalar comparison identities."},
+            {"pattern": "comparison_results/suggested_threshold_combinations.json",
+             "description": "The alignment suggestion in the shape the "
+                            "Cross-Dataset tab's Custom combination board "
+                            "consumes: reference_dataset, tolerance and one "
+                            "row per anchor with each dataset's matched "
+                            "threshold. `weight_basis` records what those "
+                            "thresholds ARE — synapse counts on the synapse "
+                            "basis, raw ratio fractions on the connection-"
+                            "ratio basis, because they were read off the "
+                            "executed minsyn_/minratio_ folders. 'Suggest "
+                            "from alignment' honours that key and moves the "
+                            "Threshold Basis selector with it, so a "
+                            "suggestion is never re-read in the other "
+                            "unit."},
             {"pattern": "comparison_results/edge_density_per_threshold.csv",
              "description": "Feature D data: per dataset, distinct connection-pair "
                              "counts (absolute and per-neuron) over the extended "

@@ -37,8 +37,11 @@ L3_to_l-LNv/
 **Benefits:**
 - Base folder contains only source/target names (cleaner)
 - Parameters moved to subfolder name with timestamp
-- Ratio and probability annotations are omitted because those filters are
-  disabled for pathfinding; ratio/probability values remain readout columns.
+- Ratio and probability annotations are omitted from the folder token when
+  neither is a live threshold; on a `weight_basis='connection_ratio'` run, or
+  with `threshold_combination='and'` and a ratio above 0, the ratio IS the
+  threshold and the token carries it (the `r{tier}` part). Probability stays
+  a readout column in every regime (F9, then suspended 2026-10-06).
 - Active path parameters remain visible in the folder name (L, w)
 
 ### 2. ✅ Configuration File Saving
@@ -49,8 +52,10 @@ L3_to_l-LNv/
 **Contents:**
 - Source/target neuron names
 - All run parameters (max_interlayer, min_synapse_num, the compatibility
-  ratio/probability values, and other settings); ratio/probability remain
-  readout columns only in the Complete/Shortest path pipeline.
+  ratio/probability values, and other settings); on the synapse 'Any one'
+  regime the ratio is a readout column, while a ratio-basis or Both (AND)
+  run states it as the live threshold — `parameters.txt` names which ran
+  (`weight basis`, `threshold combination`, `min connection ratio`).
 - Visualization settings (colors, showfig)
 - Analysis timestamp
 

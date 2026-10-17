@@ -187,7 +187,7 @@ def _corridor_mode_for_threshold(dataset_name, threshold, parameters) -> str:
     tiers would pay the lane enumeration for identical scope. The gate is
     absolute (explicit 'both' included): a higher-tier run's corridors
     are a strict subset of the lowest tier's. Canonical values
-    complete/auto/both; legacy 'off'/'on' normalize here so every
+    complete/auto/both/fast; legacy 'off'/'on' normalize here so every
     downstream surface sees the canonical names."""
     mode = getattr(parameters, 'corridor_mode', 'auto')
     if mode == 'off':
@@ -637,6 +637,34 @@ class ComparisonAnalyzer:
         # Preserve replay/fallback markers while normalizing all contract
         # values above.
         return meta
+
+    def _delegate_path_run(self, fnc, dataset_name, threshold, method_name):
+        """Run one delegated pathfinding tool, and refuse per UNIT.
+
+        Since plan 2026-10-16 §13 the tools RAISE when their query resolves to
+        no neuron in the dataset handed to them — the right answer for a single
+        run, which otherwise looked exactly like a run that searched and found
+        nothing. One dataset of N is not the user's whole request here: a type
+        present in one release and absent from another is the ordinary
+        cross-dataset case, so the refusal is recorded for THIS unit and the
+        comparison continues over the datasets that did resolve (the outcome the
+        silent `return` produced before the raise existed). Any other ValueError
+        still propagates — this handler must not swallow a real defect.
+        """
+        try:
+            getattr(fnc, method_name)(
+                find_reciprocal=self.parameters.find_reciprocal)
+        except ValueError as exc:
+            if 'resolved to no neurons' not in str(exc):
+                raise
+            reason = str(exc).splitlines()[0]
+            self._empty_query_refusals = list(
+                getattr(self, '_empty_query_refusals', [])) + [{
+                    'dataset': dataset_name, 'threshold': threshold,
+                    'method': method_name, 'reason': reason}]
+            self._log(f"  {dataset_name} @ {threshold}: {reason} — this "
+                      'dataset contributes no rows at this threshold.',
+                      level='warn')
 
     def _path_run_meta_from_fnc(self, dataset_name: str, threshold: int,
                                 fnc, path_mode: str) -> Dict:
@@ -1918,12 +1946,46 @@ class ComparisonAnalyzer:
             self._log(f"  Warning: could not write user_warning_notes.txt: {e}")
             return None
 
+    def _empty_query_banner(self) -> str:
+        """Publish the units whose query resolved to no neuron, IN the report.
+
+        The delegated tools refuse (raise) rather than fake a run, this
+        analyzer records the refusal and continues over the datasets that did
+        resolve — the ordinary cross-dataset case, since a type present in one
+        release is absent from another. The console line alone would leave a
+        reader of a matrix with a missing dataset to guess between 'nothing
+        connected at this threshold' and 'this dataset has no such neuron'.
+        """
+        import html as _html
+
+        refusals = list(getattr(self, '_empty_query_refusals', []) or [])
+        if not refusals:
+            return ''
+        esc = _html.escape
+        rows = ''.join(
+            f'<li><strong>{esc(str(r.get("dataset")))}</strong> at threshold '
+            f'{esc(str(r.get("threshold")))} ({esc(str(r.get("method")))}): '
+            f'{esc(str(r.get("reason")))}</li>'
+            for r in refusals[:20])
+        more = (f'<li>… {len(refusals) - 20} more refusal(s) of this kind.</li>'
+                if len(refusals) > 20 else '')
+        return f'''
+            <div style="background: #fff7ed; border-left: 4px solid #fb923c; padding: 12px 16px; margin-top: 12px; border-radius: 0 6px 6px 0;">
+                <strong>⚠️ {len(refusals)} dataset/threshold unit(s) contributed nothing because the query resolved to no neuron</strong>
+                <ul style="margin: 8px 0 0 18px;">{rows}{more}</ul>
+                <p class="note" style="margin: 8px 0 0 0;">These are not empty results: nothing was
+                searched, so no run folder and no rows exist for the unit named above. A type that
+                exists in one dataset release can be absent from another — check the name against
+                each dataset (Search Neurons tab) before reading the missing column as biology.</p>
+            </div>'''
+
     def _generate_mode_specific_note(self) -> str:
         """Generate HTML note specific to the comparison mode used."""
         mode = getattr(self.parameters, 'comparison_mode', 'path')
+        refusals = self._empty_query_banner()
         
         if mode == 'edge':
-            return '''
+            return refusals + '''
             <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin-top: 12px; border-radius: 0 6px 6px 0;">
                 <strong>⚠️ Edge-Based Comparison Mode:</strong> This analysis uses edge-based filtering where each synapse connection 
                 is evaluated independently by its weight. Edges are aggregated at the neuron type level. This mode avoids the 
@@ -1942,7 +2004,7 @@ class ComparisonAnalyzer:
                 weights are subsets of edge weights.
             </div>'''
         else:
-            return '''
+            return refusals + '''
             <div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 12px 16px; margin-top: 12px; border-radius: 0 6px 6px 0;">
                 <strong>⚠️ Path-Based Filtering Caveat:</strong> This analysis uses path-based filtering where edges are discovered 
                 through paths from source to target neurons. <strong>Strong edges may appear absent</strong> (marked ❌) if they only 
@@ -2070,9 +2132,11 @@ class ComparisonAnalyzer:
             flush=True,
         )
         if self.parameters.path_mode == 'shortest':
-            fnc.FindShortestPath(find_reciprocal=self.parameters.find_reciprocal)
+            self._delegate_path_run(fnc, dataset_name, threshold,
+                                    'FindShortestPath')
         else:
-            fnc.FindAllPath(find_reciprocal=self.parameters.find_reciprocal)
+            self._delegate_path_run(fnc, dataset_name, threshold,
+                                    'FindAllPath')
 
         # Capture the same post-enumeration provenance for BOTH modes.  The
         # old code populated this block only in the all-path branch, which
@@ -5070,7 +5134,9 @@ class ComparisonAnalyzer:
         )
         if self.parameters.path_mode == 'shortest':
             # Not reachable: replay is only enabled for path_mode='all'
-            fnc.FindShortestPath(find_reciprocal=self.parameters.find_reciprocal)
+            self._delegate_path_run(fnc, dataset_name,
+                                    thresholds[0] if thresholds else None,
+                                    'FindShortestPath')
             return None
         try:
             results = fnc.FindAllPathMultiThreshold(
@@ -9601,6 +9667,16 @@ class ComparisonAnalyzer:
                 _json.dump({
                     'reference_dataset': reference,
                     'tolerance': ALIGNMENT_TOLERANCE,
+                    # The tiers in `combinations` are read off the executed
+                    # threshold folders, so they are SYNAPSE COUNTS on the
+                    # synapse basis and RAW FRACTIONS on the ratio basis.
+                    # Without this key a reader that seeds the Cross-Dataset
+                    # board under the other basis silently re-reads 0.05 as
+                    # "0.05 synapses" (or 5 as "5%"), so the suggestion
+                    # carries the basis it was measured on.
+                    'weight_basis': str(
+                        getattr(self.parameters, 'weight_basis', 'synapse')
+                        or 'synapse'),
                     'combinations': rows,
                 }, f, indent=2, default=str)
             self._log(

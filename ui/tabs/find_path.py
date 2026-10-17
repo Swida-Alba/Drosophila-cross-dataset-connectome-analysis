@@ -10,6 +10,7 @@ from ..components.common import (
     checkbox_input, dir_input, apply_filter_mode, section_header, param_grid,
     tool_page, ALL_NEURONS_TOKEN, uses_all_neurons_token,
 )
+from ..components import pathfinding_controls as pc
 from ..components.mapping_editor import custom_grouping_block
 from ..components.output_panel import OutputPanel
 from ..runner import ScriptRunner
@@ -88,17 +89,7 @@ def create_find_path_tab():
         with ui.card().classes("w-full drocat-card").props('id="card-findpath-core"'):
             section_header("Core Parameters", "tune")
             with param_grid(3):
-                threshold_basis = select_input(
-                    "Threshold Basis", ["Synapse count", "Connection ratio"],
-                    default=("Connection ratio"
-                             if get_user_default("threshold_basis")
-                             == "connection_ratio" else "Synapse count"),
-                    hint="Which edge-weight basis thresholds the graph: raw "
-                         "synapse counts, or the connection ratio "
-                         "(synapses / all-post incoming weight of the post "
-                         "neuron — comparable across datasets). Ratio mode "
-                         "rank paths by their weakest fractional input.",
-                )
+                threshold_basis = pc.threshold_basis_select()
                 max_interlayer = number_input(
                     "Max Intermediate Layers", get_user_default("max_interlayer"), 0, None,
                     hint="Maximum number of intermediate neuron layers between source and target. Higher = more paths but slower.",
@@ -109,30 +100,10 @@ def create_find_path_tab():
                 )
                 # Percent display (2026-10-07): the ratio threshold reads
                 # far more naturally as a percentage of the post neuron's
-                # input; the payload divides by 100. Default 1% (= 0.01).
-                min_ratio_threshold = number_input(
-                    "Min Connection Ratio (%)", 1.0, 0.0, 100.0, 0.01,
-                    hint="Ratio-mode threshold in PERCENT: keep edges "
-                         "carrying at least this share of the post "
-                         "neuron's TOTAL input (F9 all-post denominator). "
-                         "Default 1% (= 0.01); finer tiers (e.g. 0.05%) "
-                         "stay typeable as decimals. data_details/"
-                         "ratio_synapse_map.csv shows the per-neuron "
-                         "synapse cutoffs the value implies.",
-                ).set_visibility(False)
-                threshold_combination = select_input(
-                    "Combine Thresholds", ["Any one (default)", "Both (AND)"],
-                    default=("Both (AND)"
-                             if get_user_default("threshold_combination")
-                             == "and" else "Any one (default)"),
-                    hint="How Min Synapse Count and Min Connection Ratio "
-                         "combine when both are set. Default: they are "
-                         "alternatives — one threshold governs the graph. "
-                         "Both (AND): an edge enters the graph only when it "
-                         "clears BOTH thresholds (each on its own scale); "
-                         "both inputs stay visible and the folder token "
-                         "carries both tiers.",
-                )
+                # input; the payload divides by 100 (in one place — see
+                # pathfinding_controls.ratio_payloads). Default 1% (= 0.01).
+                min_ratio_threshold = pc.min_ratio_percent_input()
+                threshold_combination = pc.threshold_combination_select()
                 edge_limit = number_input(
                     "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
                     hint="Drawing-only cap: at most this many unique edges are "
@@ -143,17 +114,13 @@ def create_find_path_tab():
                 )
 
             def _sync_threshold_basis():
-                ratio_mode = threshold_basis.value == "Connection ratio"
-                and_mode = threshold_combination.value == "Both (AND)"
-                # AND mode needs BOTH knobs visible whichever basis is
-                # active (round-13); single-knob regimes keep the
-                # historical visibility.
-                min_synapse.set_visibility(not ratio_mode or and_mode)
-                min_ratio_threshold.set_visibility(ratio_mode or and_mode)
+                pc.sync_threshold_visibility(threshold_basis, min_synapse,
+                                             min_ratio_threshold,
+                                             threshold_combination)
 
-            threshold_basis.on_value_change(lambda _e: _sync_threshold_basis())
-            threshold_combination.on_value_change(
-                lambda _e: _sync_threshold_basis())
+            for _el in (threshold_basis, threshold_combination,
+                        min_ratio_threshold):
+                _el.on_value_change(lambda _e: _sync_threshold_basis())
             _sync_threshold_basis()
             interlayer_warning = ui.label(
                 "⚠️ Layers ≥ 4: the path count grows combinatorially (branching^depth) — "
@@ -167,57 +134,16 @@ def create_find_path_tab():
                 hint="Enrich the path graph with reciprocal direct connections.",
             )
 
-            corridor_mode = select_input(
-                "Run Mode (Complete / Fast)",
-                {"complete": "Complete only",
-                 "auto": "Auto (deep runs)",
-                 "both": "Complete + Fast",
-                 "fast": "Fast only (standalone)"},
-                default=get_user_default("corridor_mode"),
-                hint="What runs on this query — complete: the COMPLETE mode "
-                     "only (all intact paths >= the applied threshold; the "
-                     "run itself). auto: COMPLETE, then FAST on deep searches "
-                     "(max intermediate layers >= 4). both: ALWAYS run FAST "
-                     "after the run. fast: STANDALONE FAST — only the "
-                     "corridor lane runs on this query (no Complete run; the "
-                     "folder carries route_scope_paths/ only). FAST mode is "
-                     "upper-bound-guided representative exploration under "
-                     "per-class share quotas — not a guarantee of the "
-                     "strongest actual neuron routes. Fast never modifies "
-                     "other outputs. Full guide via the book icon.",
-                help_doc="pathfinding_algorithms",
-            )
-            corridor_note = ui.label("").classes(
-                "text-caption text-blue-8")
+            # Corridor lane (plan-corridor-lane.md) — selector + the live
+            # WILL/will-NOT line, both defined once for every tab that has a
+            # Run Mode (shared module; the label, the four values and the
+            # auto-depth rule cannot drift between them again).
+            run_mode = pc.run_mode_block(
+                depth_getter=lambda: int(max_interlayer.value or 0))
 
-            def _corridor_note_text():
-                mode = corridor_mode.value
-                depth = int(max_interlayer.value or 0)
-                # canonical modes are complete/auto/both/fast — the legacy
-                # on/off checks never matched the selector
-                if mode == "fast":
-                    return ("Fast only: the corridor lane runs standalone "
-                            "on this query — no Complete run (the folder "
-                            "carries route_scope_paths/ only).")
-                if mode == "complete":
-                    return "Fast mode: off (Complete only)."
-                will = (mode == "both"
-                        or (mode == "auto" and depth >= 4))
-                return (f"Fast mode (corridor lane): "
-                        f"{'WILL' if will else 'will NOT'} "
-                        f"run after this search (mode {mode}, "
-                        f"depth {depth}; auto needs >= 4).")
-
-            def _refresh_corridor_note():
-                # Label.set_text (NOT set_value — house rule)
-                corridor_note.set_text(_corridor_note_text())
-
-            _refresh_corridor_note()
-            corridor_mode.on_value_change(
-                lambda _e: _refresh_corridor_note())
             def _on_max_interlayer_change(e):
                 interlayer_warning.set_visibility((e.value or 0) >= 4)
-                _refresh_corridor_note()
+                run_mode.refresh()
 
             max_interlayer.on_value_change(_on_max_interlayer_change)
 
@@ -269,44 +195,11 @@ def create_find_path_tab():
 
         with ui.card().classes("w-full drocat-card").props('id="card-findpath-hemisphere"'):
             section_header("Hemisphere Analysis", "sync_alt")
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                separate_hemi = checkbox_input(
-                    "Hemisphere-aware", False,
-                    hint="Split type/group aggregation into _L/_R/_U hemisphere labels.",
-                )
-                hemi_filter = select_input(
-                    "Hemisphere", ["both", "left", "right"], "both",
-                    hint="'both': all neurons. 'left'/'right': restrict to that hemisphere. "
-                         "Neurons WITHOUT an explicit hemisphere (no _L/_R instance suffix "
-                         "or Soma side) are always included in every option.",
-                    inline=True,
-                )
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                symmetry_analysis = checkbox_input(
-                    "Symmetry Analysis", False,
-                    hint="Generate ipsilateral vs contralateral symmetry outputs.",
-                )
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                keep_hemi_conserved = checkbox_input(
-                    "Keep Only Hemisphere-Conserved Edges", False,
-                    hint="Keep only edges conserved between hemispheres (requires Hemisphere-aware).",
-                )
-            def _sync_hemisphere_options():
-                if separate_hemi.value:
-                    keep_hemi_conserved.enable()
-                    symmetry_analysis.enable()
-                    hemi_filter.set_enabled(True)
-                else:
-                    # dependent options are unchecked AND disabled so a
-                    # greyed-out True never reaches the backend
-                    keep_hemi_conserved.value = False
-                    symmetry_analysis.value = False
-                    hemi_filter.value = 'both'
-                    keep_hemi_conserved.disable()
-                    symmetry_analysis.disable()
-                    hemi_filter.set_enabled(False)
-            separate_hemi.on_value_change(lambda _e: _sync_hemisphere_options())
-            _sync_hemisphere_options()
+            # The card is identical on all three connection tabs, so it is
+            # defined once (the auto-uncheck law included: the backend applies
+            # hemisphere_filter independently of Hemisphere-aware, so a
+            # greyed-out True must never reach it).
+            hemi = pc.hemisphere_block()
 
         # --- Advanced Settings (kept at the bottom, in its own card) ---
         with ui.card().classes("w-full drocat-card").props('id="card-findpath-advanced"'):
@@ -324,12 +217,13 @@ def create_find_path_tab():
                 with param_grid(3):
                     # F9: ratio/probability filters are disabled (ratio is a
                     # readout column now). The entrances stay in the code,
-                    # hidden, for the future ratio-weighted mode.
+                    # hidden, for the future ratio-weighted mode. They are the
+                    # raw 0-1 knobs and are read by NO payload — the payload's
+                    # ratio comes from the percent field in Core (one unit,
+                    # one conversion point; plan 2026-10-16 A2).
                     min_ratio = number_input(
                         "Min Connection Ratio", 0, 0, 1, 0.01,
-                        hint="Disabled: connection_ratio is a readout column "
-                             "(weight / all-post incoming weight) — it no longer "
-                             "filters.",
+                        hint=pc.DORMANT_RATIO_HINT,
                     ).set_visibility(False)
                     min_traversal = number_input(
                         "Min Traversal Prob.", 0, 0, 1, 0.01,
@@ -434,26 +328,17 @@ def create_find_path_tab():
         # Parse keyword filter (chips are already individual keywords)
         keywords = [str(k) for k in keyword_filter.get_value()[1]] or ['None']
 
-        ratio_mode = threshold_basis.value == "Connection ratio"
-        and_mode = threshold_combination.value == "Both (AND)"
         constructor_params = {
             "dataset": dataset.value,
             "sourceNeurons": sources,
             "targetNeurons": targets,
             "output_dir": output_dir.value,
-            "weight_basis": "connection_ratio" if ratio_mode else "synapse",
-            # Default ('or'): ratio mode — the ratio IS the threshold
-            # (backend forces the synapse floor to 1); synapse mode — F9,
-            # ratio is a readout (sent 0). AND mode (round-13): BOTH knobs
-            # ride the payload and the backend co-thresholds the graph.
-            "threshold_combination": "and" if and_mode else "or",
-            "min_synapse_num": (
-                int(min_synapse.value)
-                if (and_mode or not ratio_mode) else 1),
-            "min_ratio": (
-                # the field is in PERCENT — convert to the raw fraction
-                float(min_ratio_threshold.value) / 100.0
-                if (and_mode or ratio_mode) else 0.0),
+            # One derivation for the threshold regime (shared with Shortest
+            # Paths and Network): the percent field is converted in exactly
+            # one place, so no tab can read the same engine key in a
+            # different unit.
+            **pc.ratio_payloads(threshold_basis, threshold_combination,
+                                min_synapse, min_ratio_threshold),
             "min_traversal_probability": 0.0,
             "max_interlayer": 0 if (src_all or tgt_all) else int(max_interlayer.value),
             "filter_by": filter_by.value,
@@ -462,7 +347,7 @@ def create_find_path_tab():
             "pathfinding": "StrongestFirst",
             # Corridor lane (plan-corridor-lane.md): off/auto/on; auto
             # runs the standalone route-scoped pass after deep runs.
-            "corridor_mode": corridor_mode.value,
+            "corridor_mode": run_mode.value,
             # Fix D: the Edge Budget (lossy floor above the N-th strongest
             # edge, w0 = w1 + 1). 0 = off.
             "graph_edge_limit_bodyid": int(edge_budget.value),
@@ -483,10 +368,7 @@ def create_find_path_tab():
             "cache_only": cache_only.value,
             "drop_untyped": drop_untyped.value,
             "saveas": saveas.value.strip() or "",
-            "separate_hemispheres": separate_hemi.value,
-            "hemisphere_filter": hemi_filter.value,
-            "keep_only_hemisphere_conserved_connections": keep_hemi_conserved.value,
-            "symmetry_analysis": symmetry_analysis.value,
+            **hemi.payload(),
             "find_reciprocal": find_reciprocal.value,
         }
         if mapping_path:

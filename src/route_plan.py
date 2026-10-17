@@ -9,8 +9,11 @@ R2  CorridorDrain         — W-guided per-source resumable drain generator
 R3  validate_and_fill     — lazy plan/validate loop: phantom check (layered
                             reachability; exact forward DP for distinct-
                             type walks with a work cap, visited DFS for
-                            multi-visit) -> realizations vs per-(pair,h)
-                            path budget -> per-class floors/budget stops
+                            multi-visit) -> acceptance pays the class's
+                            ROUTE share once (existence probe, not a
+                            realization count), realization mass is spent
+                            later against the class envelope
+                            -> per-class floors/budget stops
 run_lane                  — standalone driver: reads the run folder's
                             parameters.txt (spaced-key grammar), reproduces
                             the run's edge universe (filter parity; the
@@ -161,15 +164,39 @@ def widest_to_targets_fast(pairs: pl.DataFrame, targets: set, bound: int
 
 @dataclass
 class ClassBudget:
-    """Per (pair, h) binding path budget with adaptive walk acceptance.
+    """Per (pair, h) class budget: acceptance in ROUTES, materialization in PATHS.
 
-    mh_prov (§21): the provisional candidate-probe cap
-    clamp(M_base * decay**(h-1)) — a class stops pulling candidates once
-    probed that many (the binding limit stays the path budget). feasible
-    (§22 cost control): False when no length-h walk can exist (h below the
-    min type distance) — such a class can never receive candidates, so it
-    must not keep the drain alive."""
+    Two currencies, deliberately separated (2026-10-16; measured on
+    find-paths-complete_MCNS_aMe12_etc_to_PPL101_etc_L1w5_20261016_132625):
+
+    * ``route_share`` — how many VALID TYPE-LEVEL ROUTES the class
+      publishes. Acceptance used to consume ``limit`` by REALIZATION COUNT,
+      so the single walk aMe12->KCg-d->PPL103 (>= 100 bodyId paths) filled
+      its class and the lane published ONE route for that pair while a
+      candidate at UB 15 waited behind it (accepted=1, used=100, pulled=1,
+      stop='budget'). A candidate is now probed for EXISTENCE, so a fat
+      corridor cannot starve its siblings.
+    * ``limit`` (``--pair-length-budget``) — the class's REALIZATION
+      envelope: how many bodyId witness paths the materialization pass may
+      enumerate for the class. Every accepted route is still guaranteed one
+      witness, so the envelope truncates the strong walks' tie mass and
+      never the route list.
+    * ``pull_cap`` — candidate pulls allowed (route share + a phantom
+      allowance). §21's probe cap was the only pull bound, which let
+      phantoms eat the share with no fill-up; now a class that spends its
+      pulls on phantoms closes as ``probe_cap`` and one that filled its
+      share closes as ``budget``.
+
+    ``count_routes=False`` is the opt-in certify_actual reading: that mode
+    certifies the class's top ``limit`` REALIZED paths by actual bottleneck,
+    so its share stays counted in paths.
+    feasible (§22 cost control): False when no length-h walk can exist (h
+    below the min type distance) — such a class can never receive
+    candidates, so it must not keep the drain alive."""
     limit: int = 100
+    route_share: int | None = None
+    pull_cap: int | None = None
+    count_routes: bool = True
     used: int = 0
     walks: list = field(default_factory=list)   # accepted (ub, walk)
     floor: float | None = None
@@ -189,7 +216,6 @@ class ClassBudget:
     layered_rejected: int = 0
     pulled: int = 0
     stop: str = ""
-    mh_prov: int | None = None
     feasible: bool = True
     # D2-B (certified actual-strength mode, opt-in): the class stays
     # share-satisfied mechanically, but the batch loop keeps witnessing
@@ -208,21 +234,30 @@ class ClassBudget:
     off_plan: int = 0
     off_len: int = 0
 
+    @property
+    def share(self) -> int:
+        """The acceptance bound, in its own currency: type-level ROUTES by
+        default, realized PATHS for certify_actual (or for a caller that
+        passed no route_share, which keeps the old path-share reading)."""
+        if not self.count_routes or self.route_share is None:
+            return self.limit
+        return int(self.route_share)
+
     def satisfied(self) -> bool:
         if self.certify_actual and self.feasible:
             # D2-B: an OPEN class stays in the drain's pending set so the
             # skip path keeps witnessing skipped candidates' UBs against
-            # the running weakest exported bottleneck. The probe cap
-            # below still closes the class (a certified-mode drain is
-            # bounded by the same budgets).
-            if self.used >= self.limit or not self.feasible:
+            # the running weakest exported bottleneck. The pull cap below
+            # still closes the class (a certified-mode drain is bounded by
+            # the same budgets).
+            if self.used >= self.share or not self.feasible:
                 return self.certified
-            return (self.mh_prov is not None
-                    and self.pulled >= self.mh_prov)
-        if self.used >= self.limit or not self.feasible:
+            return (self.pull_cap is not None
+                    and self.pulled >= self.pull_cap)
+        if self.used >= self.share or not self.feasible:
             return True
-        return (self.mh_prov is not None
-                and self.pulled >= self.mh_prov)
+        return (self.pull_cap is not None
+                and self.pulled >= self.pull_cap)
 
 
 class CorridorDrain:
@@ -450,7 +485,7 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
         if cb is None:
             since_accept += 1
             continue
-        share_done = cb.used >= cb.limit or not cb.feasible
+        share_done = cb.used >= cb.share or not cb.feasible
         _cert_open = (cb.certify_actual and cb.feasible
                       and not cb.certified)
         if cb.satisfied() or (share_done and (
@@ -481,8 +516,14 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
             continue
         cb.pulled += 1
         since_accept += 1
+        # ROUTE-COUNTED ACCEPTANCE (2026-10-16): a candidate is probed for
+        # EXISTENCE (cap 1 — any realization proves it is no phantom), so a
+        # fat corridor's realization mass can no longer consume the class's
+        # route share. certify_actual keeps its path-share reading: its
+        # certification needs every realization's bottleneck inline.
         n, truncated = realize_fn(
-            walk, cb.limit if _cert_open else cb.limit - cb.used)
+            walk, cb.share if _cert_open
+            else (1 if cb.count_routes else cb.share - cb.used))
         if n == 0:
             if truncated:
                 # work-capped before the first path: unverified, NOT a
@@ -495,11 +536,11 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
             continue
         since_accept = 0
         cb.walks.append((ub, walk))
-        cb.used += n
+        cb.used += 1 if cb.count_routes else n
         cb.floor = ub
         if truncated:
             cb.truncated_walks += 1
-        if cb.used >= cb.limit:
+        if cb.used >= cb.share:
             cb.stop = "budget"
         if cb.satisfied():
             pending.discard(key)
@@ -511,8 +552,8 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
             continue
         if not cb.feasible:
             cb.stop = "infeasible"
-        elif cb.mh_prov is not None and cb.pulled >= cb.mh_prov \
-                and cb.used < cb.limit:
+        elif cb.pull_cap is not None and cb.pulled >= cb.pull_cap \
+                and cb.used < cb.share:
             cb.stop = "probe_cap"
         elif stalled:
             # the accept stream stalled while this class stayed hungry —
@@ -534,7 +575,7 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
         elif not drain.exhausted:
             cb.stop = "capped" if cb.pulled else "dry"
         elif cb.pulled:
-            cb.stop = "exhausted" if cb.used < cb.limit else "budget"
+            cb.stop = "exhausted" if cb.used < cb.share else "budget"
         else:
             cb.stop = "dry"
     return {"drain_pops": drain.pops, "drain_exhausted": drain.exhausted,
@@ -548,7 +589,10 @@ def validate_and_fill(drain: CorridorDrain, classes: dict,
                 "layered_rejected": cb.layered_rejected,
                 "pulled": cb.pulled,
                 "floor": cb.floor, "floor_next": cb.floor_next,
-                "mh_prov": cb.mh_prov, "feasible": cb.feasible,
+                "route_share": cb.share, "pull_cap": cb.pull_cap,
+                "realization_envelope": cb.limit,
+                "counted": "routes" if cb.count_routes else "paths",
+                "feasible": cb.feasible,
                 "stop": cb.stop}
                 for k, cb in classes.items()}}
 
@@ -879,6 +923,20 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         kv.get("certify actual"), False)
     trigger = trigger or ("in-run" if fnc is not None else
                           "run-folder" if run_dir else "driver-direct")
+    # R3 (plan-corridor-refill-and-mode-tabs): `corridor_mode` is what the
+    # CALLER passed; `run_mode` is the USER's resolved selection (the engine
+    # stamps it into parameters.txt / all_attributes.json). A reader needs
+    # the second one to tell "Complete only was selected" from "the lane
+    # was selected and refused" — the report's tab-presence rule keys on it.
+    run_mode = str(corridor_mode or "both").lower()
+    _rm = getattr(fnc, "_resolved_run_mode", None)
+    if callable(_rm):
+        try:
+            run_mode = _rm()
+        except Exception:  # noqa: BLE001 - provenance, never fatal
+            pass
+    elif kv.get("run mode"):
+        run_mode = str(kv["run mode"]).strip().lower() or run_mode
     out = Path(out_dir) if out_dir else (
         Path(run_dir) / "route_scope_paths" if run_dir else None)
     if out is None:
@@ -888,7 +946,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         out.mkdir(parents=True, exist_ok=True)
         (out / "route_provenance.json").write_text(json.dumps(
             {"status": "refused", "reason": str(reason),
-             "corridor_mode": corridor_mode, "trigger": trigger},
+             "corridor_mode": corridor_mode, "run_mode": run_mode,
+             "trigger": trigger},
             indent=2, default=str), encoding="utf-8")
         (out / "README.md").write_text(
             "# Corridor lane (route_scope_paths)\n\n"
@@ -1260,6 +1319,17 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                           & (pl.col("weight") >= t_syn_floor)))
         typed = build_type_pairs(conn_r, tmap, 0,
                                  drop_untyped=drop_untyped)[0]
+        # The conditioned denominator is NOT the ratio-gated cone: the
+        # engine conditions `connection_ratio_adj` at the MIN-SYNAPSE tier
+        # (`thr = max(1, min_synapse_num)`), and a ratio-basis run forces
+        # that to 1 — so its adjusted denominator is the plain all-inputs
+        # one and adj == plain by construction (gate L1 covers every basis,
+        # not only synapse runs). `conn_r` here would cut the ratio gate
+        # too, leaving an 8/8 adj != plain cone denominator (measured on
+        # L1r0.001). Same universe as the synapse branch below.
+        adj_denom_src = (conn_pairs.filter(
+            pl.col("weight") >= int(t_syn_floor))
+            if int(t_syn_floor) > 1 else conn_pairs)
         typed = typed.join(
             conn_r.select("bodyId_pre", "bodyId_post", "_ratio"),
             on=["bodyId_pre", "bodyId_post"], how="left")
@@ -1285,6 +1355,12 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             conn_path, neuron_source, conn, tmap, asked, drop_untyped,
             exclude_intra, separate_hemi, hemi_filter, label_mapper,
             _phase)
+        # Same rule on the synapse basis: all pres, synapse units,
+        # conditioned at the lane's own asked floor. At asked <= 1 nothing is
+        # cut, so the conditioned denominator IS the plain one and
+        # adj == plain by construction (gate L1).
+        adj_denom_src = (conn.filter(pl.col("weight") >= int(asked))
+                         if int(asked) > 1 else conn)
     # CANONICAL ROW ORDER (2026-10-11): polars group_by is a parallel
     # hash aggregate — its output order varies run to run, which leaks
     # into FastGraph edge-insertion order and the budgeted tie-drain's
@@ -1392,11 +1468,18 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     type_incoming = {}
     for t, w in zip(incoming["t"].to_list(), incoming["w"].to_list()):
         type_incoming[t] = type_incoming.get(t, 0) + float(w)
-    # C1.1 (plan-corridor-alignment-and-viz-bases §2): the
-    # threshold-CONDITIONED denominators come from the lane's own >= asked
-    # universe — zero extra scans. `== plain` by construction when
-    # asked <= 1 (round-13 "always emitted" parity with the refill lane).
-    incoming_adj = (typed.group_by("bodyId_post")
+    # C1.1 (plan-corridor-alignment-and-viz-bases §2) + F-EX-003 D3b/D3c:
+    # the threshold-CONDITIONED denominator is the ALL-PRES, SYNAPSE-UNIT
+    # incoming of the edges this lane admits at its own asked rule — the
+    # same universe `connection_type.csv`'s `connection_ratio_adj` divides
+    # by. Two defects fixed here: (i) it used to sum the lane's `typed`
+    # frame, which has already dropped untyped pres, so adj != plain even at
+    # asked <= 1 (measured on MCNS: PPL101 38,866 conditioned vs 39,137
+    # plain, against the code's own "== plain by construction" claim); (ii)
+    # on a ratio-basis run `typed.weight` is the per-edge F9 RATIO, so a
+    # synapse numerator over it yielded impossible input shares (measured
+    # 0.912 and 204.54 on the L1r0.001 run).
+    incoming_adj = (adj_denom_src.group_by("bodyId_post")
                     .agg(pl.col("weight").sum().alias("w")))
     incoming_adj = incoming_adj.join(tmap, left_on="bodyId_post",
                                     right_on="bid")
@@ -1404,6 +1487,18 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     for t, w in zip(incoming_adj["t"].to_list(),
                     incoming_adj["w"].to_list()):
         type_incoming_adj[t] = type_incoming_adj.get(t, 0) + float(w)
+    # Largest single SYNAPSE edge per admitted type pair, on every weight
+    # basis (the ratio branch's `pairs.w_max` is the Et pair RATIO, so it
+    # cannot serve a column named `weight_max`).
+    _mass = "weight_syn" if ratio_basis else "weight"
+    wmax_syn = {}
+    try:
+        _wm = (typed.group_by("type_pre", "type_post")
+               .agg(pl.col(_mass).max().alias("_mx")))
+        wmax_syn = {(str(r["type_pre"]), str(r["type_post"])):
+                    float(r["_mx"]) for r in _wm.to_dicts()}
+    except Exception:  # noqa: BLE001 - falls back to the lane's own w_max
+        wmax_syn = {}
     type_nt = _type_nt_map(frame)
 
     walk_rows, body_rows = [], []
@@ -1624,10 +1719,21 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         for t in tgt_types:
             d_lb = ds_all.get(t)
             for h in range(1, bound + 1):
+                # ROUTE SHARE (§21's M*, now spent on accepted routes) and
+                # the candidate-probe bound around it. The pull cap allows
+                # one share's worth of phantoms: a phantom-heavy class
+                # still terminates, but a run of phantoms can no longer eat
+                # the share the routes were asked for (the 2026-10-16
+                # finding: the old single cap made phantoms and routes pay
+                # from one purse). certify_actual counts its share in
+                # realized paths, so it keeps count_routes=False.
+                _share = max(1, round(
+                    float(top_m_base) * (float(length_decay) ** (h - 1))))
                 classes[((s, t), h)] = ClassBudget(
                     limit=limit,
-                    mh_prov=max(1, round(
-                        float(top_m_base) * (float(length_decay) ** (h - 1)))),
+                    route_share=_share,
+                    pull_cap=_share * 2,
+                    count_routes=not certify_actual,
                     feasible=(d_lb is not None and h >= d_lb),
                     certify_actual=certify_actual)
         s_bodies = [b for b in src_ids if body2type.get(b) == s
@@ -1696,11 +1802,19 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 remaining = cb.limit
                 emitted_total = 0
                 for rank, (ub, walk) in enumerate(cb.walks, start=1):
-                    if remaining <= 0:
-                        break
                     if deadline is not None and time.monotonic() > deadline:
                         time_capped = True
                         break
+                    # EVERY accepted route gets at least one witness
+                    # (2026-10-16): the class envelope `cb.limit` governs the
+                    # tie MASS an enumeration may carry, not whether a route
+                    # is published at all. The old `if remaining <= 0: break`
+                    # silently dropped every accepted walk after the envelope
+                    # was spent — the materialization half of the fat-walk
+                    # starvation. A route's mass columns never depended on
+                    # this sample anyway (chain mass comes from the layered
+                    # filter below, by construction unbudgeted).
+                    share = max(1, remaining)
                     # PER-PAIR CACHE + PER-POSITION PLACEMENT (2026-10-11,
                     # plan F5): each hop's rows come from the shared
                     # _PairEdges cache (canonical order, dedup'd) and are
@@ -1755,7 +1869,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                     # what the share cut — the old budget == share made
                     # the generator stop exactly at the share and every
                     # boundary read as unverifiable.
-                    budget = remaining + 1
+                    budget = share + 1
                     for _attempt in range(1):  # layered: no retry needed
                         st: dict = {}
                         # LAZY consumption with a per-item deadline check:
@@ -1807,7 +1921,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                                         _raw[-1], {}).get(_raw[0]) != h:
                                     paths.pop()
                                     continue
-                            if len(paths) >= remaining:
+                            if len(paths) >= share:
                                 # §21 heavy-tail ruling: the share
                                 # truncates the walk's tie mass. The
                                 # generator is LAZY — breaking here stops
@@ -1903,9 +2017,46 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                     cb.layered_rejected += layered_rejected_here
                     for r in class_body_rows:
                         r["applied_tau"] = tau
-                    # ---- per-WALK type row (§23.5: one row per validated
-                    # walk; *_allpaths_type.csv column order + additive) --
-                    hop_mass = [sum(e.values()) for e in hop_edges]
+                    # ---- CHAIN-LEVEL per-hop mass + coverage (F-EX-001,
+                    # Decisions 3) ------------------------------------
+                    # The witness union above is a SAMPLE: every realizing
+                    # bodyId path is a representative route, but the sum over
+                    # a budgeted subset of them (500 of 1336 synapses on the
+                    # MCNS aMe12->KCg-d->PPL101 walk, with the class at
+                    # stop='budget') is not a mass anyone can read as a
+                    # connection weight. The chain's own per-position
+                    # restricted mass comes from the REFILL's forward +
+                    # backward layered filter — the helper that already
+                    # reproduces the complete lane's [1336, 476] element-wise
+                    # when the tiers match — run over THIS lane's admitted
+                    # graph in SYNAPSE units (`weight_syn` on a ratio run, the
+                    # same rule that anchors the refill's path tables). No
+                    # enumeration, so the class budget cannot bias it.
+                    chain_edges, chain_nodes = hop_edges, node_seen
+                    chain_revisit = False
+                    try:
+                        from type_level_refill import (
+                            _layered_chain_structures)
+                        _pe = {}
+                        for i in range(h):
+                            _d = _pe.setdefault((walk[i], walk[i + 1]), {})
+                            for u, v, w in pair_rows[i]:
+                                _d.setdefault(u, []).append(
+                                    (v, float(syn_w[(u, v)])
+                                     if ratio_basis else float(w)))
+                        _st = _layered_chain_structures(
+                            tuple(walk), _pe, s_bodies, t_bodies,
+                            body2type, set())
+                        if _st is not None:
+                            chain_edges = _st['edges_at']
+                            chain_nodes = _st['nodes_at']
+                            chain_revisit = bool(_st['revisit'])
+                    except Exception:  # pragma: no cover - additive lane
+                        # The chain readout is additive: a lane that cannot
+                        # resolve the shared filter keeps its witness union
+                        # rather than publishing nothing.
+                        pass
+                    hop_mass = [sum(e.values()) for e in chain_edges]
                     ratios, ratios_adj = [], []
                     for i in range(h):
                         denom = type_incoming.get(walk[i + 1], 0.0)
@@ -1918,6 +2069,17 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                     finite_adj = [r for r in ratios_adj
                                   if r is not None]
                     cov = [
+                        "{}/{}".format(
+                            len(chain_nodes[i]),
+                            type_membership.get(walk[i],
+                                                len(chain_nodes[i])))
+                        for i in range(h + 1)]
+                    # The SAMPLED witness readout survives, renamed so it can
+                    # never be mistaken for a connection weight, and kept in
+                    # the file for the lane's own sampling audits (gate L6a:
+                    # it must never exceed the chain mass beside it).
+                    samp_mass = [sum(e.values()) for e in hop_edges]
+                    samp_cov = [
                         "{}/{}".format(
                             len(node_seen[i]),
                             type_membership.get(walk[i],
@@ -1952,6 +2114,16 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                         "nt_types": "[" + ", ".join(
                             f'"{x}"' for x in nts) + "]",
                         "coverage": "[" + ", ".join(cov) + "]",
+                        "sampled_support_mass": "[" + ", ".join(
+                            _fmt_mass(m) for m in samp_mass) + "]",
+                        "sampled_ratios": "[" + ", ".join(
+                            repr(m / type_incoming.get(walk[i + 1], 0.0))
+                            if type_incoming.get(walk[i + 1], 0.0) > 0
+                            else 'None'
+                            for i, m in enumerate(samp_mass)) + "]",
+                        "sampled_coverage": "[" + ", ".join(
+                            samp_cov) + "]",
+                        "chain_revisit": chain_revisit,
                         "applied_tau": tau,
                         "route_h": h, "route_ub": float(ub),
                         "route_floor_h": (None if cb.floor is None
@@ -2013,7 +2185,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                    "coverage": pl.Utf8, "applied_tau": pl.Float64,
                    "route_h": pl.Int64, "route_ub": pl.Float64,
                    "route_floor_h": pl.Float64, "plan_rank": pl.Int64,
-                   "realized_paths": pl.Int64}
+                   "realized_paths": pl.Int64,
+                   # Decisions 3: the sampled witness readout, demoted to
+                   # explicitly-named columns beside the chain-level ones.
+                   "sampled_support_mass": pl.Utf8,
+                   "sampled_ratios": pl.Utf8,
+                   "sampled_coverage": pl.Utf8,
+                   "chain_revisit": pl.Boolean}
     pl.DataFrame(walk_rows, schema=type_schema).write_csv(
         out / "route_paths_type.csv")
     if write_bodyid:
@@ -2034,10 +2212,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             rec = scope_pairs[(a, b)]
             wsum, wmax, n = pair_lookup.get((a, b), (None, None, None))
             realized = round(sum(rec["edges"].values()), 2)
+            # F-EX-003 D3b: ONE universe for both flavors, all pres, synapse
+            # units — the same denominators `connection_type.csv` uses for
+            # `connection_ratio` / `connection_ratio_adj`.
             denom = type_incoming.get(b, 0.0)
-            if ratio_basis:
-                denom = denom_adj = 0  # the mean-ratio readout needs no
-                # mass denominators on the ratio basis
             denom_adj = type_incoming_adj.get(b, 0.0)
             _sel_ratios = rec.get("edge_ratios") or {}
             _mean_ratio = (round(sum(_sel_ratios.values())
@@ -2047,32 +2225,83 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 # _TYPE_MIRROR_COLUMNS family (type_level_refill.py:1758)
                 "type_pre": a, "type_post": b,
                 "weight": wsum,
-                "nt_type": type_nt.get(b, ""),
-                # CORRIDOR-ON-RATIO: on the ratio basis the pair's ratio
-                # readout is the MEAN realizing-edge F9 ratio over the
-                # selected support (never a mass quotient)
+                # F-EX-006: `nt_type` is the PRESYNAPTIC type's
+                # transmitter, exactly as `connection_type.csv` publishes it
+                # in this same mirror family. It used to read the POST type,
+                # so `aMe26→SMP091` said acetylcholine here and gaba there,
+                # and every hop into PPL101/PPL103 claimed dopamine.
+                "nt_type": type_nt.get(a, ""),
+                # F-EX-011 (Decisions 4): the ratio columns are MASS SHARES on
+                # every weight basis — a quotient a reader can reproduce from
+                # the row's own numbers, like every other connection table.
+                # The mean realizing-edge F9 ratio is still published, but
+                # under its own name, never in the `connection_ratio` slot.
                 "connection_ratio": (
-                    _mean_ratio if ratio_basis else
-                    (round(realized / denom, 6) if denom > 0 else None)),
+                    round(realized / denom, 6) if denom > 0 else None),
                 "conn_layer": "route_scope",
                 "connection_ratio_adj": (
-                    _mean_ratio if ratio_basis else
-                    (round(realized / denom_adj, 6)
-                     if denom_adj > 0 else None)),
-                # corridor tail
-                "weight_max": wmax, "pair_count": n,
+                    round(realized / denom_adj, 6)
+                    if denom_adj > 0 else None),
+                # corridor tail — `weight_max` is the largest single SYNAPSE
+                # edge of the pair on every basis (it carried the Et pair
+                # RATIO on ratio runs, a unit change under a name that says
+                # "max weight"). The Et ratio keeps its own named column.
+                "weight_max": wmax_syn.get((a, b), wmax if not ratio_basis
+                                           else None),
+                "et_pair_ratio": (round(wmax, 6) if ratio_basis
+                                  and wmax is not None else None),
+                "mean_edge_f9_ratio": _mean_ratio,
+                "pair_count": n,
                 # F-PF-008 (audit 2026-10-13): `weight` is the WHOLE
                 # admitted type-pair mass while connection_ratio divides
                 # the SELECTED-realization mass — two support sets behind
                 # one row. The explicit aliases name each quantity so no
                 # reader has to guess which numerator a number uses.
-                "universe_pair_mass": wsum,
+                # Renamed (plan-corridor-refill-and-mode-tabs F4/Q3) from
+                # `universe_pair_mass`: it is the type-pair's WEIGHT
+                # UNIVERSE the chain hops are drawn from, and the report
+                # column that prints it per hop is `Universe type weights`.
+                "universe_type_weights": wsum,
                 "selected_support_mass": realized,
                 "realized_mass": realized,
                 "realizing_paths": rec["paths"],
                 "used_by_walks": rec["walks"]})
         pl.DataFrame(conn_rows).write_csv(
             out / "route_connection_type.csv")
+    # The lane's CONDITIONED denominators (>= asked), published beside the
+    # pair table so the report's corridor Adj column stays CHAIN-derived
+    # (realized hop mass / this file) at the lane's own tier — the same
+    # contract the refill's type_incoming_asked.csv has. Header always,
+    # even when the map is empty.
+    import pandas as _pd_inc
+    _pd_inc.DataFrame(
+        [{"type_post": k, "incoming_threshold": float(v)}
+         for k, v in sorted(type_incoming_adj.items())],
+        columns=["type_post", "incoming_threshold"]).to_csv(
+        out / "route_type_incoming_asked.csv", index=False)
+    # Q2 (plan-corridor-refill-and-mode-tabs): the lane's SECOND ROUND —
+    # the same validated chains re-valued at synapse >= 1 through the
+    # refill's own layered filter, so a Fast run carries the same scope
+    # pair the Complete mode does. Additive: a failure is DISCLOSED in the
+    # provenance (a silent skip here would leave a reader believing the
+    # lane had nothing below its tier).
+    full_block = None
+    try:
+        full_block = _full_scope_refill(
+            out, conn=conn, tmap=tmap, body2type=body2type,
+            src_ids=src_ids, tgt_ids=tgt_ids, walk_rows=walk_rows,
+            typed=typed, type_membership=type_membership,
+            type_incoming=type_incoming, asked=asked,
+            # the lane's own logging convention (_dbg), and the SAME clock:
+            # the pass joins the wall-clock budget (plan §4.3)
+            log=((lambda *a, **k: print(*a, file=_sys.stderr, flush=True))
+                 if _dbg else None),
+            time_budget_s=time_budget_s, t_start=t0, type_nt=type_nt)
+    except Exception as exc:  # noqa: BLE001 - the lane's own CSVs stand
+        full_block = {"status": "failed", "error": repr(exc)}
+        print(f"[corridor] full-scope refill failed: {exc!r}",
+              file=_sys.stderr, flush=True)
+    _phase(f"full-scope refill ({(full_block or {}).get('status')})")
     live = {k: v for k, v in provenance_classes.items()
             if v["accepted"] or v["pulled"]}
     # serialized RoutePlan (§5/§23.5): the validated plan is content-hashed;
@@ -2084,7 +2313,11 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "per_pair_length_budget": limit},
         "classes": {k: {"floor": budget.floor,
                         "floor_next": budget.floor_next,
-                        "stop": budget.stop, "mh_prov": budget.mh_prov,
+                        "stop": budget.stop, "route_share": budget.share,
+                        "pull_cap": budget.pull_cap,
+                        "realization_envelope": budget.limit,
+                        "counted": ("routes" if budget.count_routes
+                                    else "paths"),
                         "walks": [[ub, list(w)] for ub, w in
                                   budget.walks]}
                     for (budget, k) in sorted(
@@ -2147,7 +2380,12 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             gap = None
     provenance = {
         "status": "complete", "corridor_mode": corridor_mode,
+        "run_mode": run_mode,
         "trigger": trigger, "asked": asked, "bound": bound,
+        # the reader needs the basis to know which columns are duplicates:
+        # on a ratio-basis lane the conditioned denominator IS the plain
+        # one, so ratios_adj == ratios by construction.
+        "weight_basis": basis,
         "max_interlayer": max_il, "dataset": dataset,
         "separate_hemispheres": separate_hemi,
         "hemisphere_filter": hemi_filter,
@@ -2187,21 +2425,96 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "bodyId_paths": len(body_rows),
         "scope_pairs": len(scope_pairs),
         "gap_partition": gap,
+        # the lane's second round (synapse >= 1) — mirrors the refill's
+        # `full` block so one reader knows both scopes' recovery
+        "full": full_block,
         "classes": dict(sorted(provenance_classes.items())),
         "live_classes": sorted(live.keys()),
     }
     (out / "route_provenance.json").write_text(json.dumps(
         provenance, indent=2, default=str), encoding="utf-8")
     floors = [f"{k}: floor={v['floor']} floor_next={v['floor_next']} "
-              f"stop={v['stop']} accepted={v['accepted']} "
-              f"emitted={v['emitted']} off_plan={v['off_plan']} "
+              f"stop={v['stop']} accepted={v['accepted']}"
+              f"/share={v.get('route_share')} "
+              f"pulled={v['pulled']} (cap {v.get('pull_cap')}) "
+              f"emitted={v['emitted']}"
+              f"/envelope={v.get('realization_envelope')} "
+              f"off_plan={v['off_plan']} "
               f"off_len={v['off_len']}"
               for k, v in sorted(live.items())]
+    # The mirror pages (or their skip) are decided BEFORE the disclosure text
+    # that reports them: the second-round block below names the pages only
+    # when they were actually built (self-review 2026-10-15 — the first
+    # version read `_viz_outcome` before assigning it).
+    _viz_outcome = _write_mirror_visualizations(
+        out, src_types=src_types, tgt_types=tgt_types,
+        adj_ratio_tier=asked,
+        log=((lambda *a, **k: print(*a, file=_sys.stderr, flush=True))
+             if _dbg else None))
+
+    # The lane's SECOND ROUND (plan-corridor-refill Q2), disclosed from the
+    # block the round itself returned — including when it failed or found
+    # nothing, so a reader never has to infer why a file is missing.
+    if full_block is None:
+        _second_round_txt = (
+            "- SECOND ROUND (synapse >= 1): not attempted (no validated "
+            "chains to re-value).\n\n")
+    elif full_block.get('status') == 'failed':
+        _second_round_txt = (
+            f"- SECOND ROUND (synapse >= 1): FAILED — "
+            f"{full_block.get('error')}. The asked-scope tables above are "
+            "unaffected.\n\n")
+    else:
+        _second_round_txt = (
+            "- SECOND ROUND (synapse >= 1): the same validated chains "
+            "re-valued with no tier through the refill's forward+backward "
+            "layered filter. The lane has no budget that raises an applied "
+            "threshold, so its sub-threshold band is `[1, asked)`. "
+            "`route_full_paths_type.csv` (every lane chain, "
+            "`emitted_weights` + `refill_weights` == `weights`), "
+            "`route_full_carrying_paths_type.csv` (only chains carrying "
+            "sub-threshold mass; `emitted_weights` + `weights` == "
+            "`total_weights`), `route_full_type_pairs.csv` (per hop pair: "
+            "`refilled_total`, its share `refilled_connection_ratio`, "
+            "`universe_type_weights` and `pair_offchain_mass` — total + "
+            "off-chain == the universe, so every chain mass printed above is "
+            "a lower bound of its pair). Denominators: "
+            "`route_type_incoming.csv` (synapse >= 1) and "
+            "`route_type_incoming_asked.csv` (the lane's asked tier — the "
+            "file the report's corridor Adj. column divides by). At this "
+            "floor the conditioned denominator IS the plain one, so the "
+            ">= 1 tables carry NO adjusted column. "
+            # The mirror pages are named only when they were actually built
+            # (F3): the outcome line reports the skip, and a status sentence
+            # promising pages that were skipped read as a contradiction
+            # (self-review 2026-10-15).
+            + ("Mirror pages: `route_full_type_network.html` / "
+               "`_heatmap.html`, which carry each pair's `refilled_total` "
+               "as the network's Refilled metric. "
+               if "built" in str(_viz_outcome or "") else
+               "Mirror pages: none in this folder \u2014 see the outcome "
+               "line below. ")
+            + f"Status: {full_block.get('status')}; chains "
+            f"{full_block.get('chains')}, carrying "
+            f"{full_block.get('chains_carrying')}, "
+            f"{full_block.get('refill_weight_total')} synapses recovered in "
+            f"{full_block.get('elapsed_s')}s. Cache guard: "
+            f"{full_block.get('cache_guard', 'not_checked')} — the >= 1 "
+            "all-post incoming of every post type was checked against this "
+            "run's own emitted-tier incoming; a smaller stream value REFUSES "
+            "the round (an incomplete connection source must not silently "
+            "undercount the universe). Time budget: "
+            + ("TIME-CAPPED — the chains listed above are the ones the pass "
+               "reached before the lane's wall clock ran out; the rest are "
+               "absent by budget, not by absence."
+               if full_block.get('time_capped') else
+               "complete within the lane's wall clock.") + ")\n\n")
     (out / "README.md").write_text(
         "# Corridor lane (route_scope_paths)\n\n"
         "Standalone route-scoped pass at the ASKED threshold; never merged "
         "into allpaths (plan-corridor-lane.md §23.5).\n\n"
-        f"- trigger: {trigger} (mode `{corridor_mode}`, asked {asked}, "
+        f"- trigger: {trigger} (run mode `{run_mode}`, lane call "
+        f"`{corridor_mode}`, asked {asked}, "
         f"bound {bound})\n"
         f"- validated walks (type rows): {len(walk_rows)} over "
         f"{len(scope_pairs)} scope type-pairs; bodyId paths: "
@@ -2237,59 +2550,400 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "the strengths of realized/omitted neuron routes; the lane is "
         "upper-bound-guided representative exploration, not a "
         "strongest-actual-route certificate):\n\n"
+        + "- TWO BUDGETS, TWO CURRENCIES (2026-10-16): the class budget is "
+          "counted in VALID TYPE-LEVEL ROUTES (route_share = max(1, round(top_m_base "
+          "* length_decay^(h-1))) per source-target type pair × hop length), "
+          "and a candidate pays it only once — a corridor whose hops compose "
+          "into hundreds of neuron paths no longer buys the whole class with "
+          "its realization count. `--pair-length-budget` is the class's "
+          "REALIZATION envelope (bodyId witness paths enumerated for the "
+          "class), and every accepted route keeps at least one witness, so "
+          "the envelope truncates a fat route's tie mass and never the route "
+          "list. Phantoms cost candidate pulls, never the route share: the "
+          "pull cap (2 × route_share) is what closes a phantom-heavy class, "
+          "disclosed as stop=probe_cap, while stop=budget means the class "
+          "published its whole share.\n\n"
         + ("- route_connection_type.csv carries TWO support sets, named: "
-           "`weight`/`universe_pair_mass` is the WHOLE admitted type-pair "
+           "`weight`/`universe_type_weights` is the WHOLE admitted type-pair "
            "mass; `selected_support_mass`/`realized_mass` is the mass on "
            "the lane's emitted witnesses (the heatmap/network draw the "
            "latter; the ratios divide it). Both are UNIONS of edges over "
            "realizations — a large aggregate never implies one neuron "
            "path carrying all of it.\n\n")
+        + _second_round_txt
+        + (f"- mirror pages (route_type_* / route_full_type_*): "
+           f"{_viz_outcome}\n\n" if _viz_outcome else "")
         + ("\n".join(f"- {f}" for f in floors) if floors
            else "- no validated corridors (all classes dry)\n")
         + (f"\n- TIME-CAPPED at {time_budget_s}s — enumeration was cut "
            "early; remaining classes/walks are absent by budget, not by "
            "absence.\n" if time_capped else ""),
         encoding="utf-8")
-    _write_mirror_visualizations(out, src_types=src_types,
-                                 tgt_types=tgt_types)
     return True
 
 
-def _write_mirror_visualizations(out, src_types=(), tgt_types=()):
+def _full_scope_refill(out, *, conn, tmap, body2type, src_ids, tgt_ids,
+                       walk_rows, typed, type_membership, type_incoming,
+                       asked, log=None, time_budget_s=None, t_start=None,
+                       type_nt=None):
+    """Q2 (plan-corridor-refill-and-mode-tabs): the lane's SECOND ROUND.
+
+    The SAME chains the lane validated, re-valued at **synapse >= 1**
+    through the refill's own forward + backward layered filter, so the Fast
+    mode offers the same scope pair the Complete mode has and can be read
+    standalone. The lane has no budget that raises an applied threshold, so
+    its sub-threshold band is `[1, asked)`: the mass the lane's own
+    admission cut left out. `emitted` = the edges the lane admitted at
+    `asked` (the cut keys), `refill` = the rest.
+
+    Denominators are the lane's plain all-inputs totals (`type_incoming`,
+    summed over the whole collapsed table). At the >= 1 floor the
+    conditioned denominator IS the plain one, so the full-scope tables
+    carry one ratio column — an Adj column there would duplicate it
+    (gate G5, same doctrine as the refill's full scope).
+
+    Returns the lane's `full` provenance block (None when there are no
+    chains to re-value)."""
+    import time as _t
+
+    say = log or (lambda *a, **k: None)
+    started = _t.monotonic()
+    chains = []
+    seen = set()
+    for row in walk_rows:
+        seq = tuple(str(p).strip() for p in str(row["path"]).split("->"))
+        if len(seq) < 2 or seq in seen:
+            continue
+        seen.add(seq)
+        chains.append(seq)
+    if not chains:
+        return None
+
+    # -- time budget (plan §4.3): this pass JOINs the lane's clock. It is
+    # the last stage, so a lane with no time left skips it explicitly rather
+    # than silently dropping the round; a deadline hit mid-way marks the
+    # block time_capped so the tables say they are partial.
+    deadline = (_t.monotonic() + float(time_budget_s)
+                if time_budget_s else None)
+    if deadline is not None and t_start is not None:
+        deadline = float(t_start) + float(time_budget_s)
+    if deadline is not None and _t.monotonic() > deadline:
+        say('  · corridor full-scope refill: skipped — the lane\'s time '
+            'budget was spent before this round could start')
+        return {'status': 'skipped_time_budget', 'chains': len(chains),
+                'scope': 'synapse >= 1', 'asked': asked,
+                'note': 'the lane ran out of its wall-clock budget before '
+                        'the synapse >= 1 re-value; the asked-scope tables '
+                        'are the landmark of this run'}
+
+    # -- cache guard (plan §4.2, mirroring the complete mode's full scope):
+    # at synapse >= 1 every post type's all-post incoming must be at least
+    # the run's own emitted-tier incoming (data_details/type_incoming_
+    # emitted.csv). A smaller value means the connection source reads
+    # incomplete RELATIVE TO THE RUN, and publishing these tables would
+    # silently undercount the universe — refuse, and let run_lane disclose
+    # the refusal, exactly as the complete mode raises.
+    cache_guard = 'not_checked'
+    _run_root = out.parent
+    _emitted_csv = _run_root / "data_details" / "type_incoming_emitted.csv"
+    if _emitted_csv.exists():
+        try:
+            import pandas as _pd_guard
+            _emitted = _pd_guard.read_csv(_emitted_csv)
+            _tcol = next((c for c in ('type', 'type_post', 'type_pre')
+                          if c in _emitted.columns), None)
+            _icol = next((c for c in ('incoming', 'incoming_weight',
+                                      'incoming_threshold')
+                          if c in _emitted.columns), None)
+            if _tcol and _icol:
+                _bad = []
+                for _, _r in _emitted.iterrows():
+                    _key = str(_r[_tcol])
+                    _want = float(_r[_icol] or 0.0)
+                    _got = float(type_incoming.get(_key, 0.0) or 0.0)
+                    if _want > _got + 1e-6:
+                        _bad.append((_key, _want, _got))
+                if _bad:
+                    return {
+                        'status': 'failed', 'scope': 'synapse >= 1',
+                        'asked': asked, 'chains': len(chains),
+                        'cache_guard': 'FAILED',
+                        'error': (
+                            'full-scope cache guard FAILED — '
+                            f'{len(_bad)} type(s) have a smaller '
+                            'stream-derived all-post incoming than the '
+                            "run's own emitted-tier incoming (first: "
+                            f'{_bad[0][0]}: stream {_bad[0][2]:g} < emitted '
+                            f'{_bad[0][1]:g}). The connection source '
+                            'appears incomplete relative to the run; '
+                            'refusing to write full-scope tables that '
+                            'would silently undercount the universe.')}
+                cache_guard = 'ok'
+        except Exception:  # noqa: BLE001 — the guard is best-effort
+            cache_guard = 'not_checked'
+
+    import polars as pl
+    hop_pairs = sorted({(seq[i], seq[i + 1])
+                        for seq in chains for i in range(len(seq) - 1)})
+    want = pl.DataFrame({"type_pre": [a for a, _b in hop_pairs],
+                         "type_post": [b for _a, b in hop_pairs]})
+    # The >= 1 universe, restricted to the lane's own hop pairs: the same
+    # collapsed table the lane already read (no second cache pass), joined
+    # to the type map on both ends.
+    edges = (conn.rename({"bodyId_pre": "u", "bodyId_post": "v"})
+             .join(tmap.rename({"bid": "u", "t": "tpre"}), on="u",
+                   how="inner")
+             .join(tmap.rename({"bid": "v", "t": "tpost"}), on="v",
+                   how="inner")
+             .rename({"tpre": "type_pre", "tpost": "type_post"})
+             .join(want, on=["type_pre", "type_post"], how="inner")
+             .filter(pl.col("weight") >= 1)
+             .select(["u", "v", "weight", "type_pre", "type_post"]))
+    pair_universe: dict = {}
+    for a, b, w in (edges.group_by(["type_pre", "type_post"])
+                    .agg(pl.col("weight").sum().alias("w"))
+                    .iter_rows()):
+        pair_universe[(a, b)] = float(w)
+    pair_edges_full: dict = {}
+    for u, v, w, a, b in edges.iter_rows():
+        pair_edges_full.setdefault((a, b), {}).setdefault(
+            u, []).append((v, float(w)))
+
+    # cut = the edges the lane actually admitted at its own tier
+    cut_keys = set(zip(typed["bodyId_pre"].to_list(),
+                       typed["bodyId_post"].to_list())) \
+        if typed is not None else set()
+
+    from type_level_refill import (
+        _complete_rows_from_structures, _layered_chain_structures,
+        _refill_rows_from_structures)
+    seq_edges: dict = {}
+    seq_nodes: dict = {}
+    seq_cls: dict = {}
+    chains_revisit = 0
+    no_realization = 0
+    time_capped_here = False
+    for seq in sorted(chains):
+        if deadline is not None and _t.monotonic() > deadline:
+            time_capped_here = True
+            break
+        dp = _layered_chain_structures(
+            seq, pair_edges_full, src_ids, tgt_ids, body2type, cut_keys)
+        if dp is None:
+            no_realization += 1
+            continue
+        seq_edges[seq] = dp["edges_at"]
+        seq_nodes[seq] = dp["nodes_at"]
+        seq_cls[seq] = dp["edges_cls_at"]
+        if dp["revisit"]:
+            chains_revisit += 1
+    if not seq_cls:
+        return {"status": "empty", "chains": len(chains),
+                "chains_revisit": chains_revisit,
+                "cache_guard": cache_guard,
+                "time_capped": time_capped_here,
+                "note": "no chain realized at synapse >= 1"}
+
+    carrying = {seq: cls for seq, cls in seq_cls.items()
+                if any((c.get("refill") or {}) for c in cls)}
+    complete_rows, _stats = _complete_rows_from_structures(
+        seq_cls, seq_nodes, type_membership, type_incoming)
+    carrying_rows = (
+        _refill_rows_from_structures(
+            {s: seq_edges[s] for s in carrying},
+            {s: seq_nodes[s] for s in carrying},
+            type_membership, type_incoming,
+            {s: seq_cls[s] for s in carrying})
+        if carrying else [])
+
+    # pair table: distinct-edge sums per hop pair, split by class
+    pair_acc: dict = {}
+    for seq in seq_cls:
+        for i, classes in enumerate(seq_cls[seq]):
+            key = (seq[i], seq[i + 1])
+            acc = pair_acc.setdefault(key, {"emitted": {}, "refill": {}})
+            for cls, edges_at in classes.items():
+                acc.setdefault(cls, {}).update(edges_at or {})
+    pair_rows = []
+    for (a, b), acc in sorted(pair_acc.items()):
+        emitted = sum(acc.get("emitted", {}).values())
+        refill = sum(acc.get("refill", {}).values())
+        total = emitted + refill
+        denom = float(type_incoming.get(b, 0.0) or 0.0)
+        universe = pair_universe.get((a, b), total)
+        pair_rows.append({
+            "type_pre": a, "type_post": b,
+            # the mirror family's transmitter column names the PRESYNAPTIC
+            # type (F-EX-006), so the second round's pages can colour edges
+            # by NT exactly like the run's own Network page
+            "nt_type": (type_nt or {}).get(a, ""),
+            "emitted_weight": emitted, "refill_weight": refill,
+            "refilled_total": total,
+            "refilled_connection_ratio": (round(total / denom, 6)
+                                          if denom > 0 else None),
+            # the >= 1 universe this hop pair's mass is drawn from — the
+            # report's `Universe type weights` column (F4/Q3 rename of
+            # `universe_pair_mass`), so every printed hop ratio is
+            # reproducible against the whole admitted pair, not just the
+            # chain's share of it
+            "universe_type_weights": round(universe, 2),
+            # mass in this type pair that no lane chain realizes
+            "pair_offchain_mass": round(max(universe - total, 0.0), 2)})
+
+    import pandas as _pd
+    (_pd.DataFrame(complete_rows, columns=_FULL_PATH_COLUMNS).to_csv(
+        out / "route_full_paths_type.csv", index=False))
+    (_pd.DataFrame(carrying_rows, columns=_FULL_CARRYING_COLUMNS).to_csv(
+        out / "route_full_carrying_paths_type.csv", index=False))
+    (_pd.DataFrame(pair_rows, columns=_FULL_PAIR_COLUMNS).to_csv(
+        out / "route_full_type_pairs.csv", index=False))
+    # the >= 1 denominators, so a reader can reproduce every ratio in the
+    # two path tables and the pair table from one file
+    (_pd.DataFrame([{"type_post": k, "incoming_threshold": float(v)}
+                    for k, v in sorted(type_incoming.items())],
+                   columns=["type_post", "incoming_threshold"]).to_csv(
+        out / "route_type_incoming.csv", index=False))
+
+    refill_edges = sum(len(c.get("refill") or {}) for cls in
+                       seq_cls.values() for c in cls)
+    block = {
+        "status": "ok" if carrying else "nothing_below_tier",
+        "scope": "synapse >= 1",
+        "asked": asked,
+        "chains": len(seq_cls),
+        "chains_carrying": len(carrying),
+        "chains_no_realization": no_realization,
+        "chains_revisit": chains_revisit,
+        # plan §4.2 key parity with the complete mode's full block
+        "cache_guard": cache_guard,
+        # plan §4.3: the pass shares the lane's clock; a deadline hit here
+        # means the tables are PARTIAL, not that the lane's chains lack
+        # lower-tier mass
+        "time_capped": time_capped_here,
+        "refill_edges": refill_edges,
+        "refill_weight_total": round(sum(
+            sum((c.get("refill") or {}).values())
+            for cls in seq_cls.values() for c in cls), 2),
+        "emitted_weight_total": round(sum(
+            sum((c.get("emitted") or {}).values())
+            for cls in seq_cls.values() for c in cls), 2),
+        "enumeration": "none (layered per-position filtering reference)",
+        "elapsed_s": round(_t.monotonic() - started, 2),
+    }
+    if time_capped_here:
+        say(f"  · corridor full-scope refill: TIME-CAPPED after "
+            f"{block['chains']} of {len(chains)} chains — the remaining "
+            "chains are absent by budget, not by absence")
+    say(f"  · corridor full-scope refill: {block['chains']} chains, "
+        f"{block['chains_carrying']} carrying "
+        f"{block['refill_weight_total']:g} synapses below the lane's tier "
+        f"({block['elapsed_s']}s)")
+    _write_mirror_visualizations(
+        out, src_types=sorted({s for seq in seq_cls for s in (seq[0],)}),
+        tgt_types=sorted({seq[-1] for seq in seq_cls}),
+        adj_ratio_tier=1, base_filename="route_full_type",
+        conn_csv=out / "route_full_type_pairs.csv",
+        weight_column="refilled_total",
+        refilled_column="refilled_total")
+    return block
+
+
+_FULL_PATH_COLUMNS = ["path", "weights", "ratios", "min_weight",
+                      "min_ratio", "length", "nt_types", "coverage",
+                      "emitted_weights", "refill_weights"]
+_FULL_CARRYING_COLUMNS = ["path", "weights", "ratios", "min_weight",
+                          "min_ratio", "length", "nt_types", "coverage",
+                          "emitted_weights", "total_weights"]
+_FULL_PAIR_COLUMNS = ["type_pre", "type_post", "nt_type",
+                      "emitted_weight",
+                      "refill_weight", "refilled_total",
+                      "refilled_connection_ratio",
+                      "universe_type_weights",
+                      "pair_offchain_mass"]
+
+
+def _write_mirror_visualizations(out, src_types=(), tgt_types=(),
+                                 adj_ratio_tier=None,
+                                 base_filename="route_type",
+                                 conn_csv=None, weight_column=None,
+                                 refilled_column=None, log=None):
     """V1.4 (plan-corridor-alignment-and-viz-bases §4.4): the mirror
     heatmap + network from route_connection_type.csv — the refill's own
     recipe (coana _vp + create_heatmap/create_network). Best-effort:
     failures leave the CSVs untouched (never fatal to the lane).
     src_types/tgt_types drive the network's node roles (an edge-list
     input has no path-position roles — without them the legend reads
-    'Source (0) / Target (0)')."""
+    'Source (0) / Target (0)').
+
+    Returns a one-line outcome for the lane README: 'built', a
+    'skipped — …' reason, 'nothing to draw', or 'FAILED'. Never
+    raises."""
     try:
         import pandas as pd
-        conn_csv = out / "route_connection_type.csv"
+        from pathlib import Path as _P
+        # REDUNDANCY (user, 2026-10-15): when the run wrote its OWN
+        # visualization/Network_*.html, that page is a strict SUPERSET of
+        # this mirror (measured: 38 pairs vs the lane's 26, same style, and
+        # — before the NT fix — richer, because it carries the transmitter
+        # per edge). The duplicate pages are skipped; the lane's CSVs are
+        # untouched and a fast-only run, which has no main visualization,
+        # still gets these pages.
+        _main_viz = (out.parent / "visualization")
+        if _main_viz.is_dir() and list(_main_viz.glob("Network_*.html")):
+            return ("skipped \u2014 the run has its own visualization/ "
+                    "pages (a superset of this scope; this folder's "
+                    "CSVs are the lane's own data)")
+        # Defaults: the lane's asked-tier mirror (route_connection_type.csv).
+        conn_csv = _P(conn_csv) if conn_csv else (
+            out / "route_connection_type.csv")
+        weight_column = weight_column or "selected_support_mass"
         if not conn_csv.exists():
-            return
+            return 'nothing to draw (no connection table)'
         frame = pd.read_csv(conn_csv)
         # F-PF-008 (audit 2026-10-13): the route-scoped visualization
         # draws the SELECTED-support mass — a route-support panel, not
         # the whole admitted type-pair universe (the old `weight` column
         # drew 101 synapses for a hop whose emitted witnesses carry 1).
-        # The universe stays in the CSV under `weight`/`universe_pair_mass`.
-        frame = frame[frame["selected_support_mass"].fillna(0) > 0]
+        # The universe stays in the CSV under
+        # `weight`/`universe_type_weights`.
+        frame = frame[frame[weight_column].fillna(0) > 0]
         if frame.empty:
             return
+        cols = ["type_pre", "type_post", weight_column]
+        rename = {weight_column: "weight", "type_pre": "source",
+                  "type_post": "target"}
+        if "nt_type" in frame.columns:
+            cols.append("nt_type")
+            rename["nt_type"] = "nt_type"
+        for src_col, dst in (("connection_ratio", "ratio"),
+                             ("refilled_connection_ratio", "ratio"),
+                             ("connection_ratio_adj", "ratio_adj")):
+            if src_col in frame.columns and dst not in rename.values():
+                cols.append(src_col)
+                rename[src_col] = dst
+        # F7.1/F7.2 parity with the refill's pages: the lane's second round
+        # knows each pair's refilled total, so its network/heatmap carry it
+        # as the 'Refilled' metric instead of the (N/A) a page with no
+        # metric map shows. The asked mirror has NO refill round, so it
+        # stays honestly unavailable there.
+        pair_extra = None
+        if refilled_column and refilled_column in frame.columns:
+            totals = {}
+            for _, r in frame.iterrows():
+                if pd.notna(r[refilled_column]):
+                    totals[(str(r['type_pre']), str(r['type_post']))] = float(
+                        r[refilled_column])
+            if totals:
+                pair_extra = {'refilled': totals}
         from vispath_pkg.vispath import VisualizePath
         vp = VisualizePath(
-            path_file=frame[["type_pre", "type_post",
-                             "selected_support_mass",
-                             "connection_ratio", "connection_ratio_adj"]]
-            .rename(columns={"type_pre": "source",
-                             "type_post": "target",
-                             "selected_support_mass": "weight",
-                             "connection_ratio": "ratio",
-                             "connection_ratio_adj": "ratio_adj"}),
+            path_file=frame[cols].rename(columns=rename),
             output_folder=str(out), showfig=False, verbose=False,
+            adj_ratio_threshold=adj_ratio_tier,
+            pair_extra_metrics=pair_extra,
+            color_edges_by_nt=("nt_type" in frame.columns),
             edgeN_limit=500)
-        vp.base_filename = "route_type"
+        vp.base_filename = base_filename
         vp.build_network()   # conn_df/G feed the heatmap + network
         # node roles from the query (edge-list inputs carry none)
         try:
@@ -2304,8 +2958,23 @@ def _write_mirror_visualizations(out, src_types=(), tgt_types=()):
             pass
         vp.create_heatmap()
         vp.create_network()
-    except Exception:
-        pass  # best-effort extras (lane CSVs are the deliverable)
+        return 'built'
+    except Exception as exc:  # noqa: BLE001 - best-effort, never silent
+        # The lane CSVs are the deliverable, so a viz failure must not
+        # break the lane — but a bare `pass` here once hid a NameError for
+        # 20 minutes while the HTML pages silently kept their stale bytes.
+        # A skipped artifact has to leave a trace a reader can find.
+        import sys as _s
+        try:
+            (out / '.mirror_visualizations_failed').write_text(
+                f'mirror heatmap/network generation failed: {exc!r}\n',
+                encoding='utf-8')
+        except OSError:
+            pass
+        print(f'[corridor] mirror visualizations failed: {exc!r}',
+              file=_s.stderr, flush=True)
+        return ('FAILED \u2014 see .mirror_visualizations_failed '
+                'beside this README')
 
 
 def _read_store_universe(run_dir, _phase=None):

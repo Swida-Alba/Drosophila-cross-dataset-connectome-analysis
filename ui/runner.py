@@ -355,17 +355,23 @@ def _maybe_generate_pair_report(scan_dir, log, progress) -> None:
         from src.paths_pair_report import (
             generate_paths_pair_report,
             has_paths_tables,
+            is_pathfinding_run,
         )
     except ImportError:  # pragma: no cover - direct src/ execution
         try:
             from paths_pair_report import (
                 generate_paths_pair_report,
                 has_paths_tables,
+                is_pathfinding_run,
             )
         except ImportError:
             return
     try:
-        if not scan_dir or not has_paths_tables(scan_dir):
+        if not scan_dir:
+            return
+        # F-EX-010: a zero-path pathfinding run has no table but still owes
+        # the folder an honest empty-state report.
+        if not (has_paths_tables(scan_dir) or is_pathfinding_run(scan_dir)):
             return
         # Cross-dataset layout (2026-10-11 user directive): the cross
         # root keeps only comparison_report.html — the per-delegate pair

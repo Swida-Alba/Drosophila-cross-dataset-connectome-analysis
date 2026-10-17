@@ -101,9 +101,13 @@ def test_class_budget_binds_and_fills():
 
     # h2 = the realizable class; h3 keeps the loop alive (feasible by the
     # conservative d<=h rule but barren — no 3-walks), so the full h2
-    # class captures its post-stop floor witness before drain exhaustion
-    classes = {(("A", "C"), 2): ClassBudget(limit=3),
-               (("A", "C"), 3): ClassBudget(limit=3)}
+    # class captures its post-stop floor witness before drain exhaustion.
+    # ROUTE SHARE (2026-10-16): acceptance is counted in published
+    # type-level ROUTES. Every candidate here realizes the SAME 6 bodyId
+    # paths, so the old realization-counted budget stopped this class after
+    # ONE walk (6 >= limit 3); with a share of 2 it stops after two.
+    classes = {(("A", "C"), 2): ClassBudget(limit=3, route_share=2),
+               (("A", "C"), 3): ClassBudget(limit=3, route_share=2)}
     def realize_fn(walk, cap):
         n, _tr = realize_count(
             [hop_pairs[h] for h in zip(walk, walk[1:])],
@@ -111,8 +115,8 @@ def test_class_budget_binds_and_fills():
         return min(cap, n), False
     prov = validate_and_fill(drain, classes, realize_fn)
     cb = classes[(("A", "C"), 2)]
-    assert 1 <= len(cb.walks) <= 3
-    assert cb.used <= 3
+    assert len(cb.walks) == 2
+    assert cb.used == 2, "used counts routes, never realizations"
     assert cb.stop == "budget"
     assert prov["drain_pops"] > 0
     # descending-UB acceptance within the class
@@ -120,8 +124,10 @@ def test_class_budget_binds_and_fills():
     assert ubs == sorted(ubs, reverse=True)
     # honest floor witness: the drain yielded one more candidate (UB 7)
     # after the class filled — floor_next records it (plan §5: floor =
-    # UB(M+1); the last ACCEPTED UB alone would overstate by a tie)
-    assert cb.floor_next == 7 and cb.floor == 9
+    # UB(M+1); the last ACCEPTED UB alone would overstate safety by a tie).
+    # With the share counted in routes the class fills on the 9 and the
+    # first 7, so the witness is a TIE at 7 — the case §5 exists for.
+    assert cb.floor == 7 and cb.floor_next == 7
     # the barren-but-feasible class dried out without accepting anything
     assert classes[(("A", "C"), 3)].stop == "dry"
 
@@ -129,13 +135,16 @@ def test_class_budget_binds_and_fills():
 def test_validate_and_fill_probe_cap_and_infeasible():
     adj = {"A": [("B", 9)], "B": [("C", 9)], "C": []}
     drain = CorridorDrain(adj, "A", {"C"}, 2)
-    classes = {(("A", "C"), 2): ClassBudget(limit=100, mh_prov=1),
-               (("A", "C"), 1): ClassBudget(limit=100, feasible=False)}
-    def realize_fn(walk, cap):  # thin walks never fill
+    classes = {(("A", "C"), 2): ClassBudget(limit=100, route_share=100,
+                                            pull_cap=1),
+               (("A", "C"), 1): ClassBudget(limit=100, route_share=100,
+                                            feasible=False)}
+    def realize_fn(walk, cap):  # existence probe: any realization counts
         return min(cap, 10), False
     validate_and_fill(drain, classes, realize_fn)
     probe = classes[(("A", "C"), 2)]
     assert probe.pulled == 1 and probe.stop == "probe_cap"
+    assert probe.used == 1 < probe.share, "share unfilled at the pull cap"
     assert probe.satisfied() is True
     inf = classes[(("A", "C"), 1)]
     assert inf.stop == "infeasible" and inf.pulled == 0
@@ -151,7 +160,8 @@ def test_validate_and_fill_terminates_when_satisfied_via_phantoms():
     # cap (>40 min on the real FAFB anchor)
     adj = {"A": [("B", 9)], "B": [("C", 9)], "C": []}
     drain = CorridorDrain(adj, "A", {"C"}, 2)
-    classes = {(("A", "C"), 2): ClassBudget(limit=100, mh_prov=1)}
+    classes = {(("A", "C"), 2): ClassBudget(limit=100, route_share=100,
+                                            pull_cap=1)}
 
     def realize_fn(walk, cap):
         return 0, False  # every candidate a phantom
@@ -160,6 +170,106 @@ def test_validate_and_fill_terminates_when_satisfied_via_phantoms():
     cb = classes[(("A", "C"), 2)]
     assert cb.pulled == 1 and cb.phantoms == 1 and cb.stop == "probe_cap"
     assert drain.pops <= 4  # terminated; did not drain to the cap
+
+
+def test_fat_walk_cannot_buy_the_class_route_share():
+    """2026-10-16 (user-measured): aMe12->PPL103@h2 published ONE route.
+
+    The acceptance loop spent the class budget on the walk's REALIZATION
+    COUNT, so the single walk aMe12->KCg-d->PPL103 (>= 100 bodyId paths)
+    filled the class and the candidate at UB 15 behind it was never
+    accepted (accepted=1, used=100, pulled=1, stop='budget'). Acceptance
+    now probes existence and spends ONE route per accepted walk; the
+    realization envelope (`limit`) belongs to the materialization pass.
+    """
+    adj = {"A": [("B", 9), ("C", 8), ("D", 7)],
+           "B": [("T", 9)], "C": [("T", 8)], "D": [("T", 7)], "T": []}
+    drain = CorridorDrain(adj, "A", {"T"}, 2)
+    # B is the fat corridor (a huge realization set), C/D are thin.
+    realizing = {"A->B->T": 5_000, "A->C->T": 2, "A->D->T": 1}
+    probed = []
+
+    def realize_fn(walk, cap):
+        n = realizing["->".join(walk)]
+        probed.append(cap)
+        return min(cap, n), False
+
+    classes = {(("A", "T"), 2): ClassBudget(limit=3, route_share=3)}
+    validate_and_fill(drain, classes, realize_fn)
+    cb = classes[(("A", "T"), 2)]
+    assert len(cb.walks) == 3, "the fat walk must not crowd out its siblings"
+    assert cb.used == 3 == cb.share
+    assert set(probed) == {1}, (
+        "acceptance probes EXISTENCE (cap 1); counting realizations here is "
+        "how one corridor ate the whole class")
+    assert cb.stop == "budget"
+
+
+def test_phantom_still_rejected_under_route_counting():
+    """The existence probe must not become an accept-anything: a walk with
+    no layered realization is still a phantom and still costs a pull, and a
+    run of phantoms still terminates the class (pull cap, §22 cost control).
+    """
+    adj = {"A": [("B", 9), ("C", 8)], "B": [("T", 9)], "C": [("T", 8)],
+           "T": []}
+    drain = CorridorDrain(adj, "A", {"T"}, 2)
+    classes = {(("A", "T"), 2): ClassBudget(limit=10, route_share=2,
+                                            pull_cap=2)}
+
+    def realize_fn(walk, cap):
+        return 0, False  # every candidate is a phantom
+
+    validate_and_fill(drain, classes, realize_fn)
+    cb = classes[(("A", "T"), 2)]
+    assert cb.walks == [] and cb.phantoms == 2
+    assert cb.used == 0 and cb.stop == "probe_cap"
+
+
+def test_lane_publishes_every_accepted_route(tmp_path):
+    """End-to-end half of the 2026-10-16 finding: the class's realization
+    envelope bounds the tie MASS an enumeration may carry, never the route
+    list. Here A->B->T realizes 50 bodyId paths against a 20-path envelope
+    and A->C->T is a weaker-but-valid sibling: BOTH must appear in
+    `route_paths_type.csv`, each with at least one witness. The old pass
+    `break`ed on the spent envelope and silently dropped the sibling."""
+    import pandas as pd
+    root = tmp_path / "ds_fat"
+    root.mkdir()
+    pre, post, w = [], [], []
+    for i in range(50):
+        pre += ["a1", f"b{i}"]
+        post += [f"b{i}", "t1"]
+        w += [100 + i, 200 + i]
+    pre += ["a1", "c1"]
+    post += ["c1", "t1"]
+    w += [10, 10]
+    pl.DataFrame({"bodyId_pre": pre, "bodyId_post": post,
+                  "weight": w}).write_parquet(root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a1", "t1", "c1"]
+                         + [f"b{i}" for i in range(50)],
+                  "type": ["A", "T", "C"] + ["B"] * 50}).to_parquet(
+        root / "neurons.parquet", index=False)
+    out = tmp_path / "lane_fat"
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    per_pair_length_budget=20,
+                    source_types=["A"], target_types=["T"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet", out_dir=out)
+    rows = pl.read_csv(out / "route_paths_type.csv")
+    assert sorted(rows["path"].to_list()) == ["A->B->T", "A->C->T"]
+    by = {r["path"]: r for r in rows.to_dicts()}
+    # the envelope truncated the FAT walk's witness sample; the sibling
+    # still got its guaranteed one
+    assert by["A->B->T"]["realized_paths"] == 20
+    assert by["A->C->T"]["realized_paths"] == 1
+    prov = json.loads((out / "route_provenance.json").read_text())
+    cls = prov["classes"]["A->T@h2"]
+    assert cls["accepted"] == 2 == cls["used"]
+    assert cls["counted"] == "routes" and cls["route_share"] == 15
+    assert cls["realization_envelope"] == 20
+    assert cls["stop"] == "exhausted"
+    body = pl.read_csv(out / "route_paths_bodyId.csv")
+    assert len(body) == 21
 
 
 def test_realize_count_work_cap_truncated():
@@ -282,6 +392,61 @@ def _write_synth_dataset(tmp_path, n_intermediate=200, int_ids=False):
     return root
 
 
+def test_lane_adj_denominator_is_all_pres(tmp_path):
+    """F-EX-003 D3b: the lane's CONDITIONED denominator must be the ALL-PRES
+    incoming of the edges it admits, exactly like `connection_type.csv`'s
+    `connection_ratio_adj` — not its own `typed` frame, which has already
+    dropped untyped presynaptic bodies. Measured on MCNS: PPL101 38,866
+    (typed-pres) vs 39,137 (all-pres) at asked=1, which broke the lane's own
+    documented law that adj == plain there.
+
+    The fixture therefore gives the intermediate body an UNTYPED presynaptic
+    neighbour: a typed-only universe cannot express the difference, which is
+    why the existing asked=1 assertion below stayed green against the buggy
+    denominator."""
+    import pandas as pd
+    root = tmp_path / "ds_untyped"
+    root.mkdir()
+    # a1 -> b1 -> c1, plus u1 (NO type) -> b1. u1's 90 synapses are part of
+    # B's dataset incoming but are dropped from the lane's `typed` frame.
+    pl.DataFrame({"bodyId_pre": ["a1", "b1", "u1"],
+                  "bodyId_post": ["b1", "c1", "b1"],
+                  "weight": [100, 80, 90]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a1", "b1", "c1", "u1"],
+                  "type": ["A", "B", "C", ""]}).to_parquet(
+        root / "neurons.parquet", index=False)
+
+    def _lane(asked, name):
+        out = tmp_path / name
+        assert run_lane(None, asked=asked, max_interlayer=2,
+                        source_types=["A"], target_types=["C"],
+                        connections_path=root / "connections.parquet",
+                        neuron_table=root / "neurons.parquet",
+                        out_dir=out)
+        return pl.read_csv(out / "route_paths_type.csv").row(0, named=True)
+
+    # asked = 1: nothing is conditioned away, so the adjusted list IS the
+    # plain one (both divide by B's 190 / C's 80).
+    one = _lane(1, "lane_t1")
+    assert json.loads(one["ratios"]) == json.loads(one["ratios_adj"])
+    assert float(one["min_ratio"]) == float(one["min_ratio_adj"])
+    w = json.loads(one["weights"])
+    assert abs(w[0] / json.loads(one["ratios"])[0] - 190.0) < 1e-6, one
+    assert abs(w[1] / json.loads(one["ratios"])[1] - 80.0) < 1e-6, one
+
+    # asked = 60: conditioning keeps a1->b1 (100) AND u1->b1 (90) — the
+    # untyped body's mass belongs to the denominator even though the body
+    # can never be a graph node — so adj > plain and its implied denominator
+    # stays the all-pres 190, not the typed-only 100.
+    six = _lane(60, "lane_t60")
+    r_plain, r_adj = (json.loads(six["ratios"]), json.loads(six["ratios_adj"]))
+    w60 = json.loads(six["weights"])
+    assert abs(w60[0] / r_plain[0] - 190.0) < 1e-6, six
+    assert abs(w60[0] / r_adj[0] - 190.0) < 1e-6, six
+    assert r_adj[0] >= r_plain[0]
+
+
 def test_run_lane_direct_end_to_end_plan_faithful(tmp_path):
     root = _write_synth_dataset(tmp_path)
     out = tmp_path / "lane_out"
@@ -295,6 +460,8 @@ def test_run_lane_direct_end_to_end_plan_faithful(tmp_path):
     prov = json.loads((out / "route_provenance.json").read_text())
     assert prov["status"] == "complete"
     assert prov["trigger"] == "driver-direct"
+    # R3: the lane records BOTH the caller's mode and the resolved run mode
+    assert prov["corridor_mode"] == "both" and prov["run_mode"] == "both"
     # §23.5 contract: ONE type row per validated walk; per-path detail in
     # the bodyId csv. Budget = the class share (200 realizations available,
     # limit 100) — the strongest 100 paths, tau = the 100th bottleneck.
@@ -305,17 +472,39 @@ def test_run_lane_direct_end_to_end_plan_faithful(tmp_path):
     assert row["plan_rank"] == 1
     assert row["applied_tau"] == 200.0     # 100th bottleneck (i=100)
     assert row["realized_paths"] == 100
-    # engine column semantics: summed per-hop realized masses + per-node
-    # coverage over type membership (the emitted 100 = i in 100..199)
-    assert json.loads(row["weights"]) == [24950, 34950]
-    assert row["coverage"] == "[1/1, 100/200, 1/1]"  # display syntax
-    assert row["min_weight"] == 24950
+    # Decisions 3 (F-EX-001): the walk row's mass columns are the CHAIN's
+    # per-position restricted mass — every realizing bodyId edge of this type
+    # sequence, not the sum over the budgeted sample of paths. The class kept
+    # 100 of 200 realizations, so the SAMPLED witness union (24950/34950, the
+    # strongest 100 paths' distinct edges) is now a separate, named column and
+    # must never exceed the chain mass beside it (gate L6a).
+    assert json.loads(row["weights"]) == [39900, 59900]
+    assert row["coverage"] == "[1/1, 200/200, 1/1]"   # chain-level n/N
+    assert row["min_weight"] == 39900
+    assert json.loads(row["sampled_support_mass"]) == [24950, 34950]
+    assert row["sampled_coverage"] == "[1/1, 100/200, 1/1]"
+    assert row["realized_paths"] == 100                # the sample, disclosed
+    s_w = json.loads(row["sampled_support_mass"])
+    assert all(s <= c for s, c in zip(s_w, json.loads(row["weights"])))
     assert len(json.loads(row["ratios"])) == 2
+    # ratios are the CHAIN mass over the post type's all-pres incoming:
+    # B's incoming is the a1->b_i family (39900) and C's the b_i->c1 family
+    # (59900), so this walk saturates both shares at 1.0.
+    assert json.loads(row["ratios"]) == [1.0, 1.0]
     # C1.2: adj ratios present; at asked=1 adj == plain BY CONSTRUCTION
     assert json.loads(row["ratios_adj"]) == json.loads(row["ratios"])
     assert row["min_ratio_adj"] == row["min_ratio"]
     cls = prov["classes"]["A->C@h2"]
-    assert cls["stop"] == "budget" and cls["emitted"] == 100
+    # ROUTE-COUNTED ACCEPTANCE (2026-10-16): this fixture has ONE type walk
+    # (its 200 realizations no longer buy the class), so the honest stop is
+    # 'exhausted' — the drain held nothing else — while the realization
+    # envelope still bites where it always did: in `emitted` and in the
+    # row's `realized_paths` above.
+    assert cls["stop"] == "exhausted" and cls["emitted"] == 100
+    assert cls["accepted"] == 1 == cls["used"]
+    assert cls["counted"] == "routes"
+    assert cls["realization_envelope"] == 100
+    assert cls["route_share"] == 15
     assert cls["off_plan"] == 0
     # connection table (C1.3): mirror family + corridor tail; realized
     # ratios == plain at asked 1
@@ -330,8 +519,13 @@ def test_run_lane_direct_end_to_end_plan_faithful(tmp_path):
                      & (pl.col("type_post") == "B"))
     assert ab["realized_mass"][0] == 24950 and ab["realizing_paths"][0] == 100
     assert ab["connection_ratio"][0] == ab["connection_ratio_adj"][0]
-    plain = json.loads(row["ratios"])[0]
+    plain = json.loads(row["sampled_ratios"])[0]
+    # The PAIR table's ratios divide the lane's selected support (its own
+    # documented `selected_support_mass`/`realized_mass`), so they match the
+    # witness readout, not the chain-level `ratios` column (F-EX-001: level 3
+    # belongs on the pair table, level chain belongs on the row).
     assert abs(ab["connection_ratio"][0] - round(plain, 6)) < 1e-9
+    assert ab["selected_support_mass"][0] == ab["realized_mass"][0] == 24950
     # plan.json: content-hashed serialized plan (direct mode -> beside out)
     plan = json.loads((out / "data_details" / "route_plan"
                        / "plan.json").read_text())
@@ -1049,10 +1243,12 @@ def test_pop_cap_reports_pop_capped_never_exhausted():
 
 def test_pair_export_names_both_support_sets(tmp_path):
     """F-PF-008: route_connection_type.csv explicitly names its two
-    support sets — weight/universe_pair_mass (the whole admitted
-    type-pair mass) vs selected_support_mass/realized_mass (the lane's
-    emitted witnesses) — and they differ exactly when the universe is
-    bigger than the selected support."""
+    support sets — weight/universe_type_weights (the whole admitted
+    type-pair mass; renamed from universe_pair_mass by
+    plan-corridor-refill-and-mode-tabs F4/Q3, same quantity) vs
+    selected_support_mass/realized_mass (the lane's emitted witnesses) —
+    and they differ exactly when the universe is bigger than the selected
+    support."""
     import pandas as pd
     root = tmp_path / "ds"
     root.mkdir()
@@ -1072,17 +1268,17 @@ def test_pair_export_names_both_support_sets(tmp_path):
                     neuron_table=root / "neurons.parquet",
                     out_dir=out)
     conn = pl.read_csv(out / "route_connection_type.csv")
-    for col in ("universe_pair_mass", "selected_support_mass",
+    for col in ("universe_type_weights", "selected_support_mass",
                 "realized_mass"):
         assert col in conn.columns
     ab = conn.filter((pl.col("type_pre") == "A")
                      & (pl.col("type_post") == "B")).row(0, named=True)
     # universe: a->b1 + a->b2 = 20; the selected walk witnesses a->b1 = 10
-    assert ab["weight"] == ab["universe_pair_mass"] == 20
+    assert ab["weight"] == ab["universe_type_weights"] == 20
     assert ab["selected_support_mass"] == ab["realized_mass"] == 10
     bt = conn.filter((pl.col("type_pre") == "B")
                      & (pl.col("type_post") == "T")).row(0, named=True)
-    assert bt["universe_pair_mass"] == 20
+    assert bt["universe_type_weights"] == 20
     assert bt["selected_support_mass"] == 10
 
 
@@ -1209,8 +1405,14 @@ def test_certified_mode_exports_the_strongest_actual_route(tmp_path):
     drops below the weakest exported path's ACTUAL bottleneck -- the
     audit's displacement fixture (a bound-100 walk whose realization is
     bottleneck-1, against a bound-90 walk realizing bottleneck-90, share
-    1) exports the 90 route. The default bound-guided mode exports the
-    bottleneck-1 route (the documented displacement)."""
+    1) exports the 90 route.
+
+    The bound-guided default no longer DROPS the weaker-bound route: since
+    the 2026-10-16 fix its budget counts type-level routes and every
+    accepted route keeps one witness, so BOTH corridors are published and
+    the displacement shows up as RANK (the bound-100 walk leads with a
+    realized bottleneck of 1) instead of as an absence. certify_actual is
+    the mode that resolves the share to the strongest ACTUAL route."""
     import pandas as pd
     root = tmp_path / "ds"
     root.mkdir()
@@ -1232,7 +1434,18 @@ def test_certified_mode_exports_the_strongest_actual_route(tmp_path):
                     out_dir=out_bound)
     body_bound = pl.read_csv(
         out_bound / "route_paths_bodyId.csv")["path"].to_list()
-    assert body_bound == ["a->b1->t"]          # the documented displacement
+    assert body_bound == ["a->b1->t", "a->c->t"], (
+        "UB-descending acceptance, one witness per accepted route")
+    rows_bound = pl.read_csv(out_bound / "route_paths_type.csv").to_dicts()
+    assert [r["path"] for r in rows_bound] == ["A->B->T", "A->C->T"]
+    assert rows_bound[0]["plan_rank"] == 1 and rows_bound[0]["route_ub"] == 100
+    # the displacement is now a RANKING fact, disclosed by the realized
+    # bottleneck beside the optimistic bound
+    assert rows_bound[0]["applied_tau"] == 1 and rows_bound[1]["applied_tau"] == 90
+    cls_bound = json.loads(
+        (out_bound / "route_provenance.json").read_text())["classes"]["A->T@h2"]
+    assert cls_bound["accepted"] == 2 and cls_bound["used"] == 2
+    assert cls_bound["realization_envelope"] == 1
 
     out_cert = tmp_path / "cert"
     assert run_lane(None, asked=1, max_interlayer=2,
@@ -1250,3 +1463,345 @@ def test_certified_mode_exports_the_strongest_actual_route(tmp_path):
     cls = prov["classes"]["A->T@h2"]
     assert cls["certified"] is True
     assert cls["weakest_emitted"] == 90
+
+
+def test_lane_ratio_basis_adj_equals_plain_by_construction(tmp_path):
+    """Gate L1 on the RATIO basis. The engine conditions
+    `connection_ratio_adj` at the MIN-SYNAPSE tier (`thr = max(1,
+    min_synapse_num)`), and a ratio-basis run forces that to 1 — so its
+    adjusted denominator is the plain all-inputs one and adj == plain for
+    EVERY row. Dividing by the ratio-gated cone instead (what `conn_r` is)
+    is the emitted-subset mistake F-EX-003 was: measured on the real
+    L1r0.001 lane, 0 of 8 rows had adj == plain.
+
+    The fixture cuts the ratio gate at 0.005, which admits only the
+    stronger half of the b_i->c1 family — so the cone denominator (34,950)
+    differs from the dataset one (59,900) and the old code cannot pass."""
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / "parameters.txt").write_text(
+        "weight basis:              connection_ratio\n"
+        "min connection ratio:      0.005\n"
+        "min synapse number:        1\n"
+        "max interlayer:            2\n"
+        "source neurons:            ['a1']\n"
+        "target neurons:            ['c1']\n", encoding="utf-8")
+    root = _write_synth_dataset(tmp_path)
+    assert run_lane(out, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    lane = out / "route_scope_paths"
+    rows = pl.read_csv(lane / "route_paths_type.csv")
+    assert rows.height >= 1
+    prov = json.loads((lane / "route_provenance.json").read_text())
+    assert prov["weight_basis"] == "connection_ratio"
+    assert rows.filter(pl.col("ratios") != pl.col("ratios_adj")).height == 0
+    for row in rows.to_dicts():
+        assert json.loads(row["ratios_adj"]) == json.loads(row["ratios"])
+        # the plain share is a DATASET share: chain mass / all-pres
+        # incoming. C's incoming is the FULL b_i->c1 family (59,900),
+        # never the ratio-gated 34,950.
+        w = json.loads(row["weights"])
+        r = json.loads(row["ratios"])
+        assert abs(w[1] / r[1] - 59900.0) < 1e-6, row
+
+
+def test_lane_full_scope_refill_second_round(tmp_path):
+    """Q2 (plan-corridor-refill-and-mode-tabs): the lane's second round
+    re-values ITS OWN chains at synapse >= 1 through the refill's layered
+    filter, so a Fast run carries the same scope pair the Complete mode
+    does. The fixture asks 150, which cuts the weaker half of both hop
+    families, so there IS mass below the lane's tier to recover."""
+    out = tmp_path / "lane_full"
+    assert run_lane(None, asked=150, max_interlayer=2,
+                    source_types=["A"], target_types=["C"],
+                    connections_path=(root := _write_synth_dataset(
+                        tmp_path, n_intermediate=60)) / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    out_dir=out)
+    asked_rows = pl.read_csv(out / "route_paths_type.csv")
+    comp = pl.read_csv(out / "route_full_paths_type.csv")
+    carr = pl.read_csv(out / "route_full_carrying_paths_type.csv")
+    pairs = pl.read_csv(out / "route_full_type_pairs.csv")
+    inc = pl.read_csv(out / "route_type_incoming.csv")
+    prov = json.loads((out / "route_provenance.json").read_text())
+
+    # the SAME chain set the lane validated at its own tier
+    assert set(comp["path"]) == set(asked_rows["path"])
+    assert comp.height > 0 and carr.height > 0
+    # mirror column contract (Q5): the complete mode's names, lane namespace
+    assert comp.columns[-2:] == ["emitted_weights", "refill_weights"]
+    assert carr.columns[-2:] == ["emitted_weights", "total_weights"]
+    assert pairs.columns == ["type_pre", "type_post", "nt_type",
+                             "emitted_weight",
+                             "refill_weight", "refilled_total",
+                             "refilled_connection_ratio",
+                             "universe_type_weights",
+                             "pair_offchain_mass"]
+    # `Universe type weights` (F4/Q3 rename of universe_pair_mass) is the
+    # >= 1 universe the hop pair is drawn from: realized + off-chain == it,
+    # so every printed chain mass is provably a lower bound of its pair.
+    for row in pairs.iter_rows(named=True):
+        assert (float(row["refilled_total"])
+                + float(row["pair_offchain_mass"])
+                == pytest.approx(float(row["universe_type_weights"]))), row
+        assert float(row["emitted_weight"]) + float(row["refill_weight"]) \
+            == pytest.approx(float(row["refilled_total"])), row
+
+    # gate G3: emitted + refill == total, hop for hop, integer-valued
+    for row in comp.iter_rows(named=True):
+        e = json.loads(row["emitted_weights"])
+        rf = json.loads(row["refill_weights"])
+        w = json.loads(row["weights"])
+        assert [a + b for a, b in zip(e, rf)] == w, row
+        assert all(float(v).is_integer() for v in e + rf + w), row
+        assert any(b > 0 for b in rf) or row["path"] not in set(carr["path"])
+    # the carrying table states its SUBJECT and reconciles beside it
+    for row in carr.iter_rows(named=True):
+        e = json.loads(row["emitted_weights"])
+        sub = json.loads(row["weights"])
+        tot = json.loads(row["total_weights"])
+        assert [a + b for a, b in zip(e, sub)] == tot, row
+        assert any(b > 0 for b in sub), row
+
+    # gate G4/G5: one denominator file reproduces every ratio, and the
+    # >= 1 scope carries NO adjusted column (conditioning at 1 is a no-op)
+    assert "ratios_adj" not in comp.columns
+    assert "ratios_adj" not in carr.columns
+    den = dict(zip(inc["type_post"], inc["incoming_threshold"]))
+    assert den["C"] > 0
+    for row in comp.iter_rows(named=True):
+        seq = row["path"].split("->")
+        w = json.loads(row["weights"])
+        r = json.loads(row["ratios"])
+        for i, m in enumerate(w):
+            assert abs(m / den[seq[i + 1]] - r[i]) < 1e-12, row
+
+    full = prov["full"]
+    assert full["status"] == "ok" and full["scope"] == "synapse >= 1"
+    assert full["chains"] == comp.height
+    assert full["chains_carrying"] == carr.height
+    assert full["refill_weight_total"] > 0
+    # the pair table agrees with the path tables' totals, per hop pair
+    assert (pairs["emitted_weight"] + pairs["refill_weight"]
+            == pairs["refilled_total"]).all()
+    assert (pairs["pair_offchain_mass"] >= 0).all()
+    # the mirror pages exist for the second round too
+    assert (out / "route_full_type_network.html").exists()
+    assert (out / "route_full_type_heatmap.html").exists()
+    assert not (out / ".mirror_visualizations_failed").exists()
+
+
+def test_lane_full_scope_refill_at_floor_is_a_no_op(tmp_path):
+    """asked == 1: the lane's tier IS the floor, so nothing lies below it —
+    the second round must say so rather than print a table of zeros or
+    fail. (Gate G3's other face.)"""
+    out = tmp_path / "lane_floor"
+    root = _write_synth_dataset(tmp_path, n_intermediate=20)
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    source_types=["A"], target_types=["C"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet", out_dir=out)
+    prov = json.loads((out / "route_provenance.json").read_text())
+    comp = pl.read_csv(out / "route_full_paths_type.csv")
+    carr = pl.read_csv(out / "route_full_carrying_paths_type.csv")
+    assert carr.height == 0
+    assert prov["full"]["chains_carrying"] == 0
+    assert prov["full"]["status"] == "nothing_below_tier"
+    # the asked-tier masses are unchanged by the >= 1 pass at the floor
+    for row in comp.iter_rows(named=True):
+        assert all(v == 0 for v in json.loads(row["refill_weights"])), row
+
+
+# ---------------------------------------------------------------------------
+# Round-2 parity laws (plan §4.2 cache guard, §4.3 time budget): the lane's
+# synapse >= 1 pass must refuse an incomplete connection source and must say
+# when the clock cut it — never publish an undercounting universe or a
+# partial table that reads as complete.
+# ---------------------------------------------------------------------------
+
+def _lane_full_fixture(tmp_path, emitted_incoming):
+    """A run root with an emitted-tier incoming file beside the lane folder,
+    plus a lane run that produces a second round."""
+    ds = _write_synth_dataset(tmp_path, n_intermediate=60)
+    (tmp_path / "data_details").mkdir(exist_ok=True)
+    (tmp_path / "data_details" / "type_incoming_emitted.csv").write_text(
+        "type,incoming\n" + "".join(f"{t},{v}\n"
+                                    for t, v in emitted_incoming.items()),
+        encoding="utf-8")
+    out = tmp_path / "route_scope_paths"
+    ok = run_lane(None, asked=150, max_interlayer=2,
+                  source_types=["A"], target_types=["C"],
+                  connections_path=ds / "connections.parquet",
+                  neuron_table=ds / "neurons.parquet", out_dir=out)
+    return out, ok
+
+
+def test_lane_full_scope_cache_guard_passes_and_is_stamped(tmp_path):
+    """§4.2 key parity: the >= 1 all-post incoming must be checked against
+    the run's own emitted-tier incoming, and the result stamped. A clean run
+    records `ok`; the comparison is the SAME invariant the complete mode's
+    full scope enforces."""
+    out, ok = _lane_full_fixture(tmp_path, {"C": 1.0})
+    assert ok
+    prov = json.loads((out / "route_provenance.json").read_text())
+    full = prov.get("full") or {}
+    assert full.get("cache_guard") == "ok", full
+    assert full.get("time_capped") is False
+    assert (out / "route_full_paths_type.csv").exists()
+
+
+def test_lane_full_scope_cache_guard_refuses_an_undercounting_source(
+        tmp_path):
+    """The negative control: when the run's own emitted-tier incoming EXCEEDS
+    what the lane's connection source can account for, the source is
+    incomplete relative to the run. The tables must NOT be written (they
+    would undercount the universe silently) and the refusal must name the
+    type and both numbers."""
+    out, ok = _lane_full_fixture(tmp_path, {"C": 1e12})
+    assert ok, "the lane itself still completes; only the round refuses"
+    prov = json.loads((out / "route_provenance.json").read_text())
+    full = prov.get("full") or {}
+    assert full.get("status") == "failed", full
+    assert full.get("cache_guard") == "FAILED"
+    assert "C" in full.get("error", "")
+    assert "cache guard FAILED" in full.get("error", "")
+    for name in ("route_full_paths_type.csv",
+                 "route_full_carrying_paths_type.csv",
+                 "route_full_type_pairs.csv"):
+        assert not (out / name).exists(), \
+            f'{name} was written despite the guard refusal'
+
+
+def test_lane_full_scope_skips_on_a_spent_time_budget(tmp_path):
+    """§4.3: the pass shares the lane's clock. A lane whose budget is spent
+    before the round starts must DISCLOSE the skip (never silently drop the
+    round), and it must return before touching the connections."""
+    import time as _time
+
+    import route_plan as rp
+
+    out = tmp_path / "route_scope_paths"
+    out.mkdir(parents=True)
+    block = rp._full_scope_refill(
+        out, conn=None, tmap=None, body2type=None, src_ids=set(),
+        tgt_ids=set(), walk_rows=[{"path": "A->B->C"}], typed=None,
+        type_membership={}, type_incoming={}, asked=3,
+        time_budget_s=0.001, t_start=_time.monotonic() - 1.0)
+    assert block and block.get("status") == "skipped_time_budget", block
+    assert "budget" in (block.get("note") or "")
+    assert not (out / "route_full_paths_type.csv").exists()
+
+
+def test_lane_mirror_pages_skip_when_the_run_has_its_own(tmp_path):
+    """REDUNDANCY (user, 2026-10-15): the lane's mirror pages drew a strict
+    SUBSET of the run's own Network in the same style (measured on the
+    user's run: 26 of 38 pairs), so they are skipped while that page exists —
+    and the skip is DISCLOSED, because a reader who finds no html in
+    route_scope_paths/ must not think the lane forgot it. A fast-only run
+    (which has no main visualization) still gets them."""
+    import pandas as pd
+
+    import route_plan
+    out = tmp_path / "route_scope_paths"
+    out.mkdir()
+    pd.DataFrame([
+        {'type_pre': 'A', 'type_post': 'B', 'selected_support_mass': 5.0,
+         'connection_ratio': 0.1, 'nt_type': 'gaba'},
+    ]).to_csv(out / "route_connection_type.csv", index=False)
+
+    outcome = route_plan._write_mirror_visualizations(
+        out, src_types=["A"], tgt_types=["B"], adj_ratio_tier=3)
+    assert outcome == "built", outcome
+    asked = (out / "route_type_network.html").read_text(encoding="utf-8")
+    assert '"nt_type"' in asked and 'gaba' in asked, \
+        'the lane mirror lost the transmitter (NT parity, issue 6)'
+
+    # the run grows its own visualization -> the second call skips
+    viz = tmp_path / "visualization"
+    viz.mkdir()
+    (viz / "Network_run.html").write_text("<html></html>", encoding="utf-8")
+    for stale in out.glob("route_type_*.html"):
+        stale.unlink()
+    outcome2 = route_plan._write_mirror_visualizations(
+        out, src_types=["A"], tgt_types=["B"], adj_ratio_tier=3)
+    assert "skipped" in outcome2, outcome2
+    assert not (out / "route_type_network.html").exists()
+    assert not (out / "route_type_heatmap.html").exists()
+
+def test_lane_full_scope_refill_on_the_ratio_basis(tmp_path):
+    """G3's "integer-valued ON ANY BASIS", for the lane's second round: the
+    ratio basis changes ADMISSION, never the unit. At the >= 1 floor a ratio
+    lane's asked tier IS the floor (the run forces min synapse 1), so the
+    honest outcomes are: masses integer-valued, no adjusted column, and — when
+    the lane already saw every edge — the round says `nothing_below_tier`
+    instead of inventing a band."""
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / "parameters.txt").write_text(
+        "weight basis:              connection_ratio\n"
+        "min connection ratio:      0.005\n"
+        "min synapse number:        1\n"
+        "max interlayer:            2\n"
+        "source neurons:            ['a1']\n"
+        "target neurons:            ['c1']\n", encoding="utf-8")
+    root = _write_synth_dataset(tmp_path)
+    assert run_lane(out, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    lane = out / "route_scope_paths"
+    prov = json.loads((lane / "route_provenance.json").read_text())
+    assert prov["weight_basis"] == "connection_ratio"
+    full = prov.get("full") or {}
+    assert full, "the second round did not run on a ratio lane"
+    assert full.get("status") in ("ok", "nothing_below_tier")
+    comp = pl.read_csv(lane / "route_full_paths_type.csv")
+    assert comp.height >= 1
+    assert "ratios_adj" not in comp.columns
+    for row in comp.iter_rows(named=True):
+        e = json.loads(row["emitted_weights"])
+        rf = json.loads(row["refill_weights"])
+        w = json.loads(row["weights"])
+        assert [a + b for a, b in zip(e, rf)] == w, row
+        assert all(float(v).is_integer() for v in e + rf + w), row
+    carr = pl.read_csv(lane / "route_full_carrying_paths_type.csv")
+    if carr.height == 0:
+        assert full.get("status") == "nothing_below_tier", full
+    else:
+        for row in carr.iter_rows(named=True):
+            e = json.loads(row["emitted_weights"])
+            sub = json.loads(row["weights"])
+            tot = json.loads(row["total_weights"])
+            assert [a + b for a, b in zip(e, sub)] == tot, row
+
+
+def test_lane_universe_is_the_dataset_ge1_pair_mass(tmp_path):
+    """G4's substance, recomputed rather than read back: the corridor's
+    `universe_type_weights` for a hop pair IS the dataset's whole >= 1 mass
+    for that pair. Both lanes take their universe from the same definition, so
+    this is what "one denominator across both lanes" means at the floor — and
+    computing it here from the fixture's parquet (not from the table) is what
+    keeps the law honest."""
+    root = _write_synth_dataset(tmp_path, n_intermediate=40)
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / "parameters.txt").write_text(
+        "min synapse number:        3\n"
+        "max interlayer:            2\n"
+        "source neurons:            ['a1']\n"
+        "target neurons:            ['c1']\n", encoding="utf-8")
+    assert run_lane(out, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    pairs = pl.read_csv(out / "route_scope_paths"
+                        / "route_full_type_pairs.csv")
+    assert pairs.height >= 1
+
+    def type_of(bid):
+        return 'A' if bid == 'a1' else ('C' if bid == 'c1' else 'B')
+
+    want = {}
+    for u, v, w in pl.read_parquet(root / "connections.parquet").iter_rows():
+        key = (type_of(u), type_of(v))
+        want[key] = want.get(key, 0.0) + float(w)
+    for row in pairs.iter_rows(named=True):
+        key = (row["type_pre"], row["type_post"])
+        assert key in want, (key, sorted(want))
+        assert float(row["universe_type_weights"]) == want[key], row

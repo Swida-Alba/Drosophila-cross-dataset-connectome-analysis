@@ -18,8 +18,8 @@ Import from a test with
 """
 
 import json
-import random
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -81,7 +81,18 @@ class Page:
 
     def __init__(self, page_path, width=1400, height=900, port=None):
         self.uid = tempfile.mkdtemp(prefix='drocat-cdp-')
-        self.port = port or (9900 + random.randint(0, 99))
+        # A FREE port, not a random guess in a 100-wide window: a previous
+        # test's Chrome that has not finished dying still holds its port, the
+        # new Chrome then fails to bind, and the connect loop below would
+        # happily drive the OLD page (2026-10-16: the square-cells test read
+        # `ticks: 0` from the previous test's heatmap — and a stale page can
+        # satisfy a predicate just as easily as fail one).
+        if port is None:
+            with socket.socket() as _s:
+                _s.bind(('127.0.0.1', 0))
+                port = _s.getsockname()[1]
+        self.port = port
+        self.page_url = 'file://' + str(Path(page_path).resolve())
         self.ws = None
         self._id = 0
         self.proc = subprocess.Popen([
@@ -97,8 +108,17 @@ class Page:
             try:
                 with urllib.request.urlopen(
                         f'http://127.0.0.1:{self.port}/json', timeout=3) as r:
-                    target = next(t for t in json.load(r)
-                                  if t['type'] == 'page')
+                    targets = [t for t in json.load(r) if t['type'] == 'page']
+                # The endpoint must be serving the page WE launched; anything
+                # else is a foreign Chrome on the same port, and measuring it
+                # is worse than failing.
+                target = next((t for t in targets
+                               if t.get('url', '').startswith(self.page_url)),
+                              None)
+                if target is None:
+                    raise RuntimeError(
+                        'no page for ' + self.page_url + ' (saw '
+                        + ', '.join(t.get('url', '?') for t in targets) + ')')
                 self.ws = websocket.create_connection(
                     target['webSocketDebuggerUrl'], suppress_origin=True,
                     max_size=None)

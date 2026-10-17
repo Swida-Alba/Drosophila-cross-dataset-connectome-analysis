@@ -23,17 +23,38 @@ inside a cross-dataset run) and writes, additively into the run folder:
   - **Global** — per-unit stats, the pair x unit path-count matrix (with
     hop-range tooltips), a pairs-by-unit-coverage histogram, and a global
     route network of the most-traversed edges.
-  - **Pair Explorer** — Source and Target multi-selects render ONE pane
-    for the selection: a single pair gets its own pane, several pairs get
-    the UNION (one merged top-paths table with a Pair column and one
-    merged layered network). Each network card has a tab strip — "All"
-    plus one tab per path length in the drawn set — rebuilding the graph
-    from only that length's rows. Rows carry the pair's source/target
-    bodyId coverage; intermediates are colored shared (blue, >=2 paths of
-    the pair) vs unique (gray, exactly 1).
+  - **Analysis** — one page holding the mode x view destinations that this
+    run actually produced (plan-corridor-refill-and-mode-tabs Q1/Option B):
+    a **mode** row (``Complete`` / ``Fast (corridor)``) and a **view** row
+    (``Pair Explorer`` / ``Refill``). Each row renders only when it has at
+    least two destinations and is otherwise stated as a caption, so a
+    single-mode run offers two destinations and a both-mode run four —
+    never a control with one option.
+    * ``Complete → Pair Explorer`` — Source and Target multi-selects render
+      ONE pane for the selection: a single pair gets its own pane, several
+      pairs get the UNION (one merged top-paths table with a Pair column and
+      one merged layered network). Each network card has a tab strip — "All"
+      plus one tab per path length in the drawn set — rebuilding the graph
+      from only that length's rows. Rows carry the pair's source/target
+      bodyId coverage; intermediates are colored shared (blue, >=2 paths of
+      the pair) vs unique (gray, exactly 1).
+    * ``Complete → Refill`` — the second path-building round as a second
+      Pair Explorer, with a scope row (``Refill-asked`` | ``Refill-full``)
+      and a ``Refill view`` row (``Complete at ...`` / ``Refill-carrying``).
+    * ``Fast (corridor) → Pair Explorer`` — the lane's validated walks,
+      same table grammar, tiered at the LANE's own asked threshold.
+    * ``Fast (corridor) → Refill`` — the lane's synapse >= 1 second round
+      (``route_full_*``), the same two views as the complete mode's.
   - **Data** — unit rollup (with per-delegate report links on
     cross-dataset runs), breakdown CSVs, paths tables, run artifacts, and
     run-level vispath/conserved-view links.
+
+  The old top-level addresses (``#tab=explorer``, ``#tab=refill``,
+  ``#tab=corridor``, ``#tab=corridor_refill``) still resolve: they are
+  aliases into Analysis, so a cited link lands on the destination it names.
+  A run whose ONLY paths are the corridor lane's (Fast Mode = ``fast``) gets
+  this same report with the lane as its unit — never an empty state that
+  describes validated walks as finding nothing.
 
   Cross-dataset runs additionally write a single-unit copy of the report
   into every ``dataset_data/<dataset>/<delegate>/`` folder.
@@ -82,6 +103,72 @@ PATHS_SUFFIX = '_allpaths_type.csv'
 DEFAULT_TOP_PER_LENGTH = 10
 DEFAULT_GLOBAL_EDGES = 60
 DEFAULT_GLOBAL_PAIRS = 50
+# Data-tab presence census (F-EX-010's sibling item): the sidecar folders
+# whose files the tab must link, and the names it must not repeat.
+DATA_TAB_CENSUS_DIRS = (
+    '', 'data_details', 'data_details/type_level_refill',
+    'data_details/route_plan', 'route_scope_paths', 'comparison_results')
+DATA_TAB_CENSUS_SKIP_NAMES = {REPORT_NAME, 'user_warning_notes.txt'}
+DATA_TAB_CENSUS_CAP = 80
+
+# Where a second-round dataset's inputs live inside a run folder
+# (plan-corridor-refill-and-mode-tabs Phase 2). The Complete mode's refill
+# mirrors into type_level_refill/ + data_details/type_level_refill/; the
+# corridor lane keeps ONE namespace (route_scope_paths/) for its asked
+# table and its synapse >= 1 second round, with the same column grammar.
+DATASET_LAYOUTS = {
+    'complete': {
+        'paths': 'type_level_refill',
+        'pairs': 'data_details/type_level_refill',
+        'pairs_asked': 'refill_type_pairs.csv',
+        'pairs_full': 'refill_full_type_pairs.csv',
+        # One conditioned-denominator file serves both scopes: the complete
+        # mode's full view suppresses its Adj column (synapse >= 1 conditions
+        # nothing), so the asked-tier file is never read as a >= 1 denominator.
+        'incoming': 'data_details/type_level_refill'
+                    '/type_incoming_asked.csv',
+        'incoming_full': 'data_details/type_level_refill'
+                         '/type_incoming_asked.csv',
+        'vispath': (('refill_type_network.html',
+                     '🕸️ refill type network (vispath)'),
+                    ('refill_bodyId_network.html',
+                     '🕸️ refill bodyId network (vispath)')),
+        # F7.2 gave the full-connection scope its OWN mirror pages, so the
+        # synapse >= 1 view links those rather than the asked scope's picture
+        # of a different mass (measured: a live run's report linked only the
+        # asked pages while refill_full_type_*.html sat unlinked beside them).
+        'vispath_full': (('refill_full_type_network.html',
+                          '🕸️ refill-full type network (vispath)'),
+                         ('refill_full_type_heatmap.html',
+                          '🔥 refill-full type heatmap (vispath)')),
+        # The complete mode's pair tables publish the pair mass as `weight`
+        # for the emitted set; no per-hop universe readout is printed there,
+        # so its explorers opt out of the column (an absent readout beats a
+        # borrowed one).
+        'universe': False},
+    'corridor': {
+        'paths': 'route_scope_paths',
+        'pairs': 'route_scope_paths',
+        'pairs_asked': 'route_connection_type.csv',
+        'pairs_full': 'route_full_type_pairs.csv',
+        # The lane's two scopes condition at DIFFERENT tiers, so each reads
+        # its own denominator file: asked at the lane's asked threshold,
+        # full at synapse >= 1 (where conditioned == plain).
+        'incoming': 'route_scope_paths/route_type_incoming_asked.csv',
+        'incoming_full': 'route_scope_paths/route_type_incoming.csv',
+        'vispath': (('route_type_network.html',
+                     '🕸️ lane type network (vispath)'),
+                    ('route_type_heatmap.html',
+                     '🔥 lane type heatmap (vispath)')),
+        'vispath_full': (('route_full_type_network.html',
+                          '🕸️ lane full-scope network (vispath)'),
+                         ('route_full_type_heatmap.html',
+                          '🔥 lane full-scope heatmap (vispath)')),
+        # Both lane scopes publish the whole admitted type-pair weight beside
+        # their ratios, so the corridor explorer prints `Universe type
+        # weights` per hop (F4/Q3).
+        'universe': True},
+}
 # path_prob removed from the rank keys (SUSPENDED 2026-10-06):
 RANK_KEYS = ('min_weight', 'min_ratio', 'length')
 
@@ -200,6 +287,50 @@ def discover_units(run_dir: Path) -> List[Unit]:
     return units
 
 
+LANE_DIR = 'route_scope_paths'
+LANE_PROV_NAME = 'route_provenance.json'
+LANE_WALKS_NAME = 'route_paths_type.csv'
+
+
+def _lane_provenance(folder: Path) -> dict:
+    """The lane's own provenance for a folder, or {} when it never ran.
+
+    ``status == 'complete'`` is the gate: a refused lane writes provenance
+    too, and a refusal is disclosure for the corridor CARD, not a dataset."""
+    prov_path = Path(folder) / LANE_DIR / LANE_PROV_NAME
+    if not prov_path.exists():
+        return {}
+    try:
+        prov = json.loads(prov_path.read_text(encoding='utf-8'))
+    except Exception:  # noqa: BLE001 - unreadable provenance == no lane
+        return {}
+    return prov if str(prov.get('status') or '') == 'complete' else {}
+
+
+def lane_unit(run_dir: Path, meta: Dict[str, Any]) -> Optional[Unit]:
+    """The unit shape of a run whose ONLY path table is the lane's.
+
+    A standalone Fast run (``corridor_mode='fast'``) skips the Complete
+    pipeline entirely, so it has no ``*_allpaths_type.csv`` and
+    ``discover_units`` returns []. Its ``route_scope_paths/
+    route_paths_type.csv`` is written in the same column order, so treating
+    it as the run's paths table gives the lane a real report — Overview,
+    pair tables, Explorer — instead of an empty state that describes a run
+    with 7 validated walks as one that found nothing (F-EX-010's sibling,
+    plan-corridor-refill-and-mode-tabs D2/G8)."""
+    run_dir = Path(run_dir)
+    csv_path = run_dir / LANE_DIR / LANE_WALKS_NAME
+    if not csv_path.exists() or not _lane_provenance(run_dir):
+        return None
+    return Unit(
+        unit_id='',
+        label=_root_display_label(run_dir, meta, run_kind_for(run_dir, meta)),
+        folder=run_dir, csv_path=csv_path,
+        dataset=str(meta.get('dataset') or ''), threshold='',
+        sort_key=('', -1.0, ''),
+    )
+
+
 # ---------------------------------------------------------------------------
 # run metadata (opportunistic — the CSVs are the only hard requirement)
 # ---------------------------------------------------------------------------
@@ -209,9 +340,56 @@ def run_kind(run_name: str) -> str:
         return 'Shortest Paths'
     if run_name.startswith('find-paths-complete'):
         return 'Complete Paths'
+    if run_name.startswith('find-network'):
+        # A Network run writes a 1-hop *_allpaths_type.csv precisely so the
+        # Pair Explorer reads it (Phase B3) — but it is not a pathfinding run,
+        # and labelling it 'Pathfinding' made the report describe a direct
+        # connection as a searched route and quote depth/lane advice the tool
+        # can never act on (plan 2026-10-16 C3).
+        return 'Network'
     if run_name.startswith('cross-dataset'):
         return 'Cross-Dataset > Paths'
     return 'Pathfinding'
+
+
+def _parameters_value(run_dir, key: str) -> str:
+    """One `key:<spaces>value` line of the folder's own parameters.txt (''
+    when absent). `_sniff_metadata` normalizes into its own vocabulary and
+    drops the keys this needs, so the stamp is read from the bytes."""
+    try:
+        lines = (Path(run_dir) / 'parameters.txt').read_text(
+            encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return ''
+    for line in lines:
+        head, sep, tail = line.strip().partition(':')
+        if sep and head.strip() == key:
+            return tail.strip()
+    return ''
+
+
+def run_kind_for(run_dir, meta=None) -> str:
+    """The tool that wrote THIS folder, falling back to what the folder says.
+
+    `run_kind` reads the run-name grammar, which is how a folder is recognized
+    by eye — but the group also writes folders under a user's `Save As` name,
+    and those carried no kind at all: the report fell back to 'Pathfinding' and
+    re-quoted the depth/lane advice a Network run cannot act on (the C3 fix was
+    therefore only true of a NAMED folder). Every tool has stamped its own
+    `path_mode` since plan 2026-10-16 Q4, so a name that settles nothing is
+    answered from the folder. Applied only as a fallback: a named folder keeps
+    its established reading, and a cross-dataset unit folder is never a root
+    here (the report is generated for the `cross-dataset_*` root).
+    """
+    name = Path(run_dir).name
+    kind = run_kind(name)
+    if kind != 'Pathfinding':
+        return kind
+    return {
+        'network': 'Network',
+        'shortest': 'Shortest Paths',
+        'all': 'Complete Paths',
+    }.get(_parameters_value(run_dir, 'path_mode').strip().lower(), kind)
 
 
 # Applied-threshold / budget provenance keys (the block pathfinding runs
@@ -242,6 +420,7 @@ def _sniff_metadata(run_dir: Path) -> Dict[str, Any]:
             ('applied_threshold', r'applied_threshold:\s*([^\s]+)'),
             ('min_ratio', r'min connection ratio:\s*([^\s]+)'),
             ('weight_basis', r'weight basis:\s*([^\s]+)'),
+            ('run_mode', r'run mode:\s*([^\s]+)'),
             ('threshold_combination', r'threshold combination:\s*([^\s]+)'),
             ('max_interlayer', r'max interlayer:\s*([^\s]+)'),
             ('dataset', r'^dataset:\s*([^\s]+)'),
@@ -638,7 +817,12 @@ def _load_pair_level_ratios(folder
                      and float(vals.max()) != float(vals.min()))
             value = (float(vals.sum()) if split
                      else float(vals.iloc[0]))
-            out[(str(pre), str(post))] = value
+            # One precision per quantity across the report: every ratio an
+            # export table publishes is stored at 6 decimals, so the
+            # pair-level ratio read from connection_type.csv is quantized
+            # the same way — otherwise the same pair renders 0.001329 in
+            # one tab's payload and 0.0013286659682653 in another's.
+            out[(str(pre), str(post))] = round(value, 6)
     except (OSError, ValueError):
         pass
     return out, source
@@ -656,9 +840,13 @@ def _path_pair_ratio(path_str, pair_ratio) -> Optional[float]:
 
 def _load_refill_pair_ratios(
         folder: Path, pairs_name: str = 'refill_type_pairs.csv',
-        prefer_adj: bool = True) -> Tuple[Dict[Tuple[str, str], float], str]:
+        prefer_adj: bool = True,
+        subdir: str = 'data_details/type_level_refill'
+) -> Tuple[Dict[Tuple[str, str], float], str]:
     """(type_pre, type_post) -> refilled pair-level ratio for the Refill
-    Explorer, from data_details/type_level_refill/<pairs_name>. Prefers
+    Explorer, from <subdir>/<pairs_name> — the complete mode's second round
+    mirrors into data_details/type_level_refill/, the corridor lane keeps
+    its own namespace (route_scope_paths/). Prefers
     ``refilled_connection_ratio_adj`` (the threshold-conditioned
     denominator) over plain ``refilled_connection_ratio`` — the same
     preference order as the main table's loader. The FULL scope
@@ -670,8 +858,7 @@ def _load_refill_pair_ratios(
     out: Dict[Tuple[str, str], float] = {}
     source = ''
     try:
-        pairs_csv = (Path(folder) / 'data_details' / 'type_level_refill'
-                     / pairs_name)
+        pairs_csv = Path(folder) / subdir / pairs_name
         if not pairs_csv.exists():
             return out, source
         frame = pd.read_csv(pairs_csv)
@@ -680,6 +867,12 @@ def _load_refill_pair_ratios(
                       ('refilled_connection_ratio', 'plain')) \
             if prefer_adj else \
             (('refilled_connection_ratio', 'full-plain'),)
+        if pairs_name.startswith('route_connection_type'):
+            # the corridor lane's asked-tier pair table names its shares
+            # the way every other type-pair table does
+            candidates = (('connection_ratio_adj', 'adjusted'),
+                          ('connection_ratio', 'plain')) if prefer_adj \
+                else (('connection_ratio', 'full-plain'),)
         for candidate, tag in candidates:
             if {'type_pre', 'type_post', candidate} <= set(frame.columns):
                 col, source = candidate, tag
@@ -693,6 +886,50 @@ def _load_refill_pair_ratios(
     except (OSError, ValueError):
         pass
     return out, source
+
+
+def _load_pair_universe(
+        folder: Path, pairs_name: str, subdir: str,
+        columns: Tuple[str, ...] = ('universe_type_weights',)
+) -> Dict[Tuple[str, str], float]:
+    """(type_pre, type_post) -> the WHOLE admitted type-pair weight at this
+    scope's tier, from <subdir>/<pairs_name> — the per-hop
+    `Universe type weights` readout (F4/Q3, renamed from `universe pair
+    mass`; the quantity is unchanged). Empty when the table publishes no
+    such column, which is how a dataset opts out of the column rather than
+    printing a wrong one."""
+    out: Dict[Tuple[str, str], float] = {}
+    try:
+        frame = pd.read_csv(Path(folder) / subdir / pairs_name)
+        col = next((c for c in columns
+                    if {'type_pre', 'type_post', c} <= set(frame.columns)),
+                   None)
+        if col is None:
+            return out
+        for _, r in frame.iterrows():
+            if pd.notna(r.get(col)):
+                out[(str(r['type_pre']), str(r['type_post']))] = float(
+                    r[col])
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def _hop_universe_list(path_str, universe: Dict[Tuple[str, str], float]) -> str:
+    """Per-hop universe weights in the presence-matrix list form the explorer
+    prints (`dashList` bolds the minimum, and an em dash marks a hop whose
+    pair the table does not publish). Masses are integers when they are
+    integers — a synapse count never needs a decimal tail."""
+    labs = str(path_str).split('->')
+    parts = []
+    for i in range(len(labs) - 1):
+        v = universe.get((labs[i], labs[i + 1]))
+        if v is None:
+            parts.append('\u2014')
+        else:
+            parts.append(str(int(v)) if float(v).is_integer()
+                         else repr(round(float(v), 2)))
+    return '[' + ', '.join(parts) + ']'
 
 
 # ---------------------------------------------------------------------------
@@ -749,15 +986,24 @@ def _per_hop_adjusted_list(path_str, pair_ratio) -> str:
     return '[' + ', '.join(parts) + ']' if parts else ''
 
 
-def _load_type_incoming_applied(folder) -> Dict[str, float]:
-    """Per post TYPE: the applied-tier incoming mass the EMITTED
-    network carries (data_details/type_incoming_applied.csv, written by
-    the engine's realized patch). This is the denominator matching the
-    realized Weights scope — the pair report derives its
-    applied-conditioned Adj. ratios from it. Empty when the run predates
-    the file."""
+def _load_type_incoming_conditioned(folder) -> Dict[str, float]:
+    """Per post TYPE: the dataset-wide incoming mass CONDITIONED at the
+    run's Min Synapse Count (data_details/type_incoming_conditioned.csv,
+    written by the engine from the same fetch that produced the pair-level
+    `connection_ratio_adj`). This is the denominator a CHAIN row's adjusted
+    ratio divides by — the run's own guide states it ("the denominator is
+    the dataset-wide incoming mass, inputs >= threshold for adjusted"), and
+    at Min Synapse Count 1 it equals the all-inputs total, so adj == plain
+    by construction.
+
+    It is deliberately NOT `type_incoming_emitted.csv` (that file sums this
+    run's emitted cone: measured PPL101 1,283 vs the dataset's 39,137, which
+    inflated chain adjusted ratios ~30x and let them saturate at 100%).
+    Empty when the run predates the file — the caller then falls back to the
+    pair-level adjusted map, which is at least the documented
+    `connection_ratio_adj`."""
     out: Dict[str, float] = {}
-    path = Path(folder) / 'data_details' / 'type_incoming_applied.csv'
+    path = Path(folder) / 'data_details' / 'type_incoming_conditioned.csv'
     try:
         frame = pd.read_csv(path)
         if {'type', 'incoming'} <= set(frame.columns):
@@ -769,20 +1015,56 @@ def _load_type_incoming_applied(folder) -> Dict[str, float]:
     return out
 
 
-def _realized_applied_list(path_str, weights, in_applied) -> str:
+def _conditioned_threshold(folder) -> str:
+    """The tier `data_details/type_incoming_conditioned.csv` was computed
+    at, as the engine recorded it (its `threshold` column). The Adj header
+    must name THAT number — the run's `applied_threshold` is a different
+    cut (the emitted-set floor), and labelling the conditioned denominator
+    with it showed tier 4 over a denominator conditioned at 3."""
+    path = Path(folder) / 'data_details' / 'type_incoming_conditioned.csv'
+    try:
+        frame = pd.read_csv(path, usecols=['threshold'])
+    except (OSError, ValueError):
+        return ''
+    for value in frame['threshold'].dropna().unique():
+        text = str(value).strip()
+        if text and text.lower() != 'none':
+            return text.rstrip('0').rstrip('.') if '.' in text else text
+    return ''
+
+
+def _opt_cell(value) -> str:
+    """A passthrough list cell that is simply absent when the source table
+    has no such column (carrying tables carry emitted/total; the others do
+    not) — never a fabricated dash."""
+    if value is None:
+        return ''
+    try:
+        if pd.isna(value):
+            return ''
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def _realized_conditioned_list(path_str, weights, in_conditioned) -> str:
     """Per-hop ADJUSTED ratio list computed from the REALIZED hop
-    masses over the applied-tier incoming denominator — matching the
-    Weights scope exactly (weights are emitted-network masses, every
-    edge >= the applied threshold). Hops whose post type lacks an
-    applied denominator render '—'. Empty when ``in_applied`` is None
+    masses over the CONDITIONED dataset-wide incoming denominator — the
+    chain-derived measure the run's guide and the pair-level
+    `connection_ratio_adj` both describe: numerator = this chain's realized
+    hop mass, denominator = the post type's dataset incoming counting only
+    edges at or above the run's Min Synapse Count. At Min Synapse Count 1
+    that denominator IS the all-inputs one, so the list equals the plain
+    Ratios list by construction. Hops whose post type lacks a conditioned
+    denominator render '—'. Empty when ``in_conditioned`` is None
     (legacy run) — the caller falls back to the pair-level adj map."""
-    if not in_applied:
+    if not in_conditioned:
         return ''
     labs = str(path_str).split('->')
     ws = _weight_list(weights) or []
     parts = []
     for i in range(len(labs) - 1):
-        denom = in_applied.get(labs[i + 1])
+        denom = in_conditioned.get(labs[i + 1])
         w = ws[i] if i < len(ws) else None
         if denom and w is not None:
             parts.append(_fmt_pct(w / denom))
@@ -1151,7 +1433,16 @@ def build_global(
                 best[key] = cand
         rep_paths.extend(v[2] for v in best.values())
 
-    edge_count: Counter = Counter()
+    # F-EX-009: the run's REAL edge set. The drawing used to be built from
+    # one representative route per source-target pair, so the panel claimed
+    # "7 of 7 distinct edges" for a run whose 64 chains span 92 distinct type
+    # edges over 38 nodes — the word "total" described the drawing, not the
+    # run. Statistics now come from EVERY emitted chain; the representative
+    # set stays available as a toggle, and each edge carries its synapse mass
+    # so widths mean something (they used to mean traversal count alone).
+    edge_count: Counter = Counter()          # representative traversals
+    all_edge_paths: Counter = Counter()      # chains using the edge (all)
+    all_edge_mass: Dict[Tuple[str, str], float] = defaultdict(float)
     min_hop_inter: Dict[str, int] = {}
     ever_source: Dict[str, bool] = {}
     ever_target: Dict[str, bool] = {}
@@ -1159,22 +1450,37 @@ def build_global(
     node_pairs: Dict[str, set] = defaultdict(set)
     ncols = 2
     for ids in rep_paths:
-        ncols = max(ncols, len(ids))
-        hops = len(ids) - 1
-        source, target = ids[0], ids[-1]
-        for hop, node in enumerate(ids):
-            node_paths[node] += 1
-            node_pairs[node].add((source, target))
-            if hop == 0:
-                ever_source[node] = True
-            elif hop == hops:
-                ever_target[node] = True
-            else:
-                prior = min_hop_inter.get(node)
-                if prior is None or hop < prior:
-                    min_hop_inter[node] = hop
         for a, b in zip(ids, ids[1:]):
             edge_count[(a, b)] += 1
+    # every emitted chain, not one per pair. Roles and columns are read
+    # from the SAME whole-run scope as the statistics: a relay that only
+    # appears in a non-representative chain is still a relay, so it must
+    # not be drawn in the source column.
+    for unit in units:
+        frame = frames[unit.unit_id]
+        for _, prow in frame.iterrows():
+            labels = [s.strip() for s in str(prow['path']).split('->')]
+            if len(labels) < 2:
+                continue
+            masses = _weight_list(prow.get('weights')) or []
+            hops = len(labels) - 1
+            ncols = max(ncols, len(labels))
+            source, target = labels[0], labels[-1]
+            for hop, node in enumerate(labels):
+                node_paths[node] += 1
+                node_pairs[node].add((source, target))
+                if hop == 0:
+                    ever_source[node] = True
+                elif hop == hops:
+                    ever_target[node] = True
+                else:
+                    prior = min_hop_inter.get(node)
+                    if prior is None or hop < prior:
+                        min_hop_inter[node] = hop
+            for i, (a, b) in enumerate(zip(labels, labels[1:])):
+                all_edge_paths[(a, b)] += 1
+                if i < len(masses):
+                    all_edge_mass[(a, b)] += float(masses[i])
 
     def node_col(node: str) -> int:
         if node in min_hop_inter:
@@ -1183,8 +1489,13 @@ def build_global(
             return ncols - 1
         return 0
 
-    top_edges = sorted(edge_count.items(), key=lambda kv: (-kv[1], kv[0]))
-    top_edges = top_edges[:global_edges]
+    _all_edges = sorted(
+        set(all_edge_paths) | set(edge_count),
+        key=lambda e: (-all_edge_mass.get(e, 0.0), -all_edge_paths[e], e))
+    emitted_edge_total = len(_all_edges)
+    emitted_node_total = len(node_paths)
+    top_edges = [
+        (e, all_edge_paths[e]) for e in _all_edges[:global_edges]]
     nodes_set = {n for edge in top_edges for n in edge[0]}
     by_col: Dict[int, List[str]] = defaultdict(list)
     for node in nodes_set:
@@ -1221,10 +1532,15 @@ def build_global(
             'ncols': ncols,
             'nrows': max((len(v) for v in by_col.values()), default=1),
             'nodes': nodes,
-            'edges': [{'f': a, 't': b, 'c': count} for (a, b), count in top_edges],
+            'edges': [{'f': a, 't': b, 'c': count,
+                       'w': round(all_edge_mass.get((a, b), 0.0), 2),
+                       'rep': bool(edge_count.get((a, b), 0))}
+                      for (a, b), count in top_edges],
         },
-        'edge_stats': {'total': len(edge_count), 'shown': len(top_edges)},
-        'node_stats': {'total': len(node_paths), 'shown': len(nodes_set)},
+        'edge_stats': {'total': emitted_edge_total,
+                       'shown': len(top_edges)},
+        'node_stats': {'total': emitted_node_total,
+                       'shown': len(nodes_set)},
     }
 
 
@@ -1275,6 +1591,18 @@ def build_payload(
         'run': {
             'name': run_name,
             'kind': kind,
+            # What the Analysis bar calls this run's destination. A Network
+            # run browses a 1-hop direct-connection table, not a searched
+            # path set, and modes is kind-blind — so before this the bar read
+            # "Mode: Complete — the only mode this run produced" for a folder
+            # that has no Complete mode at all (measured on a real
+            # find-network run, 2026-10-16 review). Carried as DATA so the
+            # claim is checkable from the payload, not only from JS text.
+            'mode_labels': ({'complete': 'Direct connections (1 hop)'}
+                            if kind == 'Network' else {}),
+            'mode_note': ('this tool has no second mode: no Complete search, '
+                          'no Fast (corridor) lane, no path budget and no tau'
+                          if kind == 'Network' else ''),
             'shortest': (kind == 'Shortest Paths'
                          or str(meta.get('path_mode', '')).lower() == 'shortest'),
             'hemispheres': str(meta.get('separate_hemispheres', '')).lower()
@@ -1467,6 +1795,11 @@ tr:hover { background: var(--bg-color); }
   padding: 6px 14px; border-radius: 16px; cursor: pointer; font-size: 0.92em; }
 .page-tab-btn.active { background: #1d4ed8; color: #fff;
   border-color: #1d4ed8; font-weight: 600; }
+/* mode/view rows: one labelled row per choice the page actually offers */
+.mode-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  margin: 2px 0 8px; }
+.mode-row-label { font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--secondary-color); margin-right: 6px; }
 .select-row { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; }
 .select-row label { display: flex; flex-direction: column; font-size: 12px;
   color: var(--secondary-color); gap: 4px; font-weight: 600; }
@@ -1632,17 +1965,37 @@ def _render_provenance_card(run: dict, run_dir=None) -> str:
     # provenance they answer to.
     refill = _load_refill_summary(run_dir)
     if refill:
-        if _refill_has_data(refill):
+        # F-EX-008 (gate L8): the Overview must not contradict the Refill
+        # tab of the same report. It used to read the TOP-LEVEL (asked-scope)
+        # counters only, so a run whose asked scope had nothing to recover
+        # printed "0 bodyId edges / 0 synapses" while its FULL scope had
+        # recovered 2,222 (L1w5) or 2,577 (L1r0.001) synapses — the Refill
+        # tab quoted those numbers in its own header.
+        _full = refill.get('full') or {}
+        _asked_edges = int(refill.get('refill_edges') or 0)
+        _asked_mass = int(refill.get('refill_weight_total') or 0)
+        _full_edges = int(_full.get('refill_edges') or 0)
+        _full_mass = int(_full.get('refill_weight_total') or 0)
+        if _asked_edges or _asked_mass or _full_edges or _full_mass:
+            bits = []
+            if _asked_edges or _asked_mass:
+                bits.append(f'asked scope: {_asked_edges:,} bodyId edges / '
+                            f'{_asked_mass:,} synapses of budget-cut mass')
+            if _full_edges or _full_mass:
+                bits.append(f'full scope (synapse &ge; 1): {_full_edges:,} '
+                            'sub-threshold bodyId edges / '
+                            f'{_full_mass:,} synapses behind the emitted '
+                            'pairs')
             rows.append(
                 f'<tr><td><strong>Type-level refill</strong></td>'
-                f'<td>{refill.get("refill_edges", 0):,} bodyId edges / '
-                f'{refill.get("refill_weight_total", 0):,} synapses '
-                f'budget-cut mass recovered (see '
-                f'data_details/type_level_refill/)</td></tr>')
+                f'<td>{" &middot; ".join(bits)} recovered (see '
+                f'data_details/type_level_refill/ and Path → Refill)'
+                f'</td></tr>')
         else:
             rows.append(
                 '<tr><td>Type-level refill</td><td>'
-                f'{_esc(str(refill.get("status")))}</td></tr>')
+                f'{_esc(str(refill.get("status")))} '
+                '&mdash; nothing to recover at either scope</td></tr>')
     complete = prov.get('paths_complete')
     if complete is not None:
         cls = 'badge-success' if complete.lower() == 'true' else 'badge-warning'
@@ -1849,12 +2202,12 @@ def _render_refill_card(run_dir: Path) -> str:
         return ''
     status = str(prov.get('status') or '')
     if status and status not in ('refilled', 'complete_at_asked'):
-        return ''  # 'complete_at_asked' surfaces on the Refill tab only
+        return ''  # 'complete_at_asked' surfaces on the Refill view only
     pairs_csv = folder / 'refill_type_pairs.csv'
     complete_only = status == 'complete_at_asked'
     if complete_only:
         # the Overview zero-mass card stays hidden (approved plan) — the
-        # Refill tab carries the complete-at-asked explorer
+        # Analysis -> Refill carries the complete-at-asked explorer
         return ''
     rows = []
     try:
@@ -1963,7 +2316,7 @@ def _render_refill_card(run_dir: Path) -> str:
         + '<p class="cap-note">refilled_total = emitted + refill mass; '
           'the refill is re-derived at the ASKED threshold '
           f'({asked_lbl}) while emitted carries the applied cut '
-          f'({cutoff_lbl}). Full tables: the Refill tab and '
+          f'({cutoff_lbl}). Full tables: the Path → Refill view and '
           'data_details/type_level_refill/; the standalone '
           '<code>type_level_refill/</code> folder mirrors the refilled '
           'data in the connection-table format with its own '
@@ -1978,6 +2331,60 @@ def _render_overview(payload: dict, run_dir: Path,
                      breakdown_paths: Tuple[Path, Path]) -> str:
     run = payload['run']
     pairs = payload['pairs']
+    lane_info = payload.get('lane') or {}
+    # A standalone Fast run reports the lane's own chains, so the Overview
+    # must not read as a Complete run that emitted paths (D2/G8): the same
+    # numbers, named for the mode that produced them.
+    #
+    # A Network run counts 1-hop rows, not paths (review 2026-10-16): the
+    # Overview here is the only place a reader sees the run's headline number,
+    # and calling direct connections 'Paths' — or announcing 'No paths found'
+    # for a tool that has no path search — describes an artifact the tool
+    # never produces. Same kind-aware wording as the Analysis bar and the
+    # empty-state report.
+    _network = run.get('kind') == 'Network'
+    if lane_info.get('lane_only'):
+        paths_label = 'Validated lane chains (all units)'
+    elif _network:
+        paths_label = 'Direct connections (all units)'
+    else:
+        paths_label = 'Paths (all units)'
+    empty_note = ('No direct connections found in this run.'
+                  if _network else 'No paths found in this run.')
+    # A lane that attempted and refused gets its own card, because Option B
+    # only mounts a corridor page when the corridor HAS data — without this
+    # the refusal reason would be nowhere in the report.
+    _refused = lane_info.get('refusals') or []
+    # (an f-string expression cannot span lines on this interpreter, so the
+    # per-unit rows are built outside the concatenation)
+    _refused_items = ''.join(
+        '<li><b>{}</b> &mdash; {}: {}</li>'.format(
+            _esc(r.get('label') or r.get('unit') or 'Run'),
+            _esc(r.get('status')), _esc(r.get('reason')))
+        for r in _refused)
+    refusal_note = ('' if not _refused else
+                    '<div class="card"><h3>Fast mode (corridor) &mdash; '
+                    'did not run</h3><p style="color:var(--secondary-color);'
+                    'font-size:0.9em;">The lane was selected for this run but '
+                    'produced no tables, so it offers no destination under Path. The '
+                    'reason is its own, per unit:</p><ul>'
+                    + _refused_items
+                    + '</ul><p class="cap-note">Re-run the pass on this '
+                      'folder with <code>scripts/CorridorDeepDive.py '
+                      '&lt;run_dir&gt;</code> to see whether it runs '
+                      'now.</p></div>')
+    mode_note = ('' if not lane_info.get('lane_only') else
+                 '<div class="card"><h3>Run mode: Fast (corridor) only</h3>'
+                 '<p style="color:var(--secondary-color);font-size:0.9em;">'
+                 'This run skipped the Complete pipeline (discovery, '
+                 'enumeration, materialization, refill) by request, so its '
+                 'only path table is the lane\u2019s '
+                 '<code>route_scope_paths/route_paths_type.csv</code>. '
+                 'Every number below counts those validated chains. Browse '
+                 'them per source &times; target under <b>Analysis</b> '
+                 '(Fast (corridor) &rarr; Pair Explorer), and the same '
+                 'chains re-valued at synapse &ge; 1 under '
+                 'Fast (corridor) &rarr; Refill.</p></div>')
     total_paths = sum(p['paths_total'] for p in pairs)
     largest = max(pairs, key=lambda p: (p['paths_total'], p['source'], p['target'])) \
         if pairs else None
@@ -1991,10 +2398,10 @@ def _render_overview(payload: dict, run_dir: Path,
             <div class="stat-box"><div class="value">{len(pairs)}</div>
                 <div class="label">Source–target pairs</div></div>
             <div class="stat-box"><div class="value">{total_paths:,}</div>
-                <div class="label">Paths (all units)</div></div>
+                <div class="label">{paths_label}</div></div>
             <div class="stat-box"><div class="value">{largest['paths_total']:,}</div>
                 <div class="label">Largest pair — {_esc(largest['source'])} → {_esc(largest['target'])}</div></div>
-        </div>""" if pairs else '<p>No paths found in this run.</p>'
+        </div>""" if pairs else f'<p>{empty_note}</p>'
 
     hist = payload['histogram']
     if hist:
@@ -2090,6 +2497,7 @@ def _render_overview(payload: dict, run_dir: Path,
             f'<p class="cap-note">Caps: top-{run["top_per_length"]} paths per '
             f'(pair, length) · rank by {_esc(run["rank_by"])}. Every capped '
             f'view links to the uncapped CSV beside this report.</p></div>'
+            + mode_note + refusal_note +
             f'<div class="card"><h3>Summary</h3>{stats_html}</div>'
             + hist_html + coverage_card + refill_card
             + _render_provenance_card(run, run_dir) + pair_table + artifacts)
@@ -2107,6 +2515,26 @@ def _meta_summary(run: dict) -> str:
         if value:
             parts.append(f'{label}: {value}')
     return ' | '.join(parts) if parts else 'no run metadata found'
+
+
+def _run_file_census(run_dir: Path, skip) -> List[Tuple[str, List[Path]]]:
+    """Every artifact file the run actually wrote in its own sidecar
+    folders, grouped by folder (F-EX-010's sibling item: the Data tab used
+    to list a fixed handful of names, so 24-25 files that existed were
+    linked nowhere). Presence-driven by construction — a folder that was
+    never written contributes nothing. Cross-dataset delegates keep their
+    own sidecars and are covered by the nested reports."""
+    groups: List[Tuple[str, List[Path]]] = []
+    for rel in DATA_TAB_CENSUS_DIRS:
+        base = (run_dir / rel) if rel else run_dir
+        if not base.is_dir():
+            continue
+        files = [p for p in sorted(base.iterdir())
+                 if p.is_file() and not p.name.startswith('.')
+                 and p not in skip and p.name not in DATA_TAB_CENSUS_SKIP_NAMES]
+        if files:
+            groups.append((rel or '.', files))
+    return groups
 
 
 def _render_data_tab(payload: dict, run_dir: Path) -> str:
@@ -2144,10 +2572,12 @@ def _render_data_tab(payload: dict, run_dir: Path) -> str:
         'single-unit <code>path_report.html</code> inside their folder.</p></div>')
 
     csv_links = []
+    linked = set()
     for unit in run['units']:
         csv_path = next(iter(sorted(unit_csv_candidates(run_dir, unit))), None)
         if csv_path is None:
             continue
+        linked.add(csv_path)
         rel = os.path.relpath(csv_path, run_dir).replace(os.sep, '/')
         csv_links.append(f'<a href="{_esc(rel)}" target="_blank">{_esc(unit["label"])}</a>')
     paths_card = (
@@ -2175,8 +2605,10 @@ def _render_data_tab(payload: dict, run_dir: Path) -> str:
     ]
     artifact_links = []
     for name in artifact_names:
-        link = _link_if_exists(run_dir / name, run_dir, name)
+        path = run_dir / name
+        link = _link_if_exists(path, run_dir, name)
         if link != '-':
+            linked.add(path)
             artifact_links.append(link)
     artifacts_card = (
         '<div class="card"><h3>Run artifacts</h3><p style="font-size:0.9em;">'
@@ -2194,7 +2626,41 @@ def _render_data_tab(payload: dict, run_dir: Path) -> str:
         'per-pair layered maps live in the Pair Explorer.</p></div>'
     ) if vispath_links else ''
 
-    return table + breakdown_card + paths_card + artifacts_card + vispath_card
+    census_groups = _run_file_census(run_dir, linked)
+    census_total = sum(len(files) for _, files in census_groups)
+    census_parts, shown = [], 0
+    for rel, files in census_groups:
+        room = DATA_TAB_CENSUS_CAP - shown
+        if room <= 0:
+            break
+        take = files[:room]
+        shown += len(take)
+        labels = []
+        for path in take:
+            href = os.path.relpath(path, run_dir).replace(os.sep, '/')
+            name = path.name if rel == '.' else f'{rel}/{path.name}'
+            labels.append(f'<a href="{_html.escape(href, quote=True)}" '
+                          f'target="_blank">{_esc(name)}</a>')
+        census_parts.append(
+            f'<h4>{_esc("(run root)" if rel == "." else rel + "/")}</h4>'
+            f'<p style="font-size:0.9em;">' + ' · '.join(labels) + '</p>')
+    census_card = ''
+    if census_parts:
+        more = (f'<p class="cap-note">… {census_total - shown:,} more file(s) '
+                f'in these folders not linked (cap {DATA_TAB_CENSUS_CAP}).</p>'
+                if census_total > shown else '')
+        census_card = (
+            '<div class="card"><h3>Every sidecar this run wrote</h3>'
+            + ''.join(census_parts) + more
+            + '<p class="cap-note">Presence-driven: a folder the run never '
+            'wrote contributes nothing, so no link here points at a missing '
+            'file. Column meaning for each of these is in the run guide '
+            '(_UserGuide_please_read_me.html) and docs/OUTPUT_FILES.md. '
+            'Cross-dataset delegates keep their own sidecars beside their '
+            'nested report.</p></div>')
+
+    return (table + breakdown_card + paths_card + artifacts_card
+            + census_card + vispath_card)
 
 
 def _render_global_tab(payload: dict) -> str:
@@ -2366,13 +2832,15 @@ def _render_global_tab(payload: dict) -> str:
         '<span><span class="chip" style="background:#94a3b8"></span>intermediate in 1 pair</span>'
         '</div>'
         '<div id="global-network"></div>'
-        f'<p class="cap-note">One representative route per source-target '
-        f'pair — the SHORTEST, then the strongest (max bottleneck) within '
-        f'that length: {stats["shown"]} of {stats["total"]:,} distinct '
-        f'edges ({nstat["shown"]} of {nstat["total"]:,} nodes). Edge width '
-        f'∝ traversals; hover a node for its path/pair counts.'
-        f'{full_note} Full edge set derivable from '
-        f'pair_breakdown_paths.csv.</p></div>')
+        f'<p class="cap-note">Defaults to the run\u2019s emitted type edges: '
+        f'{stats["shown"]:,} of {stats["total"]:,} distinct edges drawn '
+        f'({nstat["shown"]:,} of {nstat["total"]:,} nodes), edge width '
+        f'&prop; synapse mass; hover a node for its path/pair counts. The '
+        f'\u201cRepresentative routes\u201d toggle draws one route per '
+        f'source-target pair — the SHORTEST, then the strongest (max '
+        f'bottleneck) within that length — with width &prop; traversals. '
+        f'Every emitted edge and its mass also ship in '
+        f'data_details/connection_type.csv.{full_note}</p></div>')
 
     return units_card + matrix_card + hist_card + network_card
 
@@ -2389,10 +2857,18 @@ def unit_csv_candidates(run_dir: Path, unit: dict) -> List[Path]:
 
 def _render_corridor_section(folder: Path, label: str,
                              link_prefix: str = '') -> Tuple[str, bool]:
-    """One unit's corridor-lane summary + per-walk table + export links
-    (C2: independent mode over shared bases — same ratio conventions as
-    the Refill tab, zero refill columns). Presence-driven: returns
-    (html, found)."""
+    """One unit's corridor-lane disclosure: provenance, its own limits, the
+    full-scope second round and the export links.
+
+    The lane's WALK TABLE is not here: since Phase 2 the corridor's chains
+    are browsed through the Explorer (per source &times; target, capped per
+    length, with the same per-cell hover explanations as the Pair Explorer),
+    and its second round through the corridor Refill view. What this card
+    keeps is what a table cannot carry &mdash; why a lane refused, which
+    classes filled their route share or spent their realization envelope,
+    and which files hold the sample-level detail the report no longer
+    prints (F-EX-007). Presence-
+    driven: returns (html, found)."""
     folder = Path(folder)
     lane_dir = folder / 'route_scope_paths'
     prov_path = lane_dir / 'route_provenance.json'
@@ -2408,32 +2884,8 @@ def _render_corridor_section(folder: Path, label: str,
         return ('<div class="card"><h3>' + _esc(label) + '</h3>'
                 '<p>Corridor lane: not generated &mdash; ' + reason
                 + '.</p></div>', True)
-    walks_csv = lane_dir / 'route_paths_type.csv'
-    rows_html = ''
-    if walks_csv.exists():
-        try:
-            wf = pd.read_csv(walks_csv)
-            cols = [c for c in ('path', 'weights', 'ratios', 'ratios_adj',
-                                'min_weight', 'min_ratio', 'min_ratio_adj',
-                                'length', 'coverage', 'applied_tau',
-                                'route_h', 'route_ub', 'route_floor_h',
-                                'plan_rank', 'realized_paths')
-                    if c in wf.columns]
-            wf = wf[cols].head(50)
-            body_rows = []
-            for row in wf.itertuples(index=False):
-                body_rows.append('<tr>' + ''.join(
-                    '<td>' + _esc(str(v)) + '</td>' for v in row)
-                    + '</tr>')
-            rows_html = (
-                '<table><thead><tr>' + ''.join(
-                    '<th>' + _esc(c) + '</th>' for c in cols)
-                + '</tr></thead><tbody>' + ''.join(body_rows)
-                + '</tbody></table>'
-                + '<p style="opacity:0.8;">first 50 walks &mdash; full '
-                'data in route_scope_paths/ beside this run</p>')
-        except Exception:  # noqa: BLE001
-            rows_html = '<p>walk table unreadable</p>'
+    asked = prov.get('asked')
+    ask_txt = ('?' if asked is None else str(asked))
     floors = [v.get('floor') for v in (prov.get('classes') or {}).values()
               if v.get('floor') is not None]
     gap = prov.get('gap_partition') or {}
@@ -2447,10 +2899,21 @@ def _render_corridor_section(folder: Path, label: str,
                    + str(gap.get('corridor_only', '&mdash;'))
                    + ' corridor-only.</p>')
     links = []
-    for fname, lab in (('route_paths_type.csv', 'validated walks'),
+    for fname, lab in ((LANE_WALKS_NAME, 'validated walks'),
                        ('route_paths_bodyId.csv', 'bodyId paths'),
                        ('route_connection_type.csv', 'connection table'),
-                       ('route_provenance.json', 'provenance')):
+                       ('route_full_paths_type.csv',
+                        'full-scope (synapse &ge; 1) chains'),
+                       ('route_full_carrying_paths_type.csv',
+                        'full-scope refill-carrying chains'),
+                       ('route_full_type_pairs.csv',
+                        'full-scope pair table'),
+                       ('route_type_incoming_asked.csv',
+                        'conditioned incoming (&ge; asked)'),
+                       ('route_type_incoming.csv',
+                        'incoming (synapse &ge; 1)'),
+                       ('route_provenance.json', 'provenance'),
+                       ('README.md', 'lane README')):
         if (lane_dir / fname).exists():
             links.append('<a href="' + link_prefix + 'route_scope_paths/'
                          + fname + '">' + lab + '</a>')
@@ -2458,12 +2921,98 @@ def _render_corridor_section(folder: Path, label: str,
     floor_txt = ((str(min(floors)) + '..' + str(max(floors)))
                  if floors else '&mdash;')
     capped = ' &middot; <b>time-capped</b>' if prov.get('time_capped') else ''
+    # F-EX-007: the lane's own limits, stated where the numbers are read.
+    # The walk columns that SHOWED the sample are gone from the report
+    # (F4/Q3), so the caveat has to name the file that still holds them.
+    _cls = prov.get('classes') or {}
+    _stops = Counter(str(v.get('stop') or '') for v in _cls.values()
+                     if isinstance(v, dict))
+    _budgeted = _stops.get('budget', 0)
+    _ties = sum(int(v.get('ties_truncated') or 0) for v in _cls.values()
+                if isinstance(v, dict))
+    # Two currencies since 2026-10-16: the class budget is counted in
+    # published TYPE-LEVEL ROUTES, the realization envelope in bodyId
+    # witnesses. A class can spend the envelope without filling its share
+    # (one fat corridor), so the sample caveat has to watch both.
+    _enveloped = sum(
+        1 for v in _cls.values() if isinstance(v, dict)
+        and (v.get('realization_envelope') or 0) > 0
+        and int(v.get('emitted') or 0) >= int(v['realization_envelope']))
+    _quota = ', '.join(f'{k}&times;{v}' for k, v in sorted(_stops.items())
+                       if k) or '&mdash;'
+    _why = []
+    if _budgeted:
+        _why.append(f'<b>{_budgeted} class(es) filled their route share'
+                    f' (stop=budget)</b>')
+    if _enveloped:
+        _why.append(f'<b>{_enveloped} class(es) spent their realization'
+                    f' envelope</b> (every published route keeps one'
+                    f' witness; the rest of a fat corridor&#8217;s tie mass'
+                    f' is truncated)')
+    sample_txt = ('' if not (_budgeted or _enveloped or _ties) else
+                  ' &middot; ' + ', '.join(_why) + f' (stop reasons: {_quota}):'
+                  ' their sampled witness mass, sampled path count and'
+                  ' candidate UB/floor certificates live in'
+                  ' <code>route_paths_type.csv</code> only &mdash; a SAMPLE,'
+                  ' not a connection weight, and never the chain mass the'
+                  ' Explorer prints'
+                  + (f' &middot; {_ties} boundary tie(s) truncated'
+                     if _ties else ''))
+    # The lane's SECOND ROUND (Q2): the same chains re-valued at
+    # synapse >= 1, so a Fast run answers the same scope pair a Complete run
+    # does. Disclosed here even when it produced nothing.
+    _full = prov.get('full') or {}
+    full_txt = ''
+    if _full:
+        _fstat = str(_full.get('status') or '')
+        if _fstat == 'failed':
+            full_txt = ('<p><b>Full-scope second round: FAILED</b> &mdash; '
+                        + _esc(str(_full.get('error') or ''))
+                        + '. The lane&#8217;s asked-scope tables are '
+                        'unaffected.</p>')
+        elif _fstat in ('empty',):
+            full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1): '
+                        'none of the lane&#8217;s chains realizes at the '
+                        'floor.</p>')
+        elif _fstat == 'nothing_below_tier':
+            full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1): '
+                        + str(int(_full.get('chains') or 0))
+                        + ' chains re-valued, none carries sub-threshold '
+                        'mass &mdash; at this tier the lane already saw '
+                        'every edge. Browse the complete set in the Refill '
+                        'view.</p>')
+        else:
+            full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1, '
+                        'no tier): ' + str(int(_full.get('chains') or 0))
+                        + ' lane chains re-valued, '
+                        + str(int(_full.get('chains_carrying') or 0))
+                        + ' carrying '
+                        + f'{int(_full.get("refill_weight_total") or 0):,}'
+                        + ' synapses below the lane&#8217;s asked tier '
+                        + f'(&ge; {ask_txt}) &mdash; '
+                        + str(int(_full.get('refill_edges') or 0))
+                        + ' sub-threshold bodyId edges, in '
+                        + str(_full.get('elapsed_s', '&mdash;')) + 's. '
+                        + ('<b>' + str(int(_full.get('chains_revisit') or 0))
+                           + '</b> chain(s) revisit an effective type label, '
+                           'so their masses carry the disclosed '
+                           'layered-walk superset semantics. '
+                           if int(_full.get('chains_revisit') or 0) else '')
+                        + '</p>')
+    else:
+        full_txt = ('<p><b>Full-scope second round</b>: this lane ran before '
+                    'the synapse &ge; 1 re-value existed &mdash; regenerate '
+                    'with <code>scripts/CorridorDeepDive.py &lt;run_dir&gt;'
+                    '</code> to get the Refill view for the lane.</p>')
     return ('<div class="card"><h3>' + _esc(label) + '</h3>'
             '<p style="color:var(--secondary-color);font-size:0.9em;">'
             'Route-scoped pass at the ASKED threshold &mdash; same ratio '
-            'conventions as the Refill tab (plain = full-membership '
+            'conventions as the Refill view (plain = full-membership '
             'incoming; adj = &ge;-threshold incoming), independent scope '
-            '(no refill columns). Validation basis: ' + basis + '.</p>'
+            '(no refill columns). Validation basis: ' + basis
+            + '. Weights and Coverage are <b>chain-level</b>: the distinct '
+            'bodyId edges that can realize this hop of THIS chain at the '
+            'lane\u2019s admitted tier, not a sample sum.</p>'
             '<p>Validated walks: ' + str(prov.get('validated_walks',
                                                   '&mdash;')) + ' over '
             + str(prov.get('scope_pairs', '&mdash;'))
@@ -2471,13 +3020,13 @@ def _render_corridor_section(folder: Path, label: str,
             + str(prov.get('bodyId_paths', '&mdash;'))
             + ' &middot; class floors: ' + floor_txt
             + ' &middot; runtime: ' + str(prov.get('runtime_s', '&mdash;'))
-            + 's' + capped + '</p>'
-            + gap_txt + rows_html
+            + 's' + capped + sample_txt + '</p>'
+            + gap_txt + full_txt
             + '<p>' + ' &middot; '.join(links) + '</p></div>', True)
 
 
 def _render_corridor_tab(payload: dict, run_dir: Path) -> str:
-    """The Corridor tab (C2): presence-driven &mdash; rendered only when
+    """The corridor lane cards (C2): presence-driven &mdash; rendered only when
     at least one unit carries route_scope_paths/; otherwise the honest
     how-to-enable hint. Independent of the refill datasets."""
     run = payload['run']
@@ -2504,6 +3053,11 @@ def _render_corridor_tab(payload: dict, run_dir: Path) -> str:
             sections.append(section)
         found_any = found_any or found
     if not found_any:
+        # A Network run is NOT given a card here: this section mounts in the
+        # corridor template only, and a Network run's modes never include
+        # 'corridor' — so any text placed here for that tool is unreachable
+        # (measured). Its absence is stated where the reader actually lands,
+        # in the Analysis bar caption (run.mode_note).
         return ('<div class="card"><h3>Fast mode (corridor lane)</h3>'
                 '<p style="color:var(--secondary-color);">No corridor '
                 'artifacts under this run. Fast mode writes '
@@ -2513,6 +3067,137 @@ def _render_corridor_tab(payload: dict, run_dir: Path) -> str:
                 '<code>scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>.'
                 '</p></div>')
     return ''.join(sections)
+
+
+def _corridor_tier_text(lane: dict) -> str:
+    """"at synapse &ge; N" for the lane's own asked tier(s) — read from the
+    lane's provenance, never from the Complete run's thresholds (F-EX-012's
+    one-key-two-meanings is the failure this avoids)."""
+    tiers = sorted({str(u.get('asked')) for u in (lane.get('units') or [])
+                    if u.get('asked') is not None}, key=float)
+    if not tiers:
+        return 'at the lane\u2019s asked threshold'
+    return 'at synapse &ge; ' + ', '.join(tiers)
+
+
+def _render_corridor_explorer_tab(payload: dict, run_dir: Path) -> str:
+    """Analysis &rarr; Fast (corridor) &rarr; Pair Explorer (F3): the lane's
+    validated walks browsed per source &times; target, in the same capped,
+    per-cell-explained table grammar the Complete Pair Explorer uses.
+
+    The lane's own disclosure card stands above the explorer, so the tier the
+    numbers are valued at, the walk-budget stop reasons and the export links
+    stay on the page that shows the numbers."""
+    lane = payload.get('lane') or {}
+    corridor = payload.get('corridor')
+    # A ratio-basis lane conditions its adjusted denominator at the
+    # min-synapse tier, which such a run forces to 1 — so its Adj. ratios
+    # repeat Ratios and the explorer omits the column. The page that shows
+    # the numbers has to say so (the same doctrine the Pair Explorer's
+    # ratio-basis suppression follows).
+    _bases = {str(u.get('weight_basis') or '') for u in (lane.get('units')
+                                                         or [])}
+    ratio_lane = any(b.startswith('connection_ratio') for b in _bases)
+    parts = ['<div class="card"><h3>Fast mode (corridor) &mdash; validated '
+             'chains</h3>'
+             '<p style="color:var(--secondary-color);font-size:0.9em;">One '
+             'validated type-level walk per row group, ' + _corridor_tier_text(
+                 lane) + '. Weights and Coverage are <b>chain-level</b> (the '
+             'distinct bodyId edges that can realize that hop of THAT chain '
+             '&mdash; the forward+backward layered filter, the refill\u2019s '
+             'recipe), and Ratios / Adj. ratios are their shares of the '
+             'post type\u2019s incoming mass. The lane\u2019s sample-level '
+             'columns (sampled witness mass, sampled path count, candidate '
+             'UB / class floor, per-walk landing tau) stay in '
+             '<code>route_paths_type.csv</code> and are not printed here; '
+             'the second-round view of the same chains is the corridor '
+             '<b>Refill</b> view.'
+             + (' This lane is <b>ratio-basis</b>, so its conditioned '
+                'denominator is the all-inputs one and Adj. ratios would '
+                'duplicate Ratios &mdash; the column is omitted here and '
+                'kept in route_paths_type.csv.' if ratio_lane else '')
+             + '</p></div>']
+    parts.append(_render_corridor_tab(payload, run_dir))
+    if corridor and corridor.get('pairs'):
+        parts.append(_render_explorer_select_card(
+            'corridor-view-bar', 'c-', 'Select corridor pairs',
+            'Ctrl/Cmd-click (shift-click for ranges) to select several '
+            'sources and/or targets &mdash; the pane renders every selected '
+            'source &times; target combination that the lane validated, '
+            'stacked, capped per length like the Pair Explorer.',
+            corridor.get('units') or [], show_scope_bar=False))
+        parts.append('<div id="corridor-pane"></div>')
+    return ''.join(parts)
+
+
+def _render_corridor_refill_tab(payload: dict, run_dir: Path) -> str:
+    """Analysis &rarr; Fast (corridor) &rarr; Refill: the lane's SECOND ROUND
+    (Q2) — the same validated chains re-valued at synapse &ge; 1 through the
+    refill's own layered filter, so a Fast run answers the same scope pair a
+    Complete run does and can be read standalone.
+
+    Only the full scope exists here: the lane has no budget that raises an
+    applied threshold, so its sub-threshold band is <code>[1, asked)</code>
+    and there is no asked-scope second round to switch to. The bar therefore
+    states the scope as a caption instead of rendering one lit chip (G1)."""
+    lane = payload.get('lane') or {}
+    complete_full = payload.get('corridor_complete_full')
+    carrying = payload.get('corridor_refill_full')
+    any_pairs = ((complete_full and complete_full.get('pairs'))
+                 or (carrying and carrying.get('pairs')))
+    units_for_bar = ((complete_full or {}).get('units')
+                     or (carrying or {}).get('units') or [])
+    parts = ['<div class="card"><h3>Fast mode (corridor) &mdash; refill</h3>'
+             '<p style="color:var(--secondary-color);font-size:0.9em;">The '
+             'lane\u2019s chains re-valued at <b>synapse &ge; 1</b> (no '
+             'tier) against the lane\u2019s own hop pairs, with the refill\u2019s '
+             'forward+backward layered filter and its emitted / refill class '
+             'split. Two views, same grammar as the Complete Refill: '
+             '<b>Complete at full (synapse&ge;1)</b> &mdash; every lane chain '
+             'with the per-hop emitted / refill / skipped split, and '
+             '<b>Refill-carrying</b> &mdash; only the chains that carry mass '
+             'below the lane\u2019s asked tier (' + _corridor_tier_text(lane)
+             + '). At this floor the conditioned denominator IS the plain '
+             'all-inputs one, so Adj. ratios would duplicate Ratios and the '
+             'column is omitted (it is kept in the CSV where it differs). '
+             'Denominators: <code>route_type_incoming.csv</code>.</p></div>']
+    sections, found = [], False
+    for unit in (payload['run'].get('units') or []):
+        unit_rel = unit.get('id') or ''
+        if unit.get('dataset'):
+            folder = Path(run_dir) / 'dataset_data' / unit_rel
+            prefix = f'dataset_data/{unit_rel}/'
+        else:
+            folder, prefix = Path(run_dir), ''
+        section, hit = _render_corridor_section(folder, _esc(
+            unit.get('label') or unit_rel or 'Run'), prefix)
+        if section:
+            sections.append(section)
+        found = found or hit
+    if not sections:
+        section, hit = _render_corridor_section(Path(run_dir), 'Run')
+        sections.append(section)
+        found = found or hit
+    parts.extend(sections)
+    if any_pairs:
+        parts.append(_render_explorer_select_card(
+            'corridor-refill-mode-bar', 'cr-',
+            'Select corridor refill pairs',
+            'Ctrl/Cmd-click (shift-click for ranges) to select several '
+            'sources and/or targets &mdash; the pane renders every selected '
+            'source &times; target combination that carries full-scope mass, '
+            'stacked, capped per length like the Pair Explorer.',
+            units_for_bar))
+        parts.append('<div id="corridor-refill-pane"></div>')
+    elif found:
+        parts.append(
+            '<div class="card"><p class="cap-note">No corridor Refill table '
+            'in this run folder: the lane\u2019s synapse &ge; 1 second round '
+            'wrote no <code>route_full_paths_type.csv</code> (it predates '
+            'that round, or no chain realizes at the floor). Regenerate with '
+            '<code>scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>.</p>'
+            '</div>')
+    return ''.join(parts)
 
 
 def _render_refill_tab(payload: dict, run_dir: Path) -> str:
@@ -2562,8 +3247,10 @@ def _render_refill_tab(payload: dict, run_dir: Path) -> str:
         'asked-threshold chain — emitted + refill + skipped per hop; the '
         'default) and <b>Refill-carrying</b> (only the chains that carry '
         'recovered mass). refilled_total = emitted + refill mass; ratios '
-        'use percent form and the adjusted variant carries the '
-        'threshold-conditioned denominator. <b>DUAL REFILL:</b> the '
+        'use percent form; where the run shows an adjusted variant its '
+        'denominator is the dataset incoming conditioned at the '
+        'Min-Synapse tier (a ratio-basis run conditions at 1, so adj equals '
+        'plain there and one column shows). <b>DUAL REFILL:</b> the '
         'scope switch above the selects flips between <b>Refill-asked</b> '
         '(the run\'s own thresholding) and <b>Refill-full</b> (synapse '
         '>= 1, no tier — the full-connection view of the SAME emitted '
@@ -2590,6 +3277,35 @@ def _render_refill_tab(payload: dict, run_dir: Path) -> str:
     return ''.join(parts)
 
 
+def _render_explorer_select_card(bar_id: str, prefix: str, title: str,
+                                note: str, units_for_bar: Sequence[dict],
+                                show_scope_bar: bool = True) -> str:
+    """A Pair Explorer's control card: the mode/scope bar the page JS fills,
+    the multi-unit select when the dataset spans units, and the source /
+    target multi-selects. One implementation for every explorer (Pair
+    Explorer, Refill, corridor chains, corridor refill), because Q5 is
+    "mirror the complete mode exactly" — the grammar must not drift.
+
+    `prefix` namespaces the element ids so several explorers can coexist on
+    one page (`r-` for the refill, `c-`/`cr-` for the lane)."""
+    multi = len(units_for_bar) > 1
+    unit_select = (f'<label>Unit<select id="{prefix}sel-unit"></select></label>'
+                   if multi else '')
+    bar = (f'<div id="{bar_id}" class="button-group" '
+           f'style="margin-bottom:10px;"></div>'
+           if show_scope_bar else '')
+    return (
+        f'<div class="card"><h3>{title}</h3>' + bar +
+        '<div class="select-row">'
+        + unit_select +
+        f'<label>Source<select id="{prefix}sel-source" multiple size="6">'
+        '</select></label>'
+        f'<label>Target<select id="{prefix}sel-target" multiple size="6">'
+        '</select></label>'
+        '</div>'
+        f'<p class="cap-note">{note}</p></div>')
+
+
 def _render_refill_select_card(refill: Optional[dict],
                                refill_complete: Optional[dict]) -> str:
     """The refill Select-pairs card: same layout as the Pair Explorer's,
@@ -2598,26 +3314,14 @@ def _render_refill_select_card(refill: Optional[dict],
     and refill-carrying datasets; the JS builds the buttons itself."""
     units_for_bar = ((refill_complete or {}).get('units')
                      or (refill or {}).get('units') or [])
-    multi = len(units_for_bar) > 1
-    unit_select = ('<label>Unit<select id="r-sel-unit"></select></label>'
-                   if multi else '')
-    return (
-        '<div class="card"><h3>Select refilled pairs</h3>'
-        '<div id="refill-mode-bar" class="button-group" '
-        'style="margin-bottom:10px;"></div>'
-        '<div class="select-row">'
-        + unit_select +
-        '<label>Source<select id="r-sel-source" multiple size="6">'
-        '</select></label>'
-        '<label>Target<select id="r-sel-target" multiple size="6">'
-        '</select></label>'
-        '</div>'
-        '<p class="cap-note">Ctrl/Cmd-click (shift-click for ranges) to '
-        'select several sources and/or targets — the pane renders every '
-        'selected source × target combination that has refilled paths, '
-        'stacked. The capped tables rank the refilled type paths exactly '
-        'like the Pair Explorer ranks the emitted ones (top '
-        'per length, bottleneck-first).</p></div>')
+    return _render_explorer_select_card(
+        'refill-mode-bar', 'r-', 'Select refilled pairs',
+        'Ctrl/Cmd-click (shift-click for ranges) to select several sources '
+        'and/or targets &mdash; the pane renders every selected source '
+        '&times; target combination that has refilled paths, stacked. The '
+        'capped tables rank the refilled type paths exactly like the Pair '
+        'Explorer ranks the emitted ones (top per length, bottleneck-first).',
+        units_for_bar)
 
 
 def _render_refill_section(folder: Path, label: str,
@@ -2644,8 +3348,6 @@ def _render_refill_section(folder: Path, label: str,
             and _full_block):
         # DUAL REFILL: a full-only run (non-bitten synapse) — the full
         # scope summary instead of the no-records hint.
-        stat = ('ok' if _full_block.get('status') != 'truncated'
-                else 'truncated')
         _rv = int(_full_block.get('chains_revisit') or 0)
         _rv_txt = ('' if not _rv else
                    ' <b>' + f'{_rv:,}' + '</b> emitted chain(s) revisit an '
@@ -2812,6 +3514,7 @@ def _render_page_shell(payload_json: str, overview_html: str,
                        run: dict, generated_at: str,
                        refill_html: str = '',
                        corridor_html: str = '',
+                       corridor_refill_html: str = '',
                        guide_link: str = '') -> str:
     return """<!DOCTYPE html>
 <html lang="en">
@@ -2837,22 +3540,25 @@ __VIS_NETWORK__
     onclick="TAB.show('overview')">Overview</button>
   <button class="page-tab-btn" data-page="global" role="tab"
     onclick="TAB.show('global')">Global</button>
-  <button class="page-tab-btn" data-page="explorer" role="tab"
-    onclick="TAB.show('explorer')">Pair Explorer</button>
-  <button class="page-tab-btn" data-page="refill" role="tab"
-    onclick="TAB.show('refill')">Refill</button>
-  <button class="page-tab-btn" data-page="corridor" role="tab"
-    onclick="TAB.show('corridor')">Fast (corridor)</button>
+  <button class="page-tab-btn" data-page="analysis" role="tab"
+    onclick="TAB.show('analysis')">Path</button>
   <button class="page-tab-btn" data-page="data" role="tab"
     onclick="TAB.show('data')">Data</button>
 </div>
 <div id="page-content"></div>
 <template id="tpl-overview">__OVERVIEW__</template>
 <template id="tpl-global">__GLOBAL__</template>
+<template id="tpl-analysis">
+  <div class="card">
+    <div id="analysis-bar"></div>
+  </div>
+  <div id="analysis-dest"></div>
+</template>
 <template id="tpl-explorer">__EXPLORER__</template>
 <template id="tpl-data">__DATA__</template>
 <template id="tpl-refill">__REFILL__</template>
 <template id="tpl-corridor">__CORRIDOR__</template>
+<template id="tpl-corridor_refill">__CORRIDOR_REFILL__</template>
 </div>
 <script type="application/json" id="pair-data">__PAYLOAD__</script>
 <script>
@@ -2873,6 +3579,7 @@ __JS__
            .replace('__DATA__', data_html) \
            .replace('__REFILL__', refill_html) \
            .replace('__CORRIDOR__', corridor_html) \
+           .replace('__CORRIDOR_REFILL__', corridor_refill_html) \
            .replace('__PAYLOAD__', payload_json) \
            .replace('__JS__', REPORT_JS)
 
@@ -2915,7 +3622,8 @@ REPORT_JS = r"""
     }));
     var edges = new vis.DataSet(viz.edges.map(function(e) {
       return { from: e.f, to: e.t,
-        title: e.c + ' paths' + (e.w ? ' · Σw = ' + fmt(e.w) : '')
+        title: (e.t_count != null ? e.t_count : e.c) + ' paths'
+          + (e.w ? ' · Σw = ' + fmt(e.w) : '')
           + (function() { var r = (e.rw && e.w) ? e.rw / e.w : e.r;
               return (r != null && isFinite(r))
                 ? ' · mean ratio = ' + fmt(r) : ''; })(),
@@ -2960,24 +3668,147 @@ REPORT_JS = r"""
   }
   function badge(text, cls) { return elt('span', 'badge ' + cls, text); }
 
+  // ---- control-bar rows, one implementation for every switch -------------
+  // A row is a label plus its chips; the CALLER decides whether the row
+  // exists at all (the >= 2 destinations rule below), and a hidden row is
+  // always replaced by a caption, so the page never states less than it
+  // knows. Used by the Path bar and by both mode/scope switches.
+  function barRow(bar, labelText) {
+    var wrap = document.createElement('div');
+    wrap.className = 'mode-row';
+    wrap.appendChild(elt('span', 'mode-row-label', labelText));
+    bar.appendChild(wrap);
+    return wrap;
+  }
+  function barCaption(bar, text) {
+    bar.appendChild(elt('div', 'cap-note', text));
+  }
+  function barChip(parent, label, onPick) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'page-tab-btn';
+    b.textContent = label;
+    b.addEventListener('click', onPick);
+    parent.appendChild(b);
+    return b;
+  }
+
   // ---- page router (house report_tabbed pattern) ----
+  // One Analysis page holds the four destinations the old bar spread over
+  // three buttons (Q1 / Option B): mode x view. A single-mode run therefore
+  // shows two destinations, a both-mode run four.
+  var SECTION = {
+    'complete|explorer': {
+      tpl: 'explorer', mount: function() { Explorer.mount(); } },
+    'complete|refill': {
+      tpl: 'refill', mount: function() { RefillModes.init(); } },
+    'corridor|explorer': {
+      tpl: 'corridor', mount: function() { CorridorExplorer.mount(); } },
+    'corridor|refill': {
+      tpl: 'corridor_refill', mount: function() {
+        CorridorRefillModes.init(); } }
+  };
+  var MODE_NAME = {complete: 'Complete', corridor: 'Fast (corridor)'};
+  var VIEW_NAME = {explorer: 'Pair Explorer', refill: 'Refill'};
+  // The old top-level buttons are still valid addresses (#tab=explorer,
+  // #tab=refill, #tab=corridor): a cited link must land on the destination
+  // it names, not on Overview.
+  var TAB_ALIAS = {explorer: ['complete', 'explorer'],
+                   refill: ['complete', 'refill'],
+                   corridor: ['corridor', 'explorer'],
+                   corridor_refill: ['corridor', 'refill']};
+
+  var Analysis = {
+    mode: null,
+    view: null,
+    modes: function() {
+      var views = DATA.run.views || {};
+      var list = DATA.run.modes || ['complete'];
+      return list.filter(function(m) {
+        return (views[m] || []).length > 0; });
+    },
+    views: function(mode) {
+      return ((DATA.run.views || {})[mode] || []).filter(function(v) {
+        return !!SECTION[mode + '|' + v]; });
+    },
+    render: function() {
+      var self = this;
+      var modes = this.modes();
+      var dest = document.getElementById('analysis-dest');
+      var bar = document.getElementById('analysis-bar');
+      if (!modes.length || !dest) { return; }
+      if (modes.indexOf(this.mode) < 0) { this.mode = modes[0]; }
+      var views = this.views(this.mode);
+      if (!views.length) { return; }
+      if (views.indexOf(this.view) < 0) { this.view = views[0]; }
+      if (bar) {
+        bar.innerHTML = '';
+        var RUN_C = DATA.run || {};
+      var labelOf = function(m) {
+        // the run's own label for this destination when it has one (a Network
+        // run's 1-hop table is not a 'Complete' search), else the shared name
+        return (RUN_C.mode_labels || {})[m] || MODE_NAME[m] || m;
+      };
+      if (modes.length > 1) {
+          var modeRow = barRow(bar, 'Mode');
+          modes.forEach(function(m) {
+            var b = barChip(modeRow, labelOf(m), function() {
+              self.mode = m; self.view = null; self.render(); });
+            b.dataset.mode = m;
+            b.classList.toggle('active', self.mode === m);
+          });
+        } else {
+          barCaption(bar, 'Mode: ' + labelOf(this.mode) + ' \u2014 '
+            + (RUN_C.mode_note || 'the only mode this run produced') + '.');
+        }
+        if (views.length > 1) {
+          var viewRow = barRow(bar, 'View');
+          views.forEach(function(v) {
+            var b = barChip(viewRow, VIEW_NAME[v] || v, function() {
+              self.view = v; self.render(); });
+            b.dataset.view = v;
+            b.classList.toggle('active', self.view === v);
+          });
+        } else {
+          barCaption(bar, 'View: ' + (VIEW_NAME[this.view] || this.view)
+            + ' \u2014 the only view this mode produced.');
+        }
+      }
+      var sec = SECTION[this.mode + '|' + this.view];
+      dest.innerHTML = '';
+      dest.appendChild(document.getElementById('tpl-' + sec.tpl)
+                       .content.cloneNode(true));
+      sec.mount();
+      try {
+        history.replaceState(null, '', '#tab=analysis&mode=' + this.mode
+                                    + '&view=' + this.view);
+      } catch (e) {}
+    }
+  };
+
   var TAB = {
     show: function(page) {
-      var tpl = document.getElementById('tpl-' + page);
+      // rename 2026-10-15: the visible tab is 'Path', the page id stays
+      // 'analysis' (an address every citation and alias already uses).
+      if (page === 'path') { page = 'analysis'; }
+      var alias = TAB_ALIAS[page];
+      if (alias) { Analysis.mode = alias[0]; Analysis.view = alias[1]; }
+      var name = alias ? 'analysis' : page;
+      var tpl = document.getElementById('tpl-' + name);
       var container = document.getElementById('page-content');
       if (!tpl || !container) { return; }
       container.innerHTML = '';
       container.appendChild(tpl.content.cloneNode(true));
       document.querySelectorAll('.page-tab-btn').forEach(function(b) {
-        b.classList.toggle('active', b.dataset.page === page); });
-      if (page === 'explorer') { Explorer.mount(); }
-      if (page === 'refill') { RefillModes.init(); }
-      if (page === 'global') { GlobalNet.render(); }
-      try { history.replaceState(null, '', '#tab=' + page); } catch (e) {}
+        b.classList.toggle('active', b.dataset.page === name); });
+      if (name === 'analysis') { Analysis.render(); }
+      if (name === 'global') { GlobalNet.render(); }
+      try { history.replaceState(null, '', '#tab=' + name); } catch (e) {}
     },
     gotoPair: function(pairId) {
       this.show('explorer');
-      try { history.replaceState(null, '', '#tab=explorer&pair=' + pairId); } catch (e) {}
+      try {
+        history.replaceState(null, '', '#tab=explorer&pair=' + pairId);
+      } catch (e) {}
       Explorer.selectPair(pairId);
     }
   };
@@ -3032,7 +3863,7 @@ REPORT_JS = r"""
       pathEl.setAttribute('stroke-width',
         1 + 5 * Math.log2(1 + e.c) / maxLog);
       var title = document.createElementNS(NS, 'title');
-      title.textContent = e.c + ' paths'
+      title.textContent = (e.t_count != null ? e.t_count : e.c) + ' paths'
         + (e.w ? ' · Σw = ' + fmt(e.w) : '')
         + (function() { var r = (e.rw && e.w) ? e.rw / e.w : e.r;
             return (r != null && isFinite(r))
@@ -3223,25 +4054,86 @@ REPORT_JS = r"""
   }
 
   // ---- global network (Global tab) ----
+  // F-EX-009: the default view draws the run's EMITTED edge set (each edge
+  // weighted by its synapse mass, which is what widths now mean), with the
+  // one-route-per-pair skeleton kept as a toggle. The old default drew four
+  // representative routes and then announced "7 of 7 distinct edges" for a
+  // run that emitted 92.
   var GlobalNet = {
+    mode: 'all',
     render: function() {
       var holder = document.getElementById('global-network');
       if (!holder || holder.dataset.done || !DATA.global) { return; }
       holder.dataset.done = '1';
+      var self = this;
+      var bar = elt('div', 'button-group');
+      [['all', 'All emitted edges'],
+       ['rep', 'Representative routes']].forEach(function(item) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'page-tab-btn';
+        b.textContent = item[1];
+        if (self.mode === item[0]) { b.classList.add('active'); }
+        b.addEventListener('click', function() {
+          self.mode = item[0];
+          bar.querySelectorAll('button').forEach(function(x) {
+            x.classList.remove('active'); });
+          b.classList.add('active');
+          self.draw(holder);
+        });
+        bar.appendChild(b);
+      });
+      holder.appendChild(bar);
+      this.view = elt('div');
+      holder.appendChild(this.view);
+      this.draw(holder);
+    },
+    draw: function(holder) {
       var viz = DATA.global.network;
+      var src = (viz.edges || []);
+      var edges = this.mode === 'rep'
+        ? src.filter(function(e) { return e.rep; }) : src;
+      // STYLE PARITY with the Analysis networks (user, 2026-10-15): those
+      // draw width ∝ log2(COUNT) over the SAME layered geometry, and the
+      // global view used to disagree on both counts — vis-network laid it
+      // out hierarchically (so the live view differed from its own SVG
+      // fallback) and the all-edges view fed the synapse mass into the
+      // width, so a few fat ribbons dominated the picture. The mass stays
+      // the hover's subject; the thickness now follows the same law as
+      // every other network on the page — the raw count, which on this
+      // graph is already a small number (a rescale here would have mapped
+      // a uniform graph's every edge to the maximum width instead).
+      edges = edges.map(function(e) {
+        return { f: e.f, t: e.t, c: e.c, t_count: e.c, w: e.w, r: e.r };
+      });
+      var v2 = { nodes: viz.nodes, edges: edges,
+                 ncols: viz.ncols, nrows: viz.nrows };
+      this.view.innerHTML = '';
       var svgWrap = elt('div');
-      svgWrap.appendChild(makeSvg(viz).svg);
-      holder.appendChild(svgWrap);
+      svgWrap.appendChild(makeSvg(v2).svg);
+      this.view.appendChild(svgWrap);
       var netWrap = elt('div', 'network-container');
-      holder.appendChild(netWrap);
-      PENDING_NETS.push({ wrap: netWrap, svg: svgWrap, viz: viz, hier: true });
+      this.view.appendChild(netWrap);
+      // hier: false — the SAME explicit column positions the SVG fallback
+      // and the Analysis panes use, so the interactive view can no longer
+      // disagree with the static one.
+      PENDING_NETS.push({ wrap: netWrap, svg: svgWrap, viz: v2,
+                          hier: false });
       setTimeout(flushNetworks, 0);
+      var note = elt('div');
+      note.style.opacity = '0.8';
+      note.innerHTML = (this.mode === 'rep'
+        ? 'One representative route per source-target pair; edge width '
+          + '&prop; traversal count (log-scaled), hover lists the mass.'
+        : 'Every emitted type edge in the drawn cap; edge width '
+          + '&prop; chain count (log-scaled), hover lists the synapse mass. '
+          + 'Same geometry and scaling as the Pair Explorer networks.');
+      this.view.appendChild(note);
     }
   };
 
   // ---- pair explorer ----
   // Explorer factory: the SAME explorer machinery powers the Pair
-  // Explorer tab (main paths) and the Refill tab (the second
+  // The Pair Explorer view (main paths) and the Refill view (the second
   // path-building round's refilled type paths) — only the data array,
   // element ids and run context differ per instance.
   function makeExplorer(cfg) {
@@ -3262,6 +4154,7 @@ REPORT_JS = r"""
     // early-return guard here left the pane empty whenever the user
     // switched away and back (fixed 2026-10-02).
     byUnit: null,
+    sel: null,
     mount: function() {
       this.byUnit = {};
       refreshUnitLabels();
@@ -3281,10 +4174,17 @@ REPORT_JS = r"""
           self.unitSel.appendChild(opt);
         });
         this.unitSel.addEventListener('change', function() {
-          self.fillSources(); });
+          self.fillSources(); self.rememberSel(); });
       }
-      this.sourceSel.addEventListener('change', function() { self.fillTargets(); });
-      this.targetSel.addEventListener('change', function() { self.render(); });
+      this.sourceSel.addEventListener('change', function() {
+        self.fillTargets(); self.rememberSel(); });
+      this.targetSel.addEventListener('change', function() {
+        self.render(); self.rememberSel(); });
+      // A re-mount keeps what the user selected: switching the refill VIEW
+      // (or scope, or mode) changes which data is on screen, never the
+      // source/target picks (F6 — mount() used to jump to the biggest pair
+      // every time, collapsing a multi-selection to one pair).
+      if (this.sel && this.restoreSel()) { return; }
       var biggest = cfg.data.reduce(function(a, b) {
         return (b.paths_total > a.paths_total) ? b : a; }, cfg.data[0]);
       if (biggest) {
@@ -3292,6 +4192,39 @@ REPORT_JS = r"""
       } else {
         this.fillSources();
       }
+      this.rememberSel();
+    },
+    rememberSel: function() {
+      if (!this.sourceSel) { return; }
+      this.sel = {
+        unit: this.unitSel ? this.unitSel.value : null,
+        sources: this.selectedValues(this.sourceSel),
+        targets: this.selectedValues(this.targetSel) };
+    },
+    restoreSel: function() {
+      var s = this.sel, self = this, hit = 0;
+      if (this.unitSel && s.unit) {
+        if (!Array.prototype.some.call(this.unitSel.options, function(o) {
+              if (o.value !== s.unit) { return false; }
+              o.selected = true; return true; })) { return false; }
+      }
+      this.fillSources();
+      Array.prototype.forEach.call(this.sourceSel.options, function(o) {
+        var want = s.sources.indexOf(o.value) >= 0;
+        o.selected = want; if (want) { hit += 1; }
+      });
+      if (!hit) { return false; }
+      this.fillTargets();
+      var thit = 0;
+      Array.prototype.forEach.call(this.targetSel.options, function(o) {
+        var want = s.targets.indexOf(o.value) >= 0;
+        o.selected = want; if (want) { thit += 1; }
+      });
+      if (!thit && this.targetSel.options.length) {
+        this.targetSel.options[0].selected = true;
+      }
+      this.render();
+      return true;
     },
     currentUnit: function() {
       return this.unitSel ? this.unitSel.value : (cfg.units[0] || {}).id;
@@ -3354,6 +4287,7 @@ REPORT_JS = r"""
       this.fillTargets();
       this.targetSel.value = pair.target;
       this.render();
+      this.rememberSel();
     },
     selectPair: function(pairId) { this.setPair(pairId); },
     selectedValues: function(sel) {
@@ -3513,6 +4447,15 @@ REPORT_JS = r"""
         foot.appendChild(elt('span', 'code',
           'unit = ' + (UNIT_LABEL[pairs[0].unit] || pairs[0].unit)));
       }
+      // The mirror links belong to BOTH footer builders: the union pane had
+      // its own footer without them, so selecting more than one pair dropped
+      // every vispath link (found by the CDP gate, 2026-10-15).
+      (RUN.vispath || []).forEach(function(item) {
+        foot.appendChild(document.createTextNode(' \u00b7 '));
+        var v = elt('a', null, item.label);
+        v.href = item.href; v.target = '_blank';
+        foot.appendChild(v);
+      });
       pane.appendChild(foot);
       return pane;
     },
@@ -3526,15 +4469,29 @@ REPORT_JS = r"""
       card.appendChild(elt('h3', null, pairs.length > 1
         ? 'Top paths per length (union)' : 'Top paths per length'));
       var groupsByLen = {};
+      // The header's "of N" counts CAPACITY per (pair, length), so it is
+      // accumulated once per GROUP — summing the per-row copy over-counted
+      // by the number of shown rows (fixed 2026-10-15: a 5-of-12 group read
+      // "of 60").
+      var capacityByLen = {};
       pairs.forEach(function(p) {
         p.table.groups.forEach(function(g) {
           var bucket = groupsByLen[g.len] = groupsByLen[g.len] || [];
+          capacityByLen[g.len] = (capacityByLen[g.len] || 0) + g.total;
           g.rows.forEach(function(r) {
+            // EVERY field a cell reads must be carried here: this mapper
+            // rebuilds the rows for the pane, and the 2026-10-15 defect was
+            // a dropped `uni`/`emitted`/`pr_rank` (empty Universe column,
+            // "—" in Emitted, display rank under an R1 header) plus `total`
+            // colliding with the group's capacity. `total_list` is the
+            // row's own per-hop list; the group capacity is counted once per
+            // group in `capacityByLen`, never stored on a row.
             bucket.push({pair: p.source + '→' + p.target, rank: r.rank,
+              pr_rank: r.pr_rank,
               path: r.path, len: g.len, mw: r.mw, mr: r.mr, pr: r.pr,
               weights: r.weights, ratios: r.ratios, pradj: r.pradj,
-              coverage: r.coverage,
-              total: g.total});
+              emitted: r.emitted, total_list: r.total, uni: r.uni,
+              coverage: r.coverage});
           });
         });
       });
@@ -3606,9 +4563,33 @@ REPORT_JS = r"""
           ? 'Adj. ratios (inputs \u2265 ' + minSyn + ' synapses)'
           : 'Adj. ratios (threshold-conditioned inputs)';
       }
+      var hasSplit = !!(RUN.has_split && (pairs || []).some(function(p) {
+        return (p.table.groups || []).some(function(g) {
+          return (g.rows || []).some(function(r) { return r.total; });
+        });
+      }));
+      // The Weights header names the tier the masses are admitted at. A
+      // run whose metadata records no threshold (a sniff that found no
+      // Min Synapse Count, a hand-made folder) must not print
+      // "synapse ≥ undefined" — a number the reader cannot check is worse
+      // than no number, and the same law made adjHeader fall back to words.
+      var wTier = RUN.ratio_basis ? (RUN.min_synapse || 1)
+        : (RUN.applied || RUN.min_synapse);
       var COLS = [
         { h: '#', cell: function(row, i) {
-            return elt('td', null, i + 1); } },
+            // Plan rank where the table carries it (the corridor's chains:
+            // acceptance rank by candidate upper bound, R1 2026-10-15);
+            // the display rank within this (pair, length) group otherwise.
+            // The hover states WHICH one the number is, per cell, so the
+            // same header never means two things silently.
+            var td = elt('td', null, row.pr_rank != null ? row.pr_rank : i + 1);
+            td.title = row.pr_rank != null
+              ? 'Acceptance rank by candidate upper bound (F-PF-002: an UB '
+                + 'rank, not a measured route strength) — this walk\u2019s '
+                + 'plan_rank in the lane\u2019s route_paths_type.csv.'
+              : 'Display rank within this (pair, length) group, by the '
+                + 'ranking key this report was generated with.';
+            return td; } },
         union && { h: 'Pair', cell: function(row) {
             return elt('td', null, row.pair); } },
         { h: 'Path', cell: function(row) {
@@ -3616,14 +4597,17 @@ REPORT_JS = r"""
             td.appendChild(elt('strong', null, row.path));
             return td; } },
         { h: 'Len', cell: function(row) { return elt('td', null, row.len); } },
-        { h: 'Weights (synapse ≥ ' + (RUN.ratio_basis
-            ? (RUN.min_synapse || 1)
-            : (RUN.applied || RUN.min_synapse)) + ')',
+        { h: RUN.weights_label || (wTier
+            ? ('Weights (synapse \u2265 ' + wTier + ')')
+            : 'Weights (admitted synapse mass)'),
           title: 'Per-hop realized synapse mass, -w1-w2- (presence-matrix '
             + 'format; the BOTTLENECK — weakest hop — is bolded): the '
             + 'distinct bodyId edges backing each hop at that position — '
             + 'the same edges behind the Coverage n, NOT the pair\u2019s '
-            + 'cross-depth total.',
+            + 'cross-depth total.'
+            + (RUN.weights_label ? ' This table states its SUBJECT: the '
+                + 'mass here is the sub-threshold band only; the emitted '
+                + 'and total lists sit beside it.' : ''),
           cell: function(row) {
             return dashTd(row.weights, null,
               'Per-hop realized synapse mass; bold = the bottleneck.'); } },
@@ -3639,20 +4623,49 @@ REPORT_JS = r"""
             return dashTd(row.ratios, ratioDashFmt,
               'Per-hop realized share; bold = the bottleneck; '
               + '(<0.01%) = below 0.01%.'); } },
-        !RUN.ratio_basis && !RUN.suppress_adj && hasAdj && { h: adjHeader(RUN.applied || RUN.min_synapse),
+        !RUN.ratio_basis && !RUN.suppress_adj && hasAdj && { h: adjHeader(RUN.adj_tier || RUN.min_synapse),
           title: 'Per-hop ADJUSTED ratio list, -r1-r2- (presence-matrix '
             + 'format; the weakest entry is bolded; shares below 0.01% '
-            + 'show (<0.01%)): connection_ratio_adj of each (pre, post) '
-            + 'type hop — the THRESHOLD-CONDITIONED input share: the '
-            + 'denominator counts only edges at or above the run\u2019s '
-            + 'Min Synapse Count (always \u2265 Ratios; equals them when '
-            + 'N \u2264 1). Hops missing from connection_type.csv '
-            + 'render \u2014 in place. The pair-level adjusted share is '
-            + 'the weakest entry of this list.',
+            + 'show (<0.01%)): derived from THIS chain \u2014 the mass of '
+            + 'the bodyId edges backing that hop at that position / the '
+            + 'post type\u2019s DATASET incoming counting only edges at or '
+            + 'above the run\u2019s Min Synapse Count (the threshold-'
+            + 'conditioned denominator behind connection_ratio_adj in '
+            + 'data_details/connection_type.csv; always \u2265 Ratios; '
+            + 'equals them when N \u2264 1, where the conditioning cuts '
+            + 'nothing). Hops whose post type lacks a conditioned '
+            + 'denominator render \u2014 in place. The adjusted bottleneck '
+            + 'of this chain is the weakest entry of this list.',
           cell: function(row) {
             return dashTd(row.pradj, ratioDashFmt,
               'Per-hop adjusted share; bold = the weakest entry; '
               + '(<0.01%) = below 0.01%.'); } },
+        hasSplit && { h: 'Emitted (context)',
+          title: 'The EMITTED-class mass of the same hops (the mass already '
+            + 'above the run\u2019s applied cut) \u2014 context column, not '
+            + 'the subject of this table. Emitted + the sub-threshold '
+            + 'Weights list = Total.',
+          cell: function(row) { return dashTd(row.emitted, null,
+            'Emitted-class hop mass; bold = the weakest hop.'); } },
+        hasSplit && { h: 'Total (emitted + sub-threshold)',
+          title: 'The full realized mass of these hops at this scope — '
+            + 'emitted plus the sub-threshold band. Reconciles with the '
+            + '"Complete at ..." view of the same chains.',
+          cell: function(row) { return dashTd(row.total_list, null,
+            'Total realized hop mass; bold = the weakest hop.'); } },
+        RUN.has_universe && { h: 'Universe type weights',
+          title: 'Per hop: the WHOLE admitted type-pair mass this chain is '
+            + 'drawn from at this scope\u2019s tier, in the same -a-b- hop '
+            + 'order \u2014 the type pair\u2019s aggregate weight over ALL '
+            + 'its bodyId edges, not this chain\u2019s share of it. Every '
+            + 'Weights entry above is a LOWER BOUND of the entry here; '
+            + 'neither list is summed across hops. Source: the pair table '
+            + 'column universe_type_weights. \u2014 = a hop the pair table '
+            + 'does not publish.',
+          cell: function(row) {
+            return dashTd(row.uni, null,
+              'Whole admitted type-pair mass per hop; this chain\u2019s hop '
+              + 'mass is a lower bound of it.'); } },
         { h: 'Coverage',
           title: 'Per-node coverage, n1/N1, n2/N2, ...: distinct bodyIds '
             + 'realizing this exact sequence at that position / the '
@@ -3688,8 +4701,7 @@ REPORT_JS = r"""
         var gtd = elt('td', null, len + ' hops — ' + rows.length
           + ' shown (' + (union ? 'union, top '
             + RUN.top_per_length + ' per pair' : 'top ' + rows.length)
-          + ' of ' + rows.reduce(function(acc, r) {
-            return acc + r.total; }, 0) + ')');
+          + ' of ' + (capacityByLen[len] || rows.length) + ')');
         gtd.colSpan = colSpan;
         gr.appendChild(gtd);
         tbody.appendChild(gr);
@@ -3838,12 +4850,16 @@ REPORT_JS = r"""
     && String(DATA.run.meta.weight_basis || '')
       .startsWith('connection_ratio'));
   // the APPLIED threshold (the cut that defined the emitted set) — the
-  // Pair Explorer's Weights/Adj scope; refill views are asked-scoped
+  // Pair Explorer's Weights scope; refill views are asked-scoped
   var APPLIED = DATA.run.meta ? DATA.run.meta.applied_threshold : null;
+  // ADJ_TIER: the threshold recorded inside type_incoming_conditioned.csv,
+  // i.e. the tier the Adj denominator was actually conditioned at. The
+  // header must name this, not the applied cut (F-EX-012's sibling).
+  var ADJ_TIER = DATA.run.meta ? (DATA.run.meta.adj_tier || null) : null;
   var Explorer = makeExplorer({
     data: DATA.pairs, units: DATA.run.units,
     run: {rank_by: DATA.run.rank_by, min_synapse: MIN_SYN,
-          applied: APPLIED, ratio_basis: RATIO_BASIS,
+          applied: APPLIED, adj_tier: ADJ_TIER, ratio_basis: RATIO_BASIS,
           pair_ratio_source: DATA.run.pair_ratio_source,
           shortest: DATA.run.shortest,
           top_per_length: DATA.run.top_per_length,
@@ -3853,7 +4869,7 @@ REPORT_JS = r"""
     csvLabel: 'pair_breakdown_paths.csv',
     csvHref: 'paths_pair_breakdown/pair_breakdown_paths.csv',
     filterPairs: true });
-  // Refill tab mode switch (plan-refill-complete-at-asked-paths R2/D2):
+  // The Refill view's mode switch (plan-refill-complete-at-asked-paths
   // one explorer, TWO datasets — the COMPLETE-AT-ASKED paths (default)
   // and the REFILL-carrying paths. A mode switch mutates the shared cfg
   // and re-mounts; makeExplorer itself stays untouched (the main
@@ -3862,7 +4878,8 @@ REPORT_JS = r"""
     data: [], units: [],
     run: {
       rank_by: DATA.run.rank_by, pair_ratio_source: '',
-      min_synapse: MIN_SYN, applied: APPLIED, ratio_basis: RATIO_BASIS,
+      min_synapse: MIN_SYN, applied: APPLIED, adj_tier: ADJ_TIER,
+      ratio_basis: RATIO_BASIS,
       shortest: DATA.run.shortest,
       top_per_length: DATA.run.top_per_length, vispath: []
     },
@@ -3870,159 +4887,303 @@ REPORT_JS = r"""
     targetSelId: 'r-sel-target', paneId: 'refill-pane',
     csvLabel: '', csvHref: '', filterPairs: false };
   var RefillExplorer = makeExplorer(REFILL_CFG);
-  var RefillModes = {
-    sets: {},
-    scope: 'asked',
-    init: function() {
-      var self = this;
-      this.sets = {};
+  // ---- the corridor's OWN explorer (F3 / Q3) ------------------------------
+  // The lane's validated walks browsed per source x target with the SAME
+  // capped, per-cell-explained table grammar the Complete Pair Explorer uses.
+  // Its tier comes from the LANE's own provenance: the Weights header says
+  // what the lane admitted, never the Complete run's applied cut
+  // (F-EX-012's one-key-two-meanings is the defect this rules out).
+  var LANE0 = (((DATA.lane || {}).units) || [])[0] || {};
+  var LANE_ASKED = (LANE0.asked === null || LANE0.asked === undefined
+                    || LANE0.asked === '')
+    ? null : Number(LANE0.asked);
+  var LANE_RATIO = String(LANE0.weight_basis || '')
+    .indexOf('connection_ratio') === 0;
+  var CORRIDOR_CFG = {
+    data: (DATA.corridor || {}).pairs || [],
+    units: (DATA.corridor || {}).units || [],
+    run: {
+      rank_by: DATA.run.rank_by,
+      pair_ratio_source: (DATA.corridor || {}).pair_ratio_source || '',
+      min_synapse: LANE_ASKED, applied: LANE_ASKED, adj_tier: LANE_ASKED,
+      ratio_basis: LANE_RATIO,
+      // at the synapse >= 1 floor the conditioned denominator IS the plain
+      // all-inputs one, so an Adj column would duplicate Ratios (G5)
+      suppress_adj: LANE_RATIO || (LANE_ASKED !== null && LANE_ASKED <= 1),
+      has_universe: !!(DATA.corridor || {}).has_universe,
+      shortest: DATA.run.shortest,
+      top_per_length: DATA.run.top_per_length,
+      vispath: (DATA.corridor || {}).vispath || [] },
+    unitSelId: 'c-sel-unit', sourceSelId: 'c-sel-source',
+    targetSelId: 'c-sel-target', paneId: 'corridor-pane',
+    csvLabel: 'route_paths_type.csv',
+    csvHref: 'route_scope_paths/route_paths_type.csv',
+    filterPairs: false };
+  var CorridorExplorer = makeExplorer(CORRIDOR_CFG);
+  var CORRIDOR_REFILL_CFG = {
+    data: [], units: [],
+    run: {
+      rank_by: DATA.run.rank_by, pair_ratio_source: '',
+      min_synapse: MIN_SYN, applied: APPLIED, adj_tier: ADJ_TIER,
+      ratio_basis: RATIO_BASIS,
+      shortest: DATA.run.shortest,
+      top_per_length: DATA.run.top_per_length, vispath: [] },
+    unitSelId: 'cr-sel-unit', sourceSelId: 'cr-sel-source',
+    targetSelId: 'cr-sel-target', paneId: 'corridor-refill-pane',
+    csvLabel: '', csvHref: '', filterPairs: false };
+  var CorridorRefillExplorer = makeExplorer(CORRIDOR_REFILL_CFG);
+
+  // ---- ONE mode/scope/view switch machine (Q5: mirror the complete mode) --
+  // The Complete Refill and the corridor Refill share the switch: sets built
+  // by the instance, a scope row and a view row that render only when they
+  // have >= 2 destinations (G1), a caption that names the choice whenever a
+  // row is hidden, and a mount that preserves the selection (F6). Two copies
+  // of this logic is how the two modes' grammars would drift apart.
+  function makeModeSwitch(spec) {
+    return {
+      sets: {},
+      scope: spec.initialScope || 'asked',
+      view: null,
+      init: function() {
+        var sw = this;
+        this.sets = spec.build();
+        var keys = Object.keys(this.sets);
+        function isFull(key) { return !!spec.full[key]; }
+        var hasAsked = keys.some(function(k) { return !isFull(k); });
+        var hasFull = keys.some(function(k) { return isFull(k); });
+        // ---- resolve the effective scope BEFORE the bar is built (D1) ----
+        // Filtering the view buttons against a stale scope used to leave a
+        // full-only run with ONE already-active scope chip and NO view
+        // buttons, so its Refill-carrying view was unreachable (measured in
+        // headless Chrome).
+        if (this.scope === 'full' && !hasFull) { this.scope = 'asked'; }
+        if (this.scope === 'asked' && !hasAsked && hasFull) {
+          this.scope = 'full';
+        }
+        function inScope(key) {
+          return sw.scope === 'full' ? isFull(key) : !isFull(key);
+        }
+        var views = spec.views.filter(function(item) {
+          return sw.sets[item[0]] && inScope(item[0]); });
+        var bar = document.getElementById(spec.barId);
+        if (bar) {
+          bar.innerHTML = '';
+          // A control row renders only with >= 2 destinations; the current
+          // choice is then stated as a caption, so hiding a row never hides
+          // information (barRow / barChip / barCaption are the Analysis
+          // bar's own helpers — one implementation for every switch).
+          if (hasAsked && hasFull) {
+            var scopeRow = barRow(bar, 'Scope');
+            [['full', spec.scopeLabels.full],
+             ['asked', spec.scopeLabels.asked]].forEach(function(item) {
+              var b = barChip(scopeRow, item[1], function() {
+                sw.scope = item[0]; sw.init(); });
+              b.dataset.scope = item[0];
+              b.classList.toggle('active', sw.scope === item[0]);
+            });
+          } else {
+            barCaption(bar, 'Scope: ' + spec.scopeCaptions[this.scope]
+              + ' \u2014 the only scope this run produced.');
+          }
+          if (views.length > 1) {
+            var viewRow = barRow(bar, spec.viewRowLabel || 'View');
+            views.forEach(function(item) {
+              var b = barChip(viewRow, item[1], function() {
+                sw.set(item[0]); });
+              b.dataset.mode = item[0];
+            });
+          } else if (views.length === 1) {
+            barCaption(bar, 'View: ' + views[0][1]
+              + ' \u2014 the only view this scope produced.');
+          }
+        }
+        // Default view: the one already chosen when it survives the scope
+        // switch, else the scope's own first preference.
+        var first = (this.view && this.sets[this.view] && inScope(this.view))
+          ? this.view : null;
+        if (!first) {
+          var wanted = spec.defaults[this.scope] || [];
+          for (var i = 0; i < wanted.length; i += 1) {
+            if (this.sets[wanted[i]] && inScope(wanted[i])) {
+              first = wanted[i]; break;
+            }
+          }
+        }
+        this.set(first);
+      },
+      set: function(mode) {
+        if (!mode || !this.sets[mode]) { return; }
+        this.view = mode;
+        var sw = this;
+        var s = this.sets[mode];
+        var cfg = spec.cfg;
+        var ov = s.ov || {};
+        cfg.data = s.data; cfg.units = s.units;
+        cfg.run.pair_ratio_source = s.pair_ratio_source;
+        cfg.run.vispath = s.vispath || [];
+        cfg.csvLabel = s.csvLabel; cfg.csvHref = s.csvHref;
+        // Scope tier labels: each table states the tier ITS denominators are
+        // conditioned at — asked scope at the ASKED threshold, full scope at
+        // synapse >= 1 — never the pair explorer's applied cut.
+        cfg.run.applied = ('applied' in ov) ? ov.applied : APPLIED;
+        cfg.run.min_synapse = ('min_synapse' in ov) ? ov.min_synapse : MIN_SYN;
+        cfg.run.ratio_basis = ('ratio_basis' in ov)
+          ? ov.ratio_basis : RATIO_BASIS;
+        cfg.run.suppress_adj = ('suppress_adj' in ov)
+          ? ov.suppress_adj : false;
+        cfg.run.adj_tier = ('adj_tier' in ov) ? ov.adj_tier : ADJ_TIER;
+        // F-EX-002(ii): a carrying view states its subject in the Weights
+        // column and shows the emitted/total context beside it. Cleared for
+        // the other views so switching never leaves a stale label.
+        cfg.run.weights_label = ('weights_label' in ov)
+          ? ov.weights_label : null;
+        cfg.run.has_split = !!s.split;
+        // `Universe type weights` renders only for a dataset whose pair table
+        // publishes the whole admitted type-pair mass (F4/Q3).
+        cfg.run.has_universe = !!s.has_universe;
+        var bar = document.getElementById(spec.barId);
+        if (bar) {
+          // Each row marks its own kind: a scope chip is lit by the scope, a
+          // view chip by the view (one pass over both used to light two
+          // views at once).
+          bar.querySelectorAll('button[data-mode]').forEach(function(b) {
+            b.classList.toggle('active', b.dataset.mode === mode); });
+          bar.querySelectorAll('button[data-scope]').forEach(function(b) {
+            b.classList.toggle('active', b.dataset.scope === sw.scope); });
+        }
+        spec.explorer.mount();
+      }
+    };
+  }
+
+  var RefillModes = makeModeSwitch({
+    barId: 'refill-mode-bar', cfg: REFILL_CFG, explorer: RefillExplorer,
+    initialScope: 'asked',
+    // The Path bar owns the 'View' row (Pair Explorer / Refill); this
+    // row picks a view WITHIN the Refill page, so the page never shows two
+    // rows answering to the same word.
+    viewRowLabel: 'Refill view',
+    scopeLabels: {full: 'Refill-full (synapse>=1)', asked: 'Refill-asked'},
+    scopeCaptions: {
+      full: 'Refill-full (synapse >= 1)',
+      asked: 'Refill-asked (the run\u2019s own thresholding)'},
+    full: {complete_full: true, refill_full: true},
+    views: [['complete', 'Complete at asked'],
+            ['refill', 'Refill-carrying'],
+            ['complete_full', 'Complete at full (synapse>=1)'],
+            ['refill_full', 'Refill-carrying (sub-threshold)']],
+    defaults: {asked: ['complete', 'refill'],
+               full: ['complete_full', 'refill_full']},
+    build: function() {
+      var sets = {};
       // Scope ASKED (the run's own thresholding; budget-cut recovery).
       if (DATA.refill_complete && DATA.refill_complete.pairs &&
           DATA.refill_complete.pairs.length) {
-        this.sets.complete = {
+        sets.complete = {
           data: DATA.refill_complete.pairs,
           units: DATA.refill_complete.units,
           pair_ratio_source: DATA.refill_complete.pair_ratio_source,
           csvLabel: 'complete_at_asked_paths_type.csv',
           csvHref: 'type_level_refill/complete_at_asked_paths_type.csv',
           vispath: (DATA.refill_complete.vispath || []),
+          has_universe: !!DATA.refill_complete.has_universe,
           // scope tier labels: the ASKED threshold (never the applied
           // cut — the refill tables are re-valued at the asked tier)
           ov: { applied: null } };
       }
       if (DATA.refill && DATA.refill.pairs && DATA.refill.pairs.length) {
-        this.sets.refill = {
+        sets.refill = {
           data: DATA.refill.pairs, units: DATA.refill.units,
           pair_ratio_source: DATA.refill.pair_ratio_source,
           csvLabel: 'refill_paths_type.csv',
           csvHref: 'type_level_refill/refill_paths_type.csv',
           vispath: (DATA.refill.vispath || []),
-          ov: { applied: null } };
+          has_universe: !!DATA.refill.has_universe,
+          ov: { applied: null, weights_label:
+                  'Weights — sub-threshold (refill)' },
+          split: true };
       }
       // Scope FULL (DUAL REFILL 2026-10-08: synapse >= 1, no tier — the
       // full-connection view of the SAME emitted chains).
       if (DATA.complete_full && DATA.complete_full.pairs &&
           DATA.complete_full.pairs.length) {
-        this.sets.complete_full = {
+        sets.complete_full = {
           data: DATA.complete_full.pairs,
           units: DATA.complete_full.units,
           pair_ratio_source: DATA.complete_full.pair_ratio_source,
           csvLabel: 'refill_full_paths_type.csv',
           csvHref: 'type_level_refill/refill_full_paths_type.csv',
           vispath: (DATA.complete_full.vispath || []),
-          // full scope: natural weights at synapse >= 1 — never the
-          // run's ratio tier nor the applied cut. suppress_adj: at the
-          // floor-1 admission the conditioned denominator EQUALS the
-          // plain all-inputs one, so an Adj column would duplicate
-          // Ratios (same doctrine as ratio-basis runs).
+          has_universe: !!DATA.complete_full.has_universe,
           ov: { applied: null, min_synapse: 1, ratio_basis: false,
                 suppress_adj: true } };
       }
       if (DATA.refill_full && DATA.refill_full.pairs &&
           DATA.refill_full.pairs.length) {
-        this.sets.refill_full = {
+        sets.refill_full = {
           data: DATA.refill_full.pairs, units: DATA.refill_full.units,
           pair_ratio_source: DATA.refill_full.pair_ratio_source,
           csvLabel: 'refill_full_carrying_paths_type.csv',
           csvHref: 'type_level_refill/refill_full_carrying_paths_type.csv',
           vispath: (DATA.refill_full.vispath || []),
+          has_universe: !!DATA.refill_full.has_universe,
+          ov: { applied: null, min_synapse: 1, ratio_basis: false,
+                suppress_adj: true,
+                weights_label:
+                  'Weights — sub-threshold (synapse >= 1)' },
+          split: true };
+      }
+      return sets;
+    }});
+
+  var CorridorRefillModes = makeModeSwitch({
+    barId: 'corridor-refill-mode-bar', cfg: CORRIDOR_REFILL_CFG,
+    explorer: CorridorRefillExplorer,
+    initialScope: 'full',
+    viewRowLabel: 'Refill view',
+    scopeLabels: {full: 'Refill-full (synapse>=1)', asked: 'Refill-asked'},
+    scopeCaptions: {
+      full: 'Refill-full (synapse >= 1) — the lane\u2019s only second round '
+        + '(it has no budget that raises an applied threshold)',
+      asked: 'Refill-asked'},
+    full: {corridor_complete_full: true, corridor_refill_full: true},
+    views: [['corridor_complete_full', 'Complete at full (synapse>=1)'],
+            ['corridor_refill_full', 'Refill-carrying (sub-threshold)']],
+    defaults: {full: ['corridor_complete_full', 'corridor_refill_full'],
+               asked: []},
+    build: function() {
+      var sets = {};
+      if (DATA.corridor_complete_full && DATA.corridor_complete_full.pairs &&
+          DATA.corridor_complete_full.pairs.length) {
+        sets.corridor_complete_full = {
+          data: DATA.corridor_complete_full.pairs,
+          units: DATA.corridor_complete_full.units,
+          pair_ratio_source: DATA.corridor_complete_full.pair_ratio_source,
+          csvLabel: 'route_full_paths_type.csv',
+          csvHref: 'route_scope_paths/route_full_paths_type.csv',
+          vispath: (DATA.corridor_complete_full.vispath || []),
+          has_universe: !!DATA.corridor_complete_full.has_universe,
           ov: { applied: null, min_synapse: 1, ratio_basis: false,
                 suppress_adj: true } };
       }
-      var bar = document.getElementById('refill-mode-bar');
-      if (bar) {
-        bar.innerHTML = '';
-        var self2 = self;
-        // Scope switch first (asked | full), then the per-scope views.
-        var hasAsked = !!(this.sets.complete || this.sets.refill);
-        var hasFull = !!(this.sets.complete_full || this.sets.refill_full);
-        var scopeBtn = function(label, scope) {
-          var b = document.createElement('button');
-          b.type = 'button'; b.className = 'page-tab-btn';
-          b.textContent = label; b.dataset.scope = scope;
-          b.addEventListener('click', function() {
-            self2.scope = scope; self2.init(); });
-          bar.appendChild(b);
-        };
-        if (hasFull) { scopeBtn('Refill-full (synapse>=1)', 'full'); }
-        if (hasAsked) { scopeBtn('Refill-asked', 'asked'); }
-        if (hasAsked && hasFull) {
-          var sep = document.createElement('span');
-          sep.style.cssText = 'color:var(--secondary-color);margin:0 6px;';
-          sep.textContent = '|';
-          bar.appendChild(sep);
-        }
-        var inScope = function(key) {
-          var isFullKey = key.indexOf('_full') >= 0;
-          return self2.scope === 'full' ? isFullKey : !isFullKey;
-        };
-        [['complete', 'Complete at asked'],
-         ['refill', 'Refill-carrying'],
-         ['complete_full', 'Complete at full (synapse>=1)'],
-         ['refill_full', 'Refill-carrying (sub-threshold)']
-        ].forEach(function(item) {
-          if (!self2.sets[item[0]]) { return; }
-          if (!inScope(item[0])) { return; }
-          var b = document.createElement('button');
-          b.type = 'button'; b.className = 'page-tab-btn';
-          b.textContent = item[1]; b.dataset.mode = item[0];
-          b.addEventListener('click', function() { self2.set(item[0]); });
-          bar.appendChild(b);
-        });
-        // scope active-marking
-        bar.querySelectorAll('button[data-scope]').forEach(function(b) {
-          b.classList.toggle('active', b.dataset.scope === self2.scope); });
+      if (DATA.corridor_refill_full && DATA.corridor_refill_full.pairs &&
+          DATA.corridor_refill_full.pairs.length) {
+        sets.corridor_refill_full = {
+          data: DATA.corridor_refill_full.pairs,
+          units: DATA.corridor_refill_full.units,
+          pair_ratio_source: DATA.corridor_refill_full.pair_ratio_source,
+          csvLabel: 'route_full_carrying_paths_type.csv',
+          csvHref: 'route_scope_paths/route_full_carrying_paths_type.csv',
+          vispath: (DATA.corridor_refill_full.vispath || []),
+          has_universe: !!DATA.corridor_refill_full.has_universe,
+          ov: { applied: null, min_synapse: 1, ratio_basis: false,
+                suppress_adj: true,
+                weights_label:
+                  'Weights — sub-threshold (synapse >= 1)' },
+          split: true };
       }
-      // DUAL default: asked (the recovery story) when it has records;
-      // full-only runs land on full. RESPECT the current scope (fix
-      // 2026-10-09: clicking a scope button re-runs init(), which used
-      // to fall back to the asked view regardless — the user saw
-      // refill-full showing the asked data at '>= 3 synapses').
-      var first = null;
-      if (this.scope === 'full') {
-        first = this.sets.complete_full ? 'complete_full'
-              : (this.sets.refill_full ? 'refill_full' : null);
-      }
-      if (!first) {
-        first = this.sets.complete ? 'complete'
-              : (this.sets.refill ? 'refill' : null);
-      }
-      if (!first && (this.sets.complete_full || this.sets.refill_full)) {
-        this.scope = 'full';
-        first = this.sets.complete_full ? 'complete_full' : 'refill_full';
-      }
-      this.set(first);
-    },
-    set: function(mode) {
-      if (!mode || !this.sets[mode]) { return; }
-      var self = this;
-      var s = this.sets[mode];
-      REFILL_CFG.data = s.data; REFILL_CFG.units = s.units;
-      REFILL_CFG.run.pair_ratio_source = s.pair_ratio_source;
-      REFILL_CFG.run.vispath = s.vispath;
-      REFILL_CFG.csvLabel = s.csvLabel; REFILL_CFG.csvHref = s.csvHref;
-      // scope tier labels (fix 2026-10-09): the refill tables are
-      // re-valued at their OWN scope's tier — asked scope at the ASKED
-      // threshold, full scope at synapse >= 1 — never the pair
-      // explorer's applied cut.
-      var ov = s.ov || {};
-      REFILL_CFG.run.applied = ('applied' in ov) ? ov.applied : APPLIED;
-      REFILL_CFG.run.min_synapse =
-        ('min_synapse' in ov) ? ov.min_synapse : MIN_SYN;
-      REFILL_CFG.run.ratio_basis =
-        ('ratio_basis' in ov) ? ov.ratio_basis : RATIO_BASIS;
-      REFILL_CFG.run.suppress_adj =
-        ('suppress_adj' in ov) ? ov.suppress_adj : false;
-      var bar = document.getElementById('refill-mode-bar');
-      if (bar) {
-        bar.querySelectorAll('button').forEach(function(b) {
-          var active = (b.dataset.mode === mode)
-            || (b.dataset.scope === self.scope);
-          b.classList.toggle('active', active); });
-      }
-      RefillExplorer.mount();
-    }
-  };
+      return sets;
+    }});
 
   // ---- boot: parse the deep link, else Overview ----
   function initial() {
@@ -4034,10 +5195,19 @@ REPORT_JS = r"""
       params[kv[0]] = decodeURIComponent(kv.slice(1).join('='));
     });
     var page = params.tab || 'overview';
-    if (DATA.pairs.length === 0) { page = 'overview'; }
-    TAB.show(page === 'explorer' ? 'explorer' : page);
-    if (page === 'explorer' && params.pair) {
-      Explorer.selectPair(params.pair);
+    // The Overview fallback is about a run with NOTHING to show, not about
+    // the Complete table being empty: a standalone Fast run has no Complete
+    // pairs by design and must still open on its own Analysis page (G8).
+    if (page === 'analysis' && params.mode) { Analysis.mode = params.mode; }
+    if (page === 'analysis' && params.view) { Analysis.view = params.view; }
+    if (Analysis.modes().length === 0 && !DATA.pairs.length) {
+      page = 'overview';
+    }
+    TAB.show(page);
+    if (params.pair) {
+      var onExplorer = (page === 'explorer')
+        || (page === 'analysis' && Analysis.view === 'explorer');
+      if (onExplorer) { Explorer.selectPair(params.pair); }
     }
   }
   if (document.readyState === 'loading') {
@@ -4084,7 +5254,8 @@ def _attach_table_groups(
     target_cov: Optional[Dict[str, str]] = None,
     pair_cov: Optional[Dict[Tuple[str, str], Tuple[str, str]]] = None,
     pair_ratio: Optional[Dict[Tuple[str, str], float]] = None,
-    in_applied: Optional[Dict[str, float]] = None,
+    in_conditioned: Optional[Dict[str, float]] = None,
+    pair_universe: Optional[Dict[str, Dict[Tuple[str, str], float]]] = None,
 ) -> None:
     """Fill each pair entry's capped table groups (ranked rows per length),
     each row carrying PER-PATH ``scov``/``tcov`` bodyId n/N strings — the
@@ -4094,6 +5265,7 @@ def _attach_table_groups(
     source_cov = source_cov or {}
     target_cov = target_cov or {}
     pair_cov = pair_cov or {}
+    pair_universe = pair_universe or {}
     work = frame.copy()
     work['_path_key'] = work['path']
     ordered = _rank_sort(work, rank_by)
@@ -4112,6 +5284,13 @@ def _attach_table_groups(
                             else str(row['coverage']))
                 rows.append({
                     'rank': rank,
+                    # plan_rank (R1, 2026-10-15): the lane's acceptance rank
+                    # by candidate UPPER BOUND, kept as its own field so the
+                    # `#` column can print it where the table has it (the
+                    # corridor chains) while the other tables keep the
+                    # within-group display rank.
+                    'pr_rank': (None if pd.isna(row.get('plan_rank'))
+                                else int(row['plan_rank'])),
                     'path': str(row['path']),
                     'len': int(length),
                     'mw': None if pd.isna(row['min_weight']) else float(row['min_weight']),
@@ -4119,17 +5298,31 @@ def _attach_table_groups(
                            else float(row['min_ratio'])),
                     'pr': _path_pair_ratio(row['path'], pair_ratio or {}),
                     'weights': '' if pd.isna(row['weights']) else str(row['weights']),
+                    # F-EX-002(ii): the CARRYING tables state their subject
+                    # (the sub-threshold mass) and carry the context beside
+                    # them, so the emitted/total lists ride along when the
+                    # table has them. The Weights column then gets labelled
+                    # for what it holds instead of showing a total under a
+                    # "sub-threshold" name.
+                    'emitted': _opt_cell(row.get('emitted_weights')),
+                    'total': _opt_cell(row.get('total_weights')),
                     # Percent convention (§2.5): the report payload shows
                     # xx.xx% lists; the breakdown CSV keeps raw strings.
                     'ratios': _format_ratio_list(
                         '' if pd.isna(row['ratios'])
                         else str(row['ratios'])),
                     'pradj': (
-                        _realized_applied_list(
-                            row['path'], row.get('weights'), in_applied)
-                        if in_applied
+                        _realized_conditioned_list(
+                            row['path'], row.get('weights'), in_conditioned)
+                        if in_conditioned
                         else _per_hop_adjusted_list(
                             row['path'], pair_ratio or {})),
+                    # `Universe type weights` (F4/Q3): per-hop whole
+                    # type-pair mass, from the layout's pair table. '' when
+                    # the dataset publishes no such column — the explorer
+                    # then prints no such column either.
+                    'uni': (_hop_universe_list(row['path'], pair_universe)
+                            if pair_universe else ''),
                     # 2026-10-07: the per-path scov/tcov fields are
                     # gone — the coverage list IS the coverage display
                     # (n1/N1>n2/N2>... via the JS cell); rows without
@@ -4159,6 +5352,222 @@ def has_paths_tables(run_dir) -> bool:
         return any(Path(run_dir).rglob(f'*{PATHS_SUFFIX}'))
     except OSError:
         return False
+
+
+# F-EX-010 (2026-10-14): a run that finds nothing stops before the export
+# block, so it leaves no paths table — and until now no report either. Its
+# only documents (the user guide, user_warning_notes.txt) cited artifacts
+# that were never written, and nothing in the folder stated WHY. An
+# empty-state report says so in the run's own words.
+EMPTY_STATE_ABSENT = (
+    'data_details/', 'paths_pair_breakdown/', 'route_scope_paths/',
+    'type_level_refill/')
+
+
+def is_pathfinding_run(run_dir) -> bool:
+    """True for a pathfinding run folder even when it holds no paths table.
+
+    Recognized by the run-name grammar (Complete / Shortest / cross-dataset)
+    plus the artifacts an early exit still writes.
+    """
+    run_dir = Path(run_dir)
+    if run_kind_for(run_dir) == 'Pathfinding':
+        return False
+    return ((run_dir / 'parameters.txt').exists()
+            or (run_dir / 'dataset_data').is_dir())
+
+
+def _enrollment_counts(folder: Path) -> Tuple[int, int, int, int]:
+    """(source bodyIds, source types, target bodyIds, target types) as
+    enrolled by the run — the enrollment CSVs survive a zero-path exit."""
+    out = []
+    for name, type_col in (('source_neurons.csv', 'type'),
+                           ('target_neurons.csv', 'type')):
+        path = folder / name
+        try:
+            frame = pd.read_csv(path)
+        except (OSError, ValueError):
+            out.extend((0, 0))
+            continue
+        types = (frame[type_col].dropna().astype(str).str.strip().nunique()
+                 if type_col in frame.columns else 0)
+        out.extend((len(frame), int(types)))
+    return tuple(out)
+
+
+def _write_empty_state_report(run_dir: Path, meta: Dict[str, Any],
+                              log=None) -> Path:
+    """Render ``path_report.html`` for a run that emitted no paths table."""
+    say = log or (lambda *a, **k: None)
+    run_dir = Path(run_dir)
+    kind = run_kind_for(run_dir, meta)
+    # A Network run is not a search that came up empty: it is the induced
+    # sub-network of the query, so an empty result means the queried neurons
+    # simply share no direct edge at this threshold. Describing that with the
+    # path run's "raise Max Interlayer" advice is advice that cannot apply
+    # (plan 2026-10-16 C3: the folder grammar was unrecognized, so a
+    # zero-connection Network run got no report at all).
+    is_network = kind == 'Network'
+    text = ''
+    params_txt = run_dir / 'parameters.txt'
+    if params_txt.exists():
+        try:
+            text = params_txt.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            text = ''
+
+    def _param(key: str, default: str = 'not recorded') -> str:
+        match = re.search(rf'^{re.escape(key)}:\s*(.+)$', text, re.MULTILINE)
+        return match.group(1).strip() if match else default
+
+    basis = str(meta.get('weight_basis') or '')
+    ratio_basis = basis.startswith('connection_ratio')
+    thr_label = 'connection ratio ≥' if ratio_basis else 'Min Synapse Count ≥'
+    thr_value = (meta.get('min_ratio') if ratio_basis
+                 else meta.get('min_synapse')) or '—'
+    # the second gate is named only when the run really combined them; a
+    # ratio run's Min Synapse 1 is the forced floor, not an AND threshold
+    _and = (str(meta.get('threshold_combination') or '') == 'and'
+            and ratio_basis and meta.get('min_synapse'))
+    prov = meta.get('provenance') or {}
+    sb, st, tb, tt = _enrollment_counts(run_dir)
+    present = sorted(p.name for p in run_dir.iterdir() if p.is_file())
+    absent = [name for name in EMPTY_STATE_ABSENT
+              if not (run_dir / name).exists()]
+    # D2 (plan-corridor-refill-and-mode-tabs): a Fast-only run has NO
+    # Complete-lane table by design — its deliverable is the corridor lane.
+    # The empty state must not claim "nothing was found" for such a folder.
+    lane_prov: Dict[str, Any] = {}
+    try:
+        lane_prov = json.loads(
+            (run_dir / 'route_scope_paths'
+             / 'route_provenance.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        lane_prov = {}
+    lane_ok = str(lane_prov.get('status') or '') == 'complete'
+    lane_walks = lane_prov.get('validated_walks')
+
+    rows = [
+        ('Threshold that produced nothing', f'{thr_label} {_esc(thr_value)}'
+         + (f' AND Min Synapse Count ≥ {_esc(_and)}' if _and else '')),
+        ('Weight basis', _esc(basis or 'not recorded')),
+        ('Max interlayer', _esc(meta.get('max_interlayer') or '—')),
+        ('Dataset', _esc(meta.get('dataset') or _param('dataset'))),
+        ('Query', _esc(f'{_param("source name")} → {_param("target name")}')),
+        ('Source neurons enrolled', f'{sb} bodyIds / {st} type labels'),
+        ('Target neurons enrolled', f'{tb} bodyIds / {tt} type labels'),
+        ('Filter by', _esc(meta.get('filter_by') or '—')),
+        ('Run mode', _esc(meta.get('run_mode') or _param('run mode'))),
+        ('Run date', _esc(_param('run date'))),
+    ]
+    stat_boxes = ''.join(
+        f'<div class="stat-box"><div class="value">{_esc(v)}</div>'
+        f'<div class="label">{_esc(k)}</div></div>'
+        for k, v in (('direct connections' if is_network else 'paths emitted',
+                      0),
+                     ('source type labels', st),
+                     ('target type labels', tt),
+                     ('applied tau', prov.get('strongest_first_tau')
+                      or 'not reached')
+                     if not is_network else
+                     ('graph capped', 'never (no path budget)')))
+    prov_rows = ''.join(
+        f'<tr><td>{_esc(k)}</td><td>{_esc(prov[k])}</td></tr>'
+        for k in PROVENANCE_KEYS if k in prov)
+    absent_html = ''.join(f'<li><span class="code">{_esc(n)}</span></li>'
+                          for n in absent)
+    present_html = ''.join(f'<li><span class="code">{_esc(n)}</span></li>'
+                           for n in present)
+    lane_section = ''
+    if lane_ok:
+        try:
+            lane_section, _found = _render_corridor_section(
+                run_dir, 'Fast (corridor) lane')
+        except Exception:  # noqa: BLE001 - the lane read is additive here
+            lane_section = ''
+    headline = ('Complete mode produced no paths' if lane_ok
+                else ('No direct connections among the queried neurons'
+                      if is_network else 'This run found no paths'))
+    intro = (
+        f'This folder ran in <b>Fast only</b> mode: the Complete pipeline '
+        f'(discovery, enumeration, materialization, refill) was skipped by '
+        f'selection, so there is no allpaths table to tabulate here. The '
+        f'corridor lane DID produce {lane_walks} validated walk'
+        f'{"s" if str(lane_walks) != "1" else ""} — listed below.'
+        if lane_ok else
+        ('A Network run keeps only connections whose BOTH endpoints are in '
+         'the queried set, so an empty result means the neurons you asked '
+         'about share no direct edge at this threshold — intermediate '
+         'neurons are never involved here. The run\'s own settings are the '
+         'explanation:' if is_network else
+         'Path enumeration stopped before any path was written, so there is '
+         'nothing to tabulate. The run\'s own settings are the explanation:'))
+    body = (
+        f'<div class="card"><h3>{headline}</h3>'
+        f'<p>{intro}</p>'
+        f'<div class="grid" style="grid-template-columns:repeat(4,1fr);">'
+        f'{stat_boxes}</div>'
+        f'<table><tbody>'
+        + ''.join(f'<tr><th>{_esc(k)}</th><td>{v}</td></tr>'
+                  for k, v in rows)
+        + '</tbody></table>'
+        '<p class="cap-note">Readouts are the run\'s recorded parameters, not '
+        'a re-computation: the engine writes them before enumerating, so a '
+        'zero-path folder still carries them.</p></div>'
+        + lane_section +
+        '<div class="card"><h3>Applied-threshold provenance</h3>'
+        + (f'<table><thead><tr><th>key</th><th>value</th></tr></thead>'
+           f'<tbody>{prov_rows}</tbody></table>' if prov_rows else
+           '<p>No provenance block was recorded — StrongestFirst never '
+           'reached a tau, because no source could reach a target.</p>')
+        + '</div>'
+        f'<div class="card"><h3>Why the other documents point at missing files</h3>'
+        f'<p><span class="badge badge-warning">Not written</span> these '
+        f'folders and files do not exist for this run, even where '
+        f'<span class="code">user_warning_notes.txt</span> or the run guide '
+        f'mentions them:</p><ul>{absent_html}</ul>'
+        f'<p><span class="badge badge-info">Present</span></p>'
+        f'<ul>{present_html}</ul></div>'
+        f'<div class="card"><h3>{"Why Complete mode found nothing" if lane_ok else "What usually moves this"}</h3><ul>'
+        + (f'<li>Lower the threshold — a ratio gate of '
+           f'{_esc(thr_value)} asks every hop to carry that share of the post '
+           f'neuron\'s all-post incoming mass.</li>' if ratio_basis else
+           # the synapse run has no ratio gate at all: naming one here (and
+           # calling its synapse count a "share") was a claim about a knob the
+           # run never used
+           f'<li>Lower Min Synapse Count — a gate of '
+           f'{_esc(thr_value)} synapses asks every hop to be backed by at '
+           f'least that much measured mass between the pair.</li>')
+        + ('<li>Add the neurons that connect them: this tool shows only '
+           '<i>direct</i> connections, so a set that is disjoint on paper '
+           'may still be densely connected through intermediates — run '
+           'Complete Paths (or Shortest Paths) over the same sets.</li>'
+           if is_network else
+           '<li>Raise Max Interlayer so a longer chain can connect the '
+           'sets.</li>') +
+        f'<li>Check <span class="code">user_warning_notes.txt</span>: '
+        f'<span class="code">drop_untyped=True</span> removes edges touching '
+        f'untyped neurons, and an untyped source or target stays enrolled in '
+        f'the CSVs while its incident edges are gone.</li>'
+        + ('' if is_network else
+           '<li>Relax the Edge Budget / re-enable "Limit Graph Edges" if the '
+           'graph was capped before the search.</li>')
+        + f'</ul></div>')
+    html_text = (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+        f'<title>{_esc(f"Paths Pair Report — {run_dir.name}")}</title>\n'
+        f'<style>{REPORT_CSS}</style>\n</head>\n<body>\n<div class="container">\n'
+        f'<header><h1>🛤️ Paths Pair Report</h1>'
+        f'<p>{_esc(kind)} — {_esc(run_dir.name)}</p>'
+        f'<p>{_esc(_meta_summary({"meta": meta, "name": run_dir.name}))}</p>'
+        f'<p style="opacity:0.8;">Generated: {_esc(_generated_stamp())} · '
+        f'{"Fast-lane-only run (no Complete-mode paths table)" if lane_ok else "empty state (no paths table in this folder)"}</p></header>\n'
+        f'{body}\n</div>\n</body>\n</html>\n')
+    report = run_dir / REPORT_NAME
+    report.write_text(html_text, encoding='utf-8')
+    say(f'.{"lane-only" if lane_ok else "empty-state"} report: {report}')
+    return report
 
 
 def generate_paths_pair_report(
@@ -4192,14 +5601,26 @@ def generate_paths_pair_report(
         # value StrongestFirst ordered and tau cut on).
         rank_by = 'min_ratio'
     units = discover_units(run_dir)
+    # A standalone Fast run has no Complete paths table at all — only the
+    # lane's. Give it the lane as its unit instead of an empty state (D2).
+    lane_only = not units
+    if lane_only:
+        root_unit = lane_unit(run_dir, meta)
+        if root_unit is not None:
+            units = [root_unit]
     if not units:
+        if is_pathfinding_run(run_dir) and root_report:
+            # F-EX-010: a zero-path run is the run's own result, and the
+            # folder must say so instead of staying silent.
+            return _write_empty_state_report(run_dir, meta, log=say)
         raise FileNotFoundError(
             f'no *_allpaths_type.csv paths table found under {run_dir}')
     # "(run root)" is retired: the report's own root unit gets an
     # informative dataset/threshold label (round-8 item 5).
     for unit in units:
         if not unit.unit_id:
-            unit.label = _root_display_label(run_dir, meta, run_kind(run_dir.name))
+            unit.label = _root_display_label(run_dir, meta,
+                                             run_kind_for(run_dir, meta))
     say(f'.units: {len(units)}')
 
     frames: Dict[str, pd.DataFrame] = {}
@@ -4215,7 +5636,7 @@ def generate_paths_pair_report(
     unit_query_cov: Dict[str, Dict[str, Tuple[int, int]]] = {}
     unit_pair_ratio_source: Dict[str, str] = {}
     unit_pair_level_ratio: Dict[str, Dict[Tuple[str, str], float]] = {}
-    unit_in_applied: Dict[str, Dict[str, float]] = {}
+    unit_in_conditioned: Dict[str, Dict[str, float]] = {}
 
     for unit in units:
         frame = load_unit_paths(unit.csv_path)
@@ -4224,8 +5645,12 @@ def generate_paths_pair_report(
         unit_source_cov[unit.unit_id] = source_cov
         unit_target_cov[unit.unit_id] = target_cov
         unit_query_cov[unit.unit_id] = _load_query_coverage(unit.folder)
-        unit_in_applied[unit.unit_id] = _load_type_incoming_applied(
+        unit_in_conditioned[unit.unit_id] = _load_type_incoming_conditioned(
             unit.folder)
+        if not meta.get('adj_tier'):
+            # F-EX-012's header sibling: label the Adj column with the
+            # denominator's own recorded tier, never the applied cut.
+            meta['adj_tier'] = _conditioned_threshold(unit.folder)
         pair_bodyid = _load_pair_bodyid_coverage(unit.folder)
         pair_level_ratio, pair_ratio_source = _load_pair_level_ratios(
             unit.folder)
@@ -4261,7 +5686,7 @@ def generate_paths_pair_report(
 
     vispath_links = _discover_vispath_links(run_dir)
     payload = build_payload(
-        run_dir.name, run_kind(run_dir.name), meta,
+        run_dir.name, run_kind_for(run_dir, meta), meta,
         units, frames, unit_inter_counts, unit_inter_minhop,
         unit_pair_stats, unit_drawn, top_per_length, rank_by,
         vispath_links=vispath_links,
@@ -4269,7 +5694,7 @@ def generate_paths_pair_report(
     _attach_table_groups_multi(units, frames, payload, rank_by, top_per_length,
                                unit_source_cov, unit_target_cov,
                                unit_pair_cov, unit_pair_level_ratio,
-                               unit_in_applied=unit_in_applied)
+                               unit_in_conditioned=unit_in_conditioned)
     payload['global'] = build_global(
         units, frames, global_pairs, global_edges,
         unit_source_cov=unit_source_cov, unit_target_cov=unit_target_cov,
@@ -4281,10 +5706,20 @@ def generate_paths_pair_report(
     # (refill_paths_type.csv) and the COMPLETE-AT-ASKED paths
     # (complete_at_asked_paths_type.csv — every asked-threshold chain
     # with the emitted/refill/skipped per-hop split). Both run through
-    # the SAME machinery as the main tables; the Refill tab mounts a
+    # the SAME machinery as the main tables; the Refill view mounts a
     # second Pair Explorer with a mode toggle (complete = default, D2).
 
-    def _build_refill_dataset(kind: str, filename: str) -> Optional[dict]:
+    def _build_refill_dataset(kind: str, filename: str,
+                              layout: str = 'complete') -> Optional[dict]:
+        """One capped Explorer dataset built from a second-round table.
+
+        `layout` says which namespace the round lives in: the Complete
+        mode's refill mirrors into ``type_level_refill/`` +
+        ``data_details/type_level_refill/``, while the corridor lane keeps
+        ONE namespace (``route_scope_paths/``) for its asked table and its
+        synapse >= 1 second round (Q2/Q5 — same grammar, lane namespace).
+        """
+        lay = DATASET_LAYOUTS[layout]
         frames_k: Dict[str, pd.DataFrame] = {}
         units_k: List[Unit] = []
         ratio_k: Dict[str, Dict[Tuple[str, str], float]] = {}
@@ -4293,12 +5728,20 @@ def generate_paths_pair_report(
         # table with the plain full ratio — the asked table's adjusted
         # values are threshold-conditioned at the run's min synapse and
         # are wrong under the full scope (user-caught 2026-10-09).
-        full_kind = kind in ('refill_full', 'complete_full')
-        pairs_name = ('refill_full_type_pairs.csv'
-                      if full_kind else 'refill_type_pairs.csv')
+        full_kind = kind.endswith('_full') or kind.endswith('_full_asked')
+        pairs_name = (lay['pairs_full'] if full_kind
+                      else lay['pairs_asked'])
+        # Scope also decides WHICH denominator file and WHICH mirror pages
+        # the set reads: the corridor conditions its asked view at the lane's
+        # own tier and its synapse >= 1 view at the floor (the complete
+        # layout points both at one file, which is what its single mirror
+        # already assumes).
+        incoming_rel = lay['incoming_full' if full_kind else 'incoming']
+        vispath_spec = lay['vispath_full' if full_kind else 'vispath']
+        uni_k: Dict[str, Dict[Tuple[str, str], float]] = {}
         asked_in_k: Dict[str, Dict[str, float]] = {}
         for unit in units:
-            csv_path = unit.folder / 'type_level_refill' / filename
+            csv_path = unit.folder / lay['paths'] / filename
             if not csv_path.exists():
                 continue
             try:
@@ -4311,14 +5754,21 @@ def generate_paths_pair_report(
             frames_k[unit.unit_id] = rframe
             units_k.append(unit)
             ratio_map, ratio_src = _load_refill_pair_ratios(
-                unit.folder, pairs_name=pairs_name, prefer_adj=not full_kind)
+                unit.folder, pairs_name=pairs_name,
+                prefer_adj=not full_kind, subdir=lay['pairs'])
             ratio_k[unit.unit_id] = ratio_map
             ratio_src_k[unit.unit_id] = ratio_src
+            # `Universe type weights` (F4/Q3): the whole admitted type-pair
+            # mass beside the chain's own hop mass, from the same pair table
+            # the ratios come from. Only the layouts that publish the column
+            # get the readout.
+            if lay.get('universe'):
+                uni_k[unit.unit_id] = _load_pair_universe(
+                    unit.folder, pairs_name=pairs_name, subdir=lay['pairs'])
             # CHAIN-derived Adj (fix 2026-10-10): the >=threshold incoming
             # per type, exported by the refill — the conditioned
             # denominator the realized hop masses divide by.
-            asked_csv = (unit.folder / 'data_details' / 'type_level_refill'
-                         / 'type_incoming_asked.csv')
+            asked_csv = unit.folder / incoming_rel
             if asked_csv.exists():
                 try:
                     asked_in_k[unit.unit_id] = {
@@ -4373,7 +5823,8 @@ def generate_paths_pair_report(
                     source_cov=unit_source_cov.get(unit.unit_id) or {},
                     target_cov=unit_target_cov.get(unit.unit_id) or {},
                     pair_ratio=ratio_k.get(unit.unit_id),
-                    in_applied=asked_in_k.get(unit.unit_id))
+                    in_conditioned=asked_in_k.get(unit.unit_id),
+                    pair_universe=uni_k.get(unit.unit_id))
         # vispath network links for the pane footer (the mirror folder's
         # per-level vispath networks cover every pair)
         vis_links: List[Dict[str, str]] = []
@@ -4381,16 +5832,30 @@ def generate_paths_pair_report(
         for unit in units_k:
             prefix = (f'dataset_data/{unit.unit_id}/'
                       if unit.dataset else '')
-            for fname, label in (
-                    ('refill_type_network.html',
-                     '🕸️ refill type network (vispath)'),
-                    ('refill_bodyId_network.html',
-                     '🕸️ refill bodyId network (vispath)')):
-                href = f'{prefix}type_level_refill/{fname}'
-                if (unit.folder / 'type_level_refill' / fname).exists() \
+            for fname, label in vispath_spec:
+                href = f'{prefix}{lay["paths"]}/{fname}'
+                if (unit.folder / lay['paths'] / fname).exists() \
                         and href not in seen_hrefs:
                     seen_hrefs.add(href)
                     vis_links.append({'href': href, 'label': label})
+        # The run's OWN visualization pages (user, 2026-10-15): the lane's
+        # mirror pages are skipped while these exist, because they draw a
+        # strict SUPERSET of the lane's scope in the same style — so a both-
+        # modes run links them here rather than duplicating the picture.
+        for unit in units_k:
+            prefix = (f'dataset_data/{unit.unit_id}/'
+                      if unit.dataset else '')
+            viz_dir = unit.folder / 'visualization'
+            if not viz_dir.is_dir():
+                continue
+            for pattern, label in (
+                    ('Network_*.html', '🕸️ run Network (all pairs, NT-coloured)'),
+                    ('Heatmap_*.html', '🔥 run Heatmap (all pairs)')):
+                for hit in sorted(viz_dir.glob(pattern))[:1]:
+                    href = f'{prefix}visualization/{hit.name}'
+                    if href not in seen_hrefs:
+                        seen_hrefs.add(href)
+                        vis_links.append({'href': href, 'label': label})
 
         return {
             'units': [{'id': u.unit_id, 'label': u.label,
@@ -4400,6 +5865,7 @@ def generate_paths_pair_report(
             'pair_ratio_source': next(
                 (ratio_src_k.get(u.unit_id, '') for u in units_k
                  if ratio_src_k.get(u.unit_id)), ''),
+            'has_universe': any(uni_k.values()),
             'vispath': vis_links,
         }
 
@@ -4433,10 +5899,91 @@ def generate_paths_pair_report(
     complete_full_payload = _build_refill_dataset(
         'complete_full', 'refill_full_paths_type.csv')
 
+    # -- Corridor (Fast) datasets = the lane's own two rounds (Q2/Q5: the
+    # SAME grammar as the complete mode, in the lane's namespace). The asked
+    # view is the lane's validated walks — the per-pair breakdown the corridor
+    # tab never had (F3); the full views are the lane's synapse >= 1 second
+    # round (`route_full_*`, Phase 1).
+    corridor_payload = _build_refill_dataset(
+        'corridor', LANE_WALKS_NAME, layout='corridor')
+    corridor_complete_full_payload = _build_refill_dataset(
+        'corridor_complete_full', 'route_full_paths_type.csv',
+        layout='corridor')
+    corridor_refill_full_payload = _build_refill_dataset(
+        'corridor_refill_full', 'route_full_carrying_paths_type.csv',
+        layout='corridor')
+
     payload['refill'] = refill_payload
     payload['refill_complete'] = refill_complete_payload
     payload['refill_full'] = refill_full_payload
     payload['complete_full'] = complete_full_payload
+    payload['corridor'] = corridor_payload
+    payload['corridor_complete_full'] = corridor_complete_full_payload
+    payload['corridor_refill_full'] = corridor_refill_full_payload
+
+    def _has_pairs(key: str) -> bool:
+        block = payload.get(key)
+        return bool(block and block.get('pairs'))
+
+    # Which Analysis destinations this run actually produced. The bar renders
+    # a row only when it has >= 2 destinations, so this list is the report's
+    # own presence law, not a guess from the folder name (G1).
+    modes = []
+    if payload.get('pairs') and not lane_only:
+        modes.append('complete')
+    if _has_pairs('corridor') or _has_pairs('corridor_complete_full') \
+            or _has_pairs('corridor_refill_full'):
+        modes.append('corridor')
+    payload['run']['modes'] = modes
+    views = {
+        'complete': ([] if lane_only else
+                     [v for v, ok in (
+                         ('explorer', bool(payload.get('pairs'))),
+                         ('refill', _has_pairs('refill')
+                                  or _has_pairs('refill_complete')
+                                  or _has_pairs('refill_full')
+                                  or _has_pairs('complete_full'))) if ok]),
+        'corridor': [v for v, ok in (
+            ('explorer', _has_pairs('corridor')),
+            ('refill', _has_pairs('corridor_complete_full')
+                     or _has_pairs('corridor_refill_full'))) if ok],
+    }
+    payload['run']['views'] = views
+    # The lane's own provenance, for the captions that must name the tier a
+    # corridor view is valued at (never inferred from a Complete threshold).
+    lane_prov = []
+    refused_prov = []
+    for unit in units:
+        prov = _lane_provenance(unit.folder)
+        if prov:
+            lane_prov.append({
+                'unit': unit.unit_id, 'label': unit.label,
+                'asked': prov.get('asked'),
+                'validated_walks': prov.get('validated_walks'),
+                'scope_pairs': prov.get('scope_pairs'),
+                'runtime_s': prov.get('runtime_s'),
+                'time_capped': prov.get('time_capped'),
+                'weight_basis': prov.get('weight_basis'),
+                'run_mode': prov.get('run_mode') or prov.get('corridor_mode'),
+                'full': prov.get('full') or {}})
+            continue
+        # A lane that ATTEMPTED and refused still has a fact to report.
+        # Under Option B the corridor page only exists when the lane has
+        # data, so a refusal would otherwise vanish from the report — and
+        # "Fast Mode = both but the lane never ran" is exactly what a reader
+        # needs to see (D2's disclosure duty, plan §9 risk 2).
+        raw = unit.folder / LANE_DIR / LANE_PROV_NAME
+        if raw.exists():
+            try:
+                rp = json.loads(raw.read_text(encoding='utf-8'))
+            except Exception:  # noqa: BLE001 - unreadable == nothing to say
+                continue
+            refused_prov.append({
+                'unit': unit.unit_id, 'label': unit.label,
+                'status': str(rp.get('status') or 'refused'),
+                'reason': str(rp.get('reason') or 'not generated')})
+    payload['lane'] = {'present': bool(lane_prov), 'units': lane_prov,
+                       'refusals': refused_prov, 'lane_only': lane_only}
 
     payload_json = json.dumps(payload, ensure_ascii=True).replace('</', '<\\/')
 
@@ -4480,7 +6027,8 @@ def generate_paths_pair_report(
         payload['run'],
         _generated_stamp(),
         refill_html=_render_refill_tab(payload, run_dir),
-        corridor_html=_render_corridor_tab(payload, run_dir),
+        corridor_html=_render_corridor_explorer_tab(payload, run_dir),
+        corridor_refill_html=_render_corridor_refill_tab(payload, run_dir),
         guide_link=guide_link,
     )
     if not root_report:
@@ -4503,7 +6051,7 @@ def _attach_table_groups_multi(
                                            Tuple[str, str]]]] = None,
     unit_pair_ratio: Optional[Dict[str, Dict[Tuple[str, str],
                                              float]]] = None,
-    unit_in_applied: Optional[Dict[str, Dict[str, float]]] = None,
+    unit_in_conditioned: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> None:
     by_unit: Dict[str, List[dict]] = {u.unit_id: [] for u in units}
     for entry in payload['pairs']:
@@ -4517,4 +6065,4 @@ def _attach_table_groups_multi(
                 target_cov=(unit_target_cov or {}).get(unit.unit_id),
                 pair_cov=(unit_pair_cov or {}).get(unit.unit_id),
                 pair_ratio=(unit_pair_ratio or {}).get(unit.unit_id),
-                in_applied=(unit_in_applied or {}).get(unit.unit_id))
+                in_conditioned=(unit_in_conditioned or {}).get(unit.unit_id))

@@ -485,7 +485,13 @@ Budget is ignored and `edge_weight_floor` remains empty.
   run. Per-dataset console traces persist to
   `dataset_data/{dataset}/run_log.txt`; the run manifest carries a
   `dataset_coverage` block and the report opens a coverage callout when a
-  configured dataset produced no data.
+  configured dataset produced no data. The callout distinguishes the two ways
+  that happens (2026-10-17): a dataset whose query RESOLVED TO NO NEURON was
+  refused by the delegated tool before any folder existed, so it has no run log
+  to check — the callout says so and drops the `run_log.txt` pointer when every
+  missing dataset was refused. The per-unit refusal record itself
+  (`_empty_query_refusals`) is published as an orange banner above the mode
+  caveat, naming dataset / threshold / tool / query.
   `scripts/maintenance/repair_neuron_index.py` repairs a poisoned index
   (effective base+sidecar view; flips True+0 completion markers; dry-run
   default). An EMPTY connection pull is never trusted as proof of zero

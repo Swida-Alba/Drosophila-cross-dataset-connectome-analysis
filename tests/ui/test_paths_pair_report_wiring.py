@@ -66,20 +66,79 @@ def test_hook_generates_into_run_folder(tmp_path):
     assert "pair-report" in phases
 
 
-def test_hook_skips_non_pathfinding_runs(tmp_path):
+def _install_generator_probe(monkeypatch):
+    """Replace the hook's own `generate_paths_pair_report`.
+
+    The hook imports it INSIDE the function (`src.paths_pair_report`, then
+    `paths_pair_report`), so both module names are patched — patching neither
+    (the previous state) left `generated == []` unfailable: the real generator
+    ran, and only the missing file proved anything."""
+    import sys
+
+    import paths_pair_report as ppr
+    called = []
+
+    def fake_generate(run_dir, **kwargs):
+        called.append(Path(run_dir))
+        return None
+
+    # patch EVERY module alias the hook may import from, and through
+    # monkeypatch so each is restored (a raw assignment leaked the fake into
+    # the next test, which then found no report file at all)
+    monkeypatch.setattr(ppr, "generate_paths_pair_report", fake_generate)
+    for mod in ("src.paths_pair_report", "paths_pair_report"):
+        if mod in sys.modules and sys.modules[mod] is not ppr:
+            monkeypatch.setattr(sys.modules[mod],
+                                "generate_paths_pair_report", fake_generate)
+    return called
+
+
+def test_hook_skips_non_pathfinding_runs(tmp_path, monkeypatch):
     empty = tmp_path / "plot-3d_FAFB_neuronX_20260101_000000"
     empty.mkdir()
     assert has_paths_tables(empty) is False
-    generated = []
-
-    def fake_generate(run_dir, **kwargs):  # pragma: no cover - guard probe
-        generated.append(run_dir)
-
-    logs = []
+    called = _install_generator_probe(monkeypatch)
     _maybe_generate_pair_report(
-        empty, log=lambda msg, level="info": logs.append(msg),
+        empty, log=lambda msg, level="info": None,
         progress=lambda phase, label="": None)
-    assert generated == [] and not (empty / REPORT_NAME).exists()
+    assert called == [], f"the guard let a non-pathfinding run through: {called}"
+    assert not (empty / REPORT_NAME).exists()
+
+
+def test_hook_calls_the_generator_for_a_pathfinding_run(tmp_path, monkeypatch):
+    """The same probe, the other way round: a pathfinding folder that holds a
+    table MUST reach the generator — otherwise the empty `called` list above
+    would pass for a hook that never generates at all."""
+    run = tmp_path / "find-paths-complete_MCNS_S_to_T_L1w1_20260101_000000"
+    (run / "data_details").mkdir(parents=True)
+    pd.DataFrame({"path": ["S->T"], "weights": ["[3]"], "min_weight": [3],
+                  "length": [2]}).to_csv(
+        run / "src_to_tgt_allpaths_type.csv", index=False)
+    called = _install_generator_probe(monkeypatch)
+    _maybe_generate_pair_report(
+        run, log=lambda msg, level="info": None,
+        progress=lambda phase, label="": None)
+    assert [Path(c).name for c in called] == [run.name]
+
+
+def test_hook_renders_the_empty_state_for_a_zero_path_run(tmp_path):
+    """F-EX-010: the hook's gate was "has a paths table", so a run that
+    found nothing got no report at all. A pathfinding folder without any
+    table now still receives path_report.html (the empty state)."""
+    run = tmp_path / "find-paths-complete_MCNS_S_to_T_L1w1_20260101_000000"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "min synapse number:            5\n"
+        "weight basis:                  synapse\n"
+        "max interlayer:                1\n"
+        "dataset:                       male-cns:v1.0\n", encoding="utf-8")
+    assert has_paths_tables(run) is False
+    _maybe_generate_pair_report(
+        run, log=lambda msg, level="info": None,
+        progress=lambda phase, label="": None)
+    text = (run / REPORT_NAME).read_text(encoding="utf-8")
+    assert "This run found no paths" in text
+    assert "Min Synapse Count ≥ 5" in text
 
 
 def test_hook_never_raises_on_broken_inputs(tmp_path):

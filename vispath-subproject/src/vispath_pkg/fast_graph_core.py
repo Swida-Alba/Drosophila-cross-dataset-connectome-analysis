@@ -1839,8 +1839,18 @@ class FastGraph:
             return
         target_set = set(targets)
         W = self._widest_path_backward(target_set, cutoff)
-        raw_of = (lambda n: n.split('\x1f', 1)[0]) if raw_body_simple \
-            else (lambda n: n)
+        # PERF (measured 2026-10-17 on one real shortest+ratio refill cell):
+        # the raw-identity test runs once per EDGE EXAMINED, and the walk
+        # examines ~80x more edges than it yields paths — 179M calls of the
+        # old per-element lambda. Unlayered graphs (the ordinary case) pay one
+        # `is None` check instead; layered ones get a dict lookup built once.
+        if raw_body_simple:
+            _nodes = set(self.adj)
+            for _nbrs in self.adj.values():
+                _nodes.update(_nbrs)
+            _raw_of = {n: n.split('\x1f', 1)[0] for n in _nodes}.__getitem__
+        else:
+            _raw_of = None
 
         heap = []  # (-bound, tie, node, hops, run_bottleneck, path_tuple)
         counter = 0
@@ -1911,9 +1921,10 @@ class FastGraph:
                 neighbors = sorted(self.adj.get(node, {}).items(),
                                    key=lambda kv: (-kv[1], kv[0]))
                 sorted_adj_cache[node] = neighbors
-            path_set = {raw_of(p) for p in path}
+            path_set = set(path) if _raw_of is None \
+                else {_raw_of(p) for p in path}
             for v, w in neighbors:
-                if raw_of(v) in path_set:
+                if (v if _raw_of is None else _raw_of(v)) in path_set:
                     continue
                 new_run = run_b if run_b < w else w
                 v_bound = W[remaining].get(v)
@@ -1980,14 +1991,16 @@ class FastGraph:
                 if hops >= cutoff:
                     continue
                 remaining = cutoff - hops - 1
-                path_set = {raw_of(p) for p in path}
+                path_set = set(path) if _raw_of is None \
+                    else {_raw_of(p) for p in path}
                 neighbors = sorted_adj_cache.get(node)
                 if neighbors is None:
                     neighbors = sorted(self.adj.get(node, {}).items(),
                                        key=lambda kv: (-kv[1], kv[0]))
                     sorted_adj_cache[node] = neighbors
                 for v, w in neighbors:
-                    if raw_of(v) in path_set:
+                    if (v if _raw_of is None
+                        else _raw_of(v)) in path_set:
                         continue
                     new_run = run_b if run_b < w else w
                     # A prefix still at/above tau MUST be walked: the dip

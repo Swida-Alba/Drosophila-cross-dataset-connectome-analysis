@@ -269,3 +269,56 @@ class TestFindNetwork:
                                 "connection_type.csv")
             contents.append(open(path, "rb").read())
         assert contents[0] == contents[1]
+
+
+def test_parameter_stamps_do_not_leak_between_instances():
+    """E4 (plan 2026-10-16): `parameter_dict` is a bare class attribute, so
+    before `__post_init__` re-seeded it, every instance wrote into ONE dict —
+    a run's `weight basis` / `run mode` / queried names survived into the next
+    object, including one that never reaches InitializeNeuronInfo (a Network
+    run's stamps landing in a later pathfinding run's `parameters.txt`)."""
+    import coana
+
+    a = coana.FindNeuronConnection()
+    b = coana.FindNeuronConnection()
+    assert a.parameter_dict is not b.parameter_dict
+    a.parameter_dict['weight basis'] = 'connection_ratio (bodyId)'
+    a.parameter_dict['run mode'] = 'both'
+    assert b.parameter_dict == {}
+    # the class attribute itself must stay the empty seed
+    assert coana.FindNeuronConnection.parameter_dict == {}
+
+
+def test_the_network_page_is_handed_the_run_refilled_metric(monkeypatch,
+                                                            tmp_path):
+    """L5 (plan 2026-10-16 Q6): "can we embed the refill to the main network
+    too, like the ratio?" — the Network tab's Connection metric offered a
+    Refilled entry that was disabled, because `FindNetwork` built its
+    VisualizePath without `pair_extra_metrics` while the path tools read them
+    through `_attach_viz_extra_metrics`.
+
+    Measured here without a render: the refill round runs inside
+    `_finalize_network_run_artifacts`, i.e. BEFORE the visualization stage, so
+    every page this tool writes must be handed the pair's full-scope totals as
+    the run wrote them — the same map, from the same reader, as the path
+    tools."""
+    edges = [("S", "A", 10), ("A", "S", 8), ("S", "B", 6), ("A", "B", 7)]
+    fc, _fetch, _enrich, viz_calls, _logs = _make_network_fc(
+        monkeypatch, tmp_path, edges, ["S", "A", "B"])
+    # The refill's own inputs (a real run resolves them from the dataset).
+    fc._refill_edges_override = list(edges)
+    fc._refill_neuron_frame_override = pd.DataFrame({
+        "bodyId": ["S", "A", "B"], "type": ["TS", "TA", "TB"]})
+    fc.FindNetwork()
+
+    run = Path(fc.network_folder)
+    pairs = run / 'data_details' / 'type_level_refill' \
+        / 'refill_full_type_pairs.csv'
+    assert pairs.exists(), 'this run wrote no full-scope refill to embed'
+    want = {(str(r.type_pre), str(r.type_post)): float(r.refilled_total)
+            for r in pd.read_csv(pairs).itertuples()}
+    inits = [kw for kind, kw in viz_calls if kind == 'init']
+    assert inits, 'the tool wrote no visualization of its own'
+    for kw in inits:
+        refilled = (kw.get('pair_extra_metrics') or {}).get('refilled')
+        assert refilled == want, (refilled, want)

@@ -51,42 +51,103 @@ def test_config_defaults_present():
 
 
 def _tab_wired(rel, need_control=True):
+    """A tab drives the SHARED Run Mode block and sends ITS value (2026-10-16
+    Q7: the control, its label, its four values and its live status line are
+    defined once, so a tab can no longer carry a stale copy of any of them)."""
     src = (ROOT / rel).read_text()
     if need_control:
-        assert "corridor_mode = select_input(" in src
-    assert '"corridor_mode": corridor_mode.value' in src
+        assert "pc.run_mode_block(" in src, rel
+    assert '"corridor_mode": run_mode.value' in src, rel
     return src
 
 
 def test_find_path_tab_wired():
     src = _tab_wired("ui/tabs/find_path.py")
-    # §7 live feedback: the depth-change handler refreshes the corridor
-    # status line (Label.set_text, not set_value — house rule)
-    assert "corridor_note" in src and ".set_text(_corridor_note_text())" in src
-    assert "_refresh_corridor_note()" in src  # depth + mode both refresh
+    # §7 live feedback: the depth-change handler refreshes the corridor status
+    # line (the shared block does it with Label.set_text, not set_value —
+    # house rule), and this tab wires its own depth control to it.
+    assert "run_mode.refresh()" in src  # depth change refreshes the line
+    assert "interlayer_warning.set_visibility" in src
 
 
 def test_find_shortest_tab_wired():
     src = _tab_wired("ui/tabs/find_shortest.py")
     assert "shortest-DAG" in src  # honest scope label
+    # the tab whose default depth already clears the auto gate says so
+    assert "default depth (5)" in src
 
 
 def test_inter_dataset_tab_wired():
     src = _tab_wired("ui/tabs/inter_dataset.py")
-    assert 'get_user_default("corridor_mode")' in src
+    assert "Per dataset" in src  # its own extra sentence on the shared line
 
 
 def test_mode_control_unified_naming():
-    """2026-10-11: the Fast Mode control carries canonical values
-    complete/auto/both with human labels, a hover hint, and a help_doc
-    link into the algorithms guide — in all three tabs."""
-    for rel in ("ui/tabs/find_path.py", "ui/tabs/find_shortest.py",
-                "ui/tabs/inter_dataset.py"):
+    """2026-10-11, extended 2026-10-15 and 2026-10-16: the Run Mode control carries
+    canonical values with human labels, a hover hint, and a help_doc link
+    into the algorithms guide — in all three tabs.
+
+    The 2026-10-15 half is the cross-surface law the round needed and did
+    not have: the canonical set is FOUR values now (the standalone
+    `fast` = Fast only landed on the Complete Paths tab), and a tab may
+    announce only the values its own control offers. Three surfaces went
+    stale because nothing tied a guide's value list to the selector's
+    options — this is that tie."""
+    canonical = {"complete", "auto", "both", "fast"}
+    shared = (ROOT / "ui" / "components"
+              / "pathfinding_controls.py").read_text()
+    # The value dict is owned by the Settings registry (Q3: it is now both a
+    # tab control and a persisted default), so the card and the tabs cannot
+    # be reworded apart; the shared control re-exports it.
+    vocab = (ROOT / "ui" / "config.py").read_text()
+    for value, label in (("complete", "Complete only"), ("auto", "Auto (deep runs)"),
+                         ("both", "Complete + Fast"),
+                         ("fast", "Fast only (standalone)")):
+        assert f'"{value}": "{label}"' in vocab, value
+    assert "RUN_MODE_OPTIONS = CORRIDOR_MODE_CHOICES" in shared
+    assert 'help_doc="pathfinding_algorithms"' in shared
+    from ui.components import pathfinding_controls as pc
+    assert set(pc.RUN_MODE_OPTIONS) == canonical
+    # the built-in default must be one of the offered values, or every tab
+    # would open on a selection the Settings card cannot store
+    import ui.config as cfg
+    assert cfg.DEFAULTS["corridor_mode"] in pc.RUN_MODE_OPTIONS
+    assert cfg.DEFAULT_SETTING_SPECS["corridor_mode"]["options"] is \
+        cfg.CORRIDOR_MODE_CHOICES
+    guides = {"ui/tabs/find_path.py": "find_path",
+              "ui/tabs/find_shortest.py": "find_shortest",
+              "ui/tabs/inter_dataset.py": "cross_dataset"}
+    for rel, guide in guides.items():
         src = (ROOT / rel).read_text()
-        assert '"complete": "Complete only"' in src, rel
-        assert '"auto": "Auto (deep runs)"' in src, rel
-        assert '"both": "Complete + Fast"' in src, rel
-        assert 'help_doc="pathfinding_algorithms"' in src, rel
+        # the tab BUILDS the shared control; it does not re-declare it
+        assert "pc.run_mode_block(" in src, rel
+        assert '"complete": "Complete only"' not in src, rel
+        guide_src = (ROOT / "docs" / "ui_guides" / "src"
+                     / f"{guide}.md").read_text()
+        # The value list lives in a "Values: …" sentence; read THAT sentence
+        # (a stray mention of Fast-only elsewhere in the guide is not a
+        # promise about this control).
+        value_sentence = ''
+        if 'Values:' in guide_src:
+            value_sentence = guide_src[guide_src.index('Values:'):]
+            value_sentence = value_sentence[:value_sentence.index('</td>')] \
+                if '</td>' in value_sentence else value_sentence[:400]
+        for value in sorted(canonical):
+            assert f'<code>{value}</code>' in value_sentence, (
+                f'{guide}.md does not document the {value} value its '
+                'control offers')
+    # every surface that offers the mode offers all four values, and the
+    # standalone one is among them (plan Q4/D3) — read from the shared dict
+    from ui.components import pathfinding_controls as _pc
+    assert "fast" in _pc.RUN_MODE_OPTIONS
+    assert _pc.RUN_MODE_LABEL not in _src_shared_tabs_joined()
+
+
+def _src_shared_tabs_joined():
+    return "".join(
+        (ROOT / rel).read_text()
+        for rel in ("ui/tabs/find_path.py", "ui/tabs/find_shortest.py",
+                    "ui/tabs/network.py", "ui/tabs/inter_dataset.py"))
 
 
 def test_settings_legacy_values_normalize():
@@ -107,11 +168,76 @@ def test_hook_isolation_in_coana_source():
     # (in-process GC pressure made the bound-5 lane pathological)
     hook = src[src.index("def _maybe_generate_corridor_deep_dive"):]
     body = hook[:hook.index("def ", 10)]
-    assert body.index("corridor_mode") < body.index("import subprocess")
+    # the mode gate (resolved through _resolved_run_mode since the
+    # run_mode stamping landed) still precedes any import/subprocess work
+    assert body.index("_resolved_run_mode()") < body.index("import subprocess")
+    assert "if mode not in ('auto', 'both'):" in body
     assert "_run_folder_is_replay_slice" in body  # §6 step 8 replay gate
     assert "except Exception as exc" in body  # contained failure (§3b tier 3)
     assert "TimeoutExpired" in body  # hard wall-clock budget
     assert "CorridorDeepDive.py" in body  # subprocess driver
+
+
+def test_run_mode_resolution_and_stamping(tmp_path):
+    """Q4/R3 + G9: the Run Mode KNOB stays engine-facing, and its resolved
+    value is stamped into the TWO metadata files only — without it, a
+    'Complete only' run and a Fast run whose lane refused look identical in
+    the folder and the report cannot decide which tabs the run earned; with
+    it leaking into `parameter_dict`, the stamp would ALSO land in
+    data_details/parameters.csv and type_level_refill/parameters.csv, i.e. in
+    the Complete mode's own exports (gate G9: the lane adds no byte there).
+
+    The stamp is asserted where it is decided (the writer's own line, read by
+    the report's real parser), not by simulating it: a test that performed
+    the old `parameter_dict['run mode'] = ...` itself would pass on both the
+    compliant and the leaking implementation."""
+    import inspect
+    import re
+
+    import paths_pair_report as ppr
+
+    fc = _make_cache_only_fnc()
+    for raw, want in {"auto": "auto", "complete": "complete",
+                      "both": "both", "fast": "fast",
+                      "off": "complete", "on": "both",
+                      "OFF": "complete", "nonsense": "auto",
+                      None: "auto", "": "auto"}.items():
+        fc.corridor_mode = raw
+        assert fc._resolved_run_mode() == want, raw
+
+    fc.corridor_mode = "fast"
+    fc.run_mode = fc._resolved_run_mode()
+    attrs = fc._run_export_attributes("all")
+    assert attrs.get("run_mode") == "fast"
+    assert "corridor_mode" not in attrs      # the knob itself stays excluded
+
+    writer = inspect.getsource(fc._write_run_metadata)
+    assert "parameter_dict['run mode']" not in writer, \
+        "the stamp leaked into parameter_dict (G9: it would also reach " \
+        "data_details/parameters.csv)"
+    assert "f'run mode:" in writer, "the writer no longer stamps parameters.txt"
+
+    # Drive the REAL writer, twice: the early write and the post-enumeration
+    # RE-STAMP both must land the line, because the re-stamp overwrites the
+    # file. A test that only formatted the line itself would pass on an
+    # engine whose finished folder still lacked it (measured on a live run).
+    for meth in ("_find_paths_core", "_write_run_metadata"):
+        src = inspect.getsource(getattr(fc, meth))
+        assert "f'run mode:" in src, f"{meth} does not stamp run mode"
+
+    fc.allpath_folder = str(tmp_path)
+    fc.parameter_dict = dict(fc.parameter_dict or {})
+    fc.parameter_dict.pop("run mode", None)
+    fc._write_run_metadata("all")
+    params = (tmp_path / "parameters.txt").read_text(encoding="utf-8")
+    assert "run mode:" in params, params[-300:]
+    assert re.search(r"run mode:\s*fast\b", params), params
+    # G9: the parameter CSV frames must NOT gain the key
+    assert "run mode" not in fc.parameter_dict
+    match = re.search(r"run mode:\s*([^\s]+)", params)
+    assert match.group(1) == "fast"
+    # the report's own reader resolves the same line
+    assert ppr._sniff_metadata(tmp_path).get("run_mode") == "fast"
 
 
 def test_run_export_attributes_excludes_corridor_fields():
@@ -356,8 +482,11 @@ def test_corridor_report_section_absence_and_presence(tmp_path):
 
 def test_attach_viz_extra_metrics(tmp_path):
     """V1.2 engine helper: per-hop adj lists from
-    type_incoming_applied.csv + refilled pair map from the refill PAIR
-    table (not the connection mirror); absence paths stay clean."""
+    type_incoming_conditioned.csv + refilled pair map from the refill PAIR
+    table (not the connection mirror); absence paths stay clean. The
+    conditioned file is the dataset-wide threshold-conditioned incoming —
+    NOT the emitted-cone total (F-EX-003), which would divide the same hop
+    masses by this run's own subset and saturate the shares."""
     import pandas as pd
     inst = _make_cache_only_fnc()
     dd = tmp_path / "data_details"
@@ -365,7 +494,7 @@ def test_attach_viz_extra_metrics(tmp_path):
     pd.DataFrame([
         {"type": "B", "incoming": 200.0},
         {"type": "C", "incoming": 100.0},
-    ]).to_csv(dd / "type_incoming_applied.csv", index=False)
+    ]).to_csv(dd / "type_incoming_conditioned.csv", index=False)
     ref_dir = tmp_path / "data_details" / "type_level_refill"
     ref_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([{"type_pre": "A", "type_post": "B",
@@ -479,3 +608,372 @@ def test_pair_report_root_report_flag(tmp_path):
     # the DELEGATE nested report was produced
     nested = ds_dir / "path_report.html"
     assert nested.exists()
+
+
+def _corridor_lane(tmp_path, provenance):
+    """A corridor lane carrying the real column set, with the CHAIN-LEVEL
+    weights/coverage plus the demoted sampled_* readouts (the readouts stay
+    in the CSV; the report no longer prints them — F4/Q3)."""
+    lane = tmp_path / "route_scope_paths"
+    lane.mkdir(parents=True)
+    (lane / "route_provenance.json").write_text(json.dumps(provenance),
+                                                encoding="utf-8")
+    (lane / "route_paths_type.csv").write_text(
+        "path,weights,ratios,ratios_adj,min_weight,min_ratio,"
+        "min_ratio_adj,length,nt_types,coverage,applied_tau,route_h,"
+        "route_ub,route_floor_h,plan_rank,realized_paths,"
+        "sampled_support_mass,sampled_ratios,sampled_coverage,"
+        "chain_revisit\n"
+        'aMe12->KCg-d->PPL101,"[1336, 476]","[0.011793993538021505, '
+        '0.012162403863351816]","[0.011793993538021505, '
+        '0.012162403863351816]",476,0.011793993538021505,'
+        "0.011793993538021505,2,\"\",\"[6/6, 87/206, 2/2]\","
+        "4.0,2,10.0,10.0,4,56,\"[500, 174]\","
+        '"[0.004413919737283497, 0.0044459207399647396]",'
+        '"[6/6, 27/206, 2/2]",false\n',
+        encoding="utf-8")
+    (lane / "route_connection_type.csv").write_text(
+        "type_pre,type_post,weight,nt_type,connection_ratio,conn_layer,"
+        "connection_ratio_adj,weight_max,pair_count,universe_type_weights,"
+        "selected_support_mass,realized_mass,realizing_paths,used_by_walks,"
+        "et_pair_ratio,mean_edge_f9_ratio\n"
+        "aMe12,KCg-d,1336,acetylcholine,0.011794,route_scope,0.011794,37,"
+        "165,1336,1047.0,1047.0,156,2,0.011794,0.004414\n"
+        "KCg-d,PPL101,1216,dopamine,0.004446,route_scope,0.004477,10,377,"
+        "1216,174.0,174.0,56,1,0.004446,0.004446\n",
+        encoding="utf-8")
+    # The lane's conditioned denominators (asked tier) and its synapse >= 1
+    # universe, as route_plan.run_lane / _full_scope_refill write them.
+    (lane / "route_type_incoming_asked.csv").write_text(
+        "type_post,incoming_threshold\nKCg-d,113269.0\nPPL101,39146.0\n",
+        encoding="utf-8")
+    (lane / "route_type_incoming.csv").write_text(
+        "type_post,incoming_threshold\nKCg-d,113269.0\nPPL101,39146.0\n",
+        encoding="utf-8")
+    # the second round (Q2): the same chain re-valued at synapse >= 1
+    (lane / "route_full_paths_type.csv").write_text(
+        "path,weights,ratios,min_weight,min_ratio,length,nt_types,coverage,"
+        "emitted_weights,refill_weights\n"
+        'aMe12->KCg-d->PPL101,"[1400, 520]","[0.012364, 0.013284]",520,'
+        '0.012364,2,"","[6/6, 90/206, 2/2]","[1336, 476]","[64, 44]"\n',
+        encoding="utf-8")
+    (lane / "route_full_carrying_paths_type.csv").write_text(
+        "path,weights,ratios,min_weight,min_ratio,length,nt_types,coverage,"
+        "emitted_weights,total_weights\n"
+        'aMe12->KCg-d->PPL101,"[64, 44]","[0.000565, 0.001124]",44,'
+        '0.000565,2,"","[1/6, 3/206, 1/2]","[1336, 476]","[1400, 520]"\n',
+        encoding="utf-8")
+    (lane / "route_full_type_pairs.csv").write_text(
+        "type_pre,type_post,emitted_weight,refill_weight,refilled_total,"
+        "refilled_connection_ratio,universe_type_weights,pair_offchain_mass\n"
+        "aMe12,KCg-d,1336,64,1400,0.012364,1600,200\n"
+        "KCg-d,PPL101,476,44,520,0.013284,520,0\n",
+        encoding="utf-8")
+    return lane
+
+
+_CORRIDOR_PROV = {
+    "status": "complete", "asked": 1, "validated_walks": 1,
+    "scope_pairs": 2, "bodyId_paths": 56, "runtime_s": 12.1,
+    "validation_basis": "lossless_prune", "time_capped": False,
+    "weight_basis": "synapse",
+    "full": {"status": "ok", "chains": 1, "chains_carrying": 1,
+             "refill_weight_total": 108, "refill_edges": 4,
+             "elapsed_s": 4.7, "chains_revisit": 0},
+    "gap_partition": {"main_paths": 64, "corridor_walks": 20,
+                      "both": 20, "corridor_only": 0},
+    "classes": {"aMe12->PPL101@h2": {"floor": 10, "stop": "budget",
+                                     "accepted": 4, "emitted": 100,
+                                     "ties_truncated": 1}}}
+
+
+def _lane_only_run(tmp_path, provenance=None):
+    """A standalone Fast run: NO *_allpaths_type.csv, only the lane. The
+    folder grammar (`find-paths-complete_...` + parameters.txt) is what
+    `is_pathfinding_run` recognizes."""
+    run = (tmp_path / "find-paths-complete_MCNS_aMe12_to_PPL101_L2w1"
+           "_20261015_000000")
+    run.mkdir(parents=True)
+    (run / "parameters.txt").write_text(
+        "Parameters for processing aMe12 to PPL101:\n"
+        "dataset: male-cns:v1.0\nMin Synapse Count: 1\n"
+        "run mode: fast\npath_mode: all\n", encoding="utf-8")
+    _corridor_lane(run, dict(provenance or _CORRIDOR_PROV))
+    return run
+
+
+def test_a_refused_lane_is_still_disclosed(tmp_path):
+    """Option B's one disclosure risk, made a law (plan §9 risk 2).
+
+    A corridor page is mounted only when the lane HAS data, so the old
+    always-present 'Fast (corridor)' tab — which printed the refusal reason —
+    would otherwise vanish along with the reason. The report must still say
+    the lane was selected, did not run, and why.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    import paths_pair_report as ppr
+
+    run = tmp_path / "find-paths-complete_MCNS_aMe12_to_PPL101_L2w3" \
+        "_20261015_000003"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "Parameters for processing aMe12 to PPL101:\n"
+        "dataset: male-cns:v1.0\nMin Synapse Count: 3\n"
+        "run mode: both\npath_mode: all\n", encoding="utf-8")
+    (run / "x_allpaths_type.csv").write_text(
+        "path,weights,ratios,min_weight,min_ratio,length,nt_types,coverage\n"
+        'aMe12->PPL101,"[80]","[0.0204]",80,0.0204,1,"","[6/6, 2/2]"\n',
+        encoding="utf-8")
+    lane = run / "route_scope_paths"
+    lane.mkdir()
+    (lane / "route_provenance.json").write_text(json.dumps(
+        {"status": "refused",
+         "reason": "ratio-basis run without a Min Connection Ratio"}),
+        encoding="utf-8")
+
+    report = ppr.generate_paths_pair_report(run, log=None)
+    text = Path(report).read_text(encoding="utf-8")
+    payload = _payload_of(report)
+
+    # no corridor data -> no corridor destination
+    assert payload["run"]["modes"] == ["complete"], payload["run"]["modes"]
+    assert payload["corridor"] is None
+    # but the refusal is on the page, with its reason
+    assert "Fast mode (corridor) &mdash; did not run" in text \
+        or "did not run" in text, 'no refusal card'
+    assert "ratio-basis run without a Min Connection Ratio" in text
+    assert payload["lane"]["refusals"] == [
+        {"unit": "", "label": payload["lane"]["refusals"][0]["label"],
+         "status": "refused",
+         "reason": "ratio-basis run without a Min Connection Ratio"}]
+    # the mode caption the bar shows for a single-mode run comes from the
+    # same payload, so the two surfaces cannot disagree about what ran
+    assert payload["run"]["views"]["corridor"] == []
+
+
+def _payload_of(report_path):
+    """The report's own JSON payload, read out of the page it was written
+    into (the same bytes a browser parses)."""
+    text = Path(report_path).read_text(encoding="utf-8")
+    marker = '<script type="application/json" id="pair-data">'
+    start = text.index(marker) + len(marker)
+    return json.loads(text[start:text.index("</script>", start)])
+
+
+def test_corridor_tab_uses_the_explorer_display_grammar(tmp_path):
+    """F1/F3/F4/Q3 (plan-corridor-refill-and-mode-tabs): the lane's chains
+    are browsed through the SAME explorer every other table uses, so the
+    report prints the type-level aggregation only.
+
+    The inversion half is the load-bearing one: `Sampled witness`,
+    `Paths sampled`, `UB / class floor` and `Class tau` must NOT render
+    anywhere (they stay in route_paths_type.csv), while `Universe type
+    weights` — the F4/Q3 rename of `universe pair mass`, same quantity —
+    must. Asserted against the payload the report ships AND the JS column
+    spec, because a column can vanish from one and live in the other."""
+    import inspect
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    import paths_pair_report as ppr
+    from paths_pair_report import _render_corridor_section
+
+    run = _lane_only_run(tmp_path)
+    report = ppr.generate_paths_pair_report(run, log=None)
+    payload = _payload_of(report)
+
+    # --- presence law: a run with ONLY the lane is a corridor run ---------
+    assert payload["lane"]["lane_only"] is True
+    assert payload["run"]["modes"] == ["corridor"], payload["run"]["modes"]
+    assert payload["run"]["views"]["corridor"] == ["explorer", "refill"]
+    assert payload["run"]["views"]["complete"] == [], \
+        "a lane-only run must not offer a Complete destination"
+
+    rows = payload["corridor"]["pairs"][0]["table"]["groups"][0]["rows"]
+    row = rows[0]
+    # chain-level mass, presence-matrix list, percent-form ratios, and the
+    # per-hop universe beside it (1336 / 1216 from the lane's pair table)
+    assert row["weights"] == "[1336, 476]", row
+    assert row["ratios"] == "[1.18%, 1.22%]", row
+    assert row["uni"] == "[1336, 1216]", row
+    assert payload["corridor"]["has_universe"] is True
+    # the raw float never reaches a rendered cell (percent convention §2.5).
+    # The payload still carries raw values in the drawn/viz structures — the
+    # DOM gate is what proves the CELLS print percent, so this half checks
+    # only the fields the table reads.
+    for field in ("weights", "ratios", "pradj", "uni", "coverage"):
+        assert "0.011793993538021505" not in str(row[field]), field
+    # G5: at the lane's own asked=1 tier the conditioned denominator IS the
+    # plain one, so the adjusted list equals the plain list
+    assert row["pradj"] == row["ratios"], row
+
+    # --- the cut columns never reach the payload --------------------------
+    # (R1 keeps `#`/plan_rank — it rides as `pr_rank`, the raw CSV column
+    # name stays out of the row so nothing reads it as a sample readout)
+    for key in ("sampled_support_mass", "sampled_ratios", "sampled_coverage",
+                "realized_paths", "route_ub", "route_floor_h", "applied_tau",
+                "plan_rank"):
+        assert key not in row, key
+    # R1: the `#` column IS plan_rank with its candidate-UB hover. The lane
+    # fixture's walk carries plan_rank 4, so the payload must too — and the
+    # cell must print that value, not the display rank.
+    assert row["pr_rank"] == 4, row
+    js_src = inspect.getsource(ppr)
+    cell = js_src[js_src.index("h: '#', cell"):]
+    cell = cell[:cell.index("} },")]
+    assert "row.pr_rank != null ? row.pr_rank : i + 1" in cell, cell
+    assert "Acceptance rank by candidate upper bound" in cell
+    assert "Display rank within this (pair, length) group" in cell
+    js = inspect.getsource(ppr)
+    cols = js[js.index("var COLS = ["):js.index("].filter(Boolean);")]
+    for label in ("Sampled witness", "Paths sampled", "UB / class floor",
+                  "Class tau"):
+        assert label not in cols, label
+    assert "Universe type weights" in cols
+
+    # --- the lane's disclosure card keeps what a table cannot carry -------
+    html, found = _render_corridor_section(run, "Run")
+    assert found and html
+    # the budget is counted in published TYPE-LEVEL ROUTES (2026-10-16), so
+    # the card names the share it filled — never a "walk budget" a
+    # realization count supposedly spent
+    assert "filled their route share" in html
+    assert "stopped at the per-class walk budget" not in html
+    assert "boundary tie(s) truncated" in html
+    # the sample-level readouts are pointed at the file that holds them
+    assert "route_paths_type.csv" in html
+    # ... and the card itself prints no table any more
+    assert "<tbody>" not in html
+    # the second round is disclosed, with its tier
+    assert "Full-scope second round" in html
+    assert "108" in html and "4.7s" in html
+    for name in ("route_full_paths_type.csv", "route_full_type_pairs.csv",
+                 "route_type_incoming.csv", "route_type_incoming_asked.csv"):
+        assert name in html, name
+
+
+def test_the_two_lane_budgets_are_disclosed_separately(tmp_path):
+    """L7's disclosure half (2026-10-16): the class budget counts ROUTES and
+    the realization envelope counts PATHS, so a card that only warns on
+    `stop == 'budget'` goes silent in exactly the case the fix creates — a
+    class that published a few fat routes and spent the envelope while its
+    share stayed open (measured after the fix: aMe12->PPL103@h2 emitted 104
+    over an envelope of 100, accepted 5 of a share of 15, stop='exhausted').
+    Both bounds are therefore disclosed on their own evidence, and a class
+    that spent NEITHER may claim neither."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from paths_pair_report import _render_corridor_section
+
+    def _run(name, classes):
+        return _lane_only_run(tmp_path / name,
+                              dict(_CORRIDOR_PROV, classes=classes))
+
+    # (a) share open, envelope spent — the fixed run's shape
+    spent = _run("spent", {"aMe12->PPL103@h2": {
+        "floor": 23, "stop": "exhausted", "accepted": 5, "used": 5,
+        "route_share": 15, "realization_envelope": 100,
+        "emitted": 104, "ties_truncated": 1}})
+    html, found = _render_corridor_section(spent, "Run")
+    assert found and html
+    assert "spent their realization envelope" in html
+    assert "filled their route share" not in html
+    assert "boundary tie(s) truncated" in html
+
+    # (b) share filled, envelope intact — the sibling case
+    shared = _run("shared", {"aMe12->PPL101@h2": {
+        "floor": 10, "stop": "budget", "accepted": 15, "used": 15,
+        "route_share": 15, "realization_envelope": 100,
+        "emitted": 70, "ties_truncated": 0}})
+    html, found = _render_corridor_section(shared, "Run")
+    assert "filled their route share" in html
+    assert "spent their realization envelope" not in html
+
+    # (c) negative control: a class that hit neither bound says neither
+    clean = _run("clean", {"aMe26->PPL103@h2": {
+        "floor": 10, "stop": "exhausted", "accepted": 4, "used": 4,
+        "route_share": 15, "realization_envelope": 100,
+        "emitted": 21, "ties_truncated": 0}})
+    html, found = _render_corridor_section(clean, "Run")
+    assert "route share" not in html and "realization envelope" not in html
+
+
+def test_corridor_ratio_lane_prints_one_ratio_column(tmp_path):
+    """F-EX-010's caption sibling + the lane's own L1 law, now enforced one
+    layer down: the corridor Explorer suppresses its Adj column when the lane
+    is ratio-basis or its tier is the floor, because there conditioned ==
+    plain and the column would repeat Ratios.
+
+    The static table that used to omit the header is gone (F3), so the law
+    is pinned as (a) the payload reproducing plain == adjusted at the floor,
+    and (b) the JS rule that reads the LANE's provenance — never the
+    Complete run's thresholds — to decide."""
+    import inspect
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    import paths_pair_report as ppr
+
+    run = _lane_only_run(tmp_path)
+    report = ppr.generate_paths_pair_report(run, log=None)
+    payload = _payload_of(report)
+    text = Path(report).read_text(encoding="utf-8")
+    unit = payload["lane"]["units"][0]
+    assert unit["asked"] == 1 and unit["weight_basis"] == "synapse"
+    row = payload["corridor"]["pairs"][0]["table"]["groups"][0]["rows"][0]
+    assert row["pradj"] == row["ratios"], row
+
+    js = inspect.getsource(ppr)
+    cfg = js[js.index("var CORRIDOR_CFG = {"):
+             js.index("var CorridorExplorer = makeExplorer")]
+    # the tier comes from the lane's provenance, not MIN_SYN / APPLIED
+    assert "min_synapse: LANE_ASKED, applied: LANE_ASKED" in cfg
+    assert "suppress_adj: LANE_RATIO || (LANE_ASKED !== null" \
+           " && LANE_ASKED <= 1)" in cfg
+    assert "String(LANE0.weight_basis || '')" in js
+
+    # a ratio-basis lane says WHY its Adj column is not there, instead of
+    # silently dropping a column the caption promised (the disclosure lives
+    # on the page that shows the numbers, not in a table caption)
+    ratio_run = _lane_only_run(
+        tmp_path / "ratio",
+        dict(_CORRIDOR_PROV, weight_basis="connection_ratio"))
+    ratio_report = ppr.generate_paths_pair_report(ratio_run, log=None)
+    ratio_text = Path(ratio_report).read_text(encoding="utf-8")
+    assert "This lane is <b>ratio-basis</b>" in ratio_text
+    assert _payload_of(ratio_report)["lane"]["units"][0]["weight_basis"] \
+        == "connection_ratio"
+    # negative control: the synapse lane above does not claim that
+    assert "This lane is <b>ratio-basis</b>" not in text
+
+
+def test_data_tab_links_every_sidecar_the_run_wrote(tmp_path):
+    """F-EX-010's sibling: the Data tab used to link a fixed name list, so
+    artifacts that existed were linked nowhere. The census is presence-driven
+    — every file in the sidecar folders appears, and no folder the run never
+    wrote contributes a link."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from paths_pair_report import _render_data_tab
+
+    dd = tmp_path / "data_details"
+    (dd / "type_level_refill").mkdir(parents=True)
+    (tmp_path / "route_scope_paths").mkdir()
+    (dd / "connection_type.csv").write_text("type_pre\nA\n", encoding="utf-8")
+    (dd / "type_incoming_conditioned.csv").write_text(
+        "type,incoming,threshold\nA,10,1\n", encoding="utf-8")
+    (dd / "type_level_refill" / "refill_provenance.json").write_text(
+        "{}", encoding="utf-8")
+    (tmp_path / "route_scope_paths" / "route_paths_type.csv").write_text(
+        "path\nA->B\n", encoding="utf-8")
+    payload = {"run": {"units": []}, "pairs": [],
+               "global": {"units": []}}
+    html = _render_data_tab(payload, tmp_path)
+    for name in ("data_details/connection_type.csv",
+                 "data_details/type_incoming_conditioned.csv",
+                 "data_details/type_level_refill/refill_provenance.json",
+                 "route_scope_paths/route_paths_type.csv"):
+        assert name in html, name
+    # a folder that was never written adds nothing (no dangling href)
+    assert "comparison_results" not in html
+    assert 'href="data_details/total_weight_layer.csv"' not in html
+

@@ -1125,6 +1125,98 @@ def _enumerate_shortest(layer_weights, node_set, sources, targets, bound,
     return info, stats
 
 
+def _clean_nt(value):
+    """One transmitter cell -> a usable label, or None when it annotates
+    nothing. Blank / NaN / 'none' are no annotation; the caller then falls back
+    to the per-type vocabulary rather than writing an empty cell."""
+    if value is None:
+        return None
+    if isinstance(value, float) and value != value:   # NaN
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in ('nan', 'none'):
+        return None
+    return text
+
+
+def _pair_nt_lookup(run_dir):
+    """((type_pre, type_post) -> transmitter, type -> transmitter).
+
+    Two sources, merged, matrix first: the run's own
+    ``data_details/conn_mat_type_nt.csv`` (the type x type matrix the engine
+    writes) and, for every pair that matrix never listed, ``data_details/
+    connection_type.csv`` — whose ``nt_type`` column is exactly what the run's
+    own network page colours by.
+
+    The second source is not polish. A Network-tab run writes no NT matrix at
+    all, so with the matrix alone its refill mirror came out with an EMPTY
+    ``nt_type`` on every row while the run's own table had GLUT/ACH/SER for
+    130 of its 148 pairs — and the refill page therefore had no transmitter to
+    show or colour by (user report 2026-10-17, measured on
+    ``find-network_FAFB_circadian_clock_w1r0_01_20261017_131605``).
+
+    The per-type map is the PRE type's most common non-empty entry, used when
+    NO source mentions the pair at all. A pair the run itself lists with an
+    empty cell is recorded as empty (`''`) instead of inheriting its type: the
+    run's own network page draws that pair unannotated, and two surfaces of one
+    folder cannot call the same edge two different transmitters. Both maps stay
+    empty when neither file carries a transmitter; callers then keep their
+    historical empty string.
+    """
+    import collections
+    import os
+
+    pair_nt = {}
+    type_counts = collections.defaultdict(collections.Counter)
+    details = os.path.join(str(run_dir), 'data_details')
+    try:
+        import pandas as _pd
+    except Exception:  # noqa: BLE001 - the vocabulary is best-effort
+        return pair_nt, {}
+
+    matrix = os.path.join(details, 'conn_mat_type_nt.csv')
+    if os.path.isfile(matrix):
+        try:
+            frame = _pd.read_csv(matrix, dtype=str)
+            if 'type_pre' in frame.columns:
+                posts = [c for c in frame.columns if c != 'type_pre']
+                for _, row in frame.iterrows():
+                    pre = str(row['type_pre'])
+                    for post in posts:
+                        nt = _clean_nt(row.get(post))
+                        if nt is None:
+                            continue
+                        pair_nt[(pre, post)] = nt
+                        type_counts[pre][nt] += 1
+        except Exception:  # noqa: BLE001 - the vocabulary is best-effort
+            pass
+
+    edges = os.path.join(details, 'connection_type.csv')
+    if os.path.isfile(edges):
+        try:
+            frame = _pd.read_csv(edges)
+            if {'type_pre', 'type_post', 'nt_type'} <= set(frame.columns):
+                for _, row in frame.iterrows():
+                    key = (str(row['type_pre']), str(row['type_post']))
+                    nt = _clean_nt(row.get('nt_type'))
+                    if key in pair_nt:
+                        continue        # the matrix annotated this pair already
+                    # A pair the run LISTS with no transmitter is recorded as
+                    # blank, not left absent: an absent key would inherit the
+                    # PRE type's majority transmitter, and then the refill page
+                    # would label an edge the run's own page draws unannotated
+                    # (measured on R15_fafb_network_nt: 18 such pairs).
+                    pair_nt[key] = nt or ''
+                    if nt is not None:
+                        type_counts[key[0]][nt] += 1
+        except Exception:  # noqa: BLE001 - the vocabulary is best-effort
+            pass
+
+    type_nt = {k: c.most_common(1)[0][0] for k, c in type_counts.items()}
+    return pair_nt, type_nt
+
+
+
 def compute_type_level_refill(
     run_dir,
     *,
@@ -1312,7 +1404,7 @@ def compute_type_level_refill(
     # Non-bitten ratio runs (applied == asked): the second round runs at
     # the asked tier and recovers mass 0 — the status says
     # 'complete_at_asked' so consumers know the complete table is the
-    # full asked-threshold set (the Refill tab still shows it).
+    # full asked-threshold set (the Refill view still shows it).
     complete_only = ratio_mode and applied <= asked
     rec['status'] = STATUS_REFILLED
     involved = {p for pair in emitted for p in pair}
@@ -1430,9 +1522,19 @@ def compute_type_level_refill(
         # on a fat MCNS query.)
         pair_edges_full: Dict[Tuple[str, str], Dict[str, list]] = {}
         for u, v, w in e_u_full:
+            # F-EX-002(i): the layered filter's kept-edge weight is the
+            # BOOKKEEPING unit (synapses), not the enumeration unit. On a
+            # ratio-basis run `w` is the per-edge F9 ratio, and summing
+            # those produced 16-digit ratio sums under the report's
+            # "Weights (synapse >= 1)" header, with the derived ratios
+            # collapsing to 0.00%. `anchor_full` is the same anchor the
+            # pair table below already uses, so path tables and pair
+            # tables now carry one unit. Set propagation reads only `v`,
+            # and (v, w) sorts on v first, so anchoring cannot reorder
+            # the canonical iteration.
             pair_edges_full.setdefault(
                 (type_map.get(u, '~' + u), type_map.get(v, '~' + v)),
-                {}).setdefault(u, []).append((v, w))
+                {}).setdefault(u, []).append((v, anchor_full((u, v))))
         if chain_keys is None:
             # no-asked-refill branch: the emitted paths ARE the chains
             # (cut == asked there; the re-derivation above already
@@ -1516,6 +1618,12 @@ def compute_type_level_refill(
                                weight_full.get((u, v), 0.0))
                     if ratio_mode
                     else w)
+        # the same transmitter vocabulary the asked mirror and the run's
+        # visualization use (issue 6, user 2026-10-15)
+        # (a second read of the same small table: this branch runs
+        # independently of the mirror block below, so each owns its
+        # lookup rather than sharing a name across branches)
+        _pair_nt_full, _type_nt_full = _pair_nt_lookup(run_dir)
         rows_full = []
         for pair in sorted(emitted):
             emit_w = int(emitted[pair])
@@ -1524,6 +1632,8 @@ def compute_type_level_refill(
             ratio = ((emit_w + ref_w) / denom) if denom > 0 else None
             rows_full.append({
                 'type_pre': pair[0], 'type_post': pair[1],
+                'nt_type': _pair_nt_full.get(
+                    pair, _type_nt_full.get(pair[0], '')),
                 'emitted_weight': emit_w,
                 'refill_weight': ref_w,
                 'refilled_total': emit_w + ref_w,
@@ -1538,8 +1648,13 @@ def compute_type_level_refill(
             label = type_map.get(str(b))
             if label is not None:
                 type_n_full[label] += 1
+        # F-EX-002(ii): the carrying table now describes its SUBJECT (the
+        # sub-threshold mass the view is named for), with the emitted and
+        # total masses beside it, built from the same per-hop classes the
+        # complete table publishes.
         carrying_rows = _refill_rows_from_structures(
-            seq_edges_full, seq_nodes_full, type_n_full, type_in)
+            seq_edges_full, seq_nodes_full, type_n_full, type_in,
+            seq_cls=seq_cls_full)
         complete_rows_full, complete_stats_full = \
             _complete_rows_from_structures(
                 seq_cls_full, seq_nodes_full, type_n_full, type_in)
@@ -1577,16 +1692,16 @@ def compute_type_level_refill(
         # scope is anchored by table_reproduced, but the full scope had
         # no check — an incomplete connection cache would silently
         # undercount it. Cheap cross-check: the stream-derived all-post
-        # incoming must dominate the run's own exported applied-tier
-        # incoming (type_incoming_applied.csv) by a sane margin — the
-        # applied file sums a SUBSET of the same dataset's edges (every
+        # incoming must dominate the run's own exported emitted-cone
+        # incoming (type_incoming_emitted.csv) by a sane margin — the
+        # emitted file sums a SUBSET of the same dataset's edges (every
         # emitted-network edge, each >= the applied cut). type_in <
-        # applied_in is impossible under a complete cache.
+        # emitted_in is impossible under a complete cache.
         try:
-            applied_csv = (run_dir / 'data_details'
-                           / 'type_incoming_applied.csv')
-            if applied_csv.exists():
-                _applied = pd.read_csv(applied_csv)
+            emitted_csv = (run_dir / 'data_details'
+                           / 'type_incoming_emitted.csv')
+            if emitted_csv.exists():
+                _applied = pd.read_csv(emitted_csv)
                 _bad = [
                     (str(r['type']), float(r['incoming']),
                      float(type_in.get(str(r['type']), 0.0)))
@@ -1621,16 +1736,27 @@ def compute_type_level_refill(
             # conditioned denominator at the asked tier) — exported so the
             # report computes CHAIN-derived adjusted ratios (realized hop
             # mass / this denominator) instead of pair-level constants.
-            pd.DataFrame([
-                {'type_post': k, 'incoming_threshold': v}
-                for k, v in sorted(type_in_adj.items())]).to_csv(
+            # Header always, even when the type map is empty: a lone
+            # newline is unparseable, and the reader then silently loses
+            # the conditioned denominator.
+            pd.DataFrame(
+                [{'type_post': k, 'incoming_threshold': v}
+                 for k, v in sorted(type_in_adj.items())],
+                columns=['type_post',
+                         'incoming_threshold']).to_csv(
                 full_dir / 'type_incoming_asked.csv', index=False)
             if out_dir is None:
                 mirror = run_dir / _MIRROR_FOLDER_NAME
                 mirror.mkdir(parents=True, exist_ok=True)
-                pd.DataFrame(complete_rows_full).to_csv(
+                pd.DataFrame(complete_rows_full,
+                             columns=list(_COMPLETE_PATHS_COLUMNS)).to_csv(
                     mirror / 'refill_full_paths_type.csv', index=False)
-                pd.DataFrame(carrying_rows).to_csv(
+                # Header-only when nothing carries sub-threshold mass
+                # (never a zero-byte file): the report's loader reads the
+                # header to decide the view is empty, and a missing header
+                # makes the column set unobservable.
+                pd.DataFrame(carrying_rows,
+                             columns=list(_CARRYING_MIRROR_COLUMNS)).to_csv(
                     mirror / 'refill_full_carrying_paths_type.csv',
                     index=False)
                 pd.DataFrame(rows_full).to_csv(
@@ -1652,7 +1778,7 @@ def compute_type_level_refill(
         # is only the F9 denominator source. Per-pair weights are the
         # per-layer sums (the exported table counts cross-layer
         # multiplicity exactly this way). Ratio lane: the store's
-        # SYNPASE weights are converted to F9 ratios (w / all-post
+        # SYNAPSE weights are converted to F9 ratios (w / all-post
         # incoming from the edge source) so the re-enumeration orders
         # and drains exactly like the ratio run did; the per-layer
         # synapse masses ride along in syn_of for the anchor.
@@ -1723,7 +1849,7 @@ def compute_type_level_refill(
         # -- node set U + induced edges at the asked threshold.
         # Ratio lane (Phase 3): the enumeration weights are the F9
         # connection ratios (computed here — connection_ratio_paths
-        # imports this module, so no reverse import); the SYNPASE masses
+        # imports this module, so no reverse import); the SYNAPSE masses
         # ride along in syn_of for the anchor + refill aggregates (the
         # exported table's weight column stays synapse mass).
         e_u: List[Tuple[str, str, float]] = []
@@ -1839,8 +1965,18 @@ def compute_type_level_refill(
                                detail_cap)
             return rec
 
-        # -- E*(asked): re-exploration on the induced subgraph (no
-        # budgets, guarded only by the honest truncation flag)
+        # -- E*(asked): re-exploration on the induced subgraph, capped by
+        # `path_budget` and guarded by the honest truncation flag below.
+        # COST (measured 2026-10-17): the default 2,000,000-path budget is not
+        # a runtime bound — on a shortest+ratio depth-5 cell of
+        # aMe12/aMe26 -> PPL101/PPL103 this ONE call walked 2.14M emissions
+        # (539 s of the run's 601 s, ~10 GB RSS with the tuple edge
+        # materialization above) without finishing. The route-scope prefilter
+        # keeps non-emitted pairs out of the graph, but a shortest-mode run
+        # emits MINIMUM-HOP paths only, so re-exploring every simple path to
+        # the hop bound enumerates what that run never claimed. Bounding that
+        # to shortest semantics is a result-changing decision, not a tuning
+        # knob — left open deliberately (plan 2026-10-16 §13).
         _paths_asked, estar, ask_stats = _enumerate_paths(
             e_pref, sources, targets, bound, budget=path_budget)
         refill_truncated = bool(ask_stats.get('budget_bitten'))
@@ -1968,7 +2104,7 @@ def compute_type_level_refill(
                 boundary.append((u, v, meta['w']))
 
     # -- per-type-pair aggregation + threshold-free F9 ratios.
-    # Ratio lane: refill_weight is SYNPASE recovery mass (syn_of), the
+    # Ratio lane: refill_weight is SYNAPSE recovery mass (syn_of), the
     # per-edge pair ratio IS the enumeration weight, and body_in still
     # comes from the natural-weight edge source.
     totals: Dict[Tuple[str, str], float] = defaultdict(float)
@@ -2114,6 +2250,7 @@ def compute_type_level_refill(
             # mass / all-post incoming, and the threshold-conditioned
             # variant); the complete tables reuse the rows' refilled
             # columns verbatim.
+            _pair_nt, _type_nt = _pair_nt_lookup(run_dir)
             mirror_type_rows = []
             for r in rows:
                 ref_w = int(r['refill_weight'])
@@ -2126,7 +2263,12 @@ def compute_type_level_refill(
                 adj = (ref_w / denom_adj) if denom_adj > 0 else None
                 mirror_type_rows.append({
                     'type_pre': r['type_pre'], 'type_post': r['type_post'],
-                    'weight': ref_w, 'nt_type': '',
+                    'weight': ref_w,
+                    # the mirror family's transmitter column names the PRE
+                    # type's transmitter (F-EX-006)
+                    'nt_type': _pair_nt.get(
+                        (r['type_pre'], r['type_post']),
+                        _type_nt.get(r['type_pre'], '')),
                     'connection_ratio': (round(plain, 6)
                                          if plain is not None else None),
                     'conn_layer': '',
@@ -2135,7 +2277,9 @@ def compute_type_level_refill(
                 })
             complete_type_rows = [{
                 'type_pre': r['type_pre'], 'type_post': r['type_post'],
-                'weight': int(r['refilled_total']), 'nt_type': '',
+                'weight': int(r['refilled_total']),
+                'nt_type': _pair_nt.get((r['type_pre'], r['type_post']),
+                                        _type_nt.get(r['type_pre'], '')),
                 'connection_ratio': r['refilled_connection_ratio'],
                 'conn_layer': '',
                 'connection_ratio_adj': r['refilled_connection_ratio_adj'],
@@ -2150,7 +2294,11 @@ def compute_type_level_refill(
                     'weight': _anchor_w((u, v)),
                     'roi': '', 'type_pre': type_map[u],
                     'type_post': type_map[v], 'instance_pre': '',
-                    'instance_post': '', 'nt_type': '', 'nt_type_pre': '',
+                    'instance_post': '',
+                    'nt_type': _pair_nt.get(
+                        (type_map[u], type_map[v]),
+                        _type_nt.get(type_map[u], '')),
+                    'nt_type_pre': _type_nt.get(type_map[u], ''),
                     'custom_group_pre': '', 'custom_group_post': '',
                     'connection_ratio': (round(float(ratio), 6)
                                          if ratio is not None else None),
@@ -2240,7 +2388,10 @@ Files
 - `type_incoming_asked.csv` — the >=threshold incoming per post type
   (the adjusted-ratio conditioned denominator at the asked tier,
   exported since 2026-10-10); the pair report's refill-asked Adj.
-  ratios divide the chains' realized hop masses by it.
+  ratios divide the chains' realized hop masses by it. Published with
+  its `type_post,incoming_threshold` header even when the map is empty:
+  a header-less empty CSV raises EmptyDataError in every reader, and the
+  report would silently lose the conditioned denominator.
 - `refill_provenance.json` — thresholds, budgets, node/edge counts,
   `table_reproduced` (the re-derived cut reproduced the exported
   `connection_type.csv` exactly — the consistency anchor), and the
@@ -2281,7 +2432,7 @@ DP/DFS enumeration with its 2M-path caps is retired). Files:
   and this column makes the gap self-describing). The full scope is
   CACHE-GUARDED: the refill refuses when the stream-derived all-post
   incoming is smaller than the run's own exported applied-tier
-  incoming (`type_incoming_applied.csv`) — an incomplete connection
+  incoming (`type_incoming_emitted.csv`) — an incomplete connection
   cache cannot silently undercount the full scope (stamped
   `full.cache_guard: 'ok'` in the provenance).
 - mirror `refill_full_paths_type.csv` — every emitted chain re-valued
@@ -2349,7 +2500,7 @@ Completeness is a per-run EMPIRICAL property, stamped in
 the complete simple-path set at the asked tier; false = complete only
 at the drain tau — the refill guard budget bit during the second
 round; null = shortest mode, where the table is not produced). The
-pair report's Refill tab defaults to this view.
+pair report's Path → Refill view defaults to this scope.
 
 Standalone mirror folder
 ------------------------
@@ -2418,23 +2569,52 @@ _PATHS_MIRROR_COLUMNS = (
     'path', 'weights', 'ratios', 'min_weight',
     'min_ratio', 'length', 'nt_types', 'coverage')
 
+# F-EX-002(ii): the CARRYING tables (asked and full scope) now describe
+# their subject — the sub-threshold mass — and carry the context beside it,
+# so both files share one column family and a reader can always reconstruct
+# emitted + refill == total.
+_CARRYING_MIRROR_COLUMNS = _PATHS_MIRROR_COLUMNS + (
+    'emitted_weights', 'total_weights')
+
 
 def _fmt_mass(value) -> str:
     return str(int(value)) if float(value).is_integer() else str(
         float(value))
 
 
-def _refill_rows_from_structures(seq_edges, seq_nodes, type_n, type_in):
-    """Row assembly for the REFILLED path tables from per-chain
+def _refill_rows_from_structures(seq_edges, seq_nodes, type_n, type_in,
+                                 seq_cls=None):
+    """Row assembly for the REFILLED (carrying) path tables from per-chain
     structures ({seq: per-hop {(u,v): anchor weight}}, {seq: per-hop
-    body sets}) — shared by the path-fed asked view and the DP-fed
-    full scope (2026-10-11)."""
+    body sets}) — shared by the path-fed asked view and the layered full
+    scope (2026-10-11).
+
+    F-EX-002(ii): when ``seq_cls`` (the per-hop {'emitted'|'refill': edges}
+    classes) is supplied, the table describes its SUBJECT: `weights` /
+    `ratios` / `min_weight` / `min_ratio` are the SUB-THRESHOLD (refill-class)
+    mass, and `emitted_weights` / `total_weights` carry the rest beside it.
+    Previously `weights` was the mixed-class union of the carrying chains'
+    realizing edges, so the view named "Refill-carrying (sub-threshold)"
+    could not show the sub-threshold value at all — on L1w5 it rendered
+    [1336, 476] where the mass the view is about is [170, 359]. Without
+    ``seq_cls`` the legacy mixed-union behaviour is kept."""
     rows = []
     for seq in sorted(seq_edges,
                       key=lambda s: (s[0], s[-1], len(s), s)):
         edges_at = seq_edges[seq]
         nodes_at = seq_nodes[seq]
-        weights = [sum(edge.values()) for edge in edges_at]
+        classes_at = (seq_cls or {}).get(seq)
+        if classes_at:
+            emitted_w, refill_w = [], []
+            for i in range(len(edges_at)):
+                cls = classes_at[i] or {}
+                emitted_w.append(sum(cls.get('emitted', {}).values()))
+                refill_w.append(sum(cls.get('refill', {}).values()))
+            weights = list(refill_w)
+            total_w = [e + r for e, r in zip(emitted_w, refill_w)]
+        else:
+            weights = [sum(edge.values()) for edge in edges_at]
+            emitted_w = refill_w = total_w = None
         ratios = []
         for i, post in enumerate(seq[1:]):
             denom = type_in.get(post, 0.0)
@@ -2446,17 +2626,24 @@ def _refill_rows_from_structures(seq_edges, seq_nodes, type_n, type_in):
         ratios_txt = ('[' + ', '.join(
             'None' if r is None else repr(r) for r in ratios) + ']'
             if ratios else '')
-        rows.append({
+
+        def _arr(vals):
+            return '[' + ', '.join(_fmt_mass(v) for v in vals) + ']'
+
+        row = {
             'path': '->'.join(seq),
-            'weights': '[' + ', '.join(
-                _fmt_mass(w) for w in weights) + ']',
+            'weights': _arr(weights),
             'ratios': ratios_txt,
             'min_weight': min(weights) if weights else 0,
             'min_ratio': (min(finite) if finite else None),
             'length': len(seq) - 1,
             'nt_types': '',
             'coverage': coverage,
-        })
+        }
+        if total_w is not None:
+            row['emitted_weights'] = _arr(emitted_w)
+            row['total_weights'] = _arr(total_w)
+        rows.append(row)
     rows.sort(key=lambda r: (-r['min_weight'], r['path']))
     return rows
 
@@ -2538,6 +2725,7 @@ def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
         if label is not None:
             type_n[label] += 1
     seq_edges: Dict[Tuple[str, ...], List[Dict[Tuple[str, str], float]]] = {}
+    seq_cls: Dict[Tuple[str, ...], List[Dict[str, Dict]]] = {}
     seq_nodes: Dict[Tuple[str, ...], List[set]] = {}
     bodyid_count = 0
     for item in (paths_asked or []):
@@ -2558,15 +2746,19 @@ def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
         if edges_at is None:
             edges_at = [{} for _ in range(len(seq) - 1)]
             seq_edges[seq] = edges_at
+            seq_cls[seq] = [{} for _ in range(len(seq) - 1)]
             seq_nodes[seq] = [set() for _ in range(len(seq))]
         nodes_at = seq_nodes[seq]
+        classes_at = seq_cls[seq]
         for i in range(len(seq) - 1):
             key = (nodes[i], nodes[i + 1])
             edges_at[i][key] = anchor_w(key)
+            cls = 'refill' if key in refill_edge_keys else 'emitted'
+            classes_at[i].setdefault(cls, {})[key] = anchor_w(key)
         for i, n in enumerate(nodes):
             nodes_at[i].add(n)
     rows = _refill_rows_from_structures(seq_edges, seq_nodes, type_n,
-                                        type_in)
+                                         type_in, seq_cls=seq_cls)
     return rows, bodyid_count
 
 
@@ -2662,7 +2854,7 @@ def _write_mirrors(run_dir: Path, refill_type_rows, complete_type_rows,
         out / 'refilled_connection_bodyId.csv', index=False)
     if path_rows is not None:
         pd.DataFrame(
-            path_rows, columns=list(_PATHS_MIRROR_COLUMNS)).to_csv(
+            path_rows, columns=list(_CARRYING_MIRROR_COLUMNS)).to_csv(
             out / 'refill_paths_type.csv', index=False)
     if complete_path_rows is not None:
         pd.DataFrame(

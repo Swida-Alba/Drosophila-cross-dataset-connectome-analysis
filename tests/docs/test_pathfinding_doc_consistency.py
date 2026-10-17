@@ -162,3 +162,63 @@ def test_shortest_tab_default_depth_documented():
     text = _read("skills/drocat-usage/tabs/find-shortest.md")
     assert "max_interlayer=2" not in text
     assert "5" in text
+
+def test_no_surface_calls_the_walk_tau_a_class_value():
+    """G11: the exported `applied_tau` is THIS WALK's drain landing value; the
+    class-level certificate is `floor`/`floor_next`, and those are candidate
+    upper bounds. Three shipped surfaces carried the old mislabel (one of them
+    the report's own hover). The right noun must be present where the column
+    is described, and the wrong ones must not return."""
+    root = PROJECT_ROOT
+    for rel in ("docs/OUTPUT_FILES.md", "ui/output_guide.py",
+                "docs/ui_guides/src/pathfinding_algorithms.md"):
+        text = (root / rel).read_text(encoding="utf-8")
+        for wrong in ("THIS CLASS\u2019s StrongestFirst",
+                      "THIS CLASS's StrongestFirst",
+                      "class StrongestFirst tau",
+                      "Per-(pair,h)-class StrongestFirst tau"):
+            assert wrong not in text, (rel, wrong)
+    pair = (root / "docs/OUTPUT_FILES.md").read_text(encoding="utf-8")
+    guide = (root / "ui/output_guide.py").read_text(encoding="utf-8")
+    for text, rel in ((pair, "docs/OUTPUT_FILES.md"),
+                      (guide, "ui/output_guide.py")):
+        assert ("THIS WALK" in text or "this walk" in text), rel
+        assert "floor_next" in text, rel
+
+
+def test_the_page_names_and_mode_values_stay_current():
+    """The 2026-10-15 rename and the four-value Run Mode, pinned where a
+    regression would land: the report's page list and the mode vocabulary.
+    (This file is the plan's assumed catch-all; before this pin it asserted
+    none of it.)"""
+    root = PROJECT_ROOT
+    for rel in ("docs/OUTPUT_FILES.md", "ui/output_guide.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        # The page name is spelled differently per surface (markdown vs a
+        # Python string literal that may wrap), so each names its own marker;
+        # a contiguous assertion for both would fail on a harmless re-wrap.
+        if rel.endswith(".md"):
+            assert "**Path** (one page holding" in text, rel
+        else:
+            import re as _re
+            flat = _re.sub(r'"\s*"', '', text.replace("\u00b7", "/"))
+            assert "Global / Path / Data" in flat, rel
+        # the CSV contract name on both surfaces (the DISPLAY label
+        # "Universe type weights" is pinned by the report's own column test —
+        # these two files document files and columns, not rendered headers)
+        assert "universe_type_weights" in text, rel
+        # The canonical VALUES are named in the file docs (backticked); the
+        # user guide names the control's LABELS, which is what a reader of the
+        # guide sees on screen.
+        if rel.endswith(".md"):
+            for value in ("complete", "auto", "both", "fast"):
+                assert f"`{value}`" in text, (rel, value)
+        else:
+            for label in ("Complete only", "Auto (deep runs)",
+                          "Complete + Fast", "Fast only"):
+                assert label in text, (rel, label)
+        assert "Refill tab" not in text, rel
+    guide_src = (root / "docs/ui_guides/src/pathfinding_algorithms.md"
+                 ).read_text(encoding="utf-8")
+    assert "Adj. Ratio" in guide_src
+    assert "Ratio (&ge; N)" not in guide_src

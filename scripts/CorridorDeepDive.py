@@ -15,9 +15,13 @@ Direct mode:
 
 Outputs land in <run_dir>/route_scope_paths/ (run-folder mode) or --out
 (direct mode): route_paths_type.csv (one row per validated walk),
-route_paths_bodyId.csv, route_connection_type.csv, route_provenance.json,
-README.md — plus plan.json under data_details/route_plan/ beside the
-output root. Exit codes: 0 complete, 2 refused (deterministic reason).
+route_paths_bodyId.csv, route_connection_type.csv, route_type_incoming_asked.csv,
+route_provenance.json, README.md — plus the lane's OWN second round at
+synapse >= 1 (route_full_paths_type.csv, route_full_carrying_paths_type.csv,
+route_full_type_pairs.csv, route_type_incoming.csv and the
+route_full_type_{network,heatmap}.html mirrors) — plus plan.json under
+data_details/route_plan/ beside the output root. Exit codes: 0 complete,
+2 refused (deterministic reason).
 """
 import argparse
 import sys
@@ -44,9 +48,21 @@ def main():
     ap.add_argument("--bound", type=int, default=4,
                     help="hop bound = max_interlayer + 1 (default 4)")
     ap.add_argument("--asked", type=int, default=1)
-    ap.add_argument("--top-m-base", type=int, default=10)
-    ap.add_argument("--length-decay", type=float, default=1.5)
-    ap.add_argument("--pair-length-budget", type=int, default=100)
+    ap.add_argument("--top-m-base", type=int, default=10,
+                    help="route share base: each (pair, hop-length) class "
+                         "publishes up to round(top_m_base * "
+                         "length_decay**(h-1)) VALID TYPE-LEVEL ROUTES "
+                         "(15 at h2 by default). Counted in accepted routes, "
+                         "never in a route's bodyId realizations "
+                         "(2026-10-16).")
+    ap.add_argument("--length-decay", type=float, default=1.5,
+                    help="per-hop decay applied to --top-m-base")
+    ap.add_argument("--pair-length-budget", type=int, default=100,
+                    help="the class's REALIZATION envelope: how many bodyId "
+                         "witness paths the materialization pass may "
+                         "enumerate per (pair, length) class. Every accepted "
+                         "route keeps at least one witness, so this bounds "
+                         "the tie mass, never the route list.")
     ap.add_argument("--no-bodyid", action="store_true",
                     help="skip route_paths_bodyId.csv")
     ap.add_argument("--time-budget", type=float, default=900.0,

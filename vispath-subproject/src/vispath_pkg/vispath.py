@@ -293,6 +293,23 @@ def normalize_nt_value(value):
     return text if text else None
 
 
+def nt_bucket(value):
+    """One transmitter cell -> the label the page colours by, or 'unknown'.
+
+    The palettes already own an `unknown` entry (NT_COLORS / NT_GROUPS /
+    NT_GROUP_COLORS) and the Sankey page labels every unannotated hop with it;
+    the network page used to leave those hops as an empty `nt_type`, so they
+    matched no colour rule and silently kept the base edge colour (user report
+    2026-10-17: unknown-transmitter edges read light blue, the link colour,
+    instead of the palette's gray). Placeholder spellings land in the same
+    bucket, so 'unknown' / 'None' / 'nan' never become their own classes.
+    """
+    text = normalize_nt_value(value)
+    if text is None or text.lower() in ('unknown', 'none', 'nan', 'na', 'n/a'):
+        return 'unknown'
+    return text
+
+
 def mode_ignoring_blank(series):
     """Most frequent non-blank value of a per-edge NT group; None when
     every value is blank/NaN (unknown must never win an election)."""
@@ -353,7 +370,8 @@ class VisualizePath:
         node_colors=None,  # NEW: Custom node colors
         network_layout='hierarchical',
         showfig=False,
-        pair_extra_metrics=None,  # {(src,dst): {metric_name: value}} merged onto conn_df edges (V1: 'refilled' etc.)
+        pair_extra_metrics=None,  # {metric_name: {(src,dst): value}} merged onto conn_df edges (V1: 'refilled' etc.)
+        metric_note='',           # one-line caption under the Connection-Metric select (why a metric this page cannot carry is absent)
         edge_width_scale='log',  # NEW: Edge width scaling method
         edge_width_factor=1.0,   # NEW: Edge width multiplier
         edge_width_log_base=None, # NEW: Log base for logarithmic scaling (None = natural log e)
@@ -387,6 +405,8 @@ class VisualizePath:
         sankey_title=None,  # Sankey heading; None = the pathway default
         sankey_label_layers=True,  # Append the (L<n>) hop layer to Sankey labels
         metric_option_label=None,  # 'weight' option text; None = 'Synapse Count'
+        adj_ratio_threshold=None,  # NEW [DROCAT]: the conditioning tier behind
+                                   # the adjusted ratio, so its label names it
         node_shape='circle',  # NEW: Node geometry ('circle'|'round-square'|'sharp-square'|'by-role')
         merge_reciprocal_edges=False,  # NEW: Collapse reciprocal pairs into one both-end-arrow edge
     ):
@@ -670,12 +690,46 @@ class VisualizePath:
         self.sankey_label_layers = bool(sankey_label_layers)
         self.metric_option_label = str(metric_option_label
                                        or 'Synapse Count')
+        # The adjusted-ratio metric used to be labelled "Ratio (≥ N)" with a
+        # literal N that was never filled in — the reader could not tell
+        # which threshold the denominator conditioned at (DROCAT audit F7.3).
+        # With a tier supplied it reads "Adj. Ratio (≥ 5)"; without one it
+        # says what it is, and never leaves a bare placeholder behind.
+        try:
+            _adj_thr = (int(float(adj_ratio_threshold))
+                        if adj_ratio_threshold not in (None, '', 'None')
+                        else None)
+        except (TypeError, ValueError):
+            _adj_thr = None
+        # A tier of 1 is still named: at >= 1 the conditioned denominator IS
+        # the all-inputs one, and the number is what tells the reader the
+        # two ratio columns must agree.
+        self.adj_ratio_threshold = (_adj_thr
+                                    if _adj_thr and _adj_thr > 0 else None)
+        self.adj_ratio_label = (
+            f'Adj. Ratio (&ge; {self.adj_ratio_threshold})'
+            if self.adj_ratio_threshold
+            else 'Adj. Ratio (threshold-conditioned)')
+        self.adj_ratio_label_plain = (
+            f'Adj. Ratio (≥ {self.adj_ratio_threshold})'
+            if self.adj_ratio_threshold
+            else 'Adj. Ratio (threshold-conditioned)')
         # The Sankey hover names the same metric.
         self._sankey_weight_name = (_js(metric_option_label)
                                     if metric_option_label else 'Synapses')
         # Dagre flow direction: connectome hierarchies read top-to-bottom,
         # mapping artifacts pass 'LR' so source→target reads left-to-right.
         self.dagre_rank_dir = 'TB'
+        # One-line caption under the Connection-Metric select. A caller uses it
+        # where a metric is legitimately absent, so a disabled option is not
+        # the page's only word about it (DROCAT: bodyId-level pages carry no
+        # Refilled/adjusted ratio because those are computed per TYPE pair).
+        self.metric_note = str(metric_note or '').strip()
+        self.metric_note_html = (
+            '<div style="font-size:11px;opacity:0.72;margin-top:3px;'
+            'max-width:240px;line-height:1.35;">'
+            + html_escape(self.metric_note) + '</div>') if self.metric_note \
+            else ''
 
         # Hemisphere visualization options
         self.separate_hemispheres = separate_hemispheres
@@ -2761,6 +2815,24 @@ class VisualizePath:
                         m = pair_values.get((r['target'], r['source']))
                     vals.append(_np.nan if m is None else float(m))
                 conn_df[metric_name] = vals
+            # The metric must land on the GRAPH edges too: the network
+            # renderer decides whether an option is available (and builds its
+            # hover text) from G's edge attributes, so a metric carried only
+            # on conn_df showed "Refilled (N/A)" on a page whose edges had
+            # the value — the heatmap (which reads conn_df) was already
+            # correct, which is how the two views disagreed.
+            for metric_name in self.pair_extra_metrics:
+                for u, v, attrs in G.edges(data=True):
+                    try:
+                        row = conn_df[(conn_df['source'] == u)
+                                      & (conn_df['target'] == v)]
+                        if row.empty:
+                            continue
+                        val = row.iloc[0][metric_name]
+                    except Exception:
+                        continue
+                    if val is not None and not pd.isna(val):
+                        attrs[metric_name] = float(val)
         self.conn_df = conn_df
         self.G_network = G
         
@@ -3577,10 +3649,11 @@ class VisualizePath:
                         <select id="metricSelect" style="padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; font-size: 12px;" title="Link width/color basis; full metrics on hover">
                             <option value="weight">{self.metric_option_label}</option>
                             <option value="ratio" {"disabled" if not has_ratios else ""}>Connection Ratio{" (N/A)" if not has_ratios else ""}</option>
-                            <option value="ratio_adj" {"disabled" if not has_ratios_adj else ""}>Ratio (&ge; N){" (N/A)" if not has_ratios_adj else ""}</option>
+                            <option value="ratio_adj" {"disabled" if not has_ratios_adj else ""}>{self.adj_ratio_label}{" (N/A)" if not has_ratios_adj else ""}</option>
                             <option value="refilled" {"disabled" if not has_refilled else ""}>Refilled{" (N/A)" if not has_refilled else ""}</option>
                             <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
                         </select>
+                        {self.metric_note_html}
                     </div>
                 </div>
                 
@@ -4038,7 +4111,7 @@ class VisualizePath:
             
             // Metric display name for hover text
             const metricDisplayName = (currentMetric === 'ratio') ? 'Ratio'
-                : (currentMetric === 'ratio_adj') ? 'Ratio (>= N)'
+                : (currentMetric === 'ratio_adj') ? '{self.adj_ratio_label_plain}'
                 : (currentMetric === 'refilled') ? 'Refilled'
                 : '{self._sankey_weight_name}';
             
@@ -4275,6 +4348,19 @@ class VisualizePath:
         if len(nodes) < 2 or len(weights) < len(nodes) - 1:
             return []
 
+        # A record re-derived from a PATH ROW carries only weight/ratio/
+        # probability, so trimming under the Visualization Edge Limit used to
+        # silently drop every PAIR-LEVEL metric the full graph has: measured on
+        # a real MCNS run (396 edges, limit 200) the page carried `refilled`
+        # for 0 of 200 edges and `ratio_adj` for 0 of 200, so both toggles read
+        # 'N/A' on a run whose data does have them — while a run small enough
+        # to skip the trim showed them. The metrics are copied from the graph
+        # the caller already built; the names come from the caller's own
+        # metric map plus the adjusted ratio, so nothing else is overwritten.
+        G_network = getattr(self, 'G_network', None)
+        metric_names = set(getattr(self, 'pair_extra_metrics', None) or {})
+        metric_names.add('ratio_adj')
+
         records = []
         for i in range(len(nodes) - 1):
             weight = weights[i]
@@ -4282,14 +4368,20 @@ class VisualizePath:
                 # A zero-weight hop is not present in G_network, so retaining
                 # the rest of this path would manufacture a broken path.
                 return []
-            records.append((
-                (nodes[i], nodes[i + 1]),
-                {
-                    'weight': weight,
-                    'ratio': ratios[i] if i < len(ratios) else 0,
-                    'probability': probs[i] if i < len(probs) else 0,
-                },
-            ))
+            attrs = {
+                'weight': weight,
+                'ratio': ratios[i] if i < len(ratios) else 0,
+                'probability': probs[i] if i < len(probs) else 0,
+            }
+            if G_network is not None:
+                data = (G_network.get_edge_data(nodes[i], nodes[i + 1])
+                        or G_network.get_edge_data(nodes[i + 1], nodes[i])
+                        or {})
+                for name in metric_names:
+                    value = data.get(name)
+                    if value is not None and not pd.isna(value):
+                        attrs[name] = float(value)
+            records.append(((nodes[i], nodes[i + 1]), attrs))
         return records
 
     def _path_selection_score(self, row, records):
@@ -4952,6 +5044,7 @@ class VisualizePath:
         edge_weights = []  # Collect weights for scaling
         has_negative = False  # Track if any negative weights exist
         has_nt_coloring_network = False  # Track if NT coloring applies
+        has_unknown_nt_network = False   # Any edge the vocabulary leaves blank
         unique_nts_network = set()  # Collect unique NT types for CSS
         has_bidirectional_edges = False  # Merged/declared double-headed edges
 
@@ -4972,8 +5065,6 @@ class VisualizePath:
         def _fmt_weight(w):
             return f"{int(w):,}" if float(w).is_integer() else f"{w:,}"
 
-        has_ratio_adj_network = False
-        has_refilled_network = False
         merge_pairs = set()  # canonical (u, v) with str(u) < str(v)
         for (s, t) in directed_edges:
             if s == t:
@@ -4989,7 +5080,8 @@ class VisualizePath:
         def _edge_payload(source, target, data):
             """Per-direction fields for one directed edge (no bidirectional
             extras) — shared by the plain and the merged emission paths."""
-            nonlocal has_negative, has_nt_coloring_network
+            nonlocal has_negative, has_nt_coloring_network, \
+                has_unknown_nt_network
             weight = data.get('weight', 0)
             is_negative = weight < 0
             if is_negative:
@@ -4999,9 +5091,18 @@ class VisualizePath:
             refilled = data.get('refilled', np.nan)
             prob = data.get('probability', np.nan)
             nt_type = nt_lookup.get((source, target), None)
-            if self.color_edges_by_nt and nt_type is not None:
-                has_nt_coloring_network = True
-                unique_nts_network.add(nt_type)
+            if self.color_edges_by_nt:
+                # Every edge gets a BUCKET, not a raw cell: an unannotated one
+                # becomes 'unknown' so it matches the palette's Unknown style
+                # instead of falling through to the base link colour.
+                nt_type = nt_bucket(nt_type)
+                if nt_type == 'unknown':
+                    has_unknown_nt_network = True
+                else:
+                    has_nt_coloring_network = True
+                    unique_nts_network.add(nt_type)
+            else:
+                nt_type = normalize_nt_value(nt_type)
 
             weight_disp = _fmt_weight(weight)
             tooltip_parts = [f"Weight: {weight_disp} {self.edge_weight_label}"]
@@ -5056,11 +5157,6 @@ class VisualizePath:
 
             payload = _edge_payload(source, target, data)
             weight = data.get('weight', 0)
-
-            if payload.get('ratio_adj') is not None:
-                has_ratio_adj_network = True
-            if payload.get('refilled') is not None:
-                has_refilled_network = True
 
             if is_pair_half:
                 u, v = pair
@@ -5162,34 +5258,48 @@ class VisualizePath:
         # Generate NT-based edge styles if enabled
         nt_edge_styles = ""
         nt_edge_group_options = ""  # For dropdown selector
-        if has_nt_coloring_network and unique_nts_network:
-            nt_style_parts = []
-            nt_option_parts = []
-            for nt in sorted(unique_nts_network):
-                # Get color without opacity for Cytoscape
-                nt_color_rgba = get_nt_color(nt, opacity=1.0)
-                # Extract hex color from rgba
-                if nt_color_rgba.startswith('rgba'):
-                    # Convert rgba to hex for Cytoscape (module-level re)
-                    match = re.match(r'rgba\((\d+),\s*(\d+),\s*(\d+)', nt_color_rgba)
-                    if match:
-                        r, g, b = int(match.group(1)), int(match.group(2)), int(match.group(3))
-                        nt_hex = f'#{r:02x}{g:02x}{b:02x}'
-                    else:
-                        nt_hex = '#888888'
-                else:
-                    nt_hex = nt_color_rgba
-                
-                nt_style_parts.append(f"""{{
+
+        def _nt_style_hex(nt):
+            """The palette colour for one NT bucket, as the hex Cytoscape
+            styles want (get_nt_color returns rgba)."""
+            nt_color_rgba = get_nt_color(nt, opacity=1.0)
+            if nt_color_rgba.startswith('rgba'):
+                # Convert rgba to hex for Cytoscape (module-level re)
+                match = re.match(r'rgba\((\d+),\s*(\d+),\s*(\d+)', nt_color_rgba)
+                if match:
+                    r, g, b = int(match.group(1)), int(match.group(2)), int(match.group(3))
+                    return f'#{r:02x}{g:02x}{b:02x}'
+                return '#888888'
+            return nt_color_rgba
+
+        def _nt_rule(nt, nt_hex):
+            return f"""{{
                     selector: 'edge[nt_type = "{nt}"]',
                     style: {{
                         'line-color': '{nt_hex}',
                         'target-arrow-color': '{nt_hex}',
                         'source-arrow-color': '{nt_hex}'
                     }}
-                }},""")
+                }},"""
+
+        if has_nt_coloring_network and unique_nts_network:
+            nt_style_parts = []
+            nt_option_parts = []
+            for nt in sorted(unique_nts_network):
+                nt_style_parts.append(_nt_rule(nt, _nt_style_hex(nt)))
                 # Add option for dropdown
                 nt_option_parts.append(f'<option value="nt_{nt}">{nt} Edges</option>')
+            # The unannotated bucket gets its OWN rule, in the palette's
+            # unknown gray: without one those edges matched nothing and kept
+            # the base link colour, so "no transmitter information" looked
+            # exactly like a transmitter colour (user report 2026-10-17). It is
+            # emitted only when the page has some real vocabulary to be the
+            # gray relative to — a run that carries no transmitter column at
+            # all keeps its uniform edge colour.
+            if has_unknown_nt_network:
+                nt_style_parts.append(_nt_rule('unknown', _nt_style_hex('unknown')))
+                nt_option_parts.append(
+                    '<option value="nt_unknown">Unknown Edges</option>')
             nt_edge_styles = "\n                ".join(nt_style_parts)
             nt_edge_group_options = "\n                                    ".join(nt_option_parts)
 
@@ -6466,13 +6576,14 @@ class VisualizePath:
             <div class="vp-ribbon-group" style="min-width: 150px;">
             <label class="vp-group-title">Connection Metric</label>
             <!-- has_ratio_adj/has_refilled are bound below the template assembly -->
-            <select id="metricSelect" onchange="updateMetric()" title="Value used by the edge filter below AND by the edge widths: {self.metric_option_label.lower()} / connection ratio / adjusted ratio (>= threshold) / refilled. Hover always lists every available metric; NT coloring (when enabled) overrides edge COLORS only — widths/hover keep following this metric." style="width: 100%; padding: 5px;">
+            <select id="metricSelect" onchange="updateMetric()" title="Value used by the edge filter below AND by the edge widths: {self.metric_option_label.lower()} / connection ratio / {self.adj_ratio_label_plain.lower()} / refilled. Hover always lists every available metric; NT coloring (when enabled) overrides edge COLORS only — widths/hover keep following this metric." style="width: 100%; padding: 5px;">
                 <option value="weight">{self.metric_option_label}</option>
                 <option value="ratio">Connection Ratio</option>
-                <option value="ratio_adj" {"disabled" if not has_ratio_adj else ""}>Ratio (&ge; N){" (N/A)" if not has_ratio_adj else ""}</option>
+                <option value="ratio_adj" {"disabled" if not has_ratio_adj else ""}>{self.adj_ratio_label}{" (N/A)" if not has_ratio_adj else ""}</option>
                 <option value="refilled" {"disabled" if not has_refilled else ""}>Refilled{" (N/A)" if not has_refilled else ""}</option>
                 <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
             </select>
+            {self.metric_note_html}
             </div>
             <div class="vp-ribbon-group" style="min-width: 215px;">
             <label class="vp-group-title" for="ignoreEdgesInput">Hide Edges (by metric)</label>
@@ -7706,9 +7817,9 @@ class VisualizePath:
             }}
             if (data.ratio_adj !== undefined && data.ratio_adj !== null && !isNaN(data.ratio_adj)) {{
                 if (currentMetric === 'ratio_adj') {{
-                    html += `<br><b>Ratio (&ge; N):</b> <span style="color: #4CAF50; font-weight: bold;">${{data.ratio_adj.toFixed(4)}} ⬅ Current</span>`;
+                    html += `<br><b>{self.adj_ratio_label}:</b> <span style="color: #4CAF50; font-weight: bold;">${{data.ratio_adj.toFixed(4)}} ⬅ Current</span>`;
                 }} else {{
-                    html += `<br><b>Ratio (&ge; N):</b> ${{data.ratio_adj.toFixed(4)}}`;
+                    html += `<br><b>{self.adj_ratio_label}:</b> ${{data.ratio_adj.toFixed(4)}}`;
                 }}
             }}
             if (data.refilled !== undefined && data.refilled !== null && !isNaN(data.refilled)) {{
@@ -15612,6 +15723,7 @@ class VisualizePath:
             showfig=False,
             matrices_dict=matrices_dict,  # Pass all matrices for metric toggle
             verbose=self.verbose,
+            metric_label_adj=self.adj_ratio_label_plain,
             inline_plotly=True  # single-file page survives relocation
         )
         
@@ -16185,14 +16297,19 @@ def visualize_network(
     return vp.visualize_network()
 
 
-def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False):
+def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
     canvas height auto-fitted to the matrix shape. ``inline_plotly=True``
     embeds plotly.js INTO the html (single-file page, ~4.8MB heavier)
     instead of sharing one library copy per output directory.
+    ``metric_label_adj`` names the adjusted-ratio metric (with its
+    conditioning tier) — this generator is a function, not a method, so the
+    label is passed in rather than read off an instance.
     """
+    metric_label_adj = str(metric_label_adj
+                           or 'Adj. Ratio (threshold-conditioned)')
     # Remember whether the CALLER passed a colorscale: only then do we seed the
     # heatmap with a custom colorscale (the default below is a legacy leftover).
     provided_color_scale = color_scale
@@ -17278,7 +17395,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             const metricNames = {{
                 'weight': 'Synapses',
                 'ratio': 'Ratio',
-                'ratio_adj': 'Ratio (\u2265 N)',
+                'ratio_adj': '{metric_label_adj}',
                 'refilled': 'Refilled',
                 'probability': 'Probability'
             }};
@@ -17791,7 +17908,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             const metricDisplayNames = {{
                 'weight': 'Synapses',
                 'ratio': 'Ratio',
-                'ratio_adj': 'Ratio (\u2265 N)',
+                'ratio_adj': '{metric_label_adj}',
                 'refilled': 'Refilled',
                 'probability': 'Probability'
             }};

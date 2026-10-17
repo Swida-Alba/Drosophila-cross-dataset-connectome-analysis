@@ -12,6 +12,7 @@ from ..components.common import (
     checkbox_input, dir_input, apply_filter_mode, section_header, param_grid,
     tool_page, ALL_NEURONS_TOKEN, uses_all_neurons_token,
 )
+from ..components import pathfinding_controls as pc
 from ..components.mapping_editor import custom_grouping_block
 from ..components.output_panel import OutputPanel
 from ..runner import ScriptRunner
@@ -126,16 +127,27 @@ def create_find_shortest_tab():
             with param_grid(3):
                 # Intentionally 5 (not the shared max_interlayer default): the
                 # shortest-path tab targets deeper searches; keep in sync with
-                # the e2e test asserting this divergence.
+                # the e2e test asserting this divergence. It is also why this
+                # tab shows the Run Mode status line — at depth 5 the built-in
+                # 'auto' DOES run the lane.
                 max_interlayer = number_input(
                     "Max Intermediate Layers", 5, 0, None,
                     hint="Maximum number of intermediate neuron layers between source "
                          "and target. Higher = more paths but slower.",
                 )
+                # Same threshold regime as the other two tabs (plan 2026-10-16
+                # A1): the engine's ratio lane is implemented and tested for
+                # shortest mode (`test_shortest_ratio_lane`, the batched
+                # store's ratio-parity conversion); until now this tab simply
+                # never offered it, so 'Connection ratio' was unreachable
+                # everywhere the min-hop tool is the right tool.
+                threshold_basis = pc.threshold_basis_select()
                 min_synapse = number_input(
                     "Min Synapse Count", get_user_default("min_synapse_num"), 1, 100,
                     hint="Minimum number of synapses for a connection to be included. Filters out weak/noisy connections.",
                 )
+                min_ratio_threshold = pc.min_ratio_percent_input()
+                threshold_combination = pc.threshold_combination_select()
                 max_paths = number_input(
                     "Max Paths (BodyId)", get_user_default("max_paths_bodyid"),
                     0, 100000000,
@@ -145,15 +157,10 @@ def create_find_shortest_tab():
                          "kept and tau is reported. Filters the emitted PATHS "
                          "only — the graph is not trimmed. 0 = auto (1M budget).",
                 )
-                corridor_mode = select_input(
-                    "Fast Mode (corridor lane)",
-                    {"complete": "Complete only",
-                     "auto": "Auto (deep runs)",
-                     "both": "Complete + Fast"},
-                    default=get_user_default("corridor_mode"),
-                    hint="Values — complete: run COMPLETE mode only (all intact paths >= the applied threshold; the run itself). auto: also run FAST mode (the corridor lane: strongest type-level routes at the ASKED threshold) after deep searches (max intermediate layers >= 4). both: always run FAST after the run. Fast writes its own route_scope_paths/ beside the run and never modifies this run's outputs. Full guide via the book icon.",
-                    help_doc="pathfinding_algorithms",
-                )
+                run_mode = pc.run_mode_block(
+                    depth_getter=lambda: int(max_interlayer.value or 0),
+                    extra=" At this tab's default depth (5) the built-in "
+                          "'auto' runs the lane on every query.")
                 edge_limit = number_input(
                     "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
                     hint="Drawing-only cap: at most this many unique edges are "
@@ -162,6 +169,7 @@ def create_find_shortest_tab():
                          "output; a single complete path may still exceed it to "
                          "stay intact.",
                 )
+
                 # Coverage early-stop (shortest; user placement: Core):
                 # stop deepening backward discovery once both sides'
                 # per-TYPE coverage requirements are met, instead of
@@ -210,6 +218,19 @@ def create_find_shortest_tab():
             shortest_target_coverage.on_value_change(
                 lambda _e: _sync_coverage_custom())
             _sync_coverage_custom()
+
+            def _sync_threshold_basis():
+                pc.sync_threshold_visibility(threshold_basis, min_synapse,
+                                             min_ratio_threshold,
+                                             threshold_combination)
+
+            for _el in (threshold_basis, threshold_combination,
+                        min_ratio_threshold):
+                _el.on_value_change(lambda _e: _sync_threshold_basis())
+            _sync_threshold_basis()
+            # the Run Mode line depends on the depth too ('auto' needs >= 4),
+            # so the depth control refreshes it
+            max_interlayer.on_value_change(lambda _e: run_mode.refresh())
 
             def _coverage_payload(value):
                 """UI level -> engine fraction (None = legacy)."""
@@ -280,44 +301,8 @@ def create_find_shortest_tab():
 
         with ui.card().classes("w-full drocat-card").props('id="card-findshortest-hemisphere"'):
             section_header("Hemisphere Analysis", "sync_alt")
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                separate_hemi = checkbox_input(
-                    "Hemisphere-aware", False,
-                    hint="Split type/group aggregation into _L/_R/_U hemisphere labels.",
-                )
-                hemi_filter = select_input(
-                    "Hemisphere", ["both", "left", "right"], "both",
-                    hint="'both': all neurons. 'left'/'right': restrict to that hemisphere. "
-                         "Neurons WITHOUT an explicit hemisphere (no _L/_R instance suffix "
-                         "or Soma side) are always included in every option.",
-                    inline=True,
-                )
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                symmetry_analysis = checkbox_input(
-                    "Symmetry Analysis", False,
-                    hint="Generate ipsilateral vs contralateral symmetry outputs.",
-                )
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                keep_hemi_conserved = checkbox_input(
-                    "Keep Only Hemisphere-Conserved Edges", False,
-                    hint="Keep only edges conserved between hemispheres (requires Hemisphere-aware).",
-                )
-            def _sync_hemisphere_options():
-                if separate_hemi.value:
-                    keep_hemi_conserved.enable()
-                    symmetry_analysis.enable()
-                    hemi_filter.set_enabled(True)
-                else:
-                    # dependent options are unchecked AND disabled so a
-                    # greyed-out True never reaches the backend
-                    keep_hemi_conserved.value = False
-                    symmetry_analysis.value = False
-                    hemi_filter.value = 'both'
-                    keep_hemi_conserved.disable()
-                    symmetry_analysis.disable()
-                    hemi_filter.set_enabled(False)
-            separate_hemi.on_value_change(lambda _e: _sync_hemisphere_options())
-            _sync_hemisphere_options()
+            # Identical on all three connection tabs by design (shared module).
+            hemi = pc.hemisphere_block()
 
         # --- Advanced Settings (kept at the bottom, in its own card) ---
         with ui.card().classes("w-full drocat-card").props('id="card-findshortest-advanced"'):
@@ -333,26 +318,11 @@ def create_find_shortest_tab():
                 )
 
                 with param_grid(3):
-                    # F9: ratio/probability filters are disabled by default
-                    # (ratio is a readout column). Round-13 AND mode makes
-                    # the ratio a co-threshold with Min Synapse Count.
-                    min_ratio = number_input(
-                        "Min Connection Ratio", 0, 0, 1, 0.01,
-                        hint="Readout column by default. Under Combine "
-                             "Thresholds = Both (AND) it co-thresholds the "
-                             "graph: an edge must pass BOTH the synapse "
-                             "count and this ratio.",
-                    ).set_visibility(False)
-                    threshold_combination = select_input(
-                        "Combine Thresholds", ["Any one (default)", "Both (AND)"],
-                        default=("Both (AND)"
-                                 if get_user_default("threshold_combination")
-                                 == "and" else "Any one (default)"),
-                        hint="How Min Synapse Count and Min Connection Ratio "
-                             "combine when both are set. Both (AND): an edge "
-                             "enters the graph only when it clears BOTH "
-                             "thresholds (round-13).",
-                    )
+                    # F9: the probability knob stays a hidden readout
+                    # entrance (kept for a future probability-weighted mode);
+                    # the RATIO knob moved to Core as the shared percent field
+                    # (plan 2026-10-16 A2: a raw 0-1 field here read "1" as
+                    # 100% while the other tabs read it as 1%).
                     min_traversal = number_input(
                         "Min Traversal Prob.", 0, 0, 1, 0.01,
                         hint="Disabled: traversal_probability is a readout column "
@@ -360,14 +330,8 @@ def create_find_shortest_tab():
                     ).set_visibility(False)
                     # Fix C: the lossy bodyId edge limit is deprecated and
                     # ignored — shortest paths are always complete.
-
-                    def _sync_shortest_combination():
-                        min_ratio.set_visibility(
-                            threshold_combination.value == "Both (AND)")
-
-                    threshold_combination.on_value_change(
-                        lambda _e: _sync_shortest_combination())
-                    _sync_shortest_combination()
+                    # (The ratio/AND controls moved to Core with the shared
+                    # threshold block; there is nothing left to sync here.)
 
                 with param_grid(3):
                     # plan-shortest-batched-discovery: discovery memory for
@@ -505,15 +469,13 @@ def create_find_shortest_tab():
             "sourceNeurons": sources,
             "targetNeurons": targets,
             "output_dir": output_dir.value,
-            "min_synapse_num": int(min_synapse.value),
-            # F9 default: ratio/prob are readouts (sent 0). Round-13 AND
-            # mode: the ratio co-thresholds with Min Synapse Count.
-            "threshold_combination": (
-                "and" if threshold_combination.value == "Both (AND)"
-                else "or"),
-            "min_ratio": (float(min_ratio.value)
-                          if threshold_combination.value == "Both (AND)"
-                          else 0.0),
+            # One derivation for the whole threshold regime, shared with
+            # Complete Paths and Network (plan 2026-10-16 A1/A2/A3): this tab
+            # now reaches the engine's ratio lane (implemented and tested for
+            # shortest mode) and enters the ratio in PERCENT like its siblings,
+            # so 'Both (AND)' can no longer be selected into an inert 0.
+            **pc.ratio_payloads(threshold_basis, threshold_combination,
+                                min_synapse, min_ratio_threshold),
             "min_traversal_probability": 0.0,
             "max_interlayer": 0 if (src_all or tgt_all) else int(max_interlayer.value),
             "filter_by": filter_by.value,
@@ -528,7 +490,7 @@ def create_find_shortest_tab():
             # NOTE (plan-corridor-lane.md §24): validation currently runs
             # against a fresh lossless prune at the asked threshold, not
             # yet the run's shortest-DAG store — refinement pending.
-            "corridor_mode": corridor_mode.value,
+            "corridor_mode": run_mode.value,
             "target_batch_size": int(target_batch_size.value) or 0,
             # plan-shortest-store-retention: post-run store handling.
             "discovery_store_retention": store_retention.value,
@@ -553,10 +515,7 @@ def create_find_shortest_tab():
             "cache_only": cache_only.value,
             "drop_untyped": drop_untyped.value,
             "saveas": saveas.value.strip() or "",
-            "separate_hemispheres": separate_hemi.value,
-            "hemisphere_filter": hemi_filter.value,
-            "keep_only_hemisphere_conserved_connections": keep_hemi_conserved.value,
-            "symmetry_analysis": symmetry_analysis.value,
+            **hemi.payload(),
             "find_reciprocal": find_reciprocal.value,
         }
         if mapping_path:

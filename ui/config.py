@@ -377,6 +377,13 @@ def _coerce_user_default(key: str, value):
         # a saved default or typed value needs its capitals restored before
         # the exact-match option test below.
         value = normalize_brain_mesh_choice(value)
+    if kind == "select" and key == "corridor_mode" and isinstance(value, str):
+        # Legacy 'off'/'on' spellings normalize to the canonical values BEFORE
+        # the option test, so an old saved override both validates and is
+        # stored in its canonical form (normalizing after coercion only fixed
+        # reads and left `set_user_default('off')` rejected).
+        value = LEGACY_CORRIDOR_MODE.get(value.strip().lower(),
+                                         value.strip().lower())
     return value if value in options else None
 
 
@@ -386,11 +393,6 @@ def get_user_default(key: str):
     if key in overrides:
         coerced = _coerce_user_default(key, overrides[key])
         if coerced is not None:
-            if key == 'corridor_mode':
-                # NAME UNIFICATION (2026-10-11): legacy saved values
-                # normalize to the canonical 'complete'/'auto'/'both'.
-                coerced = {'off': 'complete', 'on': 'both'}.get(
-                    coerced, coerced)
             return coerced
     return DEFAULTS[key]
 
@@ -589,6 +591,28 @@ SEARCH_COLUMNS = ["auto", "type", "instance", "bodyId"]
 # Filter options
 FILTER_OPTIONS = ["bodyId", "type"]
 
+# Connection-threshold and Run-Mode vocabularies. The keys are the ENGINE
+# values a payload sends; the labels are what the tabs and the Settings card
+# show, so both surfaces read one source (plan 2026-10-16 Q3/Q7).
+THRESHOLD_BASIS_CHOICES = {
+    "synapse": "Synapse count",
+    "connection_ratio": "Connection ratio",
+}
+THRESHOLD_COMBINATION_CHOICES = {
+    "or": "Any one (default)",
+    "and": "Both (AND)",
+}
+CORRIDOR_MODE_CHOICES = {
+    "complete": "Complete only",
+    "auto": "Auto (deep runs)",
+    "both": "Complete + Fast",
+    "fast": "Fast only (standalone)",
+}
+# Pre-2026-10-11 saved spellings of Run Mode. Normalized BEFORE the option
+# test in `_coerce_user_default`, so an old override is still readable instead
+# of coercing to nothing and silently falling back to the built-in default.
+LEGACY_CORRIDOR_MODE = {"off": "complete", "on": "both"}
+
 # Output formats
 OUTPUT_FORMATS = ["csv", "xlsx"]
 
@@ -761,6 +785,27 @@ DEFAULT_SETTING_SPECS = {
     # columns now (weight / all-post incoming weight; ratio/0.3 capped) —
     # the Settings entrances were removed with the tab entrances. The
     # DEFAULTS keys survive for payload/back-compat.
+    "threshold_basis": {
+        "label": "Threshold Basis",
+        "group": "thresholds",
+        "kind": "select",
+        "options": THRESHOLD_BASIS_CHOICES,
+        "hint": "Which edge-weight basis thresholds the graph. 'Synapse "
+                "count': the integer above. 'Connection ratio': synapses / "
+                "all-post incoming weight of the post neuron, so the tier is "
+                "comparable across datasets. Read the tab hints for the "
+                "percent entry.",
+    },
+    "threshold_combination": {
+        "label": "Combine Thresholds",
+        "group": "thresholds",
+        "kind": "select",
+        "options": THRESHOLD_COMBINATION_CHOICES,
+        "hint": "'Any one': the chosen basis alone thresholds the graph. "
+                "'Both (AND)': an edge enters only when it clears both the "
+                "synapse count and the connection ratio, each on its own "
+                "scale. With an empty ratio nothing is co-thresholded.",
+    },
     "edgeN_limit": {
         "label": "Visualization Edge Limit",
         "group": "thresholds",
@@ -912,6 +957,19 @@ DEFAULT_SETTING_SPECS = {
         "max": 10,
         "step": 1,
         "hint": "Default intermediate neuron layers for Complete Paths.",
+    },
+    "corridor_mode": {
+        "label": "Run Mode (Complete / Fast)",
+        "group": "pathfinding_output",
+        "kind": "select",
+        "options": CORRIDOR_MODE_CHOICES,
+        "hint": "What runs on a pathfinding query. 'Complete only': the run "
+                "itself. 'Auto (deep runs)': Complete, then Fast once the "
+                "depth reaches 4 — so the same saved default fires on "
+                "Shortest Paths (depth 5) and not on Complete (depth 2). "
+                "'Complete + Fast': always. 'Fast only (standalone)': just "
+                "the corridor lane. Network has no lane: direct connections "
+                "run once.",
     },
     # --- 3D Skeleton Rendering ---------------------------------------------
     "skeleton_mode": {
