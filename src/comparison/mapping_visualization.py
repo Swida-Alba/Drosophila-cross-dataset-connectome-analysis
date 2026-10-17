@@ -1104,6 +1104,12 @@ def _render_mapping_graph(graph, output_path: str, *, open_browser: bool = False
             "hemisphere_desaturate_side": None,
             "hemisphere_desaturate_factor": 0.4,
             "edge_weight_label": "synapses",
+            # Derived in `VisualizePath.__init__`, so the constructor default
+            # cannot answer for it on the `__new__` path (the same hole
+            # `adj_ratio_label_plain` fell through on 2026-10-15): a mapping
+            # page renders no metric caption, which is what an empty
+            # `metric_note_html` means.
+            "metric_note_html": "",
             "dagre_rank_dir": "TB",
             "node_groups": [],
             "dataset_legend_meta": {},

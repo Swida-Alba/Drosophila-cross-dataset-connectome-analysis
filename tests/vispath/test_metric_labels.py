@@ -96,10 +96,14 @@ def test_the_batch_heatmap_entry_cannot_silently_drop_the_label():
     batch = src[src.index('def create_heatmaps('):
                 src.index('def create_heatmap(')]
     passes_label = 'metric_label_adj=' in batch
-    # the package's own docstring example is not a caller
+    # the package's own docstring example is not a caller — and neither is the
+    # census line below, which names the very pattern it searches for (it began
+    # matching once this file was committed and `git grep` started tracking it),
+    # so this file is excluded by pathspec
+    here = str(Path(__file__).relative_to(ROOT))
     callers = subprocess.run(
         ['git', 'grep', '-l', r'\.create_heatmaps(', '--', 'src', 'ui',
-         'scripts', 'tests'],
+         'scripts', 'tests', f':(exclude){here}'],
         cwd=str(ROOT), capture_output=True, text=True).stdout.strip()
     assert passes_label or not callers, (
         'create_heatmaps is now called and still drops the tier label: '
