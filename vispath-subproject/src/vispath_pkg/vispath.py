@@ -310,6 +310,616 @@ def nt_bucket(value):
     return text
 
 
+CELL_STYLE_SEP = '\t'
+CALLER_FILL_FIELD_ID = '__fill__'
+CELL_UNMAPPED_COLOR = '#f2f2f2'
+CELL_OUTLINE_DEFAULT = {'width': 2, 'color': '#111111'}
+CELL_AUTO_PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
+                     '#edc949', '#af7aa1', '#ff9da7', '#9c755f', '#bab0ab']
+
+
+def _cell_style_key(row, col):
+    """One cell's style key: its two AXIS LABELS, never its position.
+
+    `displayXLabels`/`displayYLabels` are rewritten by transpose, clustering,
+    custom order and the axis subset, and a node that is both source and target
+    appears on BOTH axes — a positional matrix would silently keep its old
+    meaning after any of those (issue filed by clock-production, 2026-10-17).
+    """
+    return f'{row}{CELL_STYLE_SEP}{col}'
+
+
+def _is_color_string(value):
+    """A CSS colour the page can hand straight to Plotly (hex or rgb/rgba)."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip().lower()
+    if text.startswith('#') and len(text) in (4, 5, 7, 9):
+        body = text[1:]
+        return all(c in '0123456789abcdef' for c in body)
+    return text.startswith('rgb(') or text.startswith('rgba(')
+
+
+def _value_key(value):
+    """The identity of one cell value as a dict key (JSON-safe)."""
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _numeric_bins(values, count):
+    """Quantile-ish breaks over the DISPLAYED values of one field.
+
+    Binning happens in JS at render time (the reader edits the count), so this
+    is the same rule in Python only for tests/tooling that want to predict it.
+    """
+    ordered = sorted(values)
+    if not ordered:
+        return []
+    edges = []
+    for i in range(count):
+        lo = ordered[int(i * len(ordered) / count)]
+        hi = ordered[min(len(ordered) - 1, int((i + 1) * len(ordered) / count) - 1)]
+        edges.append([float(lo), float(hi)])
+    return edges
+
+
+def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
+                         cell_outline=None, fill_scale=None):
+    """Turn caller per-cell style into JS-ready fields, keyed by label.
+
+    Returns `(fields, outline_map)`.
+
+    `fields` is an ordered list, one entry per channel the reader may colour by::
+
+        {'id': str, 'label': str,
+         'kind': 'color' | 'categorical' | 'numeric',
+         'values': {"<row>\t<col>": value},
+         'colors': {value_key: '#hex'},     # categorical / color channels
+         'unmapped': '#hex'}                # what an unstyled cell gets
+
+    `outline_map` is `{"<row>\t<col>": {'width': w, 'color': c}}` — a bare True
+    takes `CELL_OUTLINE_DEFAULT`, so a caller never has to name a border to ask
+    for one.
+
+    Two failures are deliberate rather than forgiving:
+
+    * a category with no colour in `fill_scale` RAISES naming it — falling through
+      to the unmapped grey would show a caller typo as a real class;
+    * a key whose row or column no axis carries WARNS — it cannot be drawn, and
+      silence would read as an unstyled cell forever.
+    """
+    import warnings
+
+    rows = {str(r) for r in row_labels}
+    cols = {str(c) for c in col_labels}
+    fields = []
+
+    def _check_keys(mapping, channel):
+        kept = {}
+        stray = []
+        for raw_key, value in (mapping or {}).items():
+            # Both spellings a caller reaches for are honoured: the tuple
+            # (row, col), and the joined string this module itself uses as the
+            # JS key. A crash on the second would be a trap for a caller who
+            # read the emitted page first.
+            if isinstance(raw_key, str) and CELL_STYLE_SEP in raw_key:
+                row, col = raw_key.split(CELL_STYLE_SEP, 1)
+            else:
+                try:
+                    row, col = raw_key
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f'{channel}: cell style keys must be (row_label, col_label) '
+                        f'or "row_label{CELL_STYLE_SEP!r}col_label"; got {raw_key!r}')
+            row, col = str(row), str(col)
+            if row not in rows or col not in cols:
+                stray.append((row, col))
+                continue
+            kept[_cell_style_key(row, col)] = value
+        if stray:
+            warnings.warn(
+                f'{channel}: {len(stray)} per-cell style key(s) name a label this '
+                f'matrix does not show and cannot be drawn, e.g. '
+                f'{stray[:3]!r}', UserWarning, stacklevel=3)
+        return kept
+
+    def _kind_of(values):
+        if values and all(_is_color_string(v) for v in values):
+            return 'color'
+        if any(isinstance(v, bool) for v in values):
+            return 'categorical'
+        try:
+            numeric = [float(v) for v in values]
+        except (TypeError, ValueError):
+            return 'categorical'
+        # ints/0-1 flags are classes a reader wants to name, not a ramp
+        if all(float(v).is_integer() for v in numeric) and len(set(numeric)) <= 12:
+            return 'categorical'
+        return 'numeric'
+
+    def _add(field_id, label, mapping, colors=None, unmapped=CELL_UNMAPPED_COLOR):
+        values = _check_keys(mapping, label)
+        if not values:
+            return None
+        kind = _kind_of(list(values.values()))
+        palette = {}
+        if kind == 'color':
+            palette = {v: v for v in set(str(x) for x in values.values())}
+        elif kind == 'categorical':
+            keys = sorted({_value_key(v) for v in values.values()})
+            if colors:
+                missing = [k for k in keys if k not in
+                           {_value_key(c) for c in colors}]
+                if missing:
+                    raise ValueError(
+                        f'{label}: category value(s) {missing} have no colour in '
+                        f'fill_scale (keys: {sorted(map(str, colors))}); an '
+                        'unpriced category must not render as the unmapped grey')
+                palette = {_value_key(k): colors[k] for k in colors}
+            else:
+                palette = {k: CELL_AUTO_PALETTE[i % len(CELL_AUTO_PALETTE)]
+                           for i, k in enumerate(keys)}
+        return {'id': field_id, 'label': label, 'kind': kind,
+                'values': values, 'colors': palette, 'unmapped': unmapped}
+
+    for name, mapping in (cell_data or {}).items():
+        field = _add(str(name), str(name), mapping)
+        if field:
+            fields.append(field)
+    if cell_fill:
+        field = _add(CALLER_FILL_FIELD_ID, 'per-cell fill', cell_fill,
+                     colors=fill_scale)
+        if field:
+            fields.insert(0, field)
+
+    outline = {}
+    for key, spec in _check_keys(cell_outline, 'cell outline').items():
+        if isinstance(spec, dict):
+            outline[key] = {
+                'width': spec.get('width', CELL_OUTLINE_DEFAULT['width']),
+                'color': spec.get('color', CELL_OUTLINE_DEFAULT['color'])}
+        elif spec:
+            # a bare True asks for a border, not for a colour the caller must
+            # have remembered to name
+            outline[key] = dict(CELL_OUTLINE_DEFAULT)
+    return fields, outline
+
+
+def _cell_style_js_chunks(fields, outline_map):
+    """The JS/HTML the heatmap template inserts for a styled page.
+
+    Every value is the empty string when the caller passed nothing, so an
+    unstyled export gains no new identifier, no `layout.shapes` and no control
+    — which is what keeps a default page byte-identical.
+    """
+    chunks = {'consts': '', 'functions': '', 'panel': '', 'context': '',
+              'trace': '', 'shapes': '', 'contrast': '',
+              'settings_save': '', 'settings_load': ''}
+    if not (fields or outline_map):
+        return chunks
+
+    from .shared_controls import json_safe
+
+    field_ids = [f['id'] for f in fields]
+    default_outline = next(iter(outline_map.values()), {}) or {}
+    state = {
+        'fillId': field_ids[0] if field_ids else 'metric',
+        'colors': {},
+        'binCounts': {},
+        'outlineId': '__caller__' if outline_map else 'none',
+        'outlineColor': default_outline.get('color',
+                                           CELL_OUTLINE_DEFAULT['color']),
+        'outlineWidth': default_outline.get('width',
+                                           CELL_OUTLINE_DEFAULT['width']),
+    }
+
+    consts = f'''
+        // ---- per-cell style channels (caller maps; the reader can restyle) ----
+        // Keyed by the two AXIS LABELS of a cell, never by position: transpose,
+        // clustering, custom order and the axis subset all rewrite the display
+        // arrays, and a node that is both source and target sits on both axes.
+        const cellStyleFields = {json_safe(fields)};
+        const cellOutlineMap = {json_safe(outline_map)};
+        const cellStyleAutoPalette = {json_safe(CELL_AUTO_PALETTE)};
+        const cellStyleSep = {json_safe(CELL_STYLE_SEP)};
+        const cellStyleDefaultState = {json_safe(state)};
+        let cellStyleState = JSON.parse(JSON.stringify(cellStyleDefaultState));
+        let cellStyleCtx = null;
+        let cellStyleBinEdges = {{}};
+'''
+
+    functions = r'''
+        function cellStyleFieldById(id) {
+            if (!id || id === 'metric') return null;
+            for (let i = 0; i < cellStyleFields.length; i++) {
+                if (cellStyleFields[i].id === id) return cellStyleFields[i];
+            }
+            return null;
+        }
+
+        // The lookup key is always (source-side label, target-side label) in the
+        // caller's direction, whichever axis they currently sit on: rows are the
+        // source side only while the page is untransposed.
+        function cellStyleKey(i, jcol) {
+            if (!cellStyleCtx) return null;
+            const src = cellStyleCtx.srcOnY ? cellStyleCtx.ys[i] : cellStyleCtx.xs[jcol];
+            const dst = cellStyleCtx.srcOnY ? cellStyleCtx.xs[jcol] : cellStyleCtx.ys[i];
+            if (src === undefined || dst === undefined) return null;
+            return src + cellStyleSep + dst;
+        }
+
+        function cellStyleValueKey(value) {
+            if (typeof value === 'boolean') return value ? 'true' : 'false';
+            if (typeof value === 'number' && Number.isInteger(value)) return String(value);
+            return String(value);
+        }
+
+        function cellStyleSortKeys(keys) {
+            keys.sort((a, b) => {
+                const na = Number(a), nb = Number(b);
+                if (!isNaN(na) && !isNaN(nb) && a !== '' && b !== '') return na - nb;
+                return a < b ? -1 : (a > b ? 1 : 0);
+            });
+            return keys;
+        }
+
+        // Ordered category list of the active field; numeric fields are binned
+        // here (the reader edits the count), the rest are their own values.
+        function cellStyleCategories(field) {
+            if (field.kind === 'numeric') {
+                const bins = Math.max(2, Math.min(10, cellStyleState.binCounts[field.id] || 4));
+                const vals = [];
+                Object.keys(field.values).forEach(k => {
+                    const v = Number(field.values[k]);
+                    if (!isNaN(v)) vals.push(v);
+                });
+                vals.sort((a, b) => a - b);
+                const out = [];
+                for (let b = 0; b < bins; b++) {
+                    const lo = vals.length ? vals[Math.floor(b * vals.length / bins)] : 0;
+                    const hiIdx = Math.min(Math.max(0, vals.length - 1),
+                                           Math.floor((b + 1) * vals.length / bins) - 1);
+                    const hi = vals.length ? vals[hiIdx] : 0;
+                    out.push({key: 'bin' + b,
+                              label: vals.length ? (lo + ' – ' + hi) : ('bin ' + b)});
+                }
+                cellStyleBinEdges[field.id] = vals.length ? out.map((_, i) => {
+                    const cut = Math.floor((i + 1) * vals.length / bins);
+                    return cut < vals.length ? vals[cut] : null;
+                }) : [];
+                return out;
+            }
+            const used = {};
+            const seen = [];
+            Object.keys(field.values).forEach(k => {
+                const key = cellStyleValueKey(field.values[k]);
+                if (!used[key]) { used[key] = 1; seen.push(key); }
+            });
+            return cellStyleSortKeys(seen);
+        }
+
+        function cellStyleCategoryOf(field, value) {
+            if (field.kind === 'numeric') {
+                const edges = cellStyleBinEdges[field.id] || [];
+                const v = Number(value);
+                for (let i = 0; i < edges.length; i++) {
+                    if (edges[i] === null || v < edges[i]) return 'bin' + i;
+                }
+                return 'bin' + Math.max(0, edges.length - 1);
+            }
+            return cellStyleValueKey(value);
+        }
+
+        function cellStyleColorOfCategory(field, key, index, total) {
+            const edited = (cellStyleState.colors[field.id] || {})[key];
+            if (edited) return edited;
+            if (key === '__unmapped__') return field.unmapped || '#f2f2f2';
+            if (field.colors && field.colors[key]) return field.colors[key];
+            if (field.kind === 'numeric' && total > 1) {
+                // an ordered field stays readable without the reader picking ten
+                // colours first: a fixed ramp, graded by position
+                const stops = ['#f7fbff', '#4a72b0', '#08306b'];
+                const t = index / (total - 1);
+                const pick = t < 0.5 ? 0 : 1;
+                const frac = t < 0.5 ? t * 2 : (t - 0.5) * 2;
+                return mixHex(stops[pick], stops[pick + 1], frac);
+            }
+            return cellStyleAutoPalette[index % cellStyleAutoPalette.length];
+        }
+
+        function mixHex(a, b, t) {
+            const pa = [1, 3, 5].map(i => parseInt(a.substr(i, 2), 16));
+            const pb = [1, 3, 5].map(i => parseInt(b.substr(i, 2), 16));
+            const out = pa.map((v, i) => Math.round(v + (pb[i] - v) * t)
+                .toString(16).padStart(2, '0'));
+            return '#' + out.join('');
+        }
+
+        function cellStyleActiveCats() {
+            const field = cellStyleFieldById(cellStyleState.fillId);
+            if (!field) return null;
+            const cats = cellStyleCategories(field);
+            const numeric = field.kind === 'numeric';
+            return {field: field,
+                    keys: cats.map(c => (numeric ? c.key : c)),
+                    labels: cats.map(c => (numeric ? c.label : c)).concat(['—'])};
+        }
+
+        function cellStyleCategoryIndex(i, jcol, active) {
+            const key = cellStyleKey(i, jcol);
+            if (key === null || !(key in active.field.values)) {
+                return active.keys.length;      // the unmapped bucket
+            }
+            const cat = cellStyleCategoryOf(active.field, active.field.values[key]);
+            const at = active.keys.indexOf(cat);
+            return at < 0 ? active.keys.length : at;
+        }
+
+        // The colour this cell is painted, or null when the metric owns colour.
+        // Shared by the trace and by the cell-value contrast, so a number written
+        // on a styled cell is legible against the colour actually behind it.
+        function cellStyleColorFor(i, jcol) {
+            const active = cellStyleActiveCats();
+            if (!active) return null;
+            const idx = cellStyleCategoryIndex(i, jcol, active);
+            const keys = active.keys.concat(['__unmapped__']);
+            return cellStyleColorOfCategory(active.field, keys[idx],
+                                            idx, keys.length);
+        }
+
+        function cellStyleOutlineFor(i, jcol) {
+            const key = cellStyleKey(i, jcol);
+            if (key === null) return null;
+            const id = cellStyleState.outlineId;
+            if (!id || id === 'none') return null;
+            const width = Math.max(1, Number(cellStyleState.outlineWidth) || 2);
+            const color = cellStyleState.outlineColor || '#111111';
+            if (id === '__caller__') {
+                const own = cellOutlineMap[key];
+                if (!own) return null;
+                return {width: own.width !== undefined ? own.width : width,
+                        color: (own.color !== undefined && own.color !== null)
+                            ? own.color : color};
+            }
+            const field = cellStyleFieldById(id);
+            if (!field || !(key in field.values)) return null;
+            const value = field.values[key];
+            const truthy = !(value === false || value === 0 || value === null ||
+                             value === undefined || value === '' || value === 'false');
+            return truthy ? {width: width, color: color} : null;
+        }
+
+        // Bordered, transparent rects on the same index geometry the cell-value
+        // annotations use, so a border is the cell and never an offset of it.
+        function cellStyleShapes() {
+            if (!cellStyleCtx) return [];
+            const shapes = [];
+            for (let i = 0; i < cellStyleCtx.ys.length; i++) {
+                for (let jj = 0; jj < cellStyleCtx.xs.length; jj++) {
+                    const o = cellStyleOutlineFor(i, jj);
+                    if (!o) continue;
+                    shapes.push({type: 'rect', xref: 'x', yref: 'y',
+                                 x0: jj - 0.5, x1: jj + 0.5,
+                                 y0: i - 0.5, y1: i + 0.5,
+                                 fillcolor: 'rgba(0,0,0,0)', line: o, layer: 'above'});
+                }
+            }
+            return shapes;
+        }
+
+        function cellStyleNormalizeToHex(color) {
+            if (typeof color === 'string' && color.charAt(0) === '#') {
+                return color.length === 4
+                    ? '#' + color.slice(1).split('').map(c => c + c).join('')
+                    : color;
+            }
+            const m = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(String(color));
+            if (!m) return '#000000';
+            return '#' + m.slice(1, 4)
+                .map(v => Number(v).toString(16).padStart(2, '0')).join('');
+        }
+
+        function renderCellStylePanel() {
+            const sel = document.getElementById('cellFillSource');
+            if (!sel) return;
+            let options = '<option value="metric">the metric</option>';
+            cellStyleFields.forEach(f => {
+                options += '<option value="' + escapeHtml(f.id) + '">'
+                    + escapeHtml(f.label) + '</option>';
+            });
+            sel.innerHTML = options;
+            sel.value = cellStyleState.fillId || 'metric';
+
+            const oSel = document.getElementById('cellOutlineSource');
+            if (oSel) {
+                let opts = '<option value="none">none</option>';
+                if (Object.keys(cellOutlineMap).length) {
+                    opts += '<option value="__caller__">caller outline</option>';
+                }
+                cellStyleFields.forEach(f => {
+                    opts += '<option value="' + escapeHtml(f.id) + '">'
+                        + escapeHtml(f.label) + ' truthy</option>';
+                });
+                oSel.innerHTML = opts;
+                oSel.value = cellStyleState.outlineId || 'none';
+            }
+
+            const wrap = document.getElementById('cellStyleColors');
+            if (!wrap) return;
+            wrap.innerHTML = '';
+            const active = cellStyleActiveCats();
+            if (!active) return;
+            const total = active.keys.length + 1;
+            const bins = document.getElementById('cellBinCount');
+            if (bins) {
+                bins.style.display = active.field.kind === 'numeric' ? '' : 'none';
+                bins.value = cellStyleState.binCounts[active.field.id] || 4;
+            }
+            active.keys.concat(['__unmapped__']).forEach((key, idx) => {
+                const label = active.labels[idx] !== undefined ? active.labels[idx] : key;
+                const row = document.createElement('div');
+                row.style.cssText = 'display:flex;align-items:center;gap:4px;margin:2px 0;';
+                const input = document.createElement('input');
+                input.type = 'color';
+                input.dataset.valueKey = key;
+                input.value = cellStyleNormalizeToHex(
+                    cellStyleColorOfCategory(active.field, key, idx, total));
+                input.style.cssText = 'width:26px;height:20px;border:1px solid #ccc;padding:0;';
+                input.oninput = function () {
+                    const colors = cellStyleState.colors[active.field.id]
+                        || (cellStyleState.colors[active.field.id] = {});
+                    colors[this.dataset.valueKey] = this.value;
+                    applyCellStyle();
+                };
+                const span = document.createElement('span');
+                span.style.cssText = 'font-size:10px;word-break:break-all;';
+                span.textContent = String(label);
+                row.appendChild(input);
+                row.appendChild(span);
+                wrap.appendChild(row);
+            });
+        }
+
+        // Style changes re-run the ONE newPlot createHeatmap already performs:
+        // restyle of nested keys (shapes, colorbar) is the trap the label toggle
+        // already proved, and there is nothing here that a full rebuild cannot do.
+        function applyCellStyle() { createHeatmap(); }
+
+        function setCellBinCount(v) {
+            const active = cellStyleActiveCats();
+            if (active && active.field.kind === 'numeric') {
+                cellStyleState.binCounts[active.field.id] =
+                    Math.max(2, Math.min(10, parseInt(v, 10) || 4));
+            }
+            applyCellStyle();
+        }
+
+        function resetCellStyle() {
+            cellStyleState = JSON.parse(JSON.stringify(cellStyleDefaultState));
+            const w = document.getElementById('cellOutlineWidth');
+            if (w) w.value = cellStyleState.outlineWidth;
+            const c = document.getElementById('cellOutlineColor');
+            if (c) c.value = cellStyleState.outlineColor;
+            applyCellStyle();
+        }
+'''
+
+    panel = f'''
+                    <!-- Per-cell style: colour and border come from the caller's
+                         data here, and the reader can restyle from any of it. -->
+                    <div class="control-section" id="cellStyleSection">
+                        <h3>🧩 Cell style</h3>
+                        <label style="font-size:9px;">Colour cells by</label>
+                        <select id="cellFillSource"
+                                onchange="cellStyleState.fillId=this.value;applyCellStyle();"></select>
+                        <div style="display:flex;gap:6px;align-items:center;margin:4px 0;">
+                            <label style="font-size:9px;">Bins</label>
+                            <input type="number" id="cellBinCount" min="2" max="10" value="4"
+                                   style="width:48px;font-size:10px;"
+                                   onchange="setCellBinCount(this.value)">
+                            <label style="font-size:9px;">Outline by</label>
+                            <select id="cellOutlineSource"
+                                    onchange="cellStyleState.outlineId=this.value;applyCellStyle();"></select>
+                        </div>
+                        <div style="display:flex;gap:6px;align-items:center;margin:4px 0;">
+                            <input type="color" id="cellOutlineColor"
+                                   value="{html_escape(state['outlineColor'])}"
+                                   style="width:26px;height:20px;"
+                                   onchange="cellStyleState.outlineColor=this.value;applyCellStyle();">
+                            <label style="font-size:9px;">width</label>
+                            <input type="number" id="cellOutlineWidth" min="1" max="8"
+                                   value="{html_escape(state['outlineWidth'])}"
+                                   style="width:44px;font-size:10px;"
+                                   onchange="cellStyleState.outlineWidth=parseInt(this.value,10);applyCellStyle();">
+                            <button class="btn" id="cellStyleReset" onclick="resetCellStyle()"
+                                    style="font-size:9px;padding:2px 6px;">Reset</button>
+                        </div>
+                        <div id="cellStyleColors" style="max-height:170px;overflow-y:auto;"></div>
+                    </div>
+'''
+
+    context = '''
+            // Written once the display labels are final, so every reorder path
+            // (transpose / clustering / custom order / axis subset) resolves a
+            // cell by the labels the reader is actually looking at. The panel is
+            // re-rendered from state here too, so it always describes this view.
+            cellStyleCtx = {xs: displayXLabels, ys: displayYLabels,
+                            srcOnY: !isTransposed};
+            renderCellStylePanel();
+'''
+
+    trace = r'''
+            // A style field owns the cell COLOUR (the metric number stays in the
+            // text and the hover). The scale is built as hard stops so each
+            // category paints exactly its own colour, and the metric's zmin/zmax
+            // and the reader's colour range are deliberately not applied here.
+            const cellStyleActive = cellStyleActiveCats();
+            if (cellStyleActive) {
+                const styleN = cellStyleActive.keys.length + 1;
+                const styleKeys = cellStyleActive.keys.concat(['__unmapped__']);
+                const styleZ = displayYLabels.map((_, i) => displayXLabels.map((_, jj) =>
+                    cellStyleCategoryIndex(i, jj, cellStyleActive)));
+                trace.z = styleZ;
+                trace.colorscale = [];
+                for (let s = 0; s < styleN; s++) {
+                    trace.colorscale.push([s / styleN,
+                        cellStyleColorOfCategory(cellStyleActive.field, styleKeys[s],
+                                                 s, styleN)]);
+                    trace.colorscale.push([(s + 1) / styleN,
+                        cellStyleColorOfCategory(cellStyleActive.field, styleKeys[s],
+                                                 s, styleN)]);
+                }
+                trace.zmin = -0.5;
+                trace.zmax = styleN - 0.5;
+                trace.colorbar = {
+                    tickmode: 'array',
+                    tickvals: styleKeys.map((_, i) => i + 0.5),
+                    ticktext: cellStyleActive.labels,
+                    title: cellStyleActive.field.label, titleside: 'right'};
+                colorbarTitleText = cellStyleActive.field.label;
+            }
+'''
+
+    shapes = '''
+            // Borders live in layout.shapes, built before the single newPlot
+            // below, so they never depend on a restyle of nested keys.
+            const cellStyleShapesList = cellStyleShapes();
+            if (cellStyleShapesList.length) {
+                layout.shapes = (layout.shapes || []).concat(cellStyleShapesList);
+            }
+'''
+
+    contrast = '''
+                        const styleFillColor = cellStyleColorFor(i, j);
+                        if (styleFillColor) bgColor = styleFillColor;
+'''
+
+    settings_save = '''
+                    cellStyle: cellStyleState,'''
+
+    settings_load = '''
+                if (settings.cellStyle) {
+                    cellStyleState = Object.assign(
+                        JSON.parse(JSON.stringify(cellStyleDefaultState)),
+                        settings.cellStyle);
+                }
+'''
+
+    chunks['consts'] = consts
+    chunks['functions'] = functions
+    chunks['panel'] = panel
+    chunks['context'] = context
+    chunks['trace'] = trace
+    chunks['shapes'] = shapes
+    chunks['contrast'] = contrast
+    chunks['settings_save'] = settings_save
+    chunks['settings_load'] = settings_load
+    return chunks
+
+
 def mode_ignoring_blank(series):
     """Most frequent non-blank value of a per-edge NT group; None when
     every value is blank/NaN (unknown must never win an election)."""
@@ -15560,7 +16170,9 @@ class VisualizePath:
         self._vprint('Done\n')
         return created_files
 
-    def create_heatmap(self, custom_row_order=None, custom_col_order=None):
+    def create_heatmap(self, custom_row_order=None, custom_col_order=None,
+                       cell_data=None, cell_fill=None, cell_outline=None,
+                       fill_scale=None):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -15577,6 +16189,9 @@ class VisualizePath:
             Custom order for column nodes (targets). If None, uses the class attribute
             `heatmap_col_order` (if set), otherwise uses sorted order.
             Nodes not in the list will be appended at the end.
+        cell_data, cell_fill, cell_outline, fill_scale
+            Optional per-cell style channels, passed straight to
+            `VisConnMatInteractive` and keyed by node label (see there).
         
         Returns
         -------
@@ -15724,7 +16339,9 @@ class VisualizePath:
             matrices_dict=matrices_dict,  # Pass all matrices for metric toggle
             verbose=self.verbose,
             metric_label_adj=self.adj_ratio_label_plain,
-            inline_plotly=True  # single-file page survives relocation
+            inline_plotly=True,  # single-file page survives relocation
+            cell_data=cell_data, cell_fill=cell_fill,
+            cell_outline=cell_outline, fill_scale=fill_scale,
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -16297,7 +16914,9 @@ def visualize_network(
     return vp.visualize_network()
 
 
-def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None):
+def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None,
+                   cell_data=None, cell_fill=None, cell_outline=None,
+                   fill_scale=None):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -16380,6 +16999,24 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         Display name for the metric axis/colorbar (overrides the metric-type heuristic).
     square_cells : bool, optional
         Open with cells locked square (auto-fitted canvas height). Default False.
+    cell_data : dict of {field_name: {(row_label, col_label): value}}, optional
+        Extra per-cell channels the reader can colour or outline cells from
+        ('any data' at the page level). Each field becomes one option in the
+        Cell style panel.
+    cell_fill : dict of {(row_label, col_label): colour-or-category}, optional
+        The caller's own cell colouring, and the panel's default source. CSS
+        colour strings colour cells directly; any other value is a category
+        priced by `fill_scale`.
+    cell_outline : dict of {(row_label, col_label): True-or-dict}, optional
+        Cells to draw a border on. A bare True asks for the default border;
+        `{'width': w, 'color': c}` names it.
+    fill_scale : dict, optional
+        Category value -> colour for a non-colour `cell_fill`. A category with
+        no entry RAISES: an unpriced class must not render as the unmapped grey.
+
+    All four are keyed by the matrix's row/column LABELS, never by position, and
+    are a rendering-only channel: the metric values stay in the text, the hover
+    and every table. With none of them passed the page is what it was before.
     '''
     
     # Helper function for verbose printing
@@ -16705,6 +17342,27 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
               file=_sys.stderr)
         plotly_tag = ('<script src="https://cdn.plot.ly/'
                       'plotly-2.35.2.min.js"></script>')
+    # Per-cell style: the caller's maps become JS-ready fields keyed by label,
+    # and every chunk below is the empty string when nothing was passed — so an
+    # unstyled page carries no style code at all (see _cell_style_js_chunks).
+    cell_style_fields, cell_style_outline_map = normalize_cell_style(
+        y_labels, x_labels, cell_data=cell_data, cell_fill=cell_fill,
+        cell_outline=cell_outline, fill_scale=fill_scale)
+    _cell_style_chunks = _cell_style_js_chunks(cell_style_fields,
+                                               cell_style_outline_map)
+    cell_style_consts = _cell_style_chunks['consts']
+    cell_style_functions = _cell_style_chunks['functions']
+    cell_style_panel = _cell_style_chunks['panel']
+    cell_style_context = _cell_style_chunks['context']
+    cell_style_trace = _cell_style_chunks['trace']
+    cell_style_shapes = _cell_style_chunks['shapes']
+    cell_style_contrast = _cell_style_chunks['contrast']
+    cell_style_settings_save = _cell_style_chunks['settings_save']
+    cell_style_settings_load = _cell_style_chunks['settings_load']
+    if cell_style_fields or cell_style_outline_map:
+        _vprint(f'  Per-cell style: {len(cell_style_fields)} colour channel(s), '
+               f'{len(cell_style_outline_map)} bordered cell(s)')
+
     html_content = f'''<!DOCTYPE html>
 <html>
 <head>
@@ -17022,7 +17680,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                         </div>
                     </div>
                     
-                    <!-- Scale Selection -->
+                    <!-- Scale Selection -->{cell_style_panel}
                     <div>
                         <label style="font-size: 10px; display: block; margin-bottom: 2px;">Scale:</label>
                         <div class="button-group">
@@ -17303,7 +17961,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         const xLabels = {json_safe(x_labels)};
         const yLabels = {json_safe(y_labels)};
         const storageKey = '{js_escape(storage_key)}';
-        const useLazyTransforms = {json.dumps(use_lazy_transforms)};
+        const useLazyTransforms = {json.dumps(use_lazy_transforms)};{cell_style_consts}
         
         // Track current row/column order (for interactive reordering)
         // If init_clustered is true and clustering succeeded, start with clustered order
@@ -17375,7 +18033,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         let filteredRowIndices = [];  // Indices of rows to show after filtering
         let filteredColIndices = [];  // Indices of columns to show after filtering
         let dataFilterMode = 'hide';  // 'hide' = hide rows/cols, 'zero' = show values as 0
-        let showFilteredRowsCols = true;  // Whether to show filtered rows/cols (when in 'zero' mode)
+        let showFilteredRowsCols = true;  // Whether to show filtered rows/cols (when in 'zero' mode){cell_style_functions}
         let zeroMaskMatrix = null;  // Boolean matrix for cells to show as 0
         
         // Function to generate hover text dynamically when needed
@@ -17863,7 +18521,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // Dendrogram traces (top: column tree, right: row tree). Only drawn
             // with clustered ordering active; the data filter is disabled during
             // clustering, so displayed labels are the full set and positions
-            // map 1:1 onto heatmap tick indices.
+            // map 1:1 onto heatmap tick indices.{cell_style_context}
             let dendroTop = null;
             let dendroRight = null;
             if (showDendrogram && useClusteredOrder && clusteringAvailable) {{
@@ -17975,7 +18633,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 trace.zmax = customZmax;
             }}
             
-            // Store current range for slider scaling
+            // Store current range for slider scaling{cell_style_trace}
             window.currentDataRange = range;
             
             // Update 2-point color value inputs to show current data range in auto mode
@@ -18022,7 +18680,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 width: currentWidth,
                 height: currentHeight,
                 margin: {{l: dynamicLeftMargin, r: 40, b: dynamicBottomMargin, t: 100, pad: 4}}
-            }};
+            }};{cell_style_shapes}
 
             // Square-cells lock rides in the same layout build so every
             // re-render (dendrogram toggles, method switches) stays constrained
@@ -18076,7 +18734,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                             bgColor = getColorFromPlotlyScale(colorscaleToUse, normalized);
                         }}
                         
-                        // Convert color to RGB and determine contrast color
+                        // Convert color to RGB and determine contrast color{cell_style_contrast}
                         const rgb = hexToRgb(bgColor);
                         const textColor = getContrastColor(rgb);
                         
@@ -19868,7 +20526,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     cellValueFontSize: cellValueFontSize,
                     ignoredValuesInput: document.getElementById('ignoreValuesInput')?.value,
                     contrastThreshold: contrastThreshold,
-                    reverseContrast: reverseContrast,
+                    reverseContrast: reverseContrast,{cell_style_settings_save}
                     // UI state
                     squareCellsLocked: squareCellsLocked,
                     // Row/column order after reordering
@@ -20059,7 +20717,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 }}
                 if (settings.currentYLabels && Array.isArray(settings.currentYLabels)) {{
                     currentYLabels = settings.currentYLabels.slice();
-                }}
+                }}{cell_style_settings_load}
                 
                 if (!useAutoRange && settings.zminSlider && settings.zmaxSlider) {{
                     document.getElementById('zminSlider').value = settings.zminSlider;

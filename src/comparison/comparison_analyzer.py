@@ -13410,6 +13410,78 @@ class ComparisonAnalyzer:
     # Conserved Path Visualization
     # =========================================================================
     
+    # The two tiers `clock-production` ops 63-65 publish: a pair reported by
+    # EVERY dataset in the fill set, and one reported by only some of them.
+    # Priced apart from the page's own unmapped grey, so "present in some" can
+    # never read as "no record at all".
+    CELL_STYLE_CONSERVED = '#2171b5'
+    CELL_STYLE_PARTIAL = '#9aa0a6'
+
+    def _cell_style_maps_from_presence(self, edge_labels, fill_datasets=None,
+                                       outline_datasets=None, nickname_map=None):
+        """Per-cell fill/outline for a cross-dataset matrix, from `edge_labels`.
+
+        `edge_labels` already holds one `'{nickname} wt'` entry per dataset that
+        actually reports the pair, so the two grades are read off that record: a
+        cell is 1 when EVERY dataset in `fill_datasets` reports it and 0
+        otherwise, and it is outlined when ANY dataset in `outline_datasets`
+        does. No new number is computed here — this is a rendering channel.
+
+        Keys are (source_label, target_label) exactly as `edge_labels` carries
+        them, i.e. after the display-name rewrite, which is what the heatmap's
+        row/column labels are; the heatmap resolves them by label, so transpose,
+        clustering, custom order and the axis subset keep them on their cell.
+
+        Returns `(cell_fill, cell_outline, fill_scale)`, all empty when nothing
+        was asked for — then the caller's `create_heatmap()` is exactly the
+        unstyled call it was before.
+
+        A dataset that reports no edge in this matrix RAISES: a silently
+        unmatched release would grey out every cell and read as an absence of
+        conservation rather than an absence of a name.
+        """
+        fill_datasets = list(fill_datasets or [])
+        outline_datasets = list(outline_datasets or [])
+        if not fill_datasets and not outline_datasets:
+            return {}, {}, {}
+        nickname_map = nickname_map or {}
+        reported = {str(key)[:-3].strip() for info in edge_labels.values()
+                    for key in info if str(key).endswith(' wt')}
+
+        def _nick(dataset):
+            # callers reach for either the release name or the short code the
+            # page already shows; both must resolve to the same record key
+            nick = str(nickname_map.get(str(dataset), str(dataset)))
+            if nick not in reported:
+                raise ValueError(
+                    f'cell style: dataset {dataset!r} (nickname {nick!r}) '
+                    f'reports no edge in this matrix; nicknames present: '
+                    f'{sorted(reported)}')
+            return nick
+
+        fill_nick = [_nick(dataset) for dataset in fill_datasets]
+        outline_nick = [_nick(dataset) for dataset in outline_datasets]
+
+        cell_fill = {}
+        cell_outline = {}
+        for (source, target), info in edge_labels.items():
+            weights = {str(key)[:-3].strip(): value
+                       for key, value in info.items()
+                       if str(key).endswith(' wt')}
+            if fill_nick:
+                cell_fill[(source, target)] = int(
+                    all(weights.get(nick) for nick in fill_nick))
+            if outline_nick and any(weights.get(nick) for nick in outline_nick):
+                cell_outline[(source, target)] = True
+
+        # both tiers priced whether or not this matrix contains them: switching
+        # datasets must not turn an exported page into a refusal later
+        fill_scale = {}
+        if cell_fill:
+            fill_scale = {1: self.CELL_STYLE_CONSERVED,
+                          0: self.CELL_STYLE_PARTIAL}
+        return cell_fill, cell_outline, fill_scale
+
     def visualize_conserved_paths(
         self,
         threshold: Optional[Any] = None,
@@ -13418,6 +13490,8 @@ class ComparisonAnalyzer:
         showfig: bool = False,
         network_layout: str = 'hierarchical',
         edge_width_scale: str = 'log',
+        cell_style_fill_datasets: Optional[list] = None,
+        cell_style_outline_datasets: Optional[list] = None,
         **vispath_kwargs
     ) -> Optional[str]:
         """
@@ -13436,6 +13510,13 @@ class ComparisonAnalyzer:
             showfig: If True, opens the visualization in browser.
             network_layout: Layout algorithm ('hierarchical', 'spring', 'circular').
             edge_width_scale: Edge width scaling ('log', 'linear', 'sqrt', 'none').
+            cell_style_fill_datasets: Datasets whose JOINT presence colours the
+                heatmap cells (a pair reported by all of them is drawn in the
+                conserved colour, one reported by only some in the partial
+                colour). Accepts release names or the short codes the page shows.
+            cell_style_outline_datasets: Datasets whose presence puts a border on
+                the cell — the agreement tier, drawn independently of the fill.
+                With neither parameter the heatmap page is exactly as before.
             **vispath_kwargs: Additional keyword arguments for VisualizePath.
             
         Returns:
@@ -13820,7 +13901,26 @@ class ComparisonAnalyzer:
         
         # Generate network visualization
         output_path = vp.create_network()
-        output_path_heatmap = vp.create_heatmap()
+        if cell_style_fill_datasets or cell_style_outline_datasets:
+            # Conservation read off the multi-dataset strengths the producer
+            # already built, so the matrix page shows the tier each pair is in
+            # instead of only the averaged weight the metric carries.
+            cell_fill, cell_outline, fill_scale = (
+                self._cell_style_maps_from_presence(
+                    edge_labels, cell_style_fill_datasets,
+                    cell_style_outline_datasets, dataset_nickname_map))
+            self._log(f"  Cell style: {sum(1 for v in cell_fill.values() if v)}"
+                      f" conserved pair(s) filled, "
+                      f"{len(cell_outline)} pair(s) outlined")
+            output_path_heatmap = vp.create_heatmap(
+                cell_fill=cell_fill, cell_outline=cell_outline,
+                fill_scale=fill_scale)
+        else:
+            output_path_heatmap = vp.create_heatmap()
+        # the heatmap used to be written and then dropped on the floor: only the
+        # network path was logged, so a caller could not find its matrix page
+        if output_path_heatmap:
+            self._log_file(output_path_heatmap, "Saved conserved path heatmap")
         
         self._log_file(output_path, "Saved conserved path visualization")
         

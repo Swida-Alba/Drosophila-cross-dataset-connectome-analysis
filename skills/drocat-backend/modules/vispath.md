@@ -30,6 +30,7 @@ vp = VisualizePath(
 | --- | --- |
 | `visualize(plot_heatmap=True, plot_Sankey=True, plot_network=True)` | Render all three HTML views; returns `(connections, graph)`. |
 | `visualize_heatmap(custom_row_order=None, custom_col_order=None)` | Heatmap only. |
+| `create_heatmap(custom_row_order=None, custom_col_order=None, cell_data=None, cell_fill=None, cell_outline=None, fill_scale=None)` | Heatmap only, from the built network; the four optional channels colour/border individual cells (see *Per-cell style*). |
 | `visualize_sankey()` | Sankey only. |
 | `visualize_network()` | Network only. |
 | `visualized_paths_for_export()` | Connection table for export. |
@@ -84,6 +85,56 @@ Key behaviors:
   (`TestVisConnMatInteractiveLocalRenders`) now renders it in headless
   Chrome, because eight string-level tests had kept it green while it was
   blank.
+
+## Per-cell style channels (2026-10-17)
+
+Filed by `clock-production` (`DROCAT_issue_heatmap_per_cell_style.md`): a Plotly
+heatmap colours a cell only from `colorscale(z)` and has no per-cell border, so a
+caller could not say "this pair is conserved" or "this one also appears in BANC"
+on the matrix page. `VisConnMatInteractive` and `VisualizePath.create_heatmap`
+now take four optional channels — rendering only, no computed number moves:
+
+- `cell_data` — `{field_name: {(row_label, col_label): value}}`, one option per
+  field in the reader's panel ("any data" at the page level);
+- `cell_fill` — the caller's own colouring, and the panel's default source: CSS
+  colour strings colour cells directly, anything else is a category priced by
+  `fill_scale`;
+- `cell_outline` — `{(row_label, col_label): True | {'width', 'color'}}`;
+- `fill_scale` — `{category: '#hex'}`. A category with no entry **raises** rather
+  than falling through to the unmapped grey, and a key naming a label no axis
+  carries warns — silence there would read as an unstyled cell forever.
+
+Keys are the two AXIS LABELS (`normalize_cell_style` joins them with `\t`, and
+accepts the `(row, col)` tuple spelling too), never positions: transpose,
+clustering, custom order and the axis subset all rewrite `displayXLabels`/
+`displayYLabels`, and a node that is both source and target sits on both axes.
+The page resolves a cell by `(source-side, target-side)` in the caller's
+direction whichever axis those currently sit on.
+
+The reader gets a **🧩 Cell style** panel: colour source (metric / any field),
+one colour input per category (numeric fields are binned, 2–10 bins), outline
+source, border colour and width, and Reset. A style change re-runs
+`createHeatmap()`, which is the one place `Plotly.newPlot` is called — no
+`restyle` of nested keys, the trap the label-toggle defect showed. While a fill
+channel owns the colour the metric's `zmin`/`zmax` and the reader's colour range
+are deliberately not applied (the scale is hard stops, one per category); the
+metric keeps its numbers in the cell text, the hover and every table.
+
+With no channel passed, every emitted chunk is the empty string — the default
+page is byte-identical to the pre-feature page (certified against the old
+module; keeps `tests/core/test_profiling_multi_dataset.py`'s `xgap`/`ygap` law
+and "no `layout.shapes`, single heatmap trace" true).
+
+`ComparisonAnalyzer.visualize_conserved_paths(...)` is the wired caller:
+`cell_style_fill_datasets` / `cell_style_outline_datasets` read the per-dataset
+weights it already built (`'{nickname} wt'` per reporting dataset), fill =
+reported by **every** dataset in the fill set, outline = reported by **any** in
+the outline set, and a dataset name that reports nothing in that matrix raises
+instead of greying the whole page.
+
+Laws: `tests/vispath/test_heatmap_cell_style.py` (normalizer, panel, transpose,
+clustering, custom order, axis subset, escaping, default page) and
+`tests/core/test_conserved_network_cell_style.py` (the producer's maps).
 
 ## Library embedding (offline contract)
 
