@@ -18593,32 +18593,16 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             colorbarTitleText = trace.colorbar.title;
             
             // Configure text display for cell values
-            console.log('createHeatmap: showCellValues =', showCellValues);
-            if (showCellValues) {{
-                // Show cell values: use texttemplate to display z values
-                console.log('Setting texttemplate to show cell values');
-                
-                // Create a text array from the data for display
-                const textArray = data.map(row => row.map(val => val.toString()));
-                
-                trace.text = textArray;  // Text array for display
-                trace.texttemplate = '%{{text}}';  // Use the text array
-                trace.textfont = {{
-                    size: Math.max(8, Math.min(16, currentFontSize * 0.8))
-                }};
-                // For hover, use the detailed hover text
-                trace.hovertext = currentHoverText;
-                trace.hoverinfo = 'text';
-                trace.hovertemplate = '%{{hovertext}}<extra></extra>';  // <extra></extra> hides "trace 0"
-            }} else {{
-                // Hide cell values: no texttemplate, only hover text
-                console.log('NOT setting texttemplate - hiding cell values');
-                trace.text = currentHoverText;  // Text for hover only
-                trace.hoverinfo = 'text';  // Show hover text on hover
-                trace.hovertemplate = '%{{text}}<extra></extra>';  // <extra></extra> hides "trace 0"
-            }}
-            console.log('trace texttemplate:', trace.texttemplate);
-            console.log('trace text sample:', trace.text ? trace.text[0] : 'none');
+            // Cell values are drawn ONCE, by the contrast-coloured annotations
+            // below. A `texttemplate` here would draw a second copy of the
+            // SCALED value on top of the ORIGINAL value the annotation shows —
+            // a doubled glyph in linear (scaled == original) and two different
+            // numbers in log/sqrt.
+            trace.text = currentHoverText;  // Text for hover only
+            trace.hoverinfo = 'text';  // Show hover text on hover
+            trace.hovertemplate = '%{{text}}<extra></extra>';  // <extra></extra> hides "trace 0"
+            console.log('createHeatmap: showCellValues =', showCellValues,
+                        '(annotations only, no texttemplate)');
             
             // Apply custom colorbar range
             // Priority: 1) Custom color range (for cross-heatmap comparison)
