@@ -454,15 +454,16 @@ def test_a_numeric_field_is_binned_and_rebinnable(tmp_path):
         high = st['cells']['S3|T3']
         assert low['color'] != high['color'], (low, high)
         assert low['drawn'] == low['color'], low
-        assert len(st['cbTicks']) == 5, st['cbTicks']   # 4 bins + the unmapped
-        assert st['swatches'] == 5, st['swatches']
+        # 4 bins and no unmapped bucket: every cell carries a strength
+        assert len(st['cbTicks']) == 4, st['cbTicks']
+        assert st['swatches'] == 4, st['swatches']
 
         page.js("document.getElementById('cellBinCount').value = '6';"
                 "setCellBinCount('6'); return 1;")
         _rendered(page)
         st = _state(page)
-        assert len(st['cbTicks']) == 7, st['cbTicks']
-        assert st['swatches'] == 7, st['swatches']
+        assert len(st['cbTicks']) == 6, st['cbTicks']
+        assert st['swatches'] == 6, st['swatches']
 
 
 @REQUIRES_CDP
@@ -477,3 +478,33 @@ def test_the_default_page_still_draws_one_unshaped_trace(tmp_path):
         assert st['z'] and st['z'][0][0] is not None
         assert st['cbTicks'] is None, st['cbTicks']
         assert not st['errors'], st['errors']
+
+
+def test_the_caller_names_its_fill_field_and_the_default_stays_generic():
+    """A categorical legend titled "per-cell fill" tells a reader nothing about
+    what its classes mean; the caller may name the field it is encoding."""
+    named, _ = normalize_cell_style(ROWS, COLS, cell_fill=dict(FILL),
+                                    fill_label='Conservation (datasets)')
+    assert named[0]['label'] == 'Conservation (datasets)', named[0]
+    default, _ = normalize_cell_style(ROWS, COLS, cell_fill=dict(FILL))
+    assert default[0]['label'] == 'per-cell fill', default[0]
+
+
+@REQUIRES_CDP
+def test_a_fully_styled_page_carries_no_unmapped_swatch(tmp_path):
+    """The "—" bucket exists only when a shown cell is outside the field. On a
+    page where every cell is classed, it would sit in the legend beside the
+    caller's own grey class and read as a fifth category."""
+    palette = ['#e15759', '#4e79a7', '#59a14f']
+    every = {(r, c): palette[(i + j) % 3]
+             for i, r in enumerate(ROWS) for j, c in enumerate(COLS)}
+    page_path = _export(tmp_path, 'fully_styled', cell_fill=every,
+                        fill_label='Class')
+    with Page(page_path) as page:
+        st = _state(page)
+        assert not st['errors'], st['errors']
+        assert '—' not in st['cbTicks'], st['cbTicks']
+        assert len(st['cbTicks']) == 3, st['cbTicks']
+        # three categories, two hard stops each, no unmapped bucket
+        assert len(st['colorscale']) == 6, st['colorscale']
+        assert max(max(row) for row in st['z']) == 2, st['z']

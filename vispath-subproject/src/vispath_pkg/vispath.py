@@ -367,10 +367,14 @@ def _numeric_bins(values, count):
 
 
 def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
-                         cell_outline=None, fill_scale=None):
+                         cell_outline=None, fill_scale=None, fill_label=None):
     """Turn caller per-cell style into JS-ready fields, keyed by label.
 
     Returns `(fields, outline_map)`.
+
+    `fill_label` names the caller's fill field in the legend/colorbar title; a
+    categorical fill without one is titled "per-cell fill", which tells a reader
+    nothing about what the classes mean.
 
     `fields` is an ordered list, one entry per channel the reader may colour by::
 
@@ -470,8 +474,8 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
         if field:
             fields.append(field)
     if cell_fill:
-        field = _add(CALLER_FILL_FIELD_ID, 'per-cell fill', cell_fill,
-                     colors=fill_scale)
+        field = _add(CALLER_FILL_FIELD_ID, fill_label or 'per-cell fill',
+                     cell_fill, colors=fill_scale)
         if field:
             fields.insert(0, field)
 
@@ -638,14 +642,32 @@ def _cell_style_js_chunks(fields, outline_map):
             return '#' + out.join('');
         }
 
+        // True when at least one cell on screen is not in the field: only then
+        // does the "—" bucket exist, in the legend and in the colour scale. A
+        // caller that styles every cell gets no stray grey swatch beside its
+        // own grey class.
+        function cellStyleShowsUnmapped(field) {
+            if (!cellStyleCtx) return true;
+            for (let i = 0; i < cellStyleCtx.ys.length; i++) {
+                for (let jcol = 0; jcol < cellStyleCtx.xs.length; jcol++) {
+                    const key = cellStyleKey(i, jcol);
+                    if (key === null || !(key in field.values)) return true;
+                }
+            }
+            return false;
+        }
+
         function cellStyleActiveCats() {
             const field = cellStyleFieldById(cellStyleState.fillId);
             if (!field) return null;
             const cats = cellStyleCategories(field);
             const numeric = field.kind === 'numeric';
+            const hasUnmapped = cellStyleShowsUnmapped(field);
             return {field: field,
+                    hasUnmapped: hasUnmapped,
                     keys: cats.map(c => (numeric ? c.key : c)),
-                    labels: cats.map(c => (numeric ? c.label : c)).concat(['—'])};
+                    labels: cats.map(c => (numeric ? c.label : c))
+                            .concat(hasUnmapped ? ['—'] : [])};
         }
 
         function cellStyleCategoryIndex(i, jcol, active) {
@@ -665,7 +687,7 @@ def _cell_style_js_chunks(fields, outline_map):
             const active = cellStyleActiveCats();
             if (!active) return null;
             const idx = cellStyleCategoryIndex(i, jcol, active);
-            const keys = active.keys.concat(['__unmapped__']);
+            const keys = active.keys.concat(active.hasUnmapped ? ['__unmapped__'] : []);
             return cellStyleColorOfCategory(active.field, keys[idx],
                                             idx, keys.length);
         }
@@ -752,13 +774,13 @@ def _cell_style_js_chunks(fields, outline_map):
             wrap.innerHTML = '';
             const active = cellStyleActiveCats();
             if (!active) return;
-            const total = active.keys.length + 1;
+            const total = active.keys.length + (active.hasUnmapped ? 1 : 0);
             const bins = document.getElementById('cellBinCount');
             if (bins) {
                 bins.style.display = active.field.kind === 'numeric' ? '' : 'none';
                 bins.value = cellStyleState.binCounts[active.field.id] || 4;
             }
-            active.keys.concat(['__unmapped__']).forEach((key, idx) => {
+            active.keys.concat(active.hasUnmapped ? ['__unmapped__'] : []).forEach((key, idx) => {
                 const label = active.labels[idx] !== undefined ? active.labels[idx] : key;
                 const row = document.createElement('div');
                 row.style.cssText = 'display:flex;align-items:center;gap:4px;margin:2px 0;';
@@ -858,8 +880,10 @@ def _cell_style_js_chunks(fields, outline_map):
             // and the reader's colour range are deliberately not applied here.
             const cellStyleActive = cellStyleActiveCats();
             if (cellStyleActive) {
-                const styleN = cellStyleActive.keys.length + 1;
-                const styleKeys = cellStyleActive.keys.concat(['__unmapped__']);
+                const styleN = cellStyleActive.keys.length
+                               + (cellStyleActive.hasUnmapped ? 1 : 0);
+                const styleKeys = cellStyleActive.keys.concat(
+                    cellStyleActive.hasUnmapped ? ['__unmapped__'] : []);
                 const styleZ = displayYLabels.map((_, i) => displayXLabels.map((_, jj) =>
                     cellStyleCategoryIndex(i, jj, cellStyleActive)));
                 trace.z = styleZ;
@@ -16172,7 +16196,7 @@ class VisualizePath:
 
     def create_heatmap(self, custom_row_order=None, custom_col_order=None,
                        cell_data=None, cell_fill=None, cell_outline=None,
-                       fill_scale=None):
+                       fill_scale=None, fill_label=None):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -16189,7 +16213,7 @@ class VisualizePath:
             Custom order for column nodes (targets). If None, uses the class attribute
             `heatmap_col_order` (if set), otherwise uses sorted order.
             Nodes not in the list will be appended at the end.
-        cell_data, cell_fill, cell_outline, fill_scale
+        cell_data, cell_fill, cell_outline, fill_scale, fill_label
             Optional per-cell style channels, passed straight to
             `VisConnMatInteractive` and keyed by node label (see there).
         
@@ -16342,6 +16366,7 @@ class VisualizePath:
             inline_plotly=True,  # single-file page survives relocation
             cell_data=cell_data, cell_fill=cell_fill,
             cell_outline=cell_outline, fill_scale=fill_scale,
+            fill_label=fill_label,
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -16916,7 +16941,7 @@ def visualize_network(
 
 def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None,
                    cell_data=None, cell_fill=None, cell_outline=None,
-                   fill_scale=None):
+                   fill_scale=None, fill_label=None):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -17347,7 +17372,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     # unstyled page carries no style code at all (see _cell_style_js_chunks).
     cell_style_fields, cell_style_outline_map = normalize_cell_style(
         y_labels, x_labels, cell_data=cell_data, cell_fill=cell_fill,
-        cell_outline=cell_outline, fill_scale=fill_scale)
+        cell_outline=cell_outline, fill_scale=fill_scale,
+        fill_label=fill_label)
     _cell_style_chunks = _cell_style_js_chunks(cell_style_fields,
                                                cell_style_outline_map)
     cell_style_consts = _cell_style_chunks['consts']
