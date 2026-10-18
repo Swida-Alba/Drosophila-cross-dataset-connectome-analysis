@@ -1404,6 +1404,9 @@ class VisualizePath:
         node_shape='circle',  # NEW: Node geometry ('circle'|'round-square'|'sharp-square'|'by-role')
         merge_reciprocal_edges=False,  # NEW: Collapse reciprocal pairs into one both-end-arrow edge
         network_node_universe=None,  # NEW: declared nodes kept on the network canvas even with no edge
+        network_node_colors=None,    # NEW: {node: hex} fill overrides (a type-palette canvas)
+        edge_group_legend=None,      # NEW: [{label, color}] edge-direction chips in the footer
+        network_role_legend=True,    # NEW: False hides the source/intermediate/target chips
     ):
         """
         Initialize VisualizePath with pathway data and visualization settings.
@@ -1731,6 +1734,10 @@ class VisualizePath:
         # Declared nodes the network must show even when no edge touches
         # them (a 21-type x L/R hemisphere canvas needs all 42).
         self.network_node_universe = [str(n) for n in (network_node_universe or [])]
+        self.network_node_colors = {
+            str(k): str(v) for k, v in (network_node_colors or {}).items()}
+        self.edge_group_legend = list(edge_group_legend or [])
+        self.network_role_legend = bool(network_role_legend)
         self.hemisphere_desaturate_side = (hemisphere_desaturate_side or 'R').upper()
         self.hemisphere_desaturate_factor = max(0.0, min(1.0, hemisphere_desaturate_factor))
         # Mirror layout auto-enables when Separate Hemispheres (L/R) is checked,
@@ -3814,7 +3821,13 @@ class VisualizePath:
         self._vprint(f"Network: {final_counts['source']} source, "
                      f"{final_counts['intermediate']} intermediate, "
                      f"{final_counts['target']} target nodes")
-        
+
+        # Per-node fill overrides (a type-palette canvas): the renderer
+        # prefers G.nodes[n]['color'] over the role palette.
+        for node, color in (getattr(self, 'network_node_colors', None) or {}).items():
+            if node in G:
+                G.nodes[node]['color'] = color
+
         # V1: pair-level extra metrics (e.g. Refilled totals) merge onto
         # the aggregated edges — same topology, parallel metric columns.
         if self.pair_extra_metrics:
@@ -6411,12 +6424,23 @@ class VisualizePath:
                     'title="These short codes prefix node names to mark the '
                     'dataset each node comes from">dataset codes in node names</span>'
                 )
+        # Edge-direction legend chips (L-L, R-R, ...): static footer chips
+        # naming the per-edge colour groups.
+        edge_group_legend_html = ""
+        if self.edge_group_legend:
+            edge_group_legend_html = "".join(
+                '<div class="legend-item" title="Edge-direction group">'
+                f'<div class="legend-color" style="background: {item.get("color", "#888")};"></div>'
+                f'<span>{html_escape(str(item.get("label", "")))}</span></div>'
+                for item in self.edge_group_legend)
+
         # Footer legends: with declared groups the structural role
         # swatches (source/intermediate/target) are REPLACED by the group
         # legend — one color chip per declared group (datasets in the
         # mapping views); roles stay on the node hovers.
         role_legend_html = ""
         group_legend_html = ""
+        role_quick_actions_html = ""
         standard_group_options_html = (
             '<option value="source">Source Nodes</option>'
             '<option value="intermediate">Intermediate Nodes</option>'
@@ -6433,7 +6457,7 @@ class VisualizePath:
             # roles move to the hovers: no Source/Intermed./Target
             # quick-action buttons when dataset groups are declared
             role_quick_actions_html = ""
-        else:
+        elif getattr(self, 'network_role_legend', True):
             role_legend_html = (
                 '<div class="legend-item" data-group="source">'
                 f'<div class="legend-color" style="background: {self.node_color[0]};"></div>'
@@ -7669,6 +7693,7 @@ class VisualizePath:
                  chips are static and never touched by it. -->
             <span id="groupLegend" style="display: contents;">{role_legend_html}{group_legend_html}</span>
             <span id="datasetLegend" style="display: contents;">{dataset_legend_html}</span>
+            <span id="edgeGroupLegend" style="display: contents;">{edge_group_legend_html}</span>
         </div>
         <div class="info">
             <!-- Live counts: the reciprocal mode hides reverse halves at
@@ -12543,6 +12568,9 @@ class VisualizePath:
         // Declared dataset groups replace the structural roles as the base
         // node groups (legend, quick actions, dropdown).
         const declaredGroupsActive = {'true' if self.node_groups else 'false'};
+        // A type-palette canvas colors every node by its own hue, so the
+        // structural role chips would contradict the canvas; suppress them.
+        const roleLegendEnabled = {'false' if not self.network_role_legend else 'true'};
         const originalGroupDefaults = {{
             source: {{ color: '{self.node_color[0]}', opacity: {int(self.source_opacity * 100)} }},
             intermediate: {{ color: '{self.node_color[1]}', opacity: {int(self.intermediate_opacity * 100)} }},
@@ -12636,7 +12664,8 @@ class VisualizePath:
             const holder = document.getElementById('groupLegend');
             if (!holder) return;
             let html = '';
-            if (!declaredGroupsActive) {{
+            if (!declaredGroupsActive &&
+                    (typeof roleLegendEnabled === 'undefined' || roleLegendEnabled)) {{
                 ['source', 'intermediate', 'target'].forEach(name => {{
                     html += legendChip(name, name.charAt(0).toUpperCase() + name.slice(1), groupDefaultFor(name));
                 }});

@@ -3426,3 +3426,31 @@ def test_metric_filter_and_labels_follow_ratio_and_ratio_adj(tmp_path):
                        " return e.data('source')==='A' && e.data('target')==='B';"
                        "})[0].data('display_label'));") == '50'
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_node_palette_overrides_and_edge_group_legend(tmp_path):
+    """Per-node fill overrides win over the role palette, the edge-group
+    chips render in the footer, and the role legend can be suppressed."""
+    df = pd.DataFrame({"source": ["A"], "target": ["B"], "weight": [5.0]})
+    vp = VisualizePath(
+        path_file=df, output_folder=str(tmp_path), showfig=False,
+        verbose=False, network_layout="dagre",
+        network_node_colors={"A": "#112233", "B": "#445566"},
+        edge_group_legend=[{"label": "L-L", "color": "#ff0000"},
+                           {"label": "R-R", "color": "#00ff00"}],
+        network_role_legend=False)
+    vp.base_filename = "palette"
+    vp.build_network()
+    out = vp.create_network()
+    with Page(Path(out)) as page:
+        assert page.wait("return typeof cy !== 'undefined' && cy.nodes().length === 2;")
+        assert page.js("return cy.getElementById('A').style('background-color');") \
+            == "rgb(17,34,51)"
+        assert page.js("return cy.getElementById('B').style('background-color');") \
+            == "rgb(68,85,102)"
+        footer = page.js("return document.querySelector('.vp-footer .legend')"
+                         ".textContent;")
+        assert 'L-L' in footer and 'R-R' in footer, footer
+        assert page.js("return document.querySelectorAll('[data-group]').length;") == 0
+        assert page.errors() == [], page.errors()
