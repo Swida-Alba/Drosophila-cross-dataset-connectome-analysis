@@ -367,7 +367,8 @@ def _numeric_bins(values, count):
 
 
 def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
-                         cell_outline=None, fill_scale=None, fill_label=None):
+                         cell_outline=None, fill_scale=None, fill_label=None,
+                         fill_value=None):
     """Turn caller per-cell style into JS-ready fields, keyed by label.
 
     Returns `(fields, outline_map)`.
@@ -375,6 +376,12 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
     `fill_label` names the caller's fill field in the legend/colorbar title; a
     categorical fill without one is titled "per-cell fill", which tells a reader
     nothing about what the classes mean.
+
+    `fill_value` is an optional number per cell. When a category's `fill_scale`
+    entry is a LIST of colours instead of one, that list is a ramp and the cell's
+    number positions it inside the ramp (normalised to the category's own min and
+    max). So a class can keep its hue while its shade carries the value, and the
+    legend band becomes a visible value scale rather than a flat swatch.
 
     `fields` is an ordered list, one entry per channel the reader may colour by::
 
@@ -444,12 +451,13 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
             return 'categorical'
         return 'numeric'
 
-    def _add(field_id, label, mapping, colors=None, unmapped=CELL_UNMAPPED_COLOR):
+    def _add(field_id, label, mapping, colors=None, fill_value=None,
+             unmapped=CELL_UNMAPPED_COLOR):
         values = _check_keys(mapping, label)
         if not values:
             return None
         kind = _kind_of(list(values.values()))
-        palette = {}
+        palette, ramps = {}, {}
         if kind == 'color':
             palette = {v: v for v in set(str(x) for x in values.values())}
         elif kind == 'categorical':
@@ -462,12 +470,41 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
                         f'{label}: category value(s) {missing} have no colour in '
                         f'fill_scale (keys: {sorted(map(str, colors))}); an '
                         'unpriced category must not render as the unmapped grey')
-                palette = {_value_key(k): colors[k] for k in colors}
+                normalised = {_value_key(c): v for c, v in colors.items()}
+                for k in keys:
+                    spec = normalised[k]
+                    if isinstance(spec, (list, tuple)):
+                        ramp = [str(c) for c in spec]
+                        if len(ramp) < 2 or not all(_is_color_string(c) for c in ramp):
+                            raise ValueError(
+                                f'{label}: the ramp for {k!r} must be at least two '
+                                f'CSS colours; got {spec!r}')
+                        ramps[k] = ramp
+                    else:
+                        if not _is_color_string(spec):
+                            raise ValueError(
+                                f'{label}: the colour for {k!r} is not a CSS '
+                                f'colour: {spec!r}')
+                        palette[k] = str(spec)
             else:
                 palette = {k: CELL_AUTO_PALETTE[i % len(CELL_AUTO_PALETTE)]
                            for i, k in enumerate(keys)}
-        return {'id': field_id, 'label': label, 'kind': kind,
-                'values': values, 'colors': palette, 'unmapped': unmapped}
+        num = {k: float(v) for k, v in
+               _check_keys(fill_value, label + ' value').items()} if fill_value else {}
+        ranges = {}
+        for cat in ramps:
+            seen = [num[k] for k, v in values.items()
+                    if _value_key(v) == cat and k in num]
+            if seen:
+                ranges[cat] = [min(seen), max(seen)]
+        field = {'id': field_id, 'label': label, 'kind': kind,
+                 'values': values, 'colors': palette, 'unmapped': unmapped}
+        if ramps:
+            field['ramps'] = ramps
+            field['ranges'] = ranges
+        if num:
+            field['values_num'] = num
+        return field
 
     for name, mapping in (cell_data or {}).items():
         field = _add(str(name), str(name), mapping)
@@ -475,7 +512,7 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
             fields.append(field)
     if cell_fill:
         field = _add(CALLER_FILL_FIELD_ID, fill_label or 'per-cell fill',
-                     cell_fill, colors=fill_scale)
+                     cell_fill, colors=fill_scale, fill_value=fill_value)
         if field:
             fields.insert(0, field)
 
@@ -617,10 +654,23 @@ def _cell_style_js_chunks(fields, outline_map):
             return cellStyleValueKey(value);
         }
 
-        function cellStyleColorOfCategory(field, key, index, total) {
+        // A ramp band: the class keeps its hue family while the shade carries
+        // the value, so the legend band IS the value scale.
+        function cellStyleRampColor(ramp, t) {
+            if (!ramp || !ramp.length) return null;
+            if (ramp.length === 1) return cellStyleNormalizeToHex(ramp[0]);
+            const x = Math.max(0, Math.min(1, Number(t) || 0)) * (ramp.length - 1);
+            const i = Math.min(ramp.length - 2, Math.floor(x));
+            return mixHex(cellStyleNormalizeToHex(ramp[i]),
+                          cellStyleNormalizeToHex(ramp[i + 1]), x - i);
+        }
+
+        function cellStyleColorOfCategory(field, key, index, total, t) {
             const edited = (cellStyleState.colors[field.id] || {})[key];
             if (edited) return edited;
             if (key === '__unmapped__') return field.unmapped || '#f2f2f2';
+            const ramp = field.ramps && field.ramps[key];
+            if (ramp) return cellStyleRampColor(ramp, t === undefined ? 0.5 : t);
             if (field.colors && field.colors[key]) return field.colors[key];
             if (field.kind === 'numeric' && total > 1) {
                 // an ordered field stays readable without the reader picking ten
@@ -657,16 +707,25 @@ def _cell_style_js_chunks(fields, outline_map):
             return false;
         }
 
+        function cellStyleRangeLabel(field, key, label) {
+            const r = field.ranges && field.ranges[key];
+            if (!r) return label;
+            const fmt = v => String(Math.round(Number(v) * 100) / 100);
+            return label + ' (' + fmt(r[0]) + '–' + fmt(r[1]) + ')';
+        }
+
         function cellStyleActiveCats() {
             const field = cellStyleFieldById(cellStyleState.fillId);
             if (!field) return null;
             const cats = cellStyleCategories(field);
             const numeric = field.kind === 'numeric';
             const hasUnmapped = cellStyleShowsUnmapped(field);
+            const keys = cats.map(c => (numeric ? c.key : c));
             return {field: field,
                     hasUnmapped: hasUnmapped,
-                    keys: cats.map(c => (numeric ? c.key : c)),
-                    labels: cats.map(c => (numeric ? c.label : c))
+                    keys: keys,
+                    labels: cats.map((c, i) => cellStyleRangeLabel(
+                                field, keys[i], numeric ? c.label : c))
                             .concat(hasUnmapped ? ['—'] : [])};
         }
 
@@ -680,6 +739,30 @@ def _cell_style_js_chunks(fields, outline_map):
             return at < 0 ? active.keys.length : at;
         }
 
+        // How far into its class's ramp this cell sits (0..1). Per class, so a
+        // class with a narrow value range still uses its whole ramp.
+        function cellStyleT(field, cat, key) {
+            const r = field.ranges && field.ranges[cat];
+            const v = field.values_num ? field.values_num[key] : undefined;
+            if (!r || v === undefined || v === null) return 0.5;
+            const lo = Number(r[0]), hi = Number(r[1]);
+            if (!(hi > lo)) return 0.5;
+            return Math.max(0, Math.min(0.999, (Number(v) - lo) / (hi - lo)));
+        }
+
+        // The cell's position on the stitched 0..N scale: flat classes sit at
+        // their band's middle, ramp classes somewhere inside their own band.
+        function cellStylePosition(i, jcol, active) {
+            const idx = cellStyleCategoryIndex(i, jcol, active);
+            const key = cellStyleKey(i, jcol);
+            if (key === null || !(key in active.field.values)) return idx + 0.5;
+            const cat = cellStyleCategoryOf(active.field, active.field.values[key]);
+            if (active.field.ramps && active.field.ramps[cat]) {
+                return idx + cellStyleT(active.field, cat, key);
+            }
+            return idx + 0.5;
+        }
+
         // The colour this cell is painted, or null when the metric owns colour.
         // Shared by the trace and by the cell-value contrast, so a number written
         // on a styled cell is legible against the colour actually behind it.
@@ -688,8 +771,16 @@ def _cell_style_js_chunks(fields, outline_map):
             if (!active) return null;
             const idx = cellStyleCategoryIndex(i, jcol, active);
             const keys = active.keys.concat(active.hasUnmapped ? ['__unmapped__'] : []);
+            const key = cellStyleKey(i, jcol);
+            let t = 0.5;
+            if (key !== null && key in active.field.values) {
+                const cat = cellStyleCategoryOf(active.field, active.field.values[key]);
+                if (active.field.ramps && active.field.ramps[cat]) {
+                    t = cellStyleT(active.field, cat, key);
+                }
+            }
             return cellStyleColorOfCategory(active.field, keys[idx],
-                                            idx, keys.length);
+                                            idx, keys.length, t);
         }
 
         function cellStyleOutlineFor(i, jcol) {
@@ -784,22 +875,34 @@ def _cell_style_js_chunks(fields, outline_map):
                 const label = active.labels[idx] !== undefined ? active.labels[idx] : key;
                 const row = document.createElement('div');
                 row.style.cssText = 'display:flex;align-items:center;gap:4px;margin:2px 0;';
-                const input = document.createElement('input');
-                input.type = 'color';
-                input.dataset.valueKey = key;
-                input.value = cellStyleNormalizeToHex(
-                    cellStyleColorOfCategory(active.field, key, idx, total));
-                input.style.cssText = 'width:26px;height:20px;border:1px solid #ccc;padding:0;';
-                input.oninput = function () {
-                    const colors = cellStyleState.colors[active.field.id]
-                        || (cellStyleState.colors[active.field.id] = {});
-                    colors[this.dataset.valueKey] = this.value;
-                    applyCellStyle();
-                };
+                const ramp = active.field.ramps && active.field.ramps[key];
+                if (ramp && ramp.length > 1) {
+                    // A ramp is the caller's value scale; show it, do not offer
+                    // a single-colour picker that would flatten it.
+                    const swatch = document.createElement('div');
+                    swatch.style.cssText = 'width:26px;height:20px;'
+                        + 'border:1px solid #ccc;flex:none;';
+                    swatch.style.background = 'linear-gradient(to right,'
+                        + ramp.join(',') + ')';
+                    row.appendChild(swatch);
+                } else {
+                    const input = document.createElement('input');
+                    input.type = 'color';
+                    input.dataset.valueKey = key;
+                    input.value = cellStyleNormalizeToHex(
+                        cellStyleColorOfCategory(active.field, key, idx, total));
+                    input.style.cssText = 'width:26px;height:20px;border:1px solid #ccc;padding:0;';
+                    input.oninput = function () {
+                        const colors = cellStyleState.colors[active.field.id]
+                            || (cellStyleState.colors[active.field.id] = {});
+                        colors[this.dataset.valueKey] = this.value;
+                        applyCellStyle();
+                    };
+                    row.appendChild(input);
+                }
                 const span = document.createElement('span');
                 span.style.cssText = 'font-size:10px;word-break:break-all;';
                 span.textContent = String(label);
-                row.appendChild(input);
                 row.appendChild(span);
                 wrap.appendChild(row);
             });
@@ -885,19 +988,29 @@ def _cell_style_js_chunks(fields, outline_map):
                 const styleKeys = cellStyleActive.keys.concat(
                     cellStyleActive.hasUnmapped ? ['__unmapped__'] : []);
                 const styleZ = displayYLabels.map((_, i) => displayXLabels.map((_, jj) =>
-                    cellStyleCategoryIndex(i, jj, cellStyleActive)));
+                    cellStylePosition(i, jj, cellStyleActive)));
                 trace.z = styleZ;
                 trace.colorscale = [];
+                // One band per class on a stitched 0..N scale. A flat class is
+                // two identical stops; a ramp class contributes its whole ramp
+                // across its own band, so the legend draws the value scale.
                 for (let s = 0; s < styleN; s++) {
-                    trace.colorscale.push([s / styleN,
-                        cellStyleColorOfCategory(cellStyleActive.field, styleKeys[s],
-                                                 s, styleN)]);
-                    trace.colorscale.push([(s + 1) / styleN,
-                        cellStyleColorOfCategory(cellStyleActive.field, styleKeys[s],
-                                                 s, styleN)]);
+                    const ramp = cellStyleActive.field.ramps
+                                 && cellStyleActive.field.ramps[styleKeys[s]];
+                    if (ramp && ramp.length > 1) {
+                        for (let r = 0; r < ramp.length; r++) {
+                            trace.colorscale.push(
+                                [(s + r / (ramp.length - 1)) / styleN, ramp[r]]);
+                        }
+                    } else {
+                        const c = cellStyleColorOfCategory(
+                            cellStyleActive.field, styleKeys[s], s, styleN, 0.5);
+                        trace.colorscale.push([s / styleN, c]);
+                        trace.colorscale.push([(s + 1) / styleN, c]);
+                    }
                 }
-                trace.zmin = -0.5;
-                trace.zmax = styleN - 0.5;
+                trace.zmin = 0;
+                trace.zmax = styleN;
                 trace.colorbar = {
                     tickmode: 'array',
                     tickvals: styleKeys.map((_, i) => i + 0.5),
@@ -16196,7 +16309,7 @@ class VisualizePath:
 
     def create_heatmap(self, custom_row_order=None, custom_col_order=None,
                        cell_data=None, cell_fill=None, cell_outline=None,
-                       fill_scale=None, fill_label=None):
+                       fill_scale=None, fill_label=None, fill_value=None):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -16213,7 +16326,7 @@ class VisualizePath:
             Custom order for column nodes (targets). If None, uses the class attribute
             `heatmap_col_order` (if set), otherwise uses sorted order.
             Nodes not in the list will be appended at the end.
-        cell_data, cell_fill, cell_outline, fill_scale, fill_label
+        cell_data, cell_fill, cell_outline, fill_scale, fill_label, fill_value
             Optional per-cell style channels, passed straight to
             `VisConnMatInteractive` and keyed by node label (see there).
         
@@ -16366,7 +16479,7 @@ class VisualizePath:
             inline_plotly=True,  # single-file page survives relocation
             cell_data=cell_data, cell_fill=cell_fill,
             cell_outline=cell_outline, fill_scale=fill_scale,
-            fill_label=fill_label,
+            fill_label=fill_label, fill_value=fill_value,
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -16941,7 +17054,7 @@ def visualize_network(
 
 def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None,
                    cell_data=None, cell_fill=None, cell_outline=None,
-                   fill_scale=None, fill_label=None):
+                   fill_scale=None, fill_label=None, fill_value=None):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -17373,7 +17486,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     cell_style_fields, cell_style_outline_map = normalize_cell_style(
         y_labels, x_labels, cell_data=cell_data, cell_fill=cell_fill,
         cell_outline=cell_outline, fill_scale=fill_scale,
-        fill_label=fill_label)
+        fill_label=fill_label, fill_value=fill_value)
     _cell_style_chunks = _cell_style_js_chunks(cell_style_fields,
                                                cell_style_outline_map)
     cell_style_consts = _cell_style_chunks['consts']

@@ -286,8 +286,9 @@ def test_each_cell_renders_its_caller_colour_and_only_outlined_cells_bordered(
         # the metric number survives the recolouring: this channel renders, it
         # does not re-compute
         assert st['text'][0][0], st['text'][0][0]
-        # z became the category index (3 colours + unmapped = 0..3)
-        assert max(max(row) for row in st['z']) == 3, st['z']
+        # z is the cell's position on the stitched class scale: a flat class
+        # sits at its band's middle (3 colours + unmapped = 0..3.5)
+        assert max(max(row) for row in st['z']) == 3.5, st['z']
         # a discrete scale is two hard stops per category (3 colours + unmapped)
         assert len(st['colorscale']) == 8, st['colorscale']
         assert st['cbTicks'], 'a styled page should label its discrete colourbar'
@@ -507,4 +508,51 @@ def test_a_fully_styled_page_carries_no_unmapped_swatch(tmp_path):
         assert len(st['cbTicks']) == 3, st['cbTicks']
         # three categories, two hard stops each, no unmapped bucket
         assert len(st['colorscale']) == 6, st['colorscale']
-        assert max(max(row) for row in st['z']) == 2, st['z']
+        assert max(max(row) for row in st['z']) == 2.5, st['z']
+
+
+def test_a_category_can_carry_a_ramp_keyed_by_the_cells_value():
+    fill = {FILL_KEY('S0', 'T0'): 'unique', FILL_KEY('S0', 'T1'): 'unique'}
+    vals = {FILL_KEY('S0', 'T0'): 10.0, FILL_KEY('S0', 'T1'): 30.0}
+    fields, _ = normalize_cell_style(
+        ROWS, COLS, cell_fill=fill,
+        fill_scale={'unique': ['#ffffff', '#000000']}, fill_value=vals)
+    f = fields[0]
+    assert f['ramps']['unique'] == ['#ffffff', '#000000'], f
+    assert f['ranges']['unique'] == [10.0, 30.0], f
+    assert f['values_num'][FILL_KEY('S0', 'T1')] == 30.0, f
+    with pytest.raises(ValueError) as exc:
+        normalize_cell_style(ROWS, COLS, cell_fill=fill,
+                             fill_scale={'unique': ['#ffffff']})
+    assert 'two' in str(exc.value), str(exc.value)
+
+
+@REQUIRES_CDP
+def test_a_ramp_class_shades_by_value_and_names_its_scale(tmp_path):
+    """One class, four values: the shade must move along the ramp and the
+    legend band must name the value range, not a single swatch."""
+    matrix = pd.DataFrame([[1.0, 2.0], [3.0, 4.0]],
+                          index=['S0', 'S1'], columns=['T0', 'T1'])
+    fill = {(r, c): 'class' for r in ('S0', 'S1') for c in ('T0', 'T1')}
+    value = {('S0', 'T0'): 10.0, ('S0', 'T1'): 20.0,
+             ('S1', 'T0'): 30.0, ('S1', 'T1'): 40.0}
+    ramp = ['#f7f7f7', '#cccccc', '#969696', '#525252', '#000000']
+    out = tmp_path / 'ramp.html'
+    VisConnMatInteractive(matrix, str(out), title='ramp', showfig=False,
+                          verbose=False, init_clustered=False,
+                          cell_fill=fill,
+                          fill_scale={'class': ramp},
+                          fill_value=value, fill_label='Class')
+    with Page(out) as page:
+        page.arm_error_watch()
+        st = _state(page)
+        assert not st['errors'], st['errors']
+        colours = {k: cell['color'] for k, cell in st['cells'].items()}
+        assert colours['S0|T0'] == '#f7f7f7', colours
+        assert colours['S1|T1'] == '#000000', colours
+        assert len(set(colours.values())) == 4, colours
+        assert len(st['colorscale']) == 5, st['colorscale']
+        assert st['cbTicks'] == ['class (10–40)'], st['cbTicks']
+        # one band: every position inside [0, 1)
+        assert 0 <= min(min(r) for r in st['z']), st['z']
+        assert max(max(r) for r in st['z']) < 1, st['z']
