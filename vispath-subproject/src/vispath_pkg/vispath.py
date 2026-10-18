@@ -6163,12 +6163,16 @@ class VisualizePath:
                 nt_type = normalize_nt_value(nt_type)
 
             weight_disp = _fmt_weight(weight)
-            # Hemisphere direction group (L-L / R-R / R-L / L-R) from the
-            # endpoint suffixes; empty when either side is unclassified.
-            _sb, _sh = _extract_hemisphere(str(source))
-            _tb, _th = _extract_hemisphere(str(target))
-            direction = (f"{_sh}-{_th}"
-                         if _sh in ('L', 'R') and _th in ('L', 'R') else '')
+            # A declared edge_group names the selector band outright (e.g. a
+            # class page's weight bin); otherwise derive the hemisphere
+            # direction (L-L / R-R / R-L / L-R) from the endpoint suffixes,
+            # empty when either side is unclassified.
+            direction = str(data.get('edge_group') or '').strip()
+            if not direction:
+                _sb, _sh = _extract_hemisphere(str(source))
+                _tb, _th = _extract_hemisphere(str(target))
+                direction = (f"{_sh}-{_th}"
+                             if _sh in ('L', 'R') and _th in ('L', 'R') else '')
             tooltip_parts = [f"Weight: {weight_disp} {self.edge_weight_label}"]
             if direction:
                 tooltip_parts.append(f"Group: {direction}")
@@ -6436,9 +6440,10 @@ class VisualizePath:
             if present:
                 edge_directions.append(d)
         for _u, _v, _attrs in G.edges(data=True):
-            d = str(_attrs.get('direction') or '').strip()
-            if d and d not in edge_directions:
-                edge_directions.append(d)
+            for _key in ('edge_group', 'direction'):
+                d = str(_attrs.get(_key) or '').strip()
+                if d and d not in edge_directions:
+                    edge_directions.append(d)
         direction_group_options = ''
         if edge_directions:
             direction_group_options = (
