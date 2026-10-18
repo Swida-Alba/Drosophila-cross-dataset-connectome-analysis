@@ -564,6 +564,7 @@ def _cell_style_js_chunks(fields, outline_map):
     state = {
         'fillId': field_ids[0] if field_ids else 'metric',
         'colors': {},
+        'ramps': {},
         'binCounts': {},
         'outlineId': '__caller__' if outline_map else 'none',
         'outlineColor': default_outline.get('color',
@@ -669,6 +670,46 @@ def _cell_style_js_chunks(fields, outline_map):
             return cellStyleValueKey(value);
         }
 
+        // The ramp in force for a class: the reader's edited one, else the
+        // caller's. Edited ramps live in the state and are saved with it.
+        function cellStyleRampFor(field, key) {
+            const byField = cellStyleState.ramps[field.id] || {};
+            return byField[key] || (field.ramps && field.ramps[key]);
+        }
+
+        // The same transform getDataForScale applies to the matrix, so a pinned
+        // colour domain follows the Scale buttons instead of ignoring them.
+        function cellStyleScaleValue(v, scale) {
+            const x = Number(v);
+            if (!Number.isFinite(x)) return x;
+            switch (scale) {
+                case 'log2': return x < 0 ? -Math.log2(-x + 1) : Math.log2(x + 1);
+                case 'log10': return x < 0 ? -Math.log10(-x + 1) : Math.log10(x + 1);
+                case 'sqrt': return x < 0 ? -Math.sqrt(-x) : Math.sqrt(x);
+                default: return x;
+            }
+        }
+
+        // Rebuild a ramp from its two endpoints. The caller's interior stops
+        // belong to the caller's colormap; once a reader names new ends, the
+        // honest ramp between them is the interpolation of those two.
+        function cellStyleSetRampEnd(fieldId, key, index, hex) {
+            const field = cellStyleFieldById(fieldId);
+            if (!field) return;
+            const base = (cellStyleRampFor(field, key) || []).slice();
+            if (base.length < 2) return;
+            base[index] = hex;
+            const n = base.length;
+            const a = cellStyleNormalizeToHex(base[0]);
+            const b = cellStyleNormalizeToHex(base[n - 1]);
+            const out = [];
+            for (let i = 0; i < n; i++) out.push(mixHex(a, b, i / (n - 1)));
+            const byField = cellStyleState.ramps[fieldId]
+                            || (cellStyleState.ramps[fieldId] = {});
+            byField[key] = out;
+            applyCellStyle();
+        }
+
         // A ramp band: the class keeps its hue family while the shade carries
         // the value, so the legend band IS the value scale.
         function cellStyleRampColor(ramp, t) {
@@ -684,7 +725,7 @@ def _cell_style_js_chunks(fields, outline_map):
             const edited = (cellStyleState.colors[field.id] || {})[key];
             if (edited) return edited;
             if (key === '__unmapped__') return field.unmapped || '#f2f2f2';
-            const ramp = field.ramps && field.ramps[key];
+            const ramp = cellStyleRampFor(field, key);
             if (ramp) return cellStyleRampColor(ramp, t === undefined ? 0.5 : t);
             if (field.colors && field.colors[key]) return field.colors[key];
             if (field.kind === 'numeric' && total > 1) {
@@ -782,17 +823,21 @@ def _cell_style_js_chunks(fields, outline_map):
         // each class gets its own colourbar over the SAME lo..hi domain, side by
         // side, plus a white base so an empty cell stays white whatever the page
         // background is. Without a pinned range one stitched trace is used.
-        function cellStyleParallelTraces(trace, active, data, hoverText) {
+        function cellStyleParallelTraces(trace, active, data, hoverText, scale) {
             const lo = Number(active.field.range[0]);
             const hi = Number(active.field.range[1]);
+            const f = v => cellStyleScaleValue(v, scale);
+            const zlo = f(lo), zhi = f(hi);
+            const scaleTicks = [0, 200, 400, 600, 800]
+                .filter(v => v >= lo && v <= hi);
             const base = Object.assign({}, trace, {
-                z: data.map(row => row.map(() => lo)),
+                z: data.map(row => row.map(() => zlo)),
                 colorscale: [[0, '#ffffff'], [1, '#ffffff']],
-                zmin: lo, zmax: hi, showscale: false, hoverinfo: 'skip'});
+                zmin: zlo, zmax: zhi, showscale: false, hoverinfo: 'skip'});
             const parts = [base];
             let bars = 0;
             active.keys.forEach((key) => {
-                const ramp = active.field.ramps && active.field.ramps[key];
+                const ramp = cellStyleRampFor(active.field, key);
                 if (!ramp) return;
                 const idx = active.keys.indexOf(key);
                 const z = data.map((row, i) => row.map((v, j) =>
@@ -801,12 +846,15 @@ def _cell_style_js_chunks(fields, outline_map):
                 parts.push(Object.assign({}, trace, {
                     z: z,
                     colorscale: stops,
-                    zmin: lo, zmax: hi,
+                    zmin: zlo, zmax: zhi,
                     showscale: true,
                     colorbar: {title: {text: String(key), side: 'top',
                                        font: {size: 10}},
                                thickness: 10, len: 0.85,
                                tickfont: {size: 9},
+                               tickmode: 'array',
+                               tickvals: scaleTicks.map(f),
+                               ticktext: scaleTicks.map(String),
                                x: 1.02 + bars * 0.10},
                     hoverinfo: 'text', text: hoverText,
                     hovertemplate: '%{text}<extra></extra>'}));
@@ -929,14 +977,31 @@ def _cell_style_js_chunks(fields, outline_map):
                 row.style.cssText = 'display:flex;align-items:center;gap:4px;margin:2px 0;';
                 const ramp = active.field.ramps && active.field.ramps[key];
                 if (ramp && ramp.length > 1) {
-                    // A ramp is the caller's value scale; show it, do not offer
-                    // a single-colour picker that would flatten it.
-                    const swatch = document.createElement('div');
-                    swatch.style.cssText = 'width:26px;height:20px;'
+                    // Adjustable like a flat class: two endpoint pickers and a
+                    // preview. onchange, not oninput — each edit re-renders the
+                    // panel, and re-rendering mid-drag would drop the picker.
+                    const current = cellStyleRampFor(active.field, key);
+                    [{i: 0, t: 'ramp start (low value)'},
+                     {i: current.length - 1, t: 'ramp end (high value)'}]
+                        .forEach(function (spec) {
+                            const pick = document.createElement('input');
+                            pick.type = 'color';
+                            pick.value = cellStyleNormalizeToHex(current[spec.i]);
+                            pick.title = spec.t;
+                            pick.style.cssText = 'width:26px;height:20px;'
+                                + 'border:1px solid #ccc;padding:0;flex:none;';
+                            pick.onchange = function () {
+                                cellStyleSetRampEnd(active.field.id, key,
+                                                    spec.i, this.value);
+                            };
+                            row.appendChild(pick);
+                        });
+                    const preview = document.createElement('div');
+                    preview.style.cssText = 'width:34px;height:20px;'
                         + 'border:1px solid #ccc;flex:none;';
-                    swatch.style.background = 'linear-gradient(to right,'
-                        + ramp.join(',') + ')';
-                    row.appendChild(swatch);
+                    preview.style.background = 'linear-gradient(to right,'
+                        + current.join(',') + ')';
+                    row.appendChild(preview);
                 } else {
                     const input = document.createElement('input');
                     input.type = 'color';
@@ -18998,7 +19063,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             let traces = [trace];
             if (cellStyleParallel) {{
                 const parts = cellStyleParallelTraces(
-                    trace, cellStyleParallel, data, currentHoverText);
+                    trace, cellStyleParallel, data, currentHoverText, currentScale);
                 traces = parts.traces;
                 // Room for the bars: WIDEN the canvas rather than the margin,
                 // because the bar x positions are fractions of the plot area —

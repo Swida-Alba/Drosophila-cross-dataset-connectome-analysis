@@ -623,3 +623,51 @@ def test_a_pinned_range_draws_one_parallel_bar_per_class(tmp_path):
         assert st['bars'][0]['x'] != st['bars'][1]['x'], st
         # the canvas grows for the bars instead of squeezing the plot
         assert st['width'] > 800 and st['marginRight'] > 40, st
+
+
+@REQUIRES_CDP
+def test_a_pinned_domain_follows_the_scale_and_its_ramp_is_editable(tmp_path):
+    """The Scale buttons must move a pinned domain with them (log ticks still
+    name the original values), and a ramp must be editable like a flat class."""
+    import math
+    matrix = pd.DataFrame([[1.0, 2.0], [3.0, 4.0]],
+                          index=['S0', 'S1'], columns=['T0', 'T1'])
+    fill = {(r, c): 'c' for r in ('S0', 'S1') for c in ('T0', 'T1')}
+    out = tmp_path / 'scaled.html'
+    VisConnMatInteractive(matrix, str(out), title='scaled', showfig=False,
+                          verbose=False, init_clustered=False,
+                          cell_fill=fill,
+                          fill_scale={'c': ['#ffffff', '#969696', '#000000']},
+                          fill_range=(0, 800), fill_label='Class')
+    bar = """
+    var g = document.querySelector('.js-plotly-plot');
+    var t = g.data.filter(function (x) { return x.showscale; })[0];
+    return {zmin: t.zmin, zmax: t.zmax, first: t.colorscale[0][1],
+            ticks: t.colorbar.ticktext, tickvals: t.colorbar.tickvals,
+            cell: cellStyleColorFor(0, 0)};
+    """
+    with Page(out) as page:
+        page.arm_error_watch()
+        assert page.wait(PAGE_READY)
+        lin = page.js(bar)
+        assert (lin['zmin'], lin['zmax']) == (0, 800), lin
+        assert lin['ticks'] == ['0', '200', '400', '600', '800'], lin
+
+        page.js("window.setScale('log10'); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (x) {"
+                         " return x.showscale && x.zmax > 0 && x.zmax < 10; });")
+        logged = page.js(bar)
+        assert abs(logged['zmax'] - math.log10(801)) < 1e-6, logged
+        assert abs(logged['tickvals'][1] - math.log10(201)) < 1e-6, logged
+        assert logged['ticks'] == ['0', '200', '400', '600', '800'], logged
+
+        page.js("cellStyleSetRampEnd('__fill__', 'c', 0, '#ff0000'); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "var t=g.data.filter(function(x){return x.showscale;})[0];"
+                         "return t.colorscale[0][1] === '#ff0000';")
+        edited = page.js(bar)
+        assert edited['first'] == '#ff0000', edited
+        ramps = page.js("return cellStyleState.ramps;")
+        assert ramps['__fill__']['c'][0] == '#ff0000', ramps
+        assert page.errors() == [], page.errors()
