@@ -409,13 +409,21 @@ class MultiDatasetMorphComparer:
                          else "type_level/type_similarity")
             rows = []
             for method in info["methods"]:
-                agg_csv = (f"{info['run_folder']}/{aggregate}_{method}.csv")
                 body_csv = (f"{info['run_folder']}/bodyid_level/"
                             f"bodyid_similarity_{method}.csv")
-                rows.append(
-                    "<tr><td>" + escape(method) + "</td>"
-                    f"<td>{link(agg_csv, 'aggregate CSV')}</td>"
-                    f"<td>{link(body_csv, 'bodyId CSV')}</td></tr>")
+                if self.aggregation_level == "bodyid":
+                    # At the bodyId level the bodyId matrix IS the comparison;
+                    # no aggregate-level CSV exists to link.
+                    rows.append(
+                        "<tr><td>" + escape(method) + "</td>"
+                        f"<td>{link(body_csv, 'bodyId CSV')}</td></tr>")
+                else:
+                    agg_csv = (f"{info['run_folder']}/{aggregate}"
+                               f"_{method}.csv")
+                    rows.append(
+                        "<tr><td>" + escape(method) + "</td>"
+                        f"<td>{link(agg_csv, 'aggregate CSV')}</td>"
+                        f"<td>{link(body_csv, 'bodyId CSV')}</td></tr>")
             dataset_cards.append(
                 "<article class='section-card'>"
                 f"<h2 class='section-heading'>{escape(dataset)}</h2>"
@@ -423,8 +431,11 @@ class MultiDatasetMorphComparer:
                 f"· {info['rows_compared']} row(s) · "
                 f"{info['neurons_compared']} neuron(s) compared</p>"
                 "<table class='mapping-table'><thead><tr><th>method</th>"
-                "<th>aggregate matrix</th><th>bodyId matrix</th></tr></thead>"
-                f"<tbody>{''.join(rows)}</tbody></table></article>")
+                + ("<th>bodyId matrix</th>"
+                   if self.aggregation_level == "bodyid" else
+                   "<th>aggregate matrix</th><th>bodyId matrix</th>")
+                + f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+                "</article>")
         cross_rows = "".join(
             f"<tr><td>{escape(pair)}</td></tr>" for pair in cross["pairs"])
         html = [
