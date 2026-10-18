@@ -11934,6 +11934,7 @@ class VisualizePath:
                     ? '' : String(Math.round(Number(v) * 1000) / 1000);
                 let label;
                 if (currentMetric === 'ratio') label = fmt(edge.data('ratio'));
+                else if (currentMetric === 'ratio_adj') label = fmt(edge.data('ratio_adj'));
                 else {{
                     // Integer-valued weights must not render with a
                     // trailing '.0' — edge lists often parse synapse
@@ -15333,6 +15334,7 @@ class VisualizePath:
         // selectable metric, so there is no probability branch here.
         function metricEdgeValue(edge) {{
             if (currentMetric === 'ratio') return Number(edge.data('ratio')) || 0;
+            if (currentMetric === 'ratio_adj') return Number(edge.data('ratio_adj')) || 0;
             return edge.data('original_weight') !== undefined
                 ? edge.data('original_weight')
                 : edge.data('weight') || 0;

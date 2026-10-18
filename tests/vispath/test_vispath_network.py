@@ -3366,3 +3366,63 @@ def test_mirror_hemispheres_applies_node_property_edits_to_the_partner(tmp_path)
         assert page.js("return cy.getElementById('A[R]').style('background-color');") \
             == "rgb(255,0,0)"
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_metric_filter_and_labels_follow_ratio_and_ratio_adj(tmp_path):
+    """The Hide-Edges filter and the edge labels evaluate the ACTIVE
+    metric, including the adjusted ratio (which used to fall back to the
+    synapse weight)."""
+    df = pd.DataFrame({
+        "source": ["A", "B", "A"],
+        "target": ["B", "C", "C"],
+        "weight": [50.0, 10.0, 5.0],
+        "ratio": [0.05, 0.005, 0.002],
+        "ratio_adj": [0.07, 0.01, 0.003],
+    })
+    vp = VisualizePath(path_file=df, output_folder=str(tmp_path),
+                       showfig=False, verbose=False, network_layout="dagre")
+    vp.base_filename = "metric_filter"
+    vp.build_network()
+    out = vp.create_network()
+    with Page(Path(out)) as page:
+        assert page.wait("return typeof cy !== 'undefined' && cy.edges().length === 3;")
+
+        def filtered_count(metric):
+            page.js(f"var s=document.getElementById('metricSelect');"
+                    f"s.value='{metric}';"
+                    f"s.dispatchEvent(new Event('change')); return true;")
+            page.wait(f"return document.getElementById('metricSelect').value==='{metric}';")
+            page.js("document.getElementById('ignoreEdgesInput').value='<0.02';"
+                    "updateIgnoredEdges(); return true;")
+            return page.js("return cy.edges('.filtered').length;")
+
+        # <0.02: ratio 0.05 survives, 0.005/0.002 hide.
+        assert filtered_count('ratio') == 2
+        # <0.02: ratio_adj 0.07 survives, 0.01/0.003 hide. The old code
+        # compared the WEIGHTS (all > 0.02) and filtered nothing.
+        assert filtered_count('ratio_adj') == 2
+
+        # Labels follow the same metric.
+        page.js("document.getElementById('ignoreEdgesInput').value='';"
+                "updateIgnoredEdges(); toggleEdgeWeightLabels(); return true;")
+        page.js("var s=document.getElementById('metricSelect');"
+                "s.value='ratio_adj';"
+                "s.dispatchEvent(new Event('change')); return true;")
+        labels = page.js("""
+          var out = {};
+          cy.edges().forEach(function (e) {
+            out[e.data('source') + '>' + e.data('target')] =
+              String(e.data('display_label'));
+          });
+          return out;
+        """)
+        assert labels.get('A>B') == '0.07', labels
+        assert labels.get('B>C') == '0.01', labels
+        page.js("var s=document.getElementById('metricSelect');"
+                "s.value='weight';"
+                "s.dispatchEvent(new Event('change')); return true;")
+        assert page.js("return String(cy.edges().filter(function (e) {"
+                       " return e.data('source')==='A' && e.data('target')==='B';"
+                       "})[0].data('display_label'));") == '50'
+        assert page.errors() == [], page.errors()
