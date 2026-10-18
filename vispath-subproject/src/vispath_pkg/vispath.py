@@ -974,7 +974,8 @@ def _cell_style_js_chunks(fields, outline_map):
             active.keys.concat(active.hasUnmapped ? ['__unmapped__'] : []).forEach((key, idx) => {
                 const label = active.labels[idx] !== undefined ? active.labels[idx] : key;
                 const row = document.createElement('div');
-                row.style.cssText = 'display:flex;align-items:center;gap:4px;margin:2px 0;';
+                row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;'
+                    + 'gap:4px;margin:4px 0;';
                 const ramp = active.field.ramps && active.field.ramps[key];
                 if (ramp && ramp.length > 1) {
                     // Adjustable like a flat class: two endpoint pickers and a
@@ -1018,7 +1019,11 @@ def _cell_style_js_chunks(fields, outline_map):
                     row.appendChild(input);
                 }
                 const span = document.createElement('span');
-                span.style.cssText = 'font-size:10px;word-break:break-all;';
+                // The Color card is ~160 px wide; a class label such as
+                // "conserved (3–744.33)" gets its own line instead of squeezing
+                // the swatches or clipping.
+                span.style.cssText = 'font-size:10px;word-break:break-word;'
+                    + 'flex:1 1 100%;line-height:1.25;';
                 span.textContent = String(label);
                 row.appendChild(span);
                 wrap.appendChild(row);
@@ -1051,9 +1056,12 @@ def _cell_style_js_chunks(fields, outline_map):
 
     panel = f'''
                     <!-- Per-cell style: colour and border come from the caller's
-                         data here, and the reader can restyle from any of it. -->
-                    <div class="control-section" id="cellStyleSection">
-                        <h3>🧩 Cell style</h3>
+                         data here, and the reader can restyle from any of it.
+                         Lives inside the Color card, under the metric colormap:
+                         both answer "how is a cell coloured". -->
+                    <div id="cellStyleSection">
+                        <h3 style="margin: 12px 0 6px 0; padding-top: 8px;
+                                   border-top: 1px solid #dee2e6;">🧩 Cell style</h3>
                         <label style="font-size:9px;">Colour cells by</label>
                         <select id="cellFillSource"
                                 onchange="cellStyleState.fillId=this.value;applyCellStyle();"></select>
@@ -17946,7 +17954,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                         </div>
                     </div>
                     
-                    <!-- Scale Selection -->{cell_style_panel}
+                    <!-- Scale Selection -->
                     <div>
                         <label style="font-size: 10px; display: block; margin-bottom: 2px;">Scale:</label>
                         <div class="button-group">
@@ -18050,7 +18058,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                             <button onclick="applyCustomColors()" style="flex: 1; font-size: 10px;">Apply</button>
                             <button onclick="resetToAutoColors()" style="flex: 1; font-size: 10px;">Auto</button>
                         </div>
-                    </div>
+                    </div>{cell_style_panel}
                 </div>
                 
                 <!-- Font Size & Colorbar Settings -->
