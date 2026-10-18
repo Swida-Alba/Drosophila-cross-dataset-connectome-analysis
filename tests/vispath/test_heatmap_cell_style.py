@@ -757,3 +757,45 @@ def test_square_cells_keep_the_pinned_range_and_draw_no_grid(tmp_path):
         assert after['xr'] == [-0.5, 1.5], after
         assert after['gx'] is False and after['gy'] is False, after
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_svg_export_is_vector_at_the_rendered_size(tmp_path):
+    """The SVG button must export the RENDERED width (a widened layout with
+    parallel colourbars is wider than the window setting) and turn a 21x21
+    matrix into editable rects rather than a coarse pixel image."""
+    import json
+    rng = np.random.default_rng(3)
+    matrix = pd.DataFrame(rng.integers(1, 90, size=(21, 21)).astype(float),
+                          index=[f'R{i}' for i in range(21)],
+                          columns=[f'C{i}' for i in range(21)])
+    out = tmp_path / 'export.html'
+    VisConnMatInteractive(matrix, str(out), title='export', showfig=False,
+                          verbose=False, init_clustered=False)
+    expr = """(async () => {
+      const gd = document.getElementById('heatmap');
+      const expW = (gd._fullLayout && gd._fullLayout.width) || currentWidth;
+      const expH = (gd._fullLayout && gd._fullLayout.height) || currentHeight;
+      const url = await Plotly.toImage(gd, {format: 'svg', width: expW, height: expH});
+      let svg = decodeURIComponent(url.split(',')[1]);
+      const all = [...svg.matchAll(/<image[^>]*xlink:href="data:image\\/png;base64,[^"]+"[^>]*>/g)];
+      for (const m of all) {
+        const pngUrl = m[0].match(/xlink:href="([^"]+)"/)[1];
+        svg = await vectorizeHeatmapCells(svg, m[0], pngUrl);
+      }
+      return JSON.stringify({w: expW, h: expH, svg: svg});
+    })()"""
+    with Page(out) as page:
+        assert page.wait(PAGE_READY)
+        res = page.send('Runtime.evaluate', {'expression': expr,
+                                            'awaitPromise': True,
+                                            'returnByValue': True})
+        d = json.loads(res['result']['value'])
+        layout = page.js("var fl=document.getElementById('heatmap')._fullLayout;"
+                         "return {w: fl.width, h: fl.height};")
+        assert (d['w'], d['h']) == (layout['w'], layout['h']), (d['w'], d['h'], layout)
+        assert '<image' not in d['svg'], 'the 21x21 matrix should export as rects'
+        assert d['svg'].count('class="heatmap-cells-vector"') == 1
+        assert d['svg'].count('<rect') >= 441, d['svg'].count('<rect')
+        assert '<text' in d['svg'], 'labels must stay vector text'
+        assert page.errors() == [], page.errors()

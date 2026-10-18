@@ -200,11 +200,12 @@ class TestPptSafeSvgExport:
         # Text must stay text: the export never outlines labels
         assert "decodeURIComponent(dataUrl.split(',')[1])" in heat_html
 
-    def test_heatmap_export_keeps_pixel_image_above_100_cells(self, tmp_path):
+    def test_heatmap_export_vectorises_up_to_2500_cells(self, tmp_path):
         heat_html = _heatmap_html(tmp_path)
-        # The vectorizer bails out (keeping Plotly's embedded pixel image)
-        # when the heatmap has more than 100 cells
-        assert "rows * cols > 100" in heat_html
+        # One pixel per cell makes sampling exact, so a 21x21 clock matrix
+        # (441 cells) exports as editable rects; beyond 50x50 the vectorizer
+        # keeps Plotly's embedded pixel image instead.
+        assert "rows * cols > 2500" in heat_html
 
     def test_network_and_sankey_exports_do_not_rasterize(self, tmp_path):
         net_html, sankey_html = _network_sankey_htmls(tmp_path)

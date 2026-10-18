@@ -19172,6 +19172,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 const barRoom = 110 * parts.bars;
                 layout.width = currentWidth + barRoom;
                 layout.margin.r = 40 + barRoom;
+                // The modebar camera must export at this width, not the window's.
+                config.toImageButtonOptions.width = layout.width;
+                config.toImageButtonOptions.height = layout.height;
             }}
             if (dendroTop || dendroRight) {{
                 // The heatmap axes' grid lines (plotly default: on) extend
@@ -20842,31 +20845,41 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         function exportPNG() {{
             const gd = document.getElementById('heatmap');
             const filename = 'heatmap_' + currentScale + '_' + new Date().getTime() + '_' + exportScale + 'x.png';
-            exportPlotlyToImage(gd, 'png', filename, exportScale, currentWidth, currentHeight, function() {{
-                showStatus('✅ PNG exported: ' + Math.round(currentWidth * exportScale) + 'x' + Math.round(currentHeight * exportScale) + 'px', 'success');
+            // Same rule as the SVG: the rendered layout can be wider than the
+            // window setting (parallel colourbars), and exporting at the window
+            // width squeezes the plot into the bar margin.
+            const expW = (gd._fullLayout && gd._fullLayout.width) || currentWidth;
+            const expH = (gd._fullLayout && gd._fullLayout.height) || currentHeight;
+            exportPlotlyToImage(gd, 'png', filename, exportScale, expW, expH, function() {{
+                showStatus('✅ PNG exported: ' + Math.round(expW * exportScale) + 'x' + Math.round(expH * exportScale) + 'px', 'success');
             }});
         }}
         
         function exportSVG() {{
             const gd = document.getElementById('heatmap');
             const filename = 'heatmap_' + currentScale + '_' + new Date().getTime() + '.svg';
-            // SVG at native size. Heatmaps with up to 100 cells export as
-            // vector <rect> cells (editable shapes); larger heatmaps keep
-            // Plotly's embedded pixel image so the colors stay crisp after
-            // PowerPoint's Convert-to-Shape.
-            Plotly.toImage(gd, {{ format: 'svg', width: currentWidth, height: currentHeight }}).then(function(dataUrl) {{
+            // Export the size the page RENDERS, not the window width: parallel
+            // colourbars widen the layout (and its right margin), so exporting
+            // at currentWidth re-lays out into a narrower plot and squeezes the
+            // cell raster — the matrix comes out stretched and the bars crowd.
+            const expW = (gd._fullLayout && gd._fullLayout.width) || currentWidth;
+            const expH = (gd._fullLayout && gd._fullLayout.height) || currentHeight;
+            // SVG. Heatmaps up to 50x50 export as vector <rect> cells (editable
+            // shapes, exact colours); larger ones keep Plotly's one-pixel-per-
+            // cell image, which is crisp because it is drawn pixelated.
+            Plotly.toImage(gd, {{ format: 'svg', width: expW, height: expH }}).then(function(dataUrl) {{
                 const svgString = decodeURIComponent(dataUrl.split(',')[1]);
                 const imgMatch = svgString.match(/<image[^>]*xlink:href="data:image\/png;base64,[^"]+"[^>]*>/);
                 if (!imgMatch) {{
                     downloadBlob(new Blob([svgString], {{ type: 'image/svg+xml' }}), filename);
-                    showStatus('✅ SVG exported: ' + currentWidth + 'x' + currentHeight + 'px', 'success');
+                    showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
                     return;
                 }}
                 const imgTag = imgMatch[0];
                 const pngUrl = imgTag.match(/xlink:href="([^"]+)"/)[1];
                 vectorizeHeatmapCells(svgString, imgTag, pngUrl).then(function(finalSvg) {{
                     downloadBlob(new Blob([finalSvg], {{ type: 'image/svg+xml' }}), filename);
-                    showStatus('✅ SVG exported: ' + currentWidth + 'x' + currentHeight + 'px', 'success');
+                    showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
                 }});
             }}).catch(function(error) {{
                 console.error('SVG export failed:', error);
@@ -20876,16 +20889,17 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         
         // Replace the rasterized heatmap-cell <image> with one <rect> per cell
         // (colors taken from the rendered pixels, so the visual result is
-        // identical) - but only for heatmaps with at most 100 cells. Larger
-        // heatmaps keep the embedded pixel image to avoid color diffusion.
+        // identical). Plotly's raster is ONE PIXEL PER CELL, so sampling is
+        // exact; up to 50x50 cells is still a small, editable shape group.
+        // Larger matrices keep the embedded pixel image.
         function vectorizeHeatmapCells(svgString, imgTag, pngUrl) {{
             return new Promise(function(resolve) {{
                 const img = new Image();
                 img.onload = function() {{
                     const cols = img.naturalWidth;
                     const rows = img.naturalHeight;
-                    if (!rows || !cols || rows * cols > 100) {{
-                        resolve(svgString);  // >100 cells: keep the embedded pixel image
+                    if (!rows || !cols || rows * cols > 2500) {{
+                        resolve(svgString);  // beyond 50x50: keep the pixel image
                         return;
                     }}
                     const x = parseFloat((imgTag.match(/ x="([^"]+)"/) || [])[1] || '0');
