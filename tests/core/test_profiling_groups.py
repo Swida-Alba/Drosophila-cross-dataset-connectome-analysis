@@ -1005,3 +1005,39 @@ def test_bodyid_axes_carry_standard_labels_with_preset(tmp_path):
     # without the preset the legacy axis is unchanged (compatibility gate)
     legacy = _make_comparer(query=["Mi1"], aggregation_level="bodyid")
     assert legacy._get_neurons_to_compare() == {"1_Mi1": [1]}
+
+
+def test_connectionless_profile_is_dropped_whatever_the_batch_size(monkeypatch):
+    """A neuron with no connections has no profile to compare.
+
+    The >100-neuron batch path returns None for it; the per-neuron path used
+    to return an all-zero profile, which entered the bodyId matrix as a row
+    of zeros. Both paths must drop it, or a standalone bodyId comparison's
+    axes and means depend on how many neurons happened to be in the query.
+    """
+    from comparison.connectivity_profiler import ConnectivityProfile
+
+    comparer = _make_comparer(query=["Mi1", "Tm3"])
+    monkeypatch.setattr(
+        comparer, "_get_neurons_to_compare",
+        lambda **kwargs: {"Mi1": [1, 2], "Tm3": [3]})
+    live = ConnectivityProfile(
+        neuron_id=1, dataset=DATASET,
+        upstream_partners={"A": 5.0}, downstream_partners={"B": 3.0})
+    connectionless = ConnectivityProfile(neuron_id=2, dataset=DATASET)
+    other = ConnectivityProfile(
+        neuron_id=3, dataset=DATASET,
+        upstream_partners={"A": 2.0}, downstream_partners={"C": 1.0})
+    monkeypatch.setattr(
+        comparer.profiler, "get_profiles_batch",
+        lambda ids, ds, **kwargs: {1: live, 2: connectionless, 3: other})
+    monkeypatch.setattr(comparer.profiler, "_get_cached_conn_df",
+                        lambda ds: None)
+
+    type_profiles, bodyid_profiles = comparer._extract_profiles_for_dataset(
+        DATASET)
+
+    assert ("Mi1", 2) not in bodyid_profiles
+    assert ("Mi1", 1) in bodyid_profiles
+    assert ("Tm3", 3) in bodyid_profiles
+    assert "Mi1" in type_profiles and "Tm3" in type_profiles

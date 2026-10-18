@@ -11772,7 +11772,16 @@ class ConnectivityProfileComparer:
         for nid, profile in all_profiles.items():
             if profile is None:
                 continue
-            
+            # A connectionless neuron has no profile to compare. The
+            # >100-neuron batch path already drops it (`None` from
+            # `_build_profile_from_cache_direct`); the per-neuron path builds
+            # an all-zero empty profile, which would enter the bodyId matrix
+            # as a row of zeros. Drop it on both paths so the axes do not
+            # depend on the batch size.
+            if not (profile.upstream_partners or profile.downstream_partners):
+                self._log(f"Skipping {nid!r}: no connections in {dataset}")
+                continue
+
             labels = bodyid_to_labels.get(nid, [])
             bid = profile.neuron_id if isinstance(profile.neuron_id, int) else nid
             
