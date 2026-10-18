@@ -43,6 +43,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "vispath-subproject" / "src"))
 
 from vispath_pkg.fast_graph_core import FastGraph  # noqa: E402
 from vispath_pkg.vispath import VisualizePath  # noqa: E402
+from heatmap_cdp import Page, REQUIRES_CDP  # noqa: E402
 
 HERE = Path(__file__).parent
 
@@ -3282,3 +3283,74 @@ def test_declared_node_universe_keeps_isolated_nodes(tmp_path):
     assert len(nodes) == 5 and len(edges) == 2, (len(nodes), len(edges))
     assert not any(e["data"]["source"] == "ISO_L"
                    or e["data"]["target"] == "ISO_L" for e in edges)
+
+
+@REQUIRES_CDP
+def test_mirror_hemispheres_applies_node_property_edits_to_the_partner(tmp_path):
+    """With the mirror toggle on, an edit to one hemisphere node lands on
+    its partner: position mirrored across the panel axis, colour/size/
+    shape/label/outline copied."""
+    df = pd.DataFrame({
+        "source": ["A[L]", "A[R]", "A[L]", "A[R]"],
+        "target": ["B[L]", "B[R]", "B[R]", "B[L]"],
+        "weight": [5.0, 6.0, 4.0, 3.0],
+        "ratio": [0.1, 0.2, 0.3, 0.4],
+    })
+    vp = VisualizePath(
+        path_file=df, output_folder=str(tmp_path), showfig=False,
+        verbose=False, network_layout="dagre",
+        separate_hemispheres=True, hemisphere_mirror_default=True)
+    vp.base_filename = "mirror"
+    vp.build_network()
+    out = vp.create_network()
+    with Page(Path(out)) as page:
+        assert page.wait("return typeof cy !== 'undefined' && cy.nodes().length === 4;")
+        # The layout sets the axis; pin it so the assertions are exact.
+        page.js("hemisphereMirrorAxisX = 500; "
+                "cy.nodes().unselect(); "
+                "cy.getElementById('A[L]').select(); return true;")
+
+        # Fill colour.
+        page.js("document.getElementById('individualColor').value='#ff0000';"
+                "applyIndividualColor(false); return true;")
+        assert page.js("return cy.getElementById('A[R]').style('background-color');") \
+            == "rgb(255,0,0)"
+
+        # Outline.
+        page.js("applyNodeOutline({borderColor: '#00ff00', borderWidth: 2});"
+                "return true;")
+        assert page.js("return cy.getElementById('A[R]').style('border-color');") \
+            == "rgb(0,255,0)"
+
+        # Shape.
+        page.js("applySelectedShape('diamond'); return true;")
+        assert page.js("return cy.getElementById('A[R]').style('shape');") == "diamond"
+
+        # Label font size.
+        page.js("applyNodeFontSize(22); return true;")
+        assert page.js("return cy.getElementById('A[R]').style('font-size');") == "22px"
+
+        # Precise position: reflected across the mirror axis.
+        pos = page.js("return cy.getElementById('A[L]').position();")
+        page.js("document.getElementById('selGeomX').value = 620;"
+                "document.getElementById('selGeomY').value = 130;"
+                "applySelectedGeometry(); return true;")
+        partner = page.js("return cy.getElementById('A[R]').position();")
+        assert abs(partner['x'] - (2 * 500 - 620)) < 0.5, partner
+        assert abs(partner['y'] - 130) < 0.5, partner
+
+        # Precise size: copied verbatim.
+        page.js("document.getElementById('selGeomSize').value = 60;"
+                "document.getElementById('selGeomHeight').value = 70;"
+                "applySelectedGeometry(); return true;")
+        size = page.js("var n=cy.getElementById('A[R]');"
+                       "return [n.numericStyle('width'), n.numericStyle('height')];")
+        assert size == [60, 70], size
+
+        # Toggle off: the partner no longer follows.
+        page.js("hemisphereMirrorEnabled = false;"
+                "document.getElementById('individualColor').value='#0000ff';"
+                "applyIndividualColor(false); return true;")
+        assert page.js("return cy.getElementById('A[R]').style('background-color');") \
+            == "rgb(255,0,0)"
+        assert page.errors() == [], page.errors()

@@ -3687,11 +3687,14 @@ class VisualizePath:
                 G.add_node(n)
         
         # Helper to extract base name without hemisphere suffix
+        # (both spellings: type_L and type[L]).
         def _get_base_name(label: str) -> str:
             base = label
             if '(' in base:
                 base = base.split('(')[0].strip()
-            if base.endswith(('_L', '_R', '_U')):
+            if base.endswith(('[L]', '[R]', '[U]')):
+                base = base[:-3]
+            elif base.endswith(('_L', '_R', '_U')):
                 base = base[:-2]
             return base
         
@@ -5859,7 +5862,11 @@ class VisualizePath:
             if '(' in label:
                 base_label = label.split('(')[0].strip()
             hemi = None
-            if base_label.endswith(('_L', '_R', '_U')):
+            # Both suffix spellings are accepted: type_L and type[L].
+            if base_label.endswith(('[L]', '[R]', '[U]')):
+                hemi = base_label[-2]
+                base_label = base_label[:-3]
+            elif base_label.endswith(('_L', '_R', '_U')):
                 hemi = base_label[-1]
                 base_label = base_label[:-2]
             return base_label, hemi
@@ -8303,6 +8310,9 @@ class VisualizePath:
         let hemisphereMirrorEnabled = {'true' if self.hemisphere_mirror_default and has_hemi_controls else 'false'};
         let originalHemispherePositions = null;
         let hemisphereTemplateSide = null;
+        // Vertical axis the mirrored layout reflected R across; mirrored
+        // property edits reflect positions across the same axis.
+        let hemisphereMirrorAxisX = null;
 
         // Layout transforms: the inter-node gap is an ABSOLUTE center-to-
         // center distance in px (the median neighbor distance along the
@@ -8626,6 +8636,7 @@ class VisualizePath:
                 
                 const layoutWidth = maxX - minX || 200;
                 const layoutCenterX = (minX + maxX) / 2;
+                hemisphereMirrorAxisX = layoutCenterX;
                 // Gap between L and R panels: use minimum of 50px or 10% of layout width
                 const gap = Math.max(50, layoutWidth * 0.1);
                 
@@ -8709,6 +8720,59 @@ class VisualizePath:
                 restoreHemispherePositions();
             }}
         }}
+
+        // --- Mirrored property edits -----------------------------------
+        // When the mirrored layout is ON, a property change on one
+        // hemisphere node is applied to its partner (same base_name,
+        // opposite hemisphere). Position is reflected across the panel
+        // axis the layout used; colour/size/shape/label/outline are copied
+        // verbatim. A guard stops the partner write from re-entering.
+        let mirroringNodeEdit = false;
+
+        function hemispherePartner(node) {{
+            if (!hemisphereMirrorEnabled || !hasHemisphereNodes) return null;
+            if (!node || typeof node.isNode !== 'function' || !node.isNode()) return null;
+            const base = node.data('base_name');
+            const hemi = node.data('hemisphere');
+            if (!base || (hemi !== 'L' && hemi !== 'R')) return null;
+            const want = hemi === 'L' ? 'R' : 'L';
+            let partner = null;
+            cy.nodes().forEach(n => {{
+                if (!partner && n.data('base_name') === base &&
+                        n.data('hemisphere') === want) partner = n;
+            }});
+            return partner;
+        }}
+
+        function mirrorPartnerStyle(node, style) {{
+            if (mirroringNodeEdit) return;
+            const partner = hemispherePartner(node);
+            if (!partner || !style || !Object.keys(style).length) return;
+            mirroringNodeEdit = true;
+            partner.style(style);
+            if (style['background-color'] !== undefined) {{
+                partner.data('customColor', true);
+            }}
+            mirroringNodeEdit = false;
+        }}
+
+        function mirrorPartnerPosition(node, partner) {{
+            if (!partner || hemisphereMirrorAxisX === null) return;
+            const p = node.position();
+            partner.position({{ x: 2 * hemisphereMirrorAxisX - p.x, y: p.y }});
+        }}
+
+        // Live drag: the partner follows the mirrored position unless it is
+        // itself selected (then the user is moving both explicitly).
+        cy.on('drag', 'node', function(evt) {{
+            if (!hemisphereMirrorEnabled || mirroringNodeEdit) return;
+            const node = evt.target;
+            const partner = hemispherePartner(node);
+            if (!partner || partner.selected()) return;
+            mirroringNodeEdit = true;
+            mirrorPartnerPosition(node, partner);
+            mirroringNodeEdit = false;
+        }});
 
         // Apply the initial layout using proper configuration
         const initialLayout = getLayoutConfig(currentLayoutAlgorithm);
@@ -9016,9 +9080,17 @@ class VisualizePath:
                     clearTimeout(pendingNudge.timer);
                 }}
                 cy.batch(() => {{
+                    const selIds = new Set();
+                    sel.forEach(n => selIds.add(n.id()));
                     sel.forEach(n => {{
                         const p = n.position();
                         n.position({{ x: p.x + dx, y: p.y + dy }});
+                    }});
+                    sel.forEach(n => {{
+                        const partner = hemispherePartner(n);
+                        if (partner && !selIds.has(partner.id())) {{
+                            mirrorPartnerPosition(n, partner);
+                        }}
                     }});
                 }});
                 pendingNudge.timer = setTimeout(flushPendingNudge, 700);
@@ -13209,6 +13281,10 @@ class VisualizePath:
                         // 'opacity' multiplies the label font too.
                         'background-opacity': opacity
                     }});
+                    mirrorPartnerStyle(element, {{
+                        'background-color': color,
+                        'background-opacity': opacity
+                    }});
                     element.data('customColor', true);  // Mark as customized
                     nodesUpdated++;
                 }} else {{
@@ -13467,12 +13543,20 @@ class VisualizePath:
                     const dx = newX - pos.x;
                     const dy = newY - pos.y;
                     cy.batch(() => {{
+                        const movedIds = new Set();
+                        nodes.forEach(n => movedIds.add(n.id()));
                         nodes.forEach(n => {{
                             if (n === primary) {{
                                 n.position({{ x: newX, y: newY }});
                             }} else {{
                                 const p = n.position();
                                 n.position({{ x: p.x + dx, y: p.y + dy }});
+                            }}
+                        }});
+                        nodes.forEach(n => {{
+                            const partner = hemispherePartner(n);
+                            if (partner && !movedIds.has(partner.id())) {{
+                                mirrorPartnerPosition(n, partner);
                             }}
                         }});
                     }});
@@ -13493,6 +13577,7 @@ class VisualizePath:
                             const w = (!isNaN(newWidth) && newWidth > 0) ? newWidth : ownW;
                             const h = (!isNaN(newHeight) && newHeight > 0) ? newHeight : ownH;
                             n.style({{ 'width': w + 'px', 'height': h + 'px' }});
+                            mirrorPartnerStyle(n, {{ 'width': w + 'px', 'height': h + 'px' }});
                         }});
                     }});
                 }}
@@ -13738,8 +13823,14 @@ class VisualizePath:
             queueStyleHistory('Change label size');
             cy.batch(() => {{
                 nodes.forEach(n => {{
-                    if (!isNaN(v) && v > 0) n.style('font-size', v + 'px');
-                    else n.removeStyle('font-size');
+                    if (!isNaN(v) && v > 0) {{
+                        n.style('font-size', v + 'px');
+                        mirrorPartnerStyle(n, {{ 'font-size': v + 'px' }});
+                    }} else {{
+                        n.removeStyle('font-size');
+                        const partner = hemispherePartner(n);
+                        if (partner) partner.removeStyle('font-size');
+                    }}
                 }});
             }});
         }}
@@ -14502,7 +14593,10 @@ class VisualizePath:
                     if (setsLook && patch.borderWidth === undefined && !widthOverridden) {{
                         style['border-width'] = '2px';
                     }}
-                    if (Object.keys(style).length) n.style(style);
+                    if (Object.keys(style).length) {{
+                        n.style(style);
+                        mirrorPartnerStyle(n, style);
+                    }}
                 }});
             }});
             updateHoverInfo('✓ Outline updated on ' + nodes.length + ' node(s)');
@@ -14571,14 +14665,21 @@ class VisualizePath:
                 nodes.forEach(n => {{
                     if (shapeValue === '__follow__') {{
                         n.removeStyle('shape');
+                        const partner = hemispherePartner(n);
+                        if (partner) partner.removeStyle('shape');
                     }} else if (shapeValue === '__circle__') {{
                         // perfect circle: ellipse + width locked equal to
                         // height (the larger dimension wins)
                         const d = Math.max(n.numericStyle('width'), n.numericStyle('height'));
                         n.style('shape', 'ellipse');
                         n.style({{ 'width': d + 'px', 'height': d + 'px' }});
+                        mirrorPartnerStyle(n, {{
+                            'shape': 'ellipse', 'width': d + 'px',
+                            'height': d + 'px'
+                        }});
                     }} else {{
                         n.style('shape', shapeValue);
+                        mirrorPartnerStyle(n, {{ 'shape': shapeValue }});
                     }}
                 }});
             }});
