@@ -6134,7 +6134,15 @@ class VisualizePath:
                 nt_type = normalize_nt_value(nt_type)
 
             weight_disp = _fmt_weight(weight)
+            # Hemisphere direction group (L-L / R-R / R-L / L-R) from the
+            # endpoint suffixes; empty when either side is unclassified.
+            _sb, _sh = _extract_hemisphere(str(source))
+            _tb, _th = _extract_hemisphere(str(target))
+            direction = (f"{_sh}-{_th}"
+                         if _sh in ('L', 'R') and _th in ('L', 'R') else '')
             tooltip_parts = [f"Weight: {weight_disp} {self.edge_weight_label}"]
+            if direction:
+                tooltip_parts.append(f"Group: {direction}")
             if not np.isnan(ratio):
                 # 4 significant figures: connection-ratio thresholds live
                 # as low as ~5e-4 on real data, where a fixed .3f would
@@ -6177,6 +6185,7 @@ class VisualizePath:
                 'probability': prob if not np.isnan(prob) else 0,
                 'tooltip': "\n".join(tooltip_parts),
                 'custom_labels': custom_labels_json,
+                'direction': direction,
             }
 
         for source, target, data in G.edges(data=True):

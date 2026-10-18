@@ -3310,6 +3310,17 @@ def test_mirror_hemispheres_applies_node_property_edits_to_the_partner(tmp_path)
                 "cy.nodes().unselect(); "
                 "cy.getElementById('A[L]').select(); return true;")
 
+        # Every edge names its hemisphere group (data + hover).
+        dirs = page.js("""
+          var out = {};
+          cy.edges().forEach(function (e) {
+            out[e.data('source') + '>' + e.data('target')] = e.data('direction');
+          });
+          return out;
+        """)
+        assert dirs.get('A[L]>B[L]') == 'L-L', dirs
+        assert dirs.get('A[L]>B[R]') == 'L-R', dirs
+
         # Toggling the mirror mode must NOT refresh or restore the layout.
         before = page.js("return cy.nodes().map(function (n) {"
                          " return [n.id(), n.position().x, n.position().y]; });")
