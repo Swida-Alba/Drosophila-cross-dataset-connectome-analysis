@@ -368,7 +368,7 @@ def _numeric_bins(values, count):
 
 def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
                          cell_outline=None, fill_scale=None, fill_label=None,
-                         fill_value=None):
+                         fill_value=None, fill_range=None):
     """Turn caller per-cell style into JS-ready fields, keyed by label.
 
     Returns `(fields, outline_map)`.
@@ -382,6 +382,13 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
     number positions it inside the ramp (normalised to the category's own min and
     max). So a class can keep its hue while its shade carries the value, and the
     legend band becomes a visible value scale rather than a flat swatch.
+
+    `fill_range=(lo, hi)` pins every ramp to ONE shared domain instead of each
+    class's own min/max. With a ramp that starts at white this makes lo exactly
+    white and lets a value be compared across classes. A pinned range also
+    switches the legend from one stitched bar to one PARALLEL bar per class,
+    each spanning lo..hi — a stitched bar cannot show three different windows of
+    the same scale without lying about one of them.
 
     `fields` is an ordered list, one entry per channel the reader may colour by::
 
@@ -452,7 +459,7 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
         return 'numeric'
 
     def _add(field_id, label, mapping, colors=None, fill_value=None,
-             unmapped=CELL_UNMAPPED_COLOR):
+             fill_range=None, unmapped=CELL_UNMAPPED_COLOR):
         values = _check_keys(mapping, label)
         if not values:
             return None
@@ -502,6 +509,13 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
         if ramps:
             field['ramps'] = ramps
             field['ranges'] = ranges
+            if fill_range is not None:
+                lo, hi = float(fill_range[0]), float(fill_range[1])
+                if not hi > lo:
+                    raise ValueError(
+                        f'{label}: fill_range must be (lo, hi) with hi > lo; '
+                        f'got {fill_range!r}')
+                field['range'] = [lo, hi]
         if num:
             field['values_num'] = num
         return field
@@ -512,7 +526,8 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
             fields.append(field)
     if cell_fill:
         field = _add(CALLER_FILL_FIELD_ID, fill_label or 'per-cell fill',
-                     cell_fill, colors=fill_scale, fill_value=fill_value)
+                     cell_fill, colors=fill_scale, fill_value=fill_value,
+                     fill_range=fill_range)
         if field:
             fields.insert(0, field)
 
@@ -742,7 +757,7 @@ def _cell_style_js_chunks(fields, outline_map):
         // How far into its class's ramp this cell sits (0..1). Per class, so a
         // class with a narrow value range still uses its whole ramp.
         function cellStyleT(field, cat, key) {
-            const r = field.ranges && field.ranges[cat];
+            const r = field.range || (field.ranges && field.ranges[cat]);
             const v = field.values_num ? field.values_num[key] : undefined;
             if (!r || v === undefined || v === null) return 0.5;
             const lo = Number(r[0]), hi = Number(r[1]);
@@ -761,6 +776,43 @@ def _cell_style_js_chunks(fields, outline_map):
                 return idx + cellStyleT(active.field, cat, key);
             }
             return idx + 0.5;
+        }
+
+        // One heatmap trace per ramp class when the caller pinned fill_range:
+        // each class gets its own colourbar over the SAME lo..hi domain, side by
+        // side, plus a white base so an empty cell stays white whatever the page
+        // background is. Without a pinned range one stitched trace is used.
+        function cellStyleParallelTraces(trace, active, data, hoverText) {
+            const lo = Number(active.field.range[0]);
+            const hi = Number(active.field.range[1]);
+            const base = Object.assign({}, trace, {
+                z: data.map(row => row.map(() => lo)),
+                colorscale: [[0, '#ffffff'], [1, '#ffffff']],
+                zmin: lo, zmax: hi, showscale: false, hoverinfo: 'skip'});
+            const parts = [base];
+            let bars = 0;
+            active.keys.forEach((key) => {
+                const ramp = active.field.ramps && active.field.ramps[key];
+                if (!ramp) return;
+                const idx = active.keys.indexOf(key);
+                const z = data.map((row, i) => row.map((v, j) =>
+                    cellStyleCategoryIndex(i, j, active) === idx ? v : null));
+                const stops = ramp.map((c, i) => [i / (ramp.length - 1), c]);
+                parts.push(Object.assign({}, trace, {
+                    z: z,
+                    colorscale: stops,
+                    zmin: lo, zmax: hi,
+                    showscale: true,
+                    colorbar: {title: {text: String(key), side: 'top',
+                                       font: {size: 10}},
+                               thickness: 10, len: 0.85,
+                               tickfont: {size: 9},
+                               x: 1.02 + bars * 0.10},
+                    hoverinfo: 'text', text: hoverText,
+                    hovertemplate: '%{text}<extra></extra>'}));
+                bars += 1;
+            });
+            return {traces: parts, bars: bars};
         }
 
         // The colour this cell is painted, or null when the metric owns colour.
@@ -982,7 +1034,13 @@ def _cell_style_js_chunks(fields, outline_map):
             // category paints exactly its own colour, and the metric's zmin/zmax
             // and the reader's colour range are deliberately not applied here.
             const cellStyleActive = cellStyleActiveCats();
-            if (cellStyleActive) {
+            if (cellStyleActive && cellStyleActive.field.range
+                && cellStyleActive.field.ramps) {
+                // Parallel bars: the metric matrix stays in trace.z and the
+                // class split happens where the traces are assembled.
+                cellStyleParallel = cellStyleActive;
+                trace.showscale = false;
+            } else if (cellStyleActive) {
                 const styleN = cellStyleActive.keys.length
                                + (cellStyleActive.hasUnmapped ? 1 : 0);
                 const styleKeys = cellStyleActive.keys.concat(
@@ -1015,7 +1073,7 @@ def _cell_style_js_chunks(fields, outline_map):
                     tickmode: 'array',
                     tickvals: styleKeys.map((_, i) => i + 0.5),
                     ticktext: cellStyleActive.labels,
-                    title: cellStyleActive.field.label, titleside: 'right'};
+                    title: {text: cellStyleActive.field.label, side: 'right'}};
                 colorbarTitleText = cellStyleActive.field.label;
             }
 '''
@@ -16309,7 +16367,8 @@ class VisualizePath:
 
     def create_heatmap(self, custom_row_order=None, custom_col_order=None,
                        cell_data=None, cell_fill=None, cell_outline=None,
-                       fill_scale=None, fill_label=None, fill_value=None):
+                       fill_scale=None, fill_label=None, fill_value=None,
+                       fill_range=None):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -16326,7 +16385,8 @@ class VisualizePath:
             Custom order for column nodes (targets). If None, uses the class attribute
             `heatmap_col_order` (if set), otherwise uses sorted order.
             Nodes not in the list will be appended at the end.
-        cell_data, cell_fill, cell_outline, fill_scale, fill_label, fill_value
+        cell_data, cell_fill, cell_outline, fill_scale, fill_label, fill_value,
+        fill_range
             Optional per-cell style channels, passed straight to
             `VisConnMatInteractive` and keyed by node label (see there).
         
@@ -16480,6 +16540,7 @@ class VisualizePath:
             cell_data=cell_data, cell_fill=cell_fill,
             cell_outline=cell_outline, fill_scale=fill_scale,
             fill_label=fill_label, fill_value=fill_value,
+            fill_range=fill_range,
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -17054,7 +17115,8 @@ def visualize_network(
 
 def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None,
                    cell_data=None, cell_fill=None, cell_outline=None,
-                   fill_scale=None, fill_label=None, fill_value=None):
+                   fill_scale=None, fill_label=None, fill_value=None,
+                   fill_range=None):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -17486,7 +17548,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     cell_style_fields, cell_style_outline_map = normalize_cell_style(
         y_labels, x_labels, cell_data=cell_data, cell_fill=cell_fill,
         cell_outline=cell_outline, fill_scale=fill_scale,
-        fill_label=fill_label, fill_value=fill_value)
+        fill_label=fill_label, fill_value=fill_value, fill_range=fill_range)
     _cell_style_chunks = _cell_style_js_chunks(cell_style_fields,
                                                cell_style_outline_map)
     cell_style_consts = _cell_style_chunks['consts']
@@ -18751,8 +18813,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 type: 'heatmap',
                 colorscale: colorscaleToUse,
                 colorbar: {{
-                    title: metricDisplayName + scaleLabel,
-                    titleside: 'right'
+                    title: {{text: metricDisplayName + scaleLabel, side: 'right'}}
                 }}
             }};
             // Remember the exact title drawn here (selected metric's display name
@@ -18785,7 +18846,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 trace.zmax = customZmax;
             }}
             
-            // Store current range for slider scaling{cell_style_trace}
+            // Store current range for slider scaling
+            let cellStyleParallel = null;{cell_style_trace}
             window.currentDataRange = range;
             
             // Update 2-point color value inputs to show current data range in auto mode
@@ -18933,7 +18995,18 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // The trees share the heatmap's x/y axes (so any later range
             // adjustment, e.g. the square-cells scaleanchor, keeps them
             // aligned); only the band-depth axes are separate.
-            const traces = [trace];
+            let traces = [trace];
+            if (cellStyleParallel) {{
+                const parts = cellStyleParallelTraces(
+                    trace, cellStyleParallel, data, currentHoverText);
+                traces = parts.traces;
+                // Room for the bars: WIDEN the canvas rather than the margin,
+                // because the bar x positions are fractions of the plot area —
+                // a bigger margin shrinks the plot and pulls the bars together.
+                const barRoom = 110 * parts.bars;
+                layout.width = currentWidth + barRoom;
+                layout.margin.r = 40 + barRoom;
+            }}
             if (dendroTop || dendroRight) {{
                 // The heatmap axes' grid lines (plotly default: on) extend
                 // across every subplot sharing the axis — invisible under the

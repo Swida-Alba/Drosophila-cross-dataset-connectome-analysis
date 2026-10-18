@@ -556,3 +556,70 @@ def test_a_ramp_class_shades_by_value_and_names_its_scale(tmp_path):
         # one band: every position inside [0, 1)
         assert 0 <= min(min(r) for r in st['z']), st['z']
         assert max(max(r) for r in st['z']) < 1, st['z']
+
+
+def test_a_pinned_range_overrides_the_per_class_domain():
+    fill = {FILL_KEY('S0', 'T0'): 'a', FILL_KEY('S0', 'T1'): 'b'}
+    vals = {FILL_KEY('S0', 'T0'): 100.0, FILL_KEY('S0', 'T1'): 300.0}
+    fields, _ = normalize_cell_style(
+        ROWS, COLS, cell_fill=fill,
+        fill_scale={'a': ['#ffffff', '#000000'],
+                    'b': ['#ffffff', '#2ca02c']},
+        fill_value=vals, fill_range=(0, 800))
+    f = fields[0]
+    assert f['range'] == [0.0, 800.0], f
+    # the per-class ranges are still recorded; the pinned one wins
+    assert f['ranges']['a'] == [100.0, 100.0], f['ranges']
+    with pytest.raises(ValueError):
+        normalize_cell_style(ROWS, COLS, cell_fill=fill,
+                             fill_scale={'a': ['#ffffff', '#000000'],
+                                         'b': ['#ffffff', '#2ca02c']},
+                             fill_range=(800, 0))
+
+
+PARALLEL = """
+var g = document.querySelector('.js-plotly-plot');
+var bars = g.data.filter(function (t) { return t.showscale; });
+return {traces: g.data.length,
+        bars: bars.map(function (t) {
+            var z = [];
+            t.z.forEach(function (r) { z = z.concat(r); });
+            return {title: t.colorbar.title.text, x: t.colorbar.x,
+                    zmin: t.zmin, zmax: t.zmax,
+                    first: t.colorscale[0][1],
+                    n: z.filter(function (v) { return v !== null; }).length,
+                    nulls: z.filter(function (v) { return v === null; }).length};
+        }),
+        marginRight: g.layout.margin.r, width: g.layout.width};
+"""
+
+
+@REQUIRES_CDP
+def test_a_pinned_range_draws_one_parallel_bar_per_class(tmp_path):
+    """Same scale, one bar each: a stitched bar cannot show three windows of one
+    0..800 domain without lying about one of them."""
+    matrix = pd.DataFrame([[1.0, 2.0], [3.0, 4.0]],
+                          index=['S0', 'S1'], columns=['T0', 'T1'])
+    fill = {('S0', 'T0'): 'a', ('S0', 'T1'): 'b',
+            ('S1', 'T0'): 'a', ('S1', 'T1'): 'b'}
+    out = tmp_path / 'parallel.html'
+    VisConnMatInteractive(matrix, str(out), title='parallel', showfig=False,
+                          verbose=False, init_clustered=False,
+                          cell_fill=fill,
+                          fill_scale={'a': ['#ffffff', '#000000'],
+                                      'b': ['#ffffff', '#2ca02c']},
+                          fill_range=(0, 800), fill_label='Classes')
+    with Page(out) as page:
+        page.arm_error_watch()
+        assert page.wait(PAGE_READY)
+        st = page.js(PARALLEL)
+        assert not page.errors(), page.errors()
+        assert len(st['bars']) == 2, st
+        assert [b['title'] for b in st['bars']] == ['a', 'b'], st
+        for bar in st['bars']:
+            assert (bar['zmin'], bar['zmax']) == (0, 800), bar
+            assert bar['first'] == '#ffffff', bar
+            assert bar['n'] == 2 and bar['nulls'] == 2, bar
+        assert st['bars'][0]['x'] != st['bars'][1]['x'], st
+        # the canvas grows for the bars instead of squeezing the plot
+        assert st['width'] > 800 and st['marginRight'] > 40, st
