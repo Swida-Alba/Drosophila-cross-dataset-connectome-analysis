@@ -55,7 +55,7 @@ def test_the_ratio_metric_scales_the_bars_to_its_own_domain(tmp_path):
                          " return x.showscale && x.zmax === 1; });")
         ratio = page.js(bar)
         assert (ratio['zmin'], ratio['zmax']) == (0, 1), ratio
-        assert ratio['ticks'] == ['0', '0.25', '0.5', '0.75', '1'], ratio
+        assert ratio['ticks'] == ['0.0%', '25.0%', '50.0%', '75.0%', '100.0%'], ratio
 
         # The Cell style panel's own Min/Max follow the metric too.
         panel = ("return [...document.querySelectorAll("
@@ -153,7 +153,7 @@ def test_the_adjusted_ratio_metric_is_selectable_on_its_own_domain(tmp_path):
                          " return x.showscale && x.zmax === 1; });")
         adj = page.js(bar)
         assert (adj['zmin'], adj['zmax']) == (0, 1), adj
-        assert adj['ticks'] == ['0', '0.25', '0.5', '0.75', '1'], adj
+        assert adj['ticks'] == ['0.0%', '25.0%', '50.0%', '75.0%', '100.0%'], adj
         assert page.js(panel) == ['0', '1'], page.js(panel)
 
         # Its override is keyed separately from the plain ratio's.

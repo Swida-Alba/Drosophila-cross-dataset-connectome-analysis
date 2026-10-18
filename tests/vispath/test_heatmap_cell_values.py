@@ -11,7 +11,8 @@ same block of `createHeatmap`:
   `1.475572836012` — 14 characters in a 24 px cell, which reads as several
   numbers run together.
 
-Values now come from the annotations only, formatted at the hover's precision,
+Values now come from the annotations only: synapse counts as whole numbers
+and ratio metrics as percentages at one decimal,
 and the font is re-hugged once to the cell the axis actually drew. The reader's
 "Cell Value Size" stays the upper bound.
 
@@ -42,7 +43,7 @@ COLS = ['T0', 'T1', 'T2']
 VALUES = np.array([[10.0, 0.0, 100.0],
                    [0.0, 1000.0, 1.475572836012],
                    [5.0, 25.0, 20.0]])
-EXPECTED = ['0', '0', '1.48', '10', '100', '1000', '20', '25', '5']
+EXPECTED = ['0', '0', '1', '10', '100', '1000', '20', '25', '5']
 
 SHOW_VALUES = "window.toggleCellValues(); return true;"
 STATE = """
@@ -131,3 +132,40 @@ return {pitch: pitch, maxWidth: Math.max.apply(null, ws), n: ws.length,
 FIT_LANDED = ("var g=document.querySelector('.js-plotly-plot');"
               "return (g.layout.annotations || []).length === 1600"
               " && g.layout.annotations[0].font.size < 10;")
+
+
+@REQUIRES_CDP
+def test_ratio_cell_values_and_bars_read_as_percentages(tmp_path):
+    """Ratio metrics label cells and colourbars as percentages (one
+    decimal); synapse counts stay whole numbers."""
+    weight = pd.DataFrame([[10.0, 20.0], [30.0, 40.0]],
+                          index=['S0', 'S1'], columns=['T0', 'T1'])
+    ratio = weight / 1000.0
+    out = tmp_path / 'ratio_values.html'
+    VisConnMatInteractive(weight, str(out), title='ratio_values',
+                          showfig=False, verbose=False, init_clustered=False,
+                          matrices_dict={'weight': weight, 'ratio': ratio})
+    assert out.exists()
+    with Page(out) as page:
+        assert page.wait(PAGE_READY)
+        page.js("var s=document.getElementById('metricSelect');"
+                "s.value='ratio'; s.dispatchEvent(new Event('change'));"
+                "return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data[0].z[0][0] > 0.009 && "
+                         "g.data[0].z[0][0] < 0.011;")
+        page.js(SHOW_VALUES)
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return (g.layout.annotations || []).length === 4;")
+        ann = page.js("var g=document.querySelector('.js-plotly-plot');"
+                      "return (g.layout.annotations || []).map(function (a) {"
+                      " return String(a.text); }).sort();")
+        assert ann == ['1.0%', '2.0%', '3.0%', '4.0%'], ann
+        cb = page.js("var t=document.querySelector('.js-plotly-plot')"
+                     ".data[0];"
+                     "return {title: (t.colorbar.title && t.colorbar.title.text)"
+                     " || t.colorbar.title, ticks: t.colorbar.ticktext || null,"
+                     " format: t.colorbar.tickformat};")
+        assert '%' in str(cb['title']), cb
+        assert cb['format'] == '.1%', cb
+        assert page.errors() == [], page.errors()

@@ -880,7 +880,13 @@ def _cell_style_js_chunks(fields, outline_map):
             // The range helper is metric-aware: synapse units keep the caller's
             // pin and the reader's overrides, ratio uses 0..1 (its own unit).
             const f = v => cellStyleScaleValue(v, scale);
-            const fmt = v => String(Math.round(Number(v) * 100) / 100);
+            const ratioMetric = cellStyleMetricKey() === 'ratio' ||
+                cellStyleMetricKey() === 'ratio_adj';
+            // Synapse bars label whole synapses; ratio bars label percentages
+            // at one decimal, matching the cell values.
+            const fmt = v => ratioMetric
+                ? (Number(v) * 100).toFixed(1) + '%'
+                : String(Math.round(Number(v)));
             const firstKey = active.keys.length ? active.keys[0] : null;
             const baseRange = (firstKey && cellStyleRangeFor(active.field, firstKey))
                 || [Number(active.field.range[0]), Number(active.field.range[1])];
@@ -8713,12 +8719,9 @@ class VisualizePath:
                 btn.style.background = hemisphereMirrorEnabled ? '#0ea5e9' : '#64748b';
                 btn.textContent = hemisphereMirrorEnabled ? '🪞 Mirrored' : '🪞 Mirror Hemispheres';
             }}
-            if (hemisphereMirrorEnabled) {{
-                if (!originalHemispherePositions) cacheHemispherePositions();
-                runHemisphereMirrorLayout();
-            }} else {{
-                restoreHemispherePositions();
-            }}
+            // The toggle arms/disarms the mirrored PROPERTY edits; it never
+            // re-runs or restores the layout. Position changes stay on the
+            // explicit layout controls (Layout, Mirror layout, Fit).
         }}
 
         // --- Mirrored property edits -----------------------------------
@@ -18605,9 +18608,13 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         function formatCellValue(value) {{
             const n = Number(value);
             if (value === '' || value === null || !Number.isFinite(n)) return String(value);
-            if (currentMetric === 'ratio' || currentMetric === 'probability') return n.toFixed(4);
-            if (Number.isInteger(n)) return String(n);
-            return n.toFixed(2);
+            // Ratio metrics read as percentages (one decimal); every
+            // synapse-count metric reads as a whole number.
+            if (currentMetric === 'ratio' || currentMetric === 'ratio_adj' ||
+                    currentMetric === 'probability') {{
+                return (n * 100).toFixed(1) + '%';
+            }}
+            return String(Math.round(n));
         }}
         
         // Largest size (never above the reader's setting) at which the widest
@@ -19062,6 +19069,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 metricDisplayNames[metricType] = metricNameOverride;
             }}
             const metricDisplayName = metricDisplayNames[currentMetric] || currentMetric;
+            const ratioMetric = currentMetric === 'ratio' ||
+                currentMetric === 'ratio_adj' ||
+                currentMetric === 'probability';
             
             const trace = {{
                 z: data,
@@ -19070,7 +19080,12 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 type: 'heatmap',
                 colorscale: colorscaleToUse,
                 colorbar: {{
-                    title: {{text: metricDisplayName + scaleLabel, side: 'right'}}
+                    title: {{text: metricDisplayName +
+                                   (ratioMetric ? ' (%)' : '') + scaleLabel,
+                            side: 'right'}},
+                    // Ratio bars read as percentages; synapse bars as whole
+                    // synapses (the metric's own unit).
+                    tickformat: ratioMetric ? '.1%' : '.0f'
                 }}
             }};
             // Remember the exact title drawn here (selected metric's display name

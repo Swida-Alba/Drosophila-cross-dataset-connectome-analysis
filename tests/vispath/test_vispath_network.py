@@ -3310,6 +3310,18 @@ def test_mirror_hemispheres_applies_node_property_edits_to_the_partner(tmp_path)
                 "cy.nodes().unselect(); "
                 "cy.getElementById('A[L]').select(); return true;")
 
+        # Toggling the mirror mode must NOT refresh or restore the layout.
+        before = page.js("return cy.nodes().map(function (n) {"
+                         " return [n.id(), n.position().x, n.position().y]; });")
+        page.js("toggleHemisphereMirror(); return true;")
+        off = page.js("return cy.nodes().map(function (n) {"
+                      " return [n.id(), n.position().x, n.position().y]; });")
+        assert off == before, ('toggle-off refreshed the layout', off, before)
+        page.js("toggleHemisphereMirror(); return true;")
+        on = page.js("return cy.nodes().map(function (n) {"
+                     " return [n.id(), n.position().x, n.position().y]; });")
+        assert on == before, ('toggle-on refreshed the layout', on, before)
+
         # Fill colour.
         page.js("document.getElementById('individualColor').value='#ff0000';"
                 "applyIndividualColor(false); return true;")
