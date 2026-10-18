@@ -3582,6 +3582,7 @@ class VisualizePath:
         has_nt = 'nt_types' in self.path_df.columns
         has_edge_group = 'edge_group' in self.path_df.columns
         has_arrow_color = 'arrow_color' in self.path_df.columns
+        has_edge_alpha = 'edge_alpha' in self.path_df.columns
         short_nt_rows = 0  # rows whose nt_types list is shorter than the hop count
 
         for idx, row in self.path_df.iterrows():
@@ -3631,6 +3632,17 @@ class VisualizePath:
                     arrow = row.get('arrow_color')
                     conn_data['arrow_color'] = ('' if pd.isna(arrow)
                                                 else str(arrow))
+                if has_edge_alpha:
+                    a = row.get('edge_alpha')
+                    if isinstance(a, str):
+                        try:
+                            a = ast.literal_eval(a)
+                        except Exception:
+                            a = [a]
+                    if isinstance(a, (list, tuple)):
+                        a = a[i] if i < len(a) else np.nan
+                    conn_data['edge_alpha'] = (None if pd.isna(a)
+                                               else float(a))
                     
                 connections.append(conn_data)
         
@@ -3661,6 +3673,8 @@ class VisualizePath:
                 cols.append('edge_group')
             if has_arrow_color:
                 cols.append('arrow_color')
+            if has_edge_alpha:
+                cols.append('edge_alpha')
             conn_df = pd.DataFrame(columns=cols)
         else:
             # Aggregate duplicate connections - only aggregate columns that exist
@@ -3680,6 +3694,8 @@ class VisualizePath:
                 agg_dict['edge_group'] = 'first'
             if has_arrow_color:
                 agg_dict['arrow_color'] = 'first'
+            if has_edge_alpha:
+                agg_dict['edge_alpha'] = 'first'
 
             conn_df = conn_df.groupby(['source', 'target'], as_index=False).agg(agg_dict)
 
@@ -3715,6 +3731,8 @@ class VisualizePath:
                 edge_attrs['edge_group'] = str(row['edge_group']).strip()
             if 'arrow_color' in row and str(row['arrow_color']).strip():
                 edge_attrs['arrow_color'] = str(row['arrow_color']).strip()
+            if 'edge_alpha' in row and pd.notna(row['edge_alpha']):
+                edge_attrs['edge_alpha'] = float(row['edge_alpha'])
             
             G.add_edge(row['source'], row['target'], **edge_attrs)
         
@@ -6235,6 +6253,7 @@ class VisualizePath:
                 'nt_type': nt_type if nt_type else '',
                 'color': edge_color,
                 'arrow_color': data.get('arrow_color') or edge_color,
+                'edge_alpha': data.get('edge_alpha'),
                 'ratio': ratio if not np.isnan(ratio) else 0,
                 'ratio_adj': (ratio_adj if not np.isnan(ratio_adj) else None),
                 'refilled': (refilled if not np.isnan(refilled) else None),
@@ -14905,13 +14924,21 @@ class VisualizePath:
             // weight-label text)
             cy.edges().forEach(function(edge) {{
                 const currentColor = edge.style('line-color');
+                // A declared per-edge alpha (e.g. a class page's weight
+                // band) replaces the global default; the arrowhead takes
+                // the pre-blended colour so it matches the faded line.
+                const bandAlpha = edge.data('edge_alpha');
+                const hasBand = bandAlpha !== undefined && bandAlpha !== null
+                    && bandAlpha !== '' && !isNaN(Number(bandAlpha));
+                const opacity = hasBand ? Number(bandAlpha) : edgeOpacity;
+                const arrowColor = edge.data('arrow_color') || currentColor;
                 edge.style({{
-                    'line-opacity': edgeOpacity,
-                    'target-arrow-color': currentColor,
-                    'source-arrow-color': currentColor
+                    'line-opacity': opacity,
+                    'target-arrow-color': arrowColor,
+                    'source-arrow-color': arrowColor
                 }});
-                if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, edgeOpacity);
-                setEdgeBaseAppearance(edge, currentColor, edgeOpacity, false);
+                if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, opacity);
+                setEdgeBaseAppearance(edge, currentColor, opacity, false);
             }});
             
             console.log('✓ Initial opacity applied from input colors (nodes + edges)');
