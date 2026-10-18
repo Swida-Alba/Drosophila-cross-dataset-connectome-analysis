@@ -3504,3 +3504,39 @@ def test_node_label_override_and_direction_group_options(tmp_path):
                        " return e.data('direction')==='L-L' && "
                        "e.style('line-color')==='rgb(255,0,255)'; }).length;") == 1
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_edge_alpha_zero_hides_the_arrowheads(tmp_path):
+    """Alpha 0 must hide the arrowheads too. This Cytoscape build ignores
+    arrow-opacity and alpha in arrow colours, so the shapes are removed at
+    alpha 0 and restored from the stylesheet above 0."""
+    df = pd.DataFrame({"source": ["A"], "target": ["B"], "weight": [5.0]})
+    vp = VisualizePath(path_file=df, output_folder=str(tmp_path),
+                       showfig=False, verbose=False, network_layout="dagre")
+    vp.base_filename = "arrow_alpha"
+    vp.build_network()
+    out = vp.create_network()
+    with Page(Path(out)) as page:
+        assert page.wait("return typeof cy !== 'undefined' && cy.edges().length === 1;")
+        page.js("cy.edges().select(); applyEdgeLineStyle({alpha: 0}); return true;")
+        zero = page.js("""
+          var e = cy.edges()[0];
+          return {line: e.style('line-opacity'),
+                  tgt: e.style('target-arrow-shape'),
+                  src: e.style('source-arrow-shape')};
+        """)
+        assert float(zero['line']) == 0, zero
+        assert zero['tgt'] == 'none', zero
+        assert zero['src'] == 'none', zero
+        page.js("applyEdgeLineStyle({alpha: 0.4}); return true;")
+        half = page.js("""
+          var e = cy.edges()[0];
+          return {line: e.style('line-opacity'),
+                  tgt: e.style('target-arrow-shape'),
+                  src: e.style('source-arrow-shape')};
+        """)
+        assert abs(float(half['line']) - 0.4) < 1e-9, half
+        assert half['tgt'] == 'triangle', half
+        assert half['src'] == 'none', half
+        assert page.errors() == [], page.errors()

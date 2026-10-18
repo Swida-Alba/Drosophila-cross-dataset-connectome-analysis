@@ -12531,6 +12531,20 @@ class VisualizePath:
         const EDGE_BASE_COLOR_KEY = '__baseColor';
         const EDGE_BASE_OPACITY_KEY = '__baseOpacity';
 
+        // This Cytoscape build supports neither target/source-arrow-opacity
+        // nor alpha in an arrow colour, so an alpha of 0 can only be honoured
+        // by removing the arrow SHAPE. (Partial alphas fade the line; the
+        // arrowhead stays solid.)
+        function edgeArrowShapes(edge, opacity) {{
+            if (opacity > 0) {{
+                edge.removeStyle('target-arrow-shape');
+                edge.removeStyle('source-arrow-shape');
+            }} else {{
+                edge.style({{ 'target-arrow-shape': 'none',
+                              'source-arrow-shape': 'none' }});
+            }}
+        }}
+
         function setEdgeBaseAppearance(edge, color, opacity, applyImmediately = true) {{
             edge.data(EDGE_BASE_COLOR_KEY, color);
             edge.data(EDGE_BASE_OPACITY_KEY, opacity);
@@ -12544,10 +12558,9 @@ class VisualizePath:
                     'line-color': color,
                     'target-arrow-color': color,
                     'source-arrow-color': color,
-                    'line-opacity': opacity,
-                    'target-arrow-opacity': opacity,
-                    'source-arrow-opacity': opacity
+                    'line-opacity': opacity
                 }});
+                edgeArrowShapes(edge, opacity);
             }}
         }}
 
@@ -12570,10 +12583,9 @@ class VisualizePath:
                 'line-color': color,
                 'target-arrow-color': color,
                 'source-arrow-color': color,
-                'line-opacity': opacity,
-                'target-arrow-opacity': opacity,
-                'source-arrow-opacity': opacity
+                'line-opacity': opacity
             }});
+            edgeArrowShapes(edge, opacity);
         }}
 
         function applyEdgeHighlightOverride(edge) {{
@@ -12588,10 +12600,9 @@ class VisualizePath:
                 // arrowhead — recolor it with the line so a highlighted
                 // double-headed edge stays symmetric.
                 'source-arrow-color': highlightColor,
-                'line-opacity': targetOpacity,
-                'target-arrow-opacity': targetOpacity,
-                'source-arrow-opacity': targetOpacity
+                'line-opacity': targetOpacity
             }});
+            edgeArrowShapes(edge, targetOpacity);
         }}
 
         function clearEdgeHighlightOverride(edge) {{
@@ -14847,12 +14858,13 @@ class VisualizePath:
             // Apply initial opacity to all edges (line + arrows, not the
             // weight-label text)
             cy.edges().forEach(function(edge) {{
+                const currentColor = edge.style('line-color');
                 edge.style({{
                     'line-opacity': edgeOpacity,
-                    'target-arrow-opacity': edgeOpacity,
-                    'source-arrow-opacity': edgeOpacity
+                    'target-arrow-color': currentColor,
+                    'source-arrow-color': currentColor
                 }});
-                const currentColor = edge.style('line-color');
+                edgeArrowShapes(edge, edgeOpacity);
                 setEdgeBaseAppearance(edge, currentColor, edgeOpacity, false);
             }});
             
