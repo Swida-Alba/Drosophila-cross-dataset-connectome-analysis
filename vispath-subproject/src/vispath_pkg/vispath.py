@@ -12560,7 +12560,7 @@ class VisualizePath:
                     'source-arrow-color': color,
                     'line-opacity': opacity
                 }});
-                edgeArrowShapes(edge, opacity);
+                if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, opacity);
             }}
         }}
 
@@ -12585,7 +12585,7 @@ class VisualizePath:
                 'source-arrow-color': color,
                 'line-opacity': opacity
             }});
-            edgeArrowShapes(edge, opacity);
+            if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, opacity);
         }}
 
         function applyEdgeHighlightOverride(edge) {{
@@ -12602,7 +12602,7 @@ class VisualizePath:
                 'source-arrow-color': highlightColor,
                 'line-opacity': targetOpacity
             }});
-            edgeArrowShapes(edge, targetOpacity);
+            if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, targetOpacity);
         }}
 
         function clearEdgeHighlightOverride(edge) {{
@@ -14864,7 +14864,7 @@ class VisualizePath:
                     'target-arrow-color': currentColor,
                     'source-arrow-color': currentColor
                 }});
-                edgeArrowShapes(edge, edgeOpacity);
+                if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, edgeOpacity);
                 setEdgeBaseAppearance(edge, currentColor, edgeOpacity, false);
             }});
             
