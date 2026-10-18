@@ -79,7 +79,9 @@ DEFAULT_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 # clipping negatives like the old green [0, 1] card.
 _MORPH_V2_STYLE = report_kit.MetricStyle(
     'morph_v2', 'Vector v2', report_kit.REPORT_DIVERGING_COLORSCALE, -1.0, 1.0)
-_LEVEL_DISPLAY = {'type': 'Type level', 'bodyid': 'BodyId level'}
+_LEVEL_DISPLAY = {'type': 'Type level',
+                  'labeltype': 'Type level (LabelMapper labels)',
+                  'bodyid': 'BodyId level'}
 
 
 def _body_id_label(dataset: str, bid, fallback_type: str,
@@ -2036,8 +2038,11 @@ class CrossDatasetMorphComparer:
                     a, src_members, b, tgt_members, skeletons_cache[a])
 
         overview = self._overview_frame(tokens, datasets, members, pairs)
+        matched_overview = self._matched_label_overview(pairs)
+        report_overview = (matched_overview if not matched_overview.empty
+                           else overview)
         files = self._write_outputs(run_path, tokens, datasets, members,
-                                    pairs, overview, notes)
+                                    pairs, report_overview, notes)
         if self.generate_heatmaps:
             try:
                 files.extend(self._write_heatmaps(run_path, pairs))
@@ -2056,7 +2061,7 @@ class CrossDatasetMorphComparer:
                 # legend-index overrun — is fixed in visualize_skeleton.)
                 self._log(f'3D visualization failed (comparison kept): {exc}')
         files = self._write_report(run_path, tokens, datasets, members,
-                                   pairs, overview, notes, scenes,
+                                   pairs, report_overview, notes, scenes,
                                    existing=files)
 
         return {'output_folder': str(run_path),
@@ -2191,6 +2196,17 @@ class CrossDatasetMorphComparer:
             pair_info['rows'], source, src_members, target, tgt_members)
         pair_info['labeltype_matrix'] = self._label_type_matrix(
             pair_info['rows'], source, target)
+        # The matched-label baseline must key on the SETTLED label, not the
+        # native type: one label can pool several native source types.
+        label_src_members: Dict[str, List[int]] = {}
+        label_of = self._axis_label_of()
+        if label_of is not None:
+            for bid in sorted({int(b) for b in
+                               pair_info['rows'].get('source_bodyId', [])}):
+                resolved = str(label_of(source, bid) or '').strip()
+                if resolved:
+                    label_src_members.setdefault(resolved, []).append(bid)
+        pair_info['label_src_members'] = label_src_members
         self._log(f'[{source} -> {target}] scored {len(rows)} pair(s); '
                   f'baseline p95 range: '
                   f'{min((s["p95"] for s in stats.values()), default=float("nan")):.3f}'
@@ -2344,6 +2360,88 @@ class CrossDatasetMorphComparer:
             ] * len(queried_types)
         return overview
 
+    def _matched_label_rows(self, info: Dict[str, Any]) -> pd.DataFrame:
+        """One row per LabelMapper label: the SAME label in source and target.
+
+        This is the inter-dataset comparison: the diagonal of the pair's
+        ``morph_labeltype_matrix`` (mean over the source-label × target-label
+        member pairs), with the mean of those source members' seeded null p95.
+        Cross-label cells are deliberately not part of this frame.
+        """
+        label_matrix = info.get('labeltype_matrix')
+        if label_matrix is None or label_matrix.empty:
+            return pd.DataFrame()
+        baseline = info.get('baseline') or {}
+        src_members = info.get('src_members') or {}
+        label_src = info.get('label_src_members') or {}
+        rows = []
+        for label in label_matrix.index:
+            label = str(label)
+            score = (label_matrix.loc[label, label]
+                     if label in label_matrix.index
+                     and label in label_matrix.columns else np.nan)
+            # Matched-label baseline: the mean seeded null p95 of the SOURCE
+            # label members (settled label; pools native types).
+            source_ids = label_src.get(label) or src_members.get(label) or []
+            p95s = [float(baseline[b]['p95'])
+                    for b in source_ids
+                    if b in baseline]
+            p95 = round(float(np.mean(p95s)), 4) if p95s else np.nan
+            rows.append({
+                'label': label,
+                'morph_v2': (round(float(score), 4)
+                             if pd.notna(score) else np.nan),
+                'null_p95': p95,
+                'above_baseline': (bool(float(score) >= p95)
+                                   if pd.notna(score) and pd.notna(p95)
+                                   else None),
+            })
+        return pd.DataFrame(rows, columns=[
+            'label', 'morph_v2', 'null_p95', 'above_baseline'])
+
+    def _matched_label_overview(
+            self, pairs: Dict[Tuple[str, str], Dict[str, Any]]
+    ) -> pd.DataFrame:
+        """The inter-dataset comparison: labels × ordered pairs, matched only.
+
+        Rows are the LabelMapper labels (not dataset-scoped native type
+        names); each score column is the pair's same-label cell. The
+        connectivity Comparison tab's multi-dataset overview has the same
+        shape (queried item × dataset pair); the pair's full label × label
+        matrix stays in ``morph_labeltype_matrix.csv`` as the type-level
+        comparison/diagnostic.
+        """
+        labels: List[str] = []
+        for info in pairs.values():
+            matrix = info.get('labeltype_matrix')
+            if matrix is None or matrix.empty:
+                continue
+            for label in matrix.index:
+                text = str(label)
+                if text not in labels:
+                    labels.append(text)
+        if not labels:
+            return pd.DataFrame()
+        columns = ['label']
+        for (a, b) in pairs:
+            col = (f'{self._abbrevs.get(a, _dataset_abbrev(a))}→'
+                   f'{self._abbrevs.get(b, _dataset_abbrev(b))}')
+            columns += [col, f'{col} baseline_p95']
+        rows = []
+        for label in labels:
+            row: Dict[str, Any] = {'label': label}
+            for (a, b), info in pairs.items():
+                col = (f'{self._abbrevs.get(a, _dataset_abbrev(a))}→'
+                       f'{self._abbrevs.get(b, _dataset_abbrev(b))}')
+                matched = self._matched_label_rows(info)
+                hit = matched[matched['label'] == label]
+                row[col] = (float(hit['morph_v2'].iloc[0])
+                            if len(hit) else np.nan)
+                row[f'{col} baseline_p95'] = (
+                    float(hit['null_p95'].iloc[0]) if len(hit) else np.nan)
+            rows.append(row)
+        return pd.DataFrame(rows, columns=columns)
+
     # --------------------------------------------------------------- output
     def _write_outputs(self, run_path: Path, tokens: Sequence[str],
                        datasets: List[str],
@@ -2352,6 +2450,7 @@ class CrossDatasetMorphComparer:
                        overview: pd.DataFrame, notes: List[str]
                        ) -> List[Path]:
         files: List[Path] = []
+        matched_overview = self._matched_label_overview(pairs)
         for (a, b), info in pairs.items():
             pair_dir = (run_path / f'{self._abbrevs.get(a, _dataset_abbrev(a))}'
                         f'_to_{self._abbrevs.get(b, _dataset_abbrev(b))}'
@@ -2369,10 +2468,15 @@ class CrossDatasetMorphComparer:
                 matrix.to_csv(csv)
             label_matrix = info.get('labeltype_matrix')
             if label_matrix is not None and not label_matrix.empty:
-                # F1 fix: the LabelMapper-aligned view lives BESIDE the
-                # native matrix — morph_type_matrix.csv stays native-keyed.
+                # The LabelMapper label matrix is the TYPE-LEVEL COMPARISON
+                # (labels, not dataset-scoped native names); the native
+                # morph_type_matrix.csv stays beside it as a diagnostic.
                 csv = pair_dir / 'morph_labeltype_matrix.csv'
                 label_matrix.to_csv(csv)
+                matched = self._matched_label_rows(info)
+                if not matched.empty:
+                    matched.to_csv(pair_dir / 'morph_matched_label.csv',
+                                   index=False)
             bodyid = info.get('bodyid_matrix')
             if bodyid is not None and not bodyid.empty:
                 csv = pair_dir / 'morph_bodyid_matrix.csv'
@@ -2387,9 +2491,11 @@ class CrossDatasetMorphComparer:
             for path in pair_dir.iterdir():
                 if path.is_file():
                     files.append(path)
-        if not overview.empty:
+        overview_to_write = (matched_overview if not matched_overview.empty
+                             else overview)
+        if not overview_to_write.empty:
             csv = run_path / 'overview.csv'
-            overview.to_csv(csv, index=False)
+            overview_to_write.to_csv(csv, index=False)
             files.append(csv)
         member_rows = []
         for type_name in self._queried_type_order(datasets, members):
@@ -2413,6 +2519,17 @@ class CrossDatasetMorphComparer:
             'generate_heatmaps': self.generate_heatmaps,
             'scoring': 'vector_v2 (block-weighted whitened cosine; '
                        'no NBLAST cross-dataset)',
+            'overview_kind': ('matched_label' if not matched_overview.empty
+                              else 'native_best_target'),
+            'type_level_view': ('labeltype'
+                                if any((info.get('labeltype_matrix') is not None
+                                        and not info['labeltype_matrix'].empty)
+                                       for info in pairs.values())
+                                else 'native_type'),
+            'inter_dataset_rule': ('same LabelMapper label in source and '
+                                   'target only (labeltype diagonal); '
+                                   'cross-label cells are not part of the '
+                                   'inter-dataset comparison'),
             'generated_at': datetime.now().isoformat(timespec='seconds'),
             'warnings': list(self.warnings),
             'resolution_notes': list(notes),
@@ -2420,11 +2537,12 @@ class CrossDatasetMorphComparer:
         if self.label_mapping_file:
             parameters['label_mapping_file'] = self.label_mapping_file
             parameters['label_axes'] = (
-                'morph_type_matrix.csv stays NATIVE-keyed (dataset-scoped '
-                'type names); the LabelMapper view is '
-                'morph_labeltype_matrix.csv (one row per standard label — '
-                'multi-label native types expand; unmapped members keep '
-                'their native name); bodyId axes read '
+                'type-level comparison = morph_labeltype_matrix.csv (one '
+                'row/column per LabelMapper label; multi-label native types '
+                'expand; unmapped members keep their native name). '
+                'morph_type_matrix.csv stays NATIVE-keyed as a diagnostic. '
+                'morph_matched_label.csv / overview.csv carry the SAME label '
+                'in source and target only. bodyId axes read '
                 '{bodyId}_{label}({native}) on resolved ids')
         (run_path / 'parameters.json').write_text(
             json.dumps(parameters, indent=2), encoding='utf-8')
@@ -2449,28 +2567,40 @@ class CrossDatasetMorphComparer:
             '  OUTPUT STRUCTURE',
             '  <SRC>_to_<TGT>/            per dataset pair',
             '    ├── results/',
-            '    │   ├── morph_type_matrix.csv      type x type mean matrix',
-            '    │   ├── morph_bodyid_matrix.csv    bodyId x bodyId vector_v2',
-            '    │   ├── morph_bodyid_scores.csv    long-form scores + null flag',
-            '    │   └── null_baseline.json         seeded null (p95/median)',
+            '    │   ├── morph_labeltype_matrix.csv  TYPE-LEVEL comparison:',
+            '    │   │                               label × label (LabelMapper)',
+            '    │   ├── morph_matched_label.csv     inter-dataset: SAME label in',
+            '    │   │                               source and target only',
+            '    │   ├── morph_type_matrix.csv       native type × type (diagnostic)',
+            '    │   ├── morph_bodyid_matrix.csv     bodyId × bodyId vector_v2 (raw',
+            '    │   │                               all-pair detail)',
+            '    │   ├── morph_bodyid_scores.csv     long-form scores + null flag',
+            '    │   └── null_baseline.json          seeded null (p95/median)',
             '    └── visualization/',
-            '        └── heatmap_morph_<SRC>_to_<TGT>_{level}.html',
+            '        └── heatmap_morph_<SRC>_to_<TGT>_{labeltype,bodyid}.html',
             '                                    interactive VisPath heatmaps',
             '  plot-3d_*/                 overlay scenes (reference template)',
-            '  report.html                tabbed report (pair tabs, Type/BodyId',
-            '                             levels, Ward-clustered heatmaps)',
-            '  overview.csv               queried type x pair: best target cell',
+            '  report.html                tabbed report (pair tabs, Type level =',
+            '                             LabelMapper labels, BodyId; inter-',
+            '                             dataset overview = matched labels)',
+            '  overview.csv               label × pair: SAME label across datasets',
+            '                             (intra-type only, like connectivity)',
             '  members_summary.csv        compared member counts per type/dataset',
             '',
         ]
         if self.label_mapping_file:
             lines.extend([
-                '  LABELMAPPER AXES',
-                '  morph_type_matrix.csv stays NATIVE-keyed; the preset view is',
-                '  morph_labeltype_matrix.csv (one row per standard label,',
-                '  multi-label native types expand). BodyId axes read',
-                '  {bodyId}_{label}({native}) on preset-resolved ids; unmapped',
-                '  members keep the native form.',
+                '  LABELMAPPER CONTRACT',
+                '  The type-level comparison carries the preset labels:',
+                '  morph_labeltype_matrix.csv is label × label (multi-label',
+                '  native types expand; unmapped members keep their native',
+                '  name). morph_type_matrix.csv stays NATIVE-keyed as a',
+                '  diagnostic. The inter-dataset comparison uses the SAME',
+                '  label in source and target only (morph_matched_label.csv,',
+                '  overview.csv); cross-label cells are diagnostics, not the',
+                '  inter-dataset comparison. BodyId axes read',
+                '  {bodyId}_{label}({native}) on preset-resolved ids;',
+                '  unmapped members keep the native form.',
                 '',
             ])
         if self.warnings:
@@ -2505,9 +2635,16 @@ class CrossDatasetMorphComparer:
                 continue
             slug = self._pair_slug(a, b)
             pair_title = slug.replace('_to_', ' → ')
-            for level in ('type', 'bodyid'):
-                matrix = (info.get('type_matrix') if level == 'type'
-                          else info.get('bodyid_matrix'))
+            levels = []
+            label_matrix = info.get('labeltype_matrix')
+            if label_matrix is not None and not label_matrix.empty:
+                # The type-level comparison carries the LabelMapper labels;
+                # the native type matrix stays a CSV diagnostic.
+                levels.append(('labeltype', label_matrix))
+            else:
+                levels.append(('type', info.get('type_matrix')))
+            levels.append(('bodyid', info.get('bodyid_matrix')))
+            for level, matrix in levels:
                 if matrix is None or matrix.empty:
                     continue
                 report_kit.generate_standalone_heatmaps(
@@ -2695,25 +2832,38 @@ class CrossDatasetMorphComparer:
                 + '</ul></div>')
 
         if not overview.empty:
-            # The overview frame carries one column block per directed pair
-            # (3 sub-columns each), so the table grows quadratically with
-            # the dataset count and can overflow the section-card. Wrap it
-            # in a horizontally scrollable container (mirrors the members
-            # details block below) and disclose the frame asymmetry so
-            # readers don't compare A→B and B→A scores as if they were
-            # mirrored measurements of the same quantity.
+            # Matched-label inter-dataset comparison: one row per
+            # LabelMapper label, one score column per directed pair. This is
+            # the connectivity Comparison tab's cross-overview shape (queried
+            # item x dataset pair), restricted to the SAME label in source and
+            # target; the pair tabs below carry the label x label type-level
+            # matrix and the raw bodyId matrix.
+            matched = 'label' in overview.columns and \
+                'queried_type' not in overview.columns
             lines.append('<div class="section-card">'
-                         '<h2 class="section-heading">Overview — best '
-                         'target-type match per queried type</h2>'
-                         '<p class="section-summary">Each column block is '
-                         'scored in its TARGET dataset\u2019s render space '
-                         'with the target\u2019s vector_v2 whitening basis, '
-                         'so A\u2192B and B\u2192A are not symmetric by '
-                         'construction \u2014 they measure morphological '
-                         'similarity in two different coordinate frames. '
-                         'Baseline p95 also shifts with the basis; compare '
-                         'a score only against its own column\u2019s '
-                         'baseline.</p>')
+                         '<h2 class="section-heading">Inter-dataset — '
+                         + ('matched labels (intra-type only)'
+                            if matched else
+                            'best target-type match per queried type')
+                         + '</h2>'
+                         '<p class="section-summary">'
+                         + ('Each row is a LabelMapper label and each score '
+                            'column is the SAME label in the source and '
+                            'target (the label matrix diagonal). Cross-label '
+                            'cells are deliberately excluded: they are '
+                            'diagnostics in the per-pair label matrix, not '
+                            'this comparison. '
+                            if matched else
+                            'Each column block is the queried type\u2019s '
+                            'best target-type cell. ')
+                         + 'Each column block is scored in its TARGET '
+                         'dataset\u2019s render space with the target\u2019s '
+                         'vector_v2 whitening basis, so A\u2192B and B\u2192A '
+                         'are not symmetric by construction \u2014 they '
+                         'measure morphological similarity in two different '
+                         'coordinate frames. Baseline p95 also shifts with the '
+                         'basis; compare a score only against its own '
+                         'column\u2019s baseline.</p>')
             lines.append('<div style="overflow-x:auto">')
             lines.append(overview.to_html(index=False, na_rep='\u2014', border=0,
                                           classes='mapping-table overview-table'))
@@ -2724,9 +2874,29 @@ class CrossDatasetMorphComparer:
 
         def render_level(pair_dir: str, info: Dict[str, Any],
                          level: str, _level_panel_id: str) -> None:
-            level_label = _LEVEL_DISPLAY[level]
-            matrix = (info.get('type_matrix') if level == 'type'
-                      else info.get('bodyid_matrix'))
+            label_matrix = info.get('labeltype_matrix')
+            if level == 'type' and label_matrix is not None \
+                    and not label_matrix.empty:
+                # The type-level comparison carries the LabelMapper labels,
+                # not dataset-scoped native type names.
+                matrix = label_matrix
+                view = 'labeltype'
+                level_label = _LEVEL_DISPLAY['labeltype']
+                csv_rel = (f'{pair_dir}/results/'
+                           f'morph_labeltype_matrix.csv')
+                vis_rel = (f'{pair_dir}/visualization/'
+                           f'heatmap_morph_{pair_dir}_labeltype.html')
+                x_title, y_title = 'Target label', 'Source label'
+            else:
+                matrix = (info.get('type_matrix') if level == 'type'
+                          else info.get('bodyid_matrix'))
+                view = level
+                level_label = _LEVEL_DISPLAY[level]
+                csv_rel = f'{pair_dir}/results/morph_{level}_matrix.csv'
+                vis_rel = (f'{pair_dir}/visualization/'
+                           f'heatmap_morph_{pair_dir}_{level}.html')
+                x_title = 'Target neuron' if level == 'bodyid' else 'Target type'
+                y_title = 'Source neuron' if level == 'bodyid' else 'Source type'
             matrix = matrix if matrix is not None else pd.DataFrame()
             if matrix.empty:
                 lines.append(
@@ -2745,6 +2915,9 @@ class CrossDatasetMorphComparer:
                 p95s = [s['p95'] for s in baseline.values()]
                 note += (f' · null baseline p95 {min(p95s):.3f}–{max(p95s):.3f}'
                          f' (seeded random targets, k≈{self.null_k})')
+            if view == 'labeltype':
+                note += (' · cells are LabelMapper label means; the matched-'
+                         'label inter-dataset comparison is the overview above')
             lines.append(
                 f"<div class='direction-intro'><h3 class='direction-title'>"
                 f'{escape(level_label)}</h3>'
@@ -2752,12 +2925,10 @@ class CrossDatasetMorphComparer:
             report_kit.append_report_metric_grid(
                 lines, run_path, {'morph_v2': matrix},
                 f'{pair_dir.replace("_to_", " → ")} · {level_label}',
-                {'morph_v2': f'{pair_dir}/results/'
-                                  f'morph_{level}_matrix.csv'},
-                {'morph_v2': f'{pair_dir}/visualization/'
-                                  f'heatmap_morph_{pair_dir}_{level}.html'},
-                'Target neuron' if level == 'bodyid' else 'Target type',
-                'Source neuron' if level == 'bodyid' else 'Source type',
+                {'morph_v2': csv_rel},
+                {'morph_v2': vis_rel},
+                x_title,
+                y_title,
                 plotly_state,
                 styles={'morph_v2': _MORPH_V2_STYLE},
                 square_cells=True,

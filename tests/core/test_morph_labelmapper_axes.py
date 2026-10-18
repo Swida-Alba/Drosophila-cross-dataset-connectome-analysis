@@ -52,6 +52,33 @@ def _write_preset(tmp_path: Path) -> str:
     return str(path)
 
 
+def _write_preset_both(tmp_path: Path) -> str:
+    """The same two labels on BOTH datasets; the matched-label contract
+    needs a label column on the target side too."""
+    preset = {
+        "format": PRESET_FORMAT_TAG,
+        "source_mapping": {
+            "custom_label": ["La", "Lb"],
+            DS_A: [["1", "2"], ["5"]],
+            DS_B: [["11", "12"], ["13"]],
+        }
+    }
+    path = tmp_path / "preset_both.json"
+    path.write_text(json.dumps(preset), encoding="utf-8")
+    return str(path)
+
+
+def _matched_rows_frame():
+    """Target 13 sits in label Lb so the Lb/Lb matched cell exists."""
+    return pd.DataFrame({
+        "source_type": ["T1", "T1", "T2", "T3"],
+        "target_type": ["U1", "U1", "U2", "U2"],
+        "source_bodyId": [1, 2, 3, 5],
+        "target_bodyId": [11, 12, 13, 13],
+        "morph_v2": [0.5, 0.7, 0.25, 0.9],
+    })
+
+
 def _cross_comparer(preset_path):
     comp = CrossDatasetMorphComparer.__new__(CrossDatasetMorphComparer)
     comp.datasets = [DS_A, DS_B]
@@ -100,6 +127,62 @@ def test_label_type_matrix_expands_and_folds(tmp_path):
 def test_label_type_matrix_empty_without_preset(tmp_path):
     comp = _cross_comparer(None)
     assert comp._label_type_matrix(_rows_frame(), DS_A, DS_B).empty
+
+
+def test_matched_label_rows_are_same_label_only(tmp_path):
+    """The inter-dataset comparison carries only the SAME LabelMapper label
+    in source and target (the labeltype diagonal), with the mean null p95 of
+    that label's source members. Cross-label cells stay in the label matrix
+    as diagnostics."""
+    comp = _cross_comparer(_write_preset_both(tmp_path))
+    rows = _matched_rows_frame()
+    label_matrix = comp._label_type_matrix(rows, DS_A, DS_B)
+    assert set(label_matrix.columns) == {"La", "Lb"}
+    info = {
+        'labeltype_matrix': label_matrix,
+        'baseline': {1: {'p95': 0.2}, 2: {'p95': 0.3}, 5: {'p95': 0.4}},
+        'src_members': {'T1': [1, 2], 'T3': [5]},
+        'label_src_members': {'La': [1, 2], 'Lb': [5]},
+    }
+    matched = comp._matched_label_rows(info)
+    by = dict(zip(matched['label'], matched['morph_v2']))
+    null = dict(zip(matched['label'], matched['null_p95']))
+    assert by['La'] == pytest.approx(0.6)
+    assert by['Lb'] == pytest.approx(0.9)
+    assert pd.isna(by['T2'])               # unmapped native row, no diagonal
+    assert null['La'] == pytest.approx(0.25)  # mean(0.2, 0.3)
+    assert null['Lb'] == pytest.approx(0.4)
+    assert pd.isna(null['T2'])
+    assert bool(matched.set_index('label').loc['La', 'above_baseline'])
+
+
+def test_matched_overview_uses_labels_and_pairs(tmp_path):
+    comp = _cross_comparer(_write_preset_both(tmp_path))
+    rows = _matched_rows_frame()
+    label_matrix = comp._label_type_matrix(rows, DS_A, DS_B)
+    info_ab = {
+        'labeltype_matrix': label_matrix,
+        'baseline': {1: {'p95': 0.2}, 2: {'p95': 0.3}, 5: {'p95': 0.4}},
+        'src_members': {'T1': [1, 2], 'T3': [5]},
+        'label_src_members': {'La': [1, 2], 'Lb': [5]},
+    }
+    info_ba = {
+        'labeltype_matrix': label_matrix.T,
+        'baseline': {11: {'p95': 0.1}, 13: {'p95': 0.2}},
+        'src_members': {'U1': [11], 'U2': [13]},
+        'label_src_members': {'La': [11], 'Lb': [13]},
+    }
+    overview = comp._matched_label_overview(
+        {(DS_A, DS_B): info_ab, (DS_B, DS_A): info_ba})
+    assert list(overview.columns) == [
+        'label',
+        'MCNS→FAFB', 'MCNS→FAFB baseline_p95',
+        'FAFB→MCNS', 'FAFB→MCNS baseline_p95',
+    ]
+    assert set(overview['label']) == {'La', 'Lb', 'T2'}
+    la = overview[overview['label'] == 'La'].iloc[0]
+    assert la['MCNS→FAFB'] == pytest.approx(0.6)
+    assert la['MCNS→FAFB baseline_p95'] == pytest.approx(0.25)
 
 
 # ------------------------------------------------------- bodyId matrix axes

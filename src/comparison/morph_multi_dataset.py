@@ -493,10 +493,12 @@ class MultiDatasetMorphComparer:
             "    bodyid_level/                 bodyId x bodyId matrix per method",
             "    members.csv, report.html, parameters.json, README.txt",
             "  cross_dataset/                  ordered dataset pairs",
-            "    <SRC>_to_<TGT>/results/       type/label/bodyId matrices, "
-            "scores, null baseline",
-            "    overview.csv, members_summary.csv, report.html, "
-            "parameters.json",
+            "    <SRC>_to_<TGT>/results/       LabelMapper label matrix "
+            "(type-level comparison), matched-label CSV, native type matrix "
+            "(diagnostic), bodyId matrices/scores, null baseline",
+            "    overview.csv                  21 labels x 6 pairs, SAME label "
+            "in source and target only (like connectivity)",
+            "    members_summary.csv, report.html, parameters.json",
             "  report.html                     this hub",
             "  parameters.json                 combined provenance",
             "",
