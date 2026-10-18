@@ -6420,7 +6420,10 @@ class VisualizePath:
             ) if hemisphere_controls_html.strip() else ''
 
         # Edge-direction groups (L-L / R-R / R-L / L-R): a page whose edges
-        # carry a direction exposes them as color/selection groups.
+        # carry a direction exposes them as color/selection groups. A
+        # declared `direction` column may also name non-hemisphere groups
+        # (e.g. a class page's weight bins); the Groups selector filters on
+        # that same field, so every distinct value becomes a group.
         edge_directions = []
         for d in ('L-L', 'R-R', 'R-L', 'L-R'):
             present = False
@@ -6432,11 +6435,16 @@ class VisualizePath:
                     break
             if present:
                 edge_directions.append(d)
+        for _u, _v, _attrs in G.edges(data=True):
+            d = str(_attrs.get('direction') or '').strip()
+            if d and d not in edge_directions:
+                edge_directions.append(d)
         direction_group_options = ''
         if edge_directions:
             direction_group_options = (
                 '<optgroup label="Edge Groups">'
-                + ''.join(f'<option value="dir_{d}">{d} Edges</option>'
+                + ''.join(f'<option value="dir_{html_escape(d)}">'
+                          f'{html_escape(d)} Edges</option>'
                           for d in edge_directions)
                 + '</optgroup>')
 
