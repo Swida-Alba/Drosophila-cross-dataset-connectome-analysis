@@ -57,12 +57,35 @@ def test_the_ratio_metric_scales_the_bars_to_its_own_domain(tmp_path):
         assert (ratio['zmin'], ratio['zmax']) == (0, 1), ratio
         assert ratio['ticks'] == ['0', '0.25', '0.5', '0.75', '1'], ratio
 
-        # The Cell style panel's own Min/Max follow the metric too, and an edit
-        # made under the ratio is stored against the ratio, not the synapse pin.
+        # The Cell style panel's own Min/Max follow the metric too.
         panel = ("return [...document.querySelectorAll("
                  "'#cellStyleColors input[type=number]')]"
                  ".map(function (i) { return i.value; });")
         assert page.js(panel) == ['0', '1'], page.js(panel)
+
+        # The transforms must follow the METRIC: switching to ratio and then a
+        # scale used to paint log10/sqrt of the SYNAPSE matrix against the ratio
+        # domain (z 0.75..2.34 under log10), so every cell saturated.
+        zmax_of = ("var g=document.querySelector('.js-plotly-plot');"
+                   "var t=g.data.filter(function (x) { return x.showscale; })[0];"
+                   "var z=[]; t.z.forEach(function (r) { r.forEach(function (v) {"
+                   " if (v !== null) z.push(v); }); });"
+                   "return Math.max.apply(null, z);")
+        page.js("window.setScale('log10'); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (x) {"
+                         " return x.showscale && Math.abs(x.zmax - 0.30103) < 1e-4; });")
+        assert page.js(zmax_of) < 0.5, page.js(zmax_of)
+
+        page.js("window.setScale('sqrt'); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (x) {"
+                         " return x.showscale && x.zmax === 1; });")
+        assert page.js(zmax_of) < 2, page.js(zmax_of)
+        page.js("window.setScale('linear'); return true;")
+
+        # An override is stored against the metric it was made in: a ratio edit
+        # does not deform the synapse view, and vice versa.
         page.js("cellStyleSetRange('__fill__', 'c', 0.2, 0.5); return true;")
         assert page.wait("var g=document.querySelector('.js-plotly-plot');"
                          "return g.data.some(function (x) {"

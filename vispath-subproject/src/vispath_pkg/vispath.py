@@ -943,9 +943,13 @@ def _cell_style_js_chunks(fields, outline_map):
                     const v = (dataMatrix && dataMatrix[i]
                                && dataMatrix[i][jcol] !== undefined)
                         ? Number(dataMatrix[i][jcol]) : null;
-                    t = (r && v !== null && Number.isFinite(v))
-                        ? Math.max(0, Math.min(0.999,
-                                                (v - r[0]) / (r[1] - r[0])))
+                    // `v` is already in the Scale's space; the range must be
+                    // transformed the same way or a log/sqrt page compares
+                    // two different units and the text flips at the wrong hue.
+                    const rlo = r ? cellStyleScaleValue(r[0], currentScale) : null;
+                    const rhi = r ? cellStyleScaleValue(r[1], currentScale) : null;
+                    t = (r && v !== null && Number.isFinite(v) && rhi > rlo)
+                        ? Math.max(0, Math.min(0.999, (v - rlo) / (rhi - rlo)))
                         : cellStyleT(active.field, cat, key);
                 }
             }
@@ -17553,10 +17557,6 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             # For synapse counts, round to integers (no precision loss)
             data_linear = np.round(data_linear, 0)
     
-    # Deep optimization: For very large matrices, compute transforms in JavaScript
-    # This saves ~75% of HTML file size by not embedding pre-computed transforms
-    use_lazy_transforms = is_large and data_linear.size > 50000
-    
     # Sparse matrix optimization: For matrices with >70% zeros, use COO format
     use_sparse_format = is_large and sparsity_ratio > 0.7 and data_linear.size > 50000
     sparse_data = None
@@ -17572,40 +17572,6 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             'shape': list(data_linear.shape)
         }
         _vprint(f"  Using sparse format: {sparsity_ratio*100:.1f}% zeros, storing {len(values)} values instead of {data_linear.size}")
-    
-    if use_lazy_transforms:
-        # Store only linear data; transforms computed client-side
-        data_log2 = None
-        data_log10 = None
-        data_sqrt = None
-    else:
-        # Pre-compute for small matrices (faster initial display)
-        # Handle negative values: sign(v) * transform(|v|)
-        # Suppress warnings for edge cases (zeros, negatives handled by np.where)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            data_log2 = np.where(data_linear >= 0, 
-                                 np.log2(data_linear + 1), 
-                                 -np.log2(-data_linear + 1))
-            data_log10 = np.where(data_linear >= 0, 
-                                  np.log10(data_linear + 1), 
-                                  -np.log10(-data_linear + 1))
-            data_sqrt = np.where(data_linear >= 0, 
-                                np.sqrt(data_linear), 
-                                -np.sqrt(-data_linear))
-            # Replace any NaN/inf values that may have occurred
-            data_log2 = np.nan_to_num(data_log2, nan=0.0, posinf=0.0, neginf=0.0)
-            data_log10 = np.nan_to_num(data_log10, nan=0.0, posinf=0.0, neginf=0.0)
-            data_sqrt = np.nan_to_num(data_sqrt, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        if is_large:
-            if metric_type in ['ratio', 'probability']:
-                data_log2 = np.round(data_log2, 4)
-                data_log10 = np.round(data_log10, 4)
-                data_sqrt = np.round(data_sqrt, 4)
-            else:
-                data_log2 = np.round(data_log2, 2)
-                data_log10 = np.round(data_log10, 2)
-                data_sqrt = np.round(data_sqrt, 2)
     
     # Create hover text with original values
     # If conn_df is provided, create type lookup for bodyId heatmaps
@@ -18352,13 +18318,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         // Get current metric data
         let dataLinear = metricsData[currentMetric];
         
-        const dataLog2 = {'null' if data_log2 is None else json.dumps(data_log2.tolist())};
-        const dataLog10 = {'null' if data_log10 is None else json.dumps(data_log10.tolist())};
-        const dataSqrt = {'null' if data_sqrt is None else json.dumps(data_sqrt.tolist())};
         const xLabels = {json_safe(x_labels)};
         const yLabels = {json_safe(y_labels)};
         const storageKey = '{js_escape(storage_key)}';
-        const useLazyTransforms = {json.dumps(use_lazy_transforms)};{cell_style_consts}
         
         // Track current row/column order (for interactive reordering)
         // If init_clustered is true and clustering succeeded, start with clustered order
@@ -18401,7 +18363,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         let showLabels = !{json.dumps(is_large)};  // Show labels for small matrices, hide for large
         // The colourbar title createHeatmap actually drew, so the labels toggle
         // restores that string instead of recomputing a different one
-        let colorbarTitleText = '';
+        let colorbarTitleText = '';{cell_style_consts}
         // Canvas size to give back when the labels are hidden again (see
         // fitCanvasForLabels); null while nothing was fitted
         let labelFitSize = null;
@@ -18479,17 +18441,11 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         }}
         
         function getDataForScale(scale) {{
-            if (!useLazyTransforms) {{
-                // Use pre-computed data for small matrices
-                switch(scale) {{
-                    case 'log2': return dataLog2;
-                    case 'log10': return dataLog10;
-                    case 'sqrt': return dataSqrt;
-                    default: return dataLinear;
-                }}
-            }}
-            
-            // Lazy computation for large matrices
+            // Always derive from dataLinear: the metric can change under the
+            // page, and a transform precomputed for the INITIAL metric would
+            // then colour the wrong matrix (measured: ratio + log10 painted
+            // log10(synapses), 0.75..2.34, against a 0..0.30 domain).
+            // The caches are cleared by updateMetric.
             switch(scale) {{
                 case 'log2':
                     if (cachedDataLog2 === null) {{
