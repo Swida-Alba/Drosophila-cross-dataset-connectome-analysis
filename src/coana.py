@@ -11106,17 +11106,32 @@ class FindNeuronConnection:
         missing_types = [t for t in dict.fromkeys(str(t) for t in post_types)
                          if t not in served_map]
         # MAPPER-GROUP LABELS (2026-10-12, plan §13.7): a label-mapper
-        # group label ('5th-LNv', 'LNd_CRY+_ITP+', ...) has no native-type
-        # rows in the D_t table, and a server pull would query a
-        # non-existent type name. Resolve the group's member bodyIds
-        # through the run's label mapper and sum their D_t per-neuron
-        # totals (the group's physical incoming at this threshold) — the
-        # same resolution the realized-ratio readout uses, applied at the
-        # F9 source so pair tables, threshold filters and recomputes all
-        # resolve custom-label posts consistently.
+        # group label ('5th-LNv', 'LNd_CRY+_ITP+', ...) may have no
+        # native-type rows in the D_t table, and a server pull would
+        # query a non-existent type name. Resolve the group's member
+        # bodyIds through the run's label mapper and sum their D_t
+        # per-neuron totals (the group's physical incoming at this
+        # threshold) — the same resolution the realized-ratio readout
+        # uses, applied at the F9 source so pair tables, threshold
+        # filters and recomputes all resolve custom-label posts
+        # consistently. A label can also COLLIDE with a native type name
+        # while naming a DIFFERENT roster (BANC 'APDN3': 7 native
+        # members vs the label's 12): the D_t type entry is then the
+        # native subset's mass, not the queried group's, so every mapper
+        # label — served or missing — takes the group sum.
         mapper = getattr(self, 'label_mapper', None)
-        if missing_types and mapper is not None:
+        roster_types = []
+        if mapper is not None:
             ds = str(getattr(self, 'dataset', '') or '')
+            for t in dict.fromkeys(str(t) for t in post_types):
+                try:
+                    ids = [str(i) for i in
+                           mapper.get_neurons_for_label(t, ds, 'target')]
+                except Exception:
+                    ids = []
+                if ids:
+                    roster_types.append((t, ids))
+        if roster_types:
             try:
                 body_table = self._get_total_incoming_by_bodyid_table(
                     min_weight)
@@ -11126,16 +11141,9 @@ class FindNeuronConnection:
             except Exception:
                 body_tot = {}
             if body_tot:
-                for t in list(missing_types):
-                    try:
-                        ids = [str(i) for i in
-                               mapper.get_neurons_for_label(t, ds, 'target')]
-                    except Exception:
-                        ids = []
-                    if ids:
-                        served_map[t] = sum(
-                            body_tot.get(i, 0.0) for i in ids)
-                        missing_types = [x for x in missing_types if x != t]
+                for t, ids in roster_types:
+                    served_map[t] = sum(body_tot.get(i, 0.0) for i in ids)
+                    missing_types = [x for x in missing_types if x != t]
         if missing_types:
             served_map.update(self._pull_missing_incoming_totals(
                 missing_types, min_weight, 'type_post'))

@@ -596,3 +596,43 @@ class TestLabelMapperBehaviors:
         got = {r.type_post: r.total_incoming_weight
                for r in res.itertuples()}
         assert got.get("5th-LNv") == 7
+
+    def test_f9_label_colliding_with_a_native_type_uses_the_roster(
+            self, tmp_path, mapper):
+        """A custom label that ALSO names a native type with a different
+        roster (BANC 'APDN3': 7 native vs 12 mapped) must divide by the
+        queried roster's mass, not the native subset's. The D_t type
+        entry exists here, so only the roster override can win."""
+        import coana
+        members = mapper.get_neurons_for_label(
+            "5th-LNv", "male-cns:v1.0", "target")
+        conn = tmp_path / "connections.parquet"
+        idx = tmp_path / "neuron_index.parquet"
+        # the label's member receives 3+4; an unrelated body carries the
+        # native type SAME NAME and receives 11 from elsewhere
+        rows = {"bodyId_pre": ["X1", "X2", "N1"],
+                "bodyId_post": [members[0], members[0], "NATIVE"],
+                "roi": ["R", "R", "R"], "weight": [3, 4, 11]}
+        pl.DataFrame(rows).write_parquet(conn)
+        pl.DataFrame({"bodyId": ["X1", "X2", "N1", "NATIVE",
+                                 str(members[0])],
+                      "type": ["X", "X", "N", "5th-LNv", "TB"]}
+                     ).write_parquet(idx)
+        fc = coana.FindNeuronConnection.__new__(
+            coana.FindNeuronConnection)
+        fc.dataset = "male-cns:v1.0"
+        fc.use_cache = True
+        fc.label_mapper = mapper
+        fc.client_type = "neuprint"
+        fc._conn_df_cache = None
+        fc._get_connection_db_path = lambda: str(conn)
+        fc._get_neuron_index_path = lambda: str(idx)
+        fc._pull_missing_incoming_totals = (
+            lambda types, min_weight, col: {})
+        fc._get_total_incoming_by_bodyid_table = lambda min_weight=1: (
+            pl.DataFrame({"bodyId_post": [str(members[0]), "NATIVE"],
+                          "total_incoming_weight": [7, 11]}))
+        res = fc._fetch_total_incoming_weight_by_type(["5th-LNv"], 1)
+        got = {r.type_post: r.total_incoming_weight
+               for r in res.itertuples()}
+        assert got.get("5th-LNv") == 7
