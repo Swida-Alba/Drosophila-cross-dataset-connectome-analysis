@@ -3581,6 +3581,7 @@ class VisualizePath:
         has_probs = 'traversal_probabilities' in self.path_df.columns
         has_nt = 'nt_types' in self.path_df.columns
         has_edge_group = 'edge_group' in self.path_df.columns
+        has_arrow_color = 'arrow_color' in self.path_df.columns
         short_nt_rows = 0  # rows whose nt_types list is shorter than the hop count
 
         for idx, row in self.path_df.iterrows():
@@ -3626,6 +3627,10 @@ class VisualizePath:
                     grp = row.get('edge_group')
                     conn_data['edge_group'] = ('' if pd.isna(grp)
                                                else str(grp))
+                if has_arrow_color:
+                    arrow = row.get('arrow_color')
+                    conn_data['arrow_color'] = ('' if pd.isna(arrow)
+                                                else str(arrow))
                     
                 connections.append(conn_data)
         
@@ -3654,6 +3659,8 @@ class VisualizePath:
                 cols.append('nt_type')
             if has_edge_group:
                 cols.append('edge_group')
+            if has_arrow_color:
+                cols.append('arrow_color')
             conn_df = pd.DataFrame(columns=cols)
         else:
             # Aggregate duplicate connections - only aggregate columns that exist
@@ -3671,6 +3678,8 @@ class VisualizePath:
                 agg_dict['nt_type'] = mode_ignoring_blank
             if has_edge_group:
                 agg_dict['edge_group'] = 'first'
+            if has_arrow_color:
+                agg_dict['arrow_color'] = 'first'
 
             conn_df = conn_df.groupby(['source', 'target'], as_index=False).agg(agg_dict)
 
@@ -3704,6 +3713,8 @@ class VisualizePath:
                 edge_attrs['probability'] = row['probability']
             if 'edge_group' in row and str(row['edge_group']).strip():
                 edge_attrs['edge_group'] = str(row['edge_group']).strip()
+            if 'arrow_color' in row and str(row['arrow_color']).strip():
+                edge_attrs['arrow_color'] = str(row['arrow_color']).strip()
             
             G.add_edge(row['source'], row['target'], **edge_attrs)
         
@@ -6223,6 +6234,7 @@ class VisualizePath:
                 'is_negative': 1 if is_negative else 0,
                 'nt_type': nt_type if nt_type else '',
                 'color': edge_color,
+                'arrow_color': data.get('arrow_color') or edge_color,
                 'ratio': ratio if not np.isnan(ratio) else 0,
                 'ratio_adj': (ratio_adj if not np.isnan(ratio_adj) else None),
                 'refilled': (refilled if not np.isnan(refilled) else None),
@@ -6396,7 +6408,7 @@ class VisualizePath:
                     selector: 'edge[bidirectional = 1]',
                     style: {
                         'source-arrow-shape': 'triangle',
-                        'source-arrow-color': 'data(color)'
+                        'source-arrow-color': 'data(arrow_color)'
                     }
                 },"""
 
@@ -8291,7 +8303,7 @@ class VisualizePath:
                     style: {{
                         'width': 'mapData(scaled_width, {min_scaled_width}, {max_scaled_width}, 1, 10)',
                         'line-color': 'data(color)',  // Per-edge color from the uploaded edge list (falls back to link_color)
-                        'target-arrow-color': 'data(color)',
+                        'target-arrow-color': 'data(arrow_color)',
                         'target-arrow-shape': 'triangle',
                         'curve-style': 'bezier',
                         'arrow-scale': 1.5,
