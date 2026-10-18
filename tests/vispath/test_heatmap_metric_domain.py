@@ -17,6 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "vispath-subproject" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from vispath_pkg import VisualizePath  # noqa: E402
+from vispath_pkg.vispath import VisConnMatInteractive  # noqa: E402
 from heatmap_cdp import PAGE_READY, Page, REQUIRES_CDP  # noqa: E402
 
 LABELS = ['A', 'B', 'C']
@@ -168,4 +169,44 @@ def test_the_adjusted_ratio_metric_is_selectable_on_its_own_domain(tmp_path):
                          "return g.data.some(function (x) {"
                          " return x.showscale && x.zmax === 1; });")
         assert page.js(panel) == ['0', '1'], page.js(panel)
+        assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_saved_metric_swaps_the_matrix_on_initialization(tmp_path):
+    """A saved settings file naming `ratio` must load the RATIO matrix, not
+    keep the default weight matrix under ratio labels (the bug showed the
+    synapse count x100 in the percent cells)."""
+    weight = pd.DataFrame([[10.0, 1000.0], [30.0, 40.0]],
+                          index=['S0', 'S1'], columns=['T0', 'T1'])
+    ratio = weight / 100000.0
+    out = tmp_path / 'saved_metric.html'
+    VisConnMatInteractive(weight, str(out), title='saved', showfig=False,
+                          verbose=False, init_clustered=False,
+                          matrices_dict={'weight': weight, 'ratio': ratio})
+    assert out.exists()
+    with Page(out) as page:
+        assert page.wait(PAGE_READY)
+        key = page.js("return storageKey;")
+        saved = ('{"scale":"sqrt","currentMetric":"ratio",'
+                 '"showCellValues":true,"showLabels":true}')
+        page.js("localStorage.setItem(" + repr(key).replace("'", '"')
+                + ", " + repr(saved) + "); location.reload(); return true;")
+        assert page.wait(PAGE_READY)
+        d = page.js("""
+          var g = document.querySelector('.js-plotly-plot');
+          var ann = (g.layout.annotations || []).map(function (a) {
+              return String(a.text); });
+          var t = g.data[0];
+          return {metric: currentMetric,
+                  linear: dataLinear[0][1],
+                  ratio: metricsData['ratio'][0][1],
+                  weight: metricsData['weight'][0][1],
+                  ann: ann.sort(),
+                  ticks: (t.colorbar || {}).ticktext || null};
+        """)
+        assert d['metric'] == 'ratio', d
+        assert abs(d['linear'] - d['ratio']) < 1e-12, d
+        assert '1.0' in d['ann'], d          # 0.01 as a percentage number
+        assert '100000.0' not in d['ann'], d  # the weight x100 bug
         assert page.errors() == [], page.errors()

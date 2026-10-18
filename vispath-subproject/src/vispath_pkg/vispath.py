@@ -21371,6 +21371,16 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 // Restore additional state
                 if (settings.currentMetric !== undefined && hasMultipleMetrics) {{
                     currentMetric = settings.currentMetric;
+                    // Swap the MATRIX too. The page opened on the default
+                    // metric, and createHeatmap reads dataLinear: without
+                    // this the z/annotations stayed on the weight matrix
+                    // while the labels and bars said ratio (weights x100 in
+                    // the percent cell labels).
+                    if (metricsData[currentMetric]) {{
+                        dataLinear = metricsData[currentMetric];
+                    }}
+                    cachedDataLog10 = null;
+                    cachedDataSqrt = null;
                     document.querySelectorAll('.metric-btn').forEach(btn => btn.classList.remove('active'));
                     const metricBtn = document.getElementById('metric-' + currentMetric);
                     if (metricBtn) {{
