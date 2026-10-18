@@ -1405,6 +1405,7 @@ class VisualizePath:
         merge_reciprocal_edges=False,  # NEW: Collapse reciprocal pairs into one both-end-arrow edge
         network_node_universe=None,  # NEW: declared nodes kept on the network canvas even with no edge
         network_node_colors=None,    # NEW: {node: hex} fill overrides (a type-palette canvas)
+        network_node_labels=None,    # NEW: {node: display label} overrides (IDs keep their suffixes)
         edge_group_legend=None,      # NEW: [{label, color}] edge-direction chips in the footer
         network_role_legend=True,    # NEW: False hides the source/intermediate/target chips
     ):
@@ -1736,6 +1737,8 @@ class VisualizePath:
         self.network_node_universe = [str(n) for n in (network_node_universe or [])]
         self.network_node_colors = {
             str(k): str(v) for k, v in (network_node_colors or {}).items()}
+        self.network_node_labels = {
+            str(k): str(v) for k, v in (network_node_labels or {}).items()}
         self.edge_group_legend = list(edge_group_legend or [])
         self.network_role_legend = bool(network_role_legend)
         self.hemisphere_desaturate_side = (hemisphere_desaturate_side or 'R').upper()
@@ -3827,6 +3830,11 @@ class VisualizePath:
         for node, color in (getattr(self, 'network_node_colors', None) or {}).items():
             if node in G:
                 G.nodes[node]['color'] = color
+        # Display-label overrides: an ID may keep a side suffix for grouping
+        # while the canvas shows a shorter label.
+        for node, label in (getattr(self, 'network_node_labels', None) or {}).items():
+            if node in G:
+                G.nodes[node]['label'] = label
 
         # V1: pair-level extra metrics (e.g. Refilled totals) merge onto
         # the aggregated edges — same topology, parallel metric columns.
@@ -6390,6 +6398,27 @@ class VisualizePath:
                 + '</div>'
             ) if hemisphere_controls_html.strip() else ''
 
+        # Edge-direction groups (L-L / R-R / R-L / L-R): a page whose edges
+        # carry a direction exposes them as color/selection groups.
+        edge_directions = []
+        for d in ('L-L', 'R-R', 'R-L', 'L-R'):
+            present = False
+            for u, v, _ in G.edges(data=True):
+                su = _extract_hemisphere(str(u))[1]
+                sv = _extract_hemisphere(str(v))[1]
+                if su in ('L', 'R') and sv in ('L', 'R') and f'{su}-{sv}' == d:
+                    present = True
+                    break
+            if present:
+                edge_directions.append(d)
+        direction_group_options = ''
+        if edge_directions:
+            direction_group_options = (
+                '<optgroup label="Edge Groups">'
+                + ''.join(f'<option value="dir_{d}">{d} Edges</option>'
+                          for d in edge_directions)
+                + '</optgroup>')
+
         # Generate dataset legend HTML for cross-dataset type name display
         # Shows one-character codes and their corresponding dataset names;
         # each chip carries its group's color dot when the code is a
@@ -7945,6 +7974,7 @@ class VisualizePath:
                                     <option value="negative_edges">Negative Edges</option>
                                     <option value="all_edges">All Edges</option>
                                 </optgroup>
+                                {direction_group_options}
                                 {hemisphere_group_options}
                                 <optgroup label="NT Edges" id="ntEdgeGroup">
                                     {nt_edge_group_options}
@@ -12803,6 +12833,29 @@ class VisualizePath:
             const group = document.getElementById('groupSelector').value;
             let defaults = groupDefaults[group] || groupDefaults[group.replace('all_', '')] || {{ color: '#888888', opacity: 100 }};
             
+            // Edge-direction groups: default to the first member's colour.
+            if (group.startsWith('dir_')) {{
+                const dir = group.slice(4);
+                const first = cy.edges().filter(
+                    e => e.data('direction') === dir)[0];
+                defaults = groupDefaults[group] || {{
+                    color: first ? first.style('line-color') : '#888888',
+                    opacity: 100
+                }};
+            }}
+
+            // Edge-direction groups (L-L / R-R / R-L / L-R)
+            if (group.startsWith('dir_')) {{
+                const dir = group.slice(4);
+                cy.edges().filter(
+                    e => e.data('direction') === dir).forEach(edge => {{
+                    if (!edge.hasClass('highlighted')) {{
+                        setEdgeBaseAppearance(edge, color, opacity, true);
+                    }}
+                }});
+                groupDefaults[group] = {{ color: color, opacity: opacity * 100 }};
+            }}
+
             // Handle NT edge groups (prefixed with 'nt_')
             if (group.startsWith('nt_')) {{
                 const ntType = group.replace('nt_', '');
@@ -12850,7 +12903,8 @@ class VisualizePath:
             
             // Update label based on group type
             const label = document.getElementById('groupColorLabel');
-            if (group.includes('edge') || group.startsWith('nt_')) {{
+            if (group.includes('edge') || group.startsWith('nt_') ||
+                    group.startsWith('dir_')) {{
                 label.textContent = 'Edge Color:';
             }} else if (group.startsWith('custom_')) {{
                 label.textContent = 'Element Color:';
@@ -13017,6 +13071,10 @@ class VisualizePath:
                 cy.edges().filter('[is_negative = 1]').select();
             }} else if (group === 'all_edges') {{
                 cy.edges().select();
+            }} else if (group.startsWith('dir_')) {{
+                const dir = group.slice(4);
+                cy.edges().filter(
+                    e => e.data('direction') === dir).select();
             }} else if (group === 'all_nodes') {{
                 cy.nodes().select();
             }} else if (group.startsWith('nt_')) {{

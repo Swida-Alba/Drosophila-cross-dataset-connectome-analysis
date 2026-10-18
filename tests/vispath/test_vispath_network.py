@@ -3465,3 +3465,35 @@ def test_node_palette_overrides_and_edge_group_legend(tmp_path):
         assert 'L-L' in footer and 'R-R' in footer, footer
         assert page.js("return document.querySelectorAll('[data-group]').length;") == 0
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_node_label_override_and_direction_group_options(tmp_path):
+    """A node ID may keep a side suffix for grouping while the display label
+    drops it; edges with a direction expose the four group options."""
+    df = pd.DataFrame({
+        "source": ["A[L]", "A[R]", "A[L]", "A[R]"],
+        "target": ["B[L]", "B[R]", "B[R]", "B[L]"],
+        "weight": [5.0, 6.0, 4.0, 3.0],
+    })
+    vp = VisualizePath(
+        path_file=df, output_folder=str(tmp_path), showfig=False,
+        verbose=False, network_layout="dagre",
+        network_node_labels={"A[R]": "A", "B[R]": "B"})
+    vp.base_filename = "labels"
+    vp.build_network()
+    out = vp.create_network()
+    with Page(Path(out)) as page:
+        assert page.wait("return typeof cy !== 'undefined' && cy.edges().length === 4;")
+        assert page.js("return cy.getElementById('A[R]').data('label');") == 'A'
+        assert page.js("return cy.getElementById('A[L]').data('label');") == 'A[L]'
+        opts = page.js("return [].map.call("
+                       "document.querySelectorAll('#groupSelector option'),"
+                       "function (o) { return o.value; });")
+        for g in ('dir_L-L', 'dir_R-R', 'dir_R-L', 'dir_L-R'):
+            assert g in opts, (g, opts)
+        page.js("selectGroup('dir_L-L'); return true;")
+        assert page.js("return cy.edges(':selected').length;") == 1
+        assert page.js("return cy.edges(':selected')[0].data('direction');") \
+            == 'L-L'
+        assert page.errors() == [], page.errors()
