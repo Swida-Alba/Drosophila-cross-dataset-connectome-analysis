@@ -1,12 +1,19 @@
-"""Cell values on the interactive connection-matrix heatmap are drawn ONCE.
+"""Cell values on the interactive connection-matrix heatmap: one layer, in-cell.
 
-Found 2026-10-18 from `clock-production`'s conservation page: with "Show
-Values" on, `createHeatmap` set `trace.texttemplate` (which Plotly draws as
-`g.heatmap-label`) *and* pushed one `layout.annotation` per cell. Linear showed
-the same number twice, offset a pixel (a "shadow"); log10 and sqrt showed the
-transformed value underneath the original, i.e. two different numbers in one
-cell. Values now come from the annotations only, which is also what makes the
-contrast colour work.
+Found 2026-10-18 from `clock-production`'s conservation page, two defects in the
+same block of `createHeatmap`:
+
+* `trace.texttemplate = '%{text}'` was set *and* one `layout.annotation` per cell
+  was pushed. Plotly drew both — `g.heatmap-label` (the TRANSFORMED value) under
+  the annotation (the datum). Linear showed the same number twice, a pixel apart
+  (a "shadow"); log₁₀/√ showed two different numbers in one cell.
+* the annotation text was `String(originalValue)`, so a raw weight printed as
+  `1.475572836012` — 14 characters in a 24 px cell, which reads as several
+  numbers run together.
+
+Values now come from the annotations only, formatted at the hover's precision,
+and the font is re-hugged once to the cell the axis actually drew. The reader's
+"Cell Value Size" stays the upper bound.
 
 Run:
     conda run -n drocat-4.5.0 python -m pytest \\
@@ -30,28 +37,18 @@ from heatmap_cdp import PAGE_READY, Page, REQUIRES_CDP  # noqa: E402
 ROWS = ['S0', 'S1', 'S2']
 COLS = ['T0', 'T1', 'T2']
 
-#: Values whose log₁₀ differs from the datum, so a scaled label is obvious.
+#: A long float and values whose log₁₀ differs from the datum, so a scaled or
+#: unrounded label is obvious.
 VALUES = np.array([[10.0, 0.0, 100.0],
-                   [0.0, 1000.0, 0.0],
-                   [5.0, 0.0, 20.0]])
-
-
-def _export(tmp_path):
-    out = tmp_path / 'values.html'
-    VisConnMatInteractive(pd.DataFrame(VALUES, index=ROWS, columns=COLS),
-                          str(out), title='values', showfig=False,
-                          verbose=False, init_clustered=False)
-    assert out.exists() and out.stat().st_size > 1000
-    return out
-
+                   [0.0, 1000.0, 1.475572836012],
+                   [5.0, 25.0, 20.0]])
+EXPECTED = ['0', '0', '1.48', '10', '100', '1000', '20', '25', '5']
 
 SHOW_VALUES = "window.toggleCellValues(); return true;"
 STATE = """
 var g = document.querySelector('.js-plotly-plot');
 var ann = (g.layout.annotations || []).map(function (a) { return String(a.text); });
 return {annotations: ann.sort(),
-        values: g.data[0].z.map(function (r) { return r.map(String); })
-                 .reduce(function (a, b) { return a.concat(b); }).sort(),
         heatLabels: document.querySelectorAll('g.heatmap-label').length,
         texttemplate: g.data[0].texttemplate === undefined ? null
                                                           : g.data[0].texttemplate,
@@ -59,9 +56,18 @@ return {annotations: ann.sort(),
 """
 
 
+def _export(tmp_path, name, matrix):
+    out = tmp_path / f'{name}.html'
+    VisConnMatInteractive(pd.DataFrame(matrix), str(out), title=name,
+                          showfig=False, verbose=False, init_clustered=False)
+    assert out.exists() and out.stat().st_size > 1000
+    return out
+
+
 @REQUIRES_CDP
-def test_cell_values_are_annotations_only_and_untransformed(tmp_path):
-    page_path = _export(tmp_path)
+def test_cell_values_are_one_annotation_layer_and_untransformed(tmp_path):
+    page_path = _export(tmp_path, 'values',
+                        pd.DataFrame(VALUES, index=ROWS, columns=COLS))
     with Page(page_path) as page:
         assert page.wait(PAGE_READY)
         hidden = page.js(STATE)
@@ -73,9 +79,9 @@ def test_cell_values_are_annotations_only_and_untransformed(tmp_path):
         linear = page.js(STATE)
         # One text per cell: Plotly's heatmap-label layer must be empty ...
         assert linear['heatLabels'] == 0, linear
-        # ... and the one layer that remains carries the untransformed values.
         assert linear['texttemplate'] is None, linear
-        assert linear['annotations'] == linear['values'], linear
+        # ... and the one layer that remains shows the datum at hover precision.
+        assert linear['annotations'] == EXPECTED, linear
 
         page.js("window.setScale('log10'); return true;")
         assert page.wait("var g=document.querySelector('.js-plotly-plot');"
@@ -85,10 +91,43 @@ def test_cell_values_are_annotations_only_and_untransformed(tmp_path):
         assert logged['heatLabels'] == 0, logged
         assert logged['texttemplate'] is None, logged
         # The colour is log-scaled; the number in the cell is still the datum.
-        assert logged['annotations'] == linear['values'], (logged, linear)
+        assert logged['annotations'] == EXPECTED, logged
 
         page.js(SHOW_VALUES)
         assert page.wait("var g=document.querySelector('.js-plotly-plot');"
                          "return (g.layout.annotations || []).length === 0;")
         assert page.js(STATE)['heatLabels'] == 0
         assert page.errors() == []
+
+
+@REQUIRES_CDP
+def test_a_dense_matrix_shrinks_its_labels_to_the_cell(tmp_path):
+    rng = np.random.default_rng(7)
+    matrix = rng.integers(0, 4000, size=(40, 40)).astype(float)
+    page_path = _export(tmp_path, 'dense', matrix)
+    with Page(page_path) as page:
+        assert page.wait(PAGE_READY)
+        page.js(SHOW_VALUES)
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return (g.layout.annotations || []).length === 1600;")
+        # The re-hug runs after the first paint; wait for it to land.
+        assert page.wait(FIT_LANDED, timeout=30), 'the cell labels never shrank'
+        fit = page.js(FIT)
+        assert fit['fontSize'] < 10, fit
+        assert fit['maxWidth'] <= fit['pitch'] * 1.02, fit
+        assert page.js(STATE)['heatLabels'] == 0
+        assert page.errors() == []
+
+
+FIT = """
+var g = document.querySelector('.js-plotly-plot');
+var pitch = g._fullLayout.xaxis._length / g.data[0].x.length;
+var ws = [].map.call(document.querySelectorAll('g.annotation text'),
+                     function (t) { return t.getBoundingClientRect().width; });
+return {pitch: pitch, maxWidth: Math.max.apply(null, ws), n: ws.length,
+        fontSize: g.layout.annotations[0].font.size};
+"""
+
+FIT_LANDED = ("var g=document.querySelector('.js-plotly-plot');"
+              "return (g.layout.annotations || []).length === 1600"
+              " && g.layout.annotations[0].font.size < 10;")

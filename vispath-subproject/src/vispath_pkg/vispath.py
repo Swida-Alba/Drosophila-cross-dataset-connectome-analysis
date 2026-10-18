@@ -18138,6 +18138,35 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             }}
         }}
         
+        // A cell label must stay inside its cell. Raw floats can be 16
+        // characters wide (`1.475572836012`), which reads as several numbers
+        // run together on a dense matrix, so labels use the same precision the
+        // hover already shows (minus the thousands separators, which only add
+        // width). The transformed value never appears here: the colour carries
+        // the scale, the number is the datum.
+        function formatCellValue(value) {{
+            const n = Number(value);
+            if (value === '' || value === null || !Number.isFinite(n)) return String(value);
+            if (currentMetric === 'ratio' || currentMetric === 'probability') return n.toFixed(4);
+            if (Number.isInteger(n)) return String(n);
+            return n.toFixed(2);
+        }}
+        
+        // Largest size (never above the reader's setting) at which the widest
+        // label still fits one cell, with a little air on each side.
+        function fitCellValueFont(texts, requested, cellW, cellH) {{
+            if (!texts.length || !(cellW > 0) || !(cellH > 0)) return requested;
+            const probe = document.createElement('canvas').getContext('2d');
+            probe.font = requested + 'px "Open Sans", verdana, arial, sans-serif';
+            let widest = 0;
+            for (const t of texts) {{
+                widest = Math.max(widest, probe.measureText(t).width);
+            }}
+            if (widest <= 0) return requested;
+            return Math.max(4, Math.min(requested, requested * (cellW * 0.92) / widest,
+                                        cellH * 0.7));
+        }}
+        
         function getDataRange(data) {{
             let min = Infinity;
             let max = -Infinity;
@@ -18745,7 +18774,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                         annotations.push({{
                             x: j,  // Use index for positioning
                             y: i,  // Use index for positioning
-                            text: String(originalValue),  // Display original value
+                            text: formatCellValue(originalValue),  // Display the datum, not the scaled value
                             showarrow: false,
                             font: {{
                                 size: cellValueFontSize,
@@ -18795,6 +18824,30 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             }}
 
             Plotly.newPlot('heatmap', traces, layout, config);
+
+            // Labels were drawn at the reader's size; now that the axes have a
+            // length, shrink them once if the widest one does not fit its cell.
+            // This is the only point where the true cell pitch exists — margins,
+            // the dendrogram domains and the square-cells constraint are all
+            // applied by now. The reader's setting stays the upper bound.
+            if (showCellValues && layout.annotations && layout.annotations.length) {{
+                setTimeout(function () {{
+                    const gd = document.getElementById('heatmap');
+                    const fl = gd && gd._fullLayout;
+                    if (!fl || !fl.xaxis || !fl.yaxis) return;
+                    const cellW = fl.xaxis._length / Math.max(1, (data[0] || []).length);
+                    const cellH = fl.yaxis._length / Math.max(1, data.length);
+                    const fitted = fitCellValueFont(
+                        layout.annotations.map(a => String(a.text)),
+                        cellValueFontSize, cellW, cellH);
+                    if (fitted >= cellValueFontSize - 0.25) return;
+                    Plotly.relayout(gd, {{annotations: layout.annotations.map(function (a) {{
+                        const copy = Object.assign({{}}, a);
+                        copy.font = Object.assign({{}}, a.font, {{size: fitted}});
+                        return copy;
+                    }})}});
+                }}, 0);
+            }}
 
             // After the constrained (square-cells) render resolves its ranges,
             // re-hug the dendrogram band edges to the true cell edges. The
