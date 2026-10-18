@@ -5,6 +5,7 @@ only), the CrossDatasetMorphComparer backend, and the population-artifact
 bootstrap."""
 
 import pickle
+import json
 import sys
 from types import SimpleNamespace
 from pathlib import Path
@@ -555,6 +556,35 @@ class TestCrossDatasetMorphComparer:
         assert ("'scaleanchor':'x'" in report
                 or '"scaleanchor":"x"' in report
                 or 'heatmap-square-fit' in report)
+
+    def test_members_override_bypasses_token_resolution(
+            self, monkeypatch, tmp_path, fafb_mcns):
+        """The multi-dataset suite resolves the population once and hands the
+        same member set to the cross phase; an unmatched query token must not
+        empty a run whose members were supplied."""
+        self._install_fakes(monkeypatch)
+        self._install_frames(monkeypatch)
+        override = {
+            "male-cns:v1.0": {"APDN3": [201, 202]},
+            "flywire_FAFB_v783": {"APDN3": [301, 302]},
+        }
+        comparer = mcd.CrossDatasetMorphComparer(
+            datasets=["male-cns:v1.0", "flywire_FAFB_v783"],
+            query=["NOT-A-REAL-TYPE"], output_dir=str(tmp_path),
+            saveas="run_override", null_k=25, visualize=False,
+            members_override=override, project_root=str(tmp_path))
+        result = comparer.run()
+        run_path = Path(result["output_folder"])
+        assert run_path == tmp_path / "run_override"
+
+        members = pd.read_csv(run_path / "members_summary.csv")
+        assert members.loc[0, "queried_type"] == "APDN3"
+        assert members.loc[0, "MCNS"] == 2
+        assert members.loc[0, "FAFB"] == 2
+
+        params = json.loads((run_path / "parameters.json").read_text())
+        assert not any("0 members" in note
+                       for note in params["resolution_notes"])
 
     def test_heatmaps_disabled_skips_visualization(self, monkeypatch,
                                                    tmp_path, fafb_mcns):

@@ -1609,6 +1609,7 @@ class CrossDatasetMorphComparer:
                  token: str = '',
                  use_auto_type_mapping: bool = True,
                  label_mapping_file: Optional[str] = None,
+                 members_override: Optional[Dict[str, Dict[str, List[int]]]] = None,
                  use_cache: bool = True,
                  verbose: bool = True,
                  n_workers: int = 8,
@@ -1633,6 +1634,15 @@ class CrossDatasetMorphComparer:
         # type view BESIDE the native-keyed morph_type_matrix.csv — the
         # native outputs stay untouched (compatibility gate).
         self.label_mapping_file = str(label_mapping_file or '').strip()
+        # A caller that already resolved the shared comparison population
+        # (the multi-dataset suite resolves once so the intra and cross
+        # phases score exactly the same neurons) bypasses token resolution.
+        # Shape: {dataset: {row_label: [bodyIds]}}.
+        self.members_override = (
+            {str(ds): {str(label): [int(b) for b in ids]
+                       for label, ids in (rows or {}).items()}
+             for ds, rows in members_override.items()}
+            if members_override is not None else None)
         self._label_mapper = None
         self._label_mapper_loaded = False
         self._axis_label_of_cache = None
@@ -1987,10 +1997,20 @@ class CrossDatasetMorphComparer:
 
         members: Dict[str, Dict[str, List[int]]] = {}
         notes: List[str] = []
-        for name in datasets:
-            got, resolved_notes = self._resolve_members(tokens, name)
-            members[name] = got
-            notes.extend(resolved_notes)
+        if self.members_override is not None:
+            for name in datasets:
+                rows = {label: list(ids)
+                        for label, ids in
+                        (self.members_override.get(name) or {}).items()}
+                members[name] = rows
+                notes.append(f'{name}: using the shared comparison '
+                             f'population ({sum(len(v) for v in rows.values())}'
+                             ' neuron(s))')
+        else:
+            for name in datasets:
+                got, resolved_notes = self._resolve_members(tokens, name)
+                members[name] = got
+                notes.extend(resolved_notes)
 
         pairs: Dict[Tuple[str, str], Dict[str, Any]] = {}
         skeletons_cache: Dict[str, Dict[int, Any]] = {}

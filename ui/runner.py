@@ -318,6 +318,17 @@ TOOL_REGISTRY: Dict[str, dict] = {
             "run": "comparer.run()",
         },
     },
+    "morphology_multi_comparison": {
+        "label": "Multi-Dataset Morphology Comparison",
+        "import": ("from comparison.morph_multi_dataset import "
+                   "MultiDatasetMorphComparer"),
+        "class": "MultiDatasetMorphComparer",
+        "var": "comparer",
+        "init_method": None,
+        "methods": {
+            "run": "comparer.run()",
+        },
+    },
     "type_mapping_validation": {
         "label": "Type Validation (TM VEV)",
         "import": ("from comparison.mapping_validation import "

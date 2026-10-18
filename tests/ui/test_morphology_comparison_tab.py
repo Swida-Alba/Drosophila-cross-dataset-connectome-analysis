@@ -57,6 +57,10 @@ def test_aggregation_level_drops_bodyid_while_nblast_is_selected():
     assert "bodyid" not in aggregation.options
     assert aggregation.value == "type"
 
+    method.set_value("both")
+    assert "bodyid" not in aggregation.options
+    assert aggregation.value == "type"
+
     method.set_value("vector_v2")
     assert "bodyid" in aggregation.options
     assert aggregation.value == "type"
@@ -87,10 +91,10 @@ def test_custom_group_board_always_visible():
     assert board.visible is True
 
 
-def test_intra_only_parameters_stay_hidden_for_two_datasets():
-    """Aggregation Level and the board belong to the intra-dataset comparison:
-    a cross run never reads them, so a stale bodyid/custom choice cannot ride
-    into the cross-dataset constructor params."""
+def test_intra_parameters_stay_visible_for_two_datasets():
+    """Full parity with Connectivity > Comparison: a multi-dataset run
+    computes each selected volume's intra matrices AND the cross pairs, so
+    the intra block must remain visible (it feeds the intra half)."""
     from nicegui import Client
     from nicegui.page import page
 
@@ -108,9 +112,7 @@ def test_intra_only_parameters_stay_hidden_for_two_datasets():
 
     aggregation.set_value("bodyid")
     datasets.set_value(["male-cns:v1.0", "flywire_FAFB_v783"])
-    # The whole intra block hides, so run_comparison's cross branch — which
-    # never reads these widgets — cannot be reached with a stale choice.
-    assert intra_box.visible is False
+    assert intra_box.visible is True
     datasets.set_value(["male-cns:v1.0"])
     assert intra_box.visible is True
     assert aggregation.value == "bodyid"
@@ -152,19 +154,55 @@ def test_custom_group_mode_disables_the_ignored_query_input():
 
 
 # ------------------------------------------------------- run-time level clamp
-def test_cross_runs_never_inherit_the_intra_aggregation_level():
-    """A stale 'custom group' used to mark the query optional on a CROSS run,
-    so two datasets with an empty query passed every guard and silently skipped
-    both the grouping resolution and the history record."""
+def test_multi_dataset_runs_keep_the_selected_intra_level():
+    """The suite computes each volume's intra matrices at the selected level
+    while the cross phase stays on native type rows; a stale value must still
+    fall back to 'type' rather than reaching the run record."""
     from ui.tabs.morphology import _comparison_aggregation
 
-    assert _comparison_aggregation(True, "custom group") == "type"
-    assert _comparison_aggregation(True, "bodyid") == "type"
+    assert _comparison_aggregation(True, "custom group") == "custom group"
+    assert _comparison_aggregation(True, "bodyid") == "bodyid"
     assert _comparison_aggregation(False, "custom group") == "custom group"
     assert _comparison_aggregation(False, "bodyid") == "bodyid"
     assert _comparison_aggregation(False, None) == "type"
     # A value the option list no longer offers (NBLAST reset) cannot ride along
     assert _comparison_aggregation(False, "not-a-level") == "type"
+
+
+def test_multi_dataset_branch_calls_the_intra_plus_cross_suite():
+    """A two-dataset run must go through the suite (intra + cross in one
+    folder), not the cross-only backend, and must forward the intra controls
+    that stay visible in cross mode."""
+    source = (Path(__file__).resolve().parents[2]
+              / "ui" / "tabs" / "morphology.py").read_text(encoding="utf-8")
+    assert 'tool = "morphology_multi_comparison"' in source
+    assert '"intra_fetch_online": bool(comparison_fetch.value)' in source
+    assert '"intra_use_cache": bool(comparison_use_cache.value)' in source
+    assert '"intra_visualize": viz_on' in source
+    assert '"aggregation_level": _AGGREGATION_PARAM_VALUES[aggregation]' in source
+    assert '"max_total_neurons": int(comparison_max_total.value)' in source
+
+
+def test_custom_group_labels_read_every_preset_label(tmp_path):
+    """A label with no members in the first selected dataset must still be
+    sent to the cross phase, which resolves it per dataset and reports an
+    explicit empty row."""
+    import json
+
+    from ui.tabs.morphology import _custom_group_labels
+
+    preset = tmp_path / "preset.json"
+    preset.write_text(json.dumps({
+        "format": "drocat_custom_groups/v1",
+        "source_mapping": {
+            "custom_label": ["shared", "first-only", "second-only"],
+            "male-cns:v1.0": [["aMe12"], ["aMe10"], []],
+            "flywire_FAFB_v783": [["aMe12"], [], ["aMe10"]],
+        },
+    }), encoding="utf-8")
+    assert _custom_group_labels(preset, "male-cns:v1.0") == [
+        "shared", "first-only", "second-only"]
+    assert _custom_group_labels(tmp_path / "missing.json", "x") == []
 
 
 def test_the_ui_no_longer_refuses_a_single_neuron_entry():

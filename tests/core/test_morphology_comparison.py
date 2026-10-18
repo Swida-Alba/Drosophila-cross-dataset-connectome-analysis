@@ -641,6 +641,23 @@ def test_heatmap_fallback_writes_files(vector_setup, monkeypatch):
     assert "plotly" in html.lower()
 
 
+def test_heatmap_fallback_writes_one_per_method(vector_setup, monkeypatch):
+    """A ``both`` run renders four fallback heatmaps in ONE folder — one per
+    level and method — with no filename collision."""
+    monkeypatch.setitem(sys.modules, "vispath_pkg", None)
+    monkeypatch.setitem(sys.modules, "vispath_pkg.vispath", None)
+    _install_both(monkeypatch, [1, 2, 3, 4, 5])
+
+    result = _comparer(vector_setup, method="both",
+                       generate_heatmaps=True).run()
+    out = Path(result["output_folder"])
+    for method in ("vector_v2", "nblast"):
+        for level in ("type", "bodyid"):
+            path = out / "visualization" / f"heatmap_{level}_{method}.html"
+            assert path.exists(), path
+            assert "plotly" in path.read_text(encoding="utf-8").lower()
+
+
 def test_completion_marker_printed(vector_setup, capsys):
     comparer = _comparer(vector_setup, verbose=True)
     result = comparer.run()
@@ -1037,6 +1054,12 @@ def test_custom_level_rows_are_groups(vector_setup, tmp_path):
     import json
     params = json.loads((out / "parameters.json").read_text())
     assert params["aggregation_level"] == "custom"
+    # The query list is ignored in custom mode; parameters.json must echo the
+    # resolved groups, never the literal '[None]' the old writer emitted.
+    assert params["query"] == [
+        {"group": "early", "ids": [1, 2]},
+        {"group": "late", "ids": [3, 4, 5]},
+    ]
 
 
 def test_type_level_expands_a_custom_group_label(vector_setup):
@@ -1529,6 +1552,26 @@ def test_nblast_dotprops_lookup_uses_canonical_ids(monkeypatch, tmp_path):
     assert matrix[0, 0] == pytest.approx(1.0)
 
 
+def test_resolved_members_bypass_preset_and_query(vector_setup, tmp_path):
+    """The multi-dataset suite resolves once and hands the shared population
+    to the intra phase; no preset file or query may re-resolve it."""
+    comparer = mc.MorphologyProfileComparer(
+        dataset="male-cns:v1.0", query=None, aggregation_level="custom",
+        resolved_members={"G": [1, 2, 3]}, output_dir=str(tmp_path / "out"),
+        generate_heatmaps=False, verbose=False)
+    result = comparer.run()
+    out = Path(result["output_folder"])
+    group = _read_matrix(
+        out / "group_level" / "group_similarity_vector_v2.csv")
+    assert list(group.index) == ["G"]
+    members = pd.read_csv(out / "members.csv")
+    assert sorted(members["bodyId"].astype(str)) == ["1", "2", "3"]
+    assert set(members["row"]) == {"G"}
+    import json
+    params = json.loads((out / "parameters.json").read_text())
+    assert params["query"] == [{"group": "G", "ids": [1, 2, 3]}]
+
+
 def test_both_similarity_styles_render_diverging_full_domain():
     """Both morphology similarity metrics span [-1, 1] (normalized NBLAST
     verified at -0.88 on real FAFB pairs), so BOTH always render on the
@@ -1548,3 +1591,74 @@ def test_both_similarity_styles_render_diverging_full_domain():
         dataset="male-cns:v1.0", query=["a", "b"], method="nblast",
         verbose=False, generate_heatmaps=False)
     assert cmp._metric_style() == cmp._metric_style()
+
+
+# ------------------------------------------------------- both methods, one run
+def _install_both(monkeypatch, dotprop_ids):
+    monkeypatch.setattr(
+        mc, "MorphologyComparer",
+        lambda **kw: _FakeHelper(dotprop_ids))
+    import navis.nbl.nblast_funcs as nblast_funcs
+    monkeypatch.setattr(nblast_funcs, "NBlaster", _FakeNBlaster)
+
+
+def test_both_methods_share_one_run_folder(vector_setup, monkeypatch):
+    """The morphology analogue of the connectivity comparison's metric set:
+    one run, one folder, one members.csv, both scorer matrices — so a volume
+    no longer needs a second folder just to hold the other method."""
+    _install_both(monkeypatch, [1, 2, 3, 4, 5])
+    result = _comparer(vector_setup, method="both").run()
+    out = Path(result["output_folder"])
+
+    assert result["method"] == "both"
+    assert result["methods"] == ["vector_v2", "nblast"]
+    assert len([p for p in vector_setup.iterdir() if p.is_dir()]) == 1
+    for method in ("vector_v2", "nblast"):
+        assert (out / "type_level"
+                / f"type_similarity_{method}.csv").is_file()
+        assert (out / "bodyid_level"
+                / f"bodyid_similarity_{method}.csv").is_file()
+    assert len(list(out.rglob("members.csv"))) == 1
+    members = pd.read_csv(out / "members.csv")
+    assert list(members.columns) == [
+        "row", "type", "label", "bodyId", "instance", "status",
+        "status_vector_v2", "status_nblast"]
+    assert set(members["status"]) == {"compared"}
+
+    import json
+    params = json.loads((out / "parameters.json").read_text())
+    assert params["method"] == "both"
+    assert params["methods"] == ["vector_v2", "nblast"]
+    assert params["neurons_compared"] == 5
+    assert params["neurons_compared_by_method"] == {
+        "vector_v2": 5, "nblast": 5}
+
+    html = (out / "report.html").read_text(encoding="utf-8")
+    assert "Vector v2" in html and "NBLAST similarity" in html
+
+
+def test_both_methods_keep_per_method_statuses(vector_setup, monkeypatch):
+    """A neuron missing dotprops is still compared by vector_v2; the combined
+    status must disclose the partial coverage instead of either hiding the
+    NBLAST hole or pretending the vector cell is missing too."""
+    _install_both(monkeypatch, [1, 2, 3])
+    result = _comparer(vector_setup, method="both").run()
+    out = Path(result["output_folder"])
+    members = pd.read_csv(out / "members.csv")
+    by_id = {str(rec["bodyId"]): rec
+             for rec in members.to_dict("records")}
+    assert by_id["1"]["status"] == "compared"
+    assert by_id["1"]["status_vector_v2"] == "compared"
+    assert by_id["1"]["status_nblast"] == "compared"
+    assert by_id["4"]["status_vector_v2"] == "compared"
+    assert by_id["4"]["status_nblast"] == "no dotprops"
+    assert by_id["4"]["status"] == (
+        "vector_v2: compared; nblast: no dotprops")
+    assert result["neurons_compared"] == 3
+    assert result["neurons_compared_by_method"] == {
+        "vector_v2": 5, "nblast": 3}
+    # The NBLAST matrix keeps the full axis order; the missing pair is NaN.
+    body = _read_matrix(
+        out / "bodyid_level" / "bodyid_similarity_nblast.csv")
+    assert body.shape == (5, 5)
+    assert np.isnan(body.loc[_lbl("4"), _lbl("1")])

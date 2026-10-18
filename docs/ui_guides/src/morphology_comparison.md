@@ -10,10 +10,14 @@ Compare the morphology of already-identified neurons <b>within one dataset</b>: 
 <div class="callout warn">
   <b>One dataset = intra-dataset.</b> Skeletons are scored in one
   dataset's coordinate space against that dataset's caches. Select
-  <b>two or more datasets</b> to switch this sub-tab into the
+  <b>two or more datasets</b> and the run keeps every selected volume's
+  intra comparison <i>and</i> adds the
   <a href="cross_dataset_morphology.html">cross-dataset comparison</a>
   (queried neurons across FAFB / male-cns / BANC, null-baselined
-  vector_v2).
+  vector_v2) — all in <b>one run folder</b>, the same multi-dataset contract
+  as Connectivity ▸ Comparison. The intra controls (Method, Aggregation
+  Level, caps, cache) stay visible in multi-dataset mode and drive the intra
+  half; the cross phase always uses native type rows.
 </div>
 
 
@@ -99,6 +103,13 @@ See the <a href="label_mapper.html">label-mapper guide</a> for the preset format
       the Aggregation Level drops <b>bodyid</b> while NBLAST is selected —
       there each row is one neuron, so a realistic query could not
       complete.</td></tr>
+  <tr><td><b>Both</b></td><td>Vector cost + NBLAST cost</td>
+    <td>One run, one folder, both scorer matrices
+      (<code>*_similarity_vector_v2.csv</code> and
+      <code>*_similarity_nblast.csv</code>) with two cards per level in the
+      report and one heatmap per level and method. The morphology analogue
+      of the connectivity comparison's metric set; <b>bodyid</b> is not
+      offered because the NBLAST half would not complete.</td></tr>
 </table>
 
 
@@ -106,12 +117,12 @@ See the <a href="label_mapper.html">label-mapper guide</a> for the preset format
 
 <table>
   <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
-  <tr><td>Aggregation Level</td><td>type</td><td>What one matrix row is:
+  <tr><td>Aggregation Level</td><td>type</td><td>What one INTRA matrix row is:
     a <b>type</b> (bodyId inputs resolve to their type), an individual
     <b>neuron</b> (bodyid), or a <b>custom group</b> from the grouping board
-    (its query box is disabled). Only offered for the intra-dataset comparison — a
-    cross-dataset run keeps type rows, because bodyIds are not comparable
-    across datasets</td></tr>
+    (its query box is disabled). In a multi-dataset run this level is used
+    for every selected volume's intra matrices; the cross phase always keeps
+    native type rows, because bodyIds are not comparable across datasets</td></tr>
   <tr><td>Max Members per Type</td><td>25</td><td>Members sampled per type
     for the pairwise scores (large types are truncated; the exact member
     list is written to <code>members.csv</code>). At the bodyId level it
@@ -120,7 +131,9 @@ See the <a href="label_mapper.html">label-mapper guide</a> for the preset format
     dropped by it</td></tr>
   <tr><td>Max Total Neurons</td><td>200</td><td>Safety cap on the compared
     population; truncation walks the rows in order and never drops a neuron
-    you queried by bodyId. NBLAST scores every pair twice, so populations
+    you queried by bodyId. In a multi-dataset run it is applied <b>once</b>
+    to the shared population, so the intra and cross phases compare exactly
+    the same neurons. NBLAST scores every pair twice, so populations
     past 30 neurons (the size that will actually be scored — the cap, or
     more when your queried bodyIds alone exceed it) <b>warn</b> that the run
     may take very long — they are never refused</td></tr>
@@ -165,7 +178,22 @@ visualization/heatmap_type_{method}.html     # or heatmap_group_… / heatmap_bo
 visualization/heatmap_bodyid_{method}.html
 plot-3d_{dataset}/                       # optional 3D skeleton scene
 report.html</code></pre>
-<code>report.html</code> uses the same tabbed generator as the connectivity-profiling and cross-dataset morphology reports (shared <code>report_kit</code>): a hero header, Type/Group-level and BodyId-level tabs with Ward-clustered heatmap cards (hover for exact values, CSV and VisPath editor links), and compared-neuron / parameter details. Every heatmap card's <b>cells render square</b> (1:1, at any window size) — the card itself is not squared, only the matrix cells. Plotly.js is embedded, so the report renders offline. Both similarity metrics span <b>[-1, 1]</b> — negative means less similar than chance (a whitened cosine and normalized NBLAST both genuinely score below zero) — so every heatmap renders on the diverging blue–white–red scale over the full [-1, 1] domain, whether or not a run happens to contain negative cells.
+
+With two or more datasets the run writes one folder with both halves:
+
+<pre><code>{output_dir}/morphology_comparison_MCNS_FAFB_BANC_aMe12_aMe10_20260901_120000/
+intra_dataset/MCNS/                      # one self-contained intra run per volume
+intra_dataset/FAFB/                      #   (both methods side by side when Method = Both)
+intra_dataset/BANCv888/
+cross_dataset/<SRC>_to_<TGT>/results/    # ordered pairs, null baselines
+cross_dataset/overview.csv
+cross_dataset/members_summary.csv
+cross_dataset/report.html
+report.html                              # hub linking both halves + key tables
+parameters.json                          # combined provenance
+README.txt
+user_warning_notes.txt</code></pre>
+<code>report.html</code> uses the same tabbed generator as the connectivity-profiling and cross-dataset morphology reports (shared <code>report_kit</code>): a hero header, Type/Group-level and BodyId-level tabs with Ward-clustered heatmap cards (hover for exact values, CSV and VisPath editor links), and compared-neuron / parameter details. With <b>Both</b> selected each level shows one card per method (vector_v2 and NBLAST) in the same tab. Every heatmap card's <b>cells render square</b> (1:1, at any window size) — the card itself is not squared, only the matrix cells. Plotly.js is embedded, so the report renders offline. Both similarity metrics span <b>[-1, 1]</b> — negative means less similar than chance (a whitened cosine and normalized NBLAST both genuinely score below zero) — so every heatmap renders on the diverging blue–white–red scale over the full [-1, 1] domain, whether or not a run happens to contain negative cells.
 
 BodyId-level rows and axes are labeled <code>{bodyId}\_{instance}</code> (NeuPrint-style datasets, e.g. <code>11309_aMe4_L</code>) or <code>{bodyId}\_{type}_L/_R</code> (FAFB/BANC) — the same labels the 3D legend tree uses — so no export reads as a bare numeric id. <code>members.csv</code> maps every label back to its raw bodyId.
 

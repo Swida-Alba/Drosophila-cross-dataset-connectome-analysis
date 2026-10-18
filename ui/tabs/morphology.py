@@ -3,10 +3,15 @@
 Two sub-tabs share this page (mirroring the Connectivity tab's structure):
 - Find Similar: query-vs-all morphological similarity search (intra-dataset).
 - Comparison: N×N comparison of queried neurons. One selected dataset runs
-  the intra-dataset comparison (vector_v2 or NBLAST scoring); two or more
-  datasets run the cross-dataset comparison (FAFB / male-cns / BANC,
-  vector_v2 only, transform-based with null baselines).
+  the intra-dataset comparison (vector_v2, NBLAST, or both); two or more
+  datasets run EVERY selected volume's intra comparison plus the
+  cross-dataset comparison (FAFB / male-cns / BANC, vector_v2 only,
+  transform-based with null baselines) in ONE run folder — the same
+  multi-dataset contract as Connectivity > Comparison.
 """
+
+import json
+from pathlib import Path
 
 from nicegui import ui
 
@@ -115,6 +120,13 @@ MORPH_METHODS = {
     for method in MORPH_METHOD_OPTIONS
 }
 
+# Comparison adds the both-methods run. It is deliberately NOT added to
+# MORPH_METHOD_OPTIONS: Find Similar's backend scores one method per query.
+COMPARISON_METHODS = {
+    **MORPH_METHODS,
+    "both": "Both (vector + NBLAST)",
+}
+
 # Row granularity of the Comparison sub-tab — the same three choices the
 # Connectivity tab's Comparison sub-tab offers. "custom group" is the UI
 # label; the backend keyword is "custom".
@@ -137,18 +149,34 @@ def _resolve_comparison_output_dir(value):
 
 
 def _comparison_aggregation(cross: bool, value) -> str:
-    """The aggregation level a comparison run actually uses.
+    """The INTRA row granularity a comparison run uses.
 
-    'custom group' rows are read from THIS dataset's grouping board, so a
-    cross run has no level to take: it uses the type level whatever the
-    (hidden) select still holds. Reading the select before this clamp used to
-    let a stale 'custom group' mark the query optional on a cross run, which
-    then passed every guard with an empty query.
+    Kept for one-dataset AND multi-dataset runs: the multi-dataset suite
+    computes each selected volume's intra matrices at this level, while the
+    cross phase always uses native type rows. A stale value no longer
+    changes whether the query is optional — custom groups are a legitimate
+    multi-dataset selection (their labels resolve per dataset), so the
+    caller supplies those labels as the cross query.
     """
-    if cross:
-        return "type"
     level = str(value or "type")
     return level if level in MORPH_AGGREGATION_OPTIONS else "type"
+
+
+def _custom_group_labels(mapping_path, dataset) -> "list[str]":
+    """Every custom label the grouping preset defines, in preset order.
+
+    The multi-dataset cross phase resolves each label through its own
+    dataset column; passing the labels (not the disabled query box) is what
+    makes a custom-group multi-dataset run cover every group, including a
+    label with no members in the first selected dataset.
+    """
+    try:
+        data = json.loads(Path(str(mapping_path)).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    side = data.get("source_mapping") or {}
+    labels = side.get("custom_label") or side.get("std_label") or []
+    return [str(label) for label in labels if str(label).strip()]
 
 
 def create_morphology_tab():
@@ -357,12 +385,14 @@ def create_morphology_tab():
                     label="Datasets to compare",
                     default=["male-cns:v1.0"],
                     group_recommended=True,
-                    hint="One dataset runs the intra-dataset N×N comparison "
-                         "(vector_v2 or NBLAST). Two or more run the "
-                         "cross-dataset comparison of the queried neurons "
-                         "(FAFB / male-cns / BANC only — vector_v2 in each "
-                         "target's render space, with null baselines; other "
-                         "datasets raise a banner error).",
+                    hint="One dataset runs the intra-dataset N×N comparison. "
+                         "Two or more run EVERY selected volume's intra "
+                         "comparison AND the cross-dataset comparison, in one "
+                         "run folder (the Connectivity Comparison tab's "
+                         "multi-dataset contract). Cross scoring is "
+                         "vector_v2 in each target's render space, with null "
+                         "baselines; only FAFB / male-cns / BANC are "
+                         "supported.",
                 )
                 comparison_output_dir = dir_input(scope="morphology_comparison")
                 comparison_banc_warning = ui.label(
@@ -465,20 +495,24 @@ def create_morphology_tab():
                         "re-resolved."
                     ).classes("text-caption drocat-muted")
 
-                # --- intra-dataset-only parameters (exactly one dataset) ---
+                # --- intra parameters (one dataset, and every volume's intra
+                #     half of a multi-dataset run) ---
                 with ui.column().classes("w-full gap-1").props(
                         'id=card-morph-comparison-intra') as intra_params_box:
 
                     with param_grid(2):
                         comparison_method = select_input(
-                            "Method", MORPH_METHODS, "vector_v2",
+                            "Method", COMPARISON_METHODS, "vector_v2",
                             hint="'Vector (spatial)' (default): the Find "
                                  "Similar vector_v2 score on whitened "
                                  "vectors — fast, whole-population "
                                  "whitening comes from the dataset cache. "
                                  "'NBLAST': canonical normalized NBLAST on "
                                  "raw-skeleton dotprops; populations past "
-                                 "30 neurons warn and proceed (slow).",
+                                 "30 neurons warn and proceed (slow). "
+                                 "'Both': one run folder holds both scorer "
+                                 "matrices — the morphology analogue of the "
+                                 "connectivity comparison's metric set.",
                         ).props('id=select-morph-comparison-method')
                     with ui.row().classes("w-full items-center gap-4"):
                         comparison_visualize = checkbox_input(
@@ -550,7 +584,8 @@ def create_morphology_tab():
                 cross_params_box.set_visibility(False)
 
             # --- Advanced Settings (kept at the bottom, in its own card;
-            #     intra-dataset only — hidden in cross-dataset mode) ---
+            #     these controls feed the intra comparison, including every
+            #     selected volume's intra half in a multi-dataset run) ---
             advanced_card = ui.card().classes("w-full drocat-card").props(
                 'id="card-morphology-advanced"'
             )
@@ -565,14 +600,14 @@ def create_morphology_tab():
                             comparison_aggregation = select_input(
                                 "Aggregation Level", MORPH_AGGREGATION_OPTIONS,
                                 "type",
-                                hint="'type': each queried type is one matrix row "
-                                     "(bodyId inputs resolve to their type). "
-                                     "'bodyid': every individual neuron is its own "
-                                     "row, so the bodyId matrix IS the comparison "
-                                     "and no type-level matrix is written. "
-                                     "'custom group': rows come from the grouping "
-                                     "board above; its query box is disabled in "
-                                     "this mode.",
+                                hint="Rows of the INTRA matrix ('type': each "
+                                     "queried type; 'bodyid': every neuron; "
+                                     "'custom group': the grouping board's "
+                                     "labels, with the query box disabled). "
+                                     "In a multi-dataset run this level is "
+                                     "used for every selected volume's intra "
+                                     "matrices; the cross phase always uses "
+                                     "native type rows.",
                             ).props('id=select-aggregation')
 
                         comparison_use_cache = checkbox_input(
@@ -600,11 +635,14 @@ def create_morphology_tab():
                             hint="Safety cap on the compared population: "
                                  "truncation walks the rows in order and "
                                  "never drops a neuron you queried by "
-                                 "bodyId. NBLAST scores every pair twice, "
-                                 "so populations past 30 neurons (the size "
-                                 "that will actually be scored — the cap, "
-                                 "or more when your queried bodyIds alone "
-                                 "exceed it) warn that the "
+                                 "bodyId. In a multi-dataset run it is "
+                                 "applied ONCE to the shared population, so "
+                                 "the intra and cross phases compare the "
+                                 "same neurons. NBLAST scores every pair "
+                                 "twice, so populations past 30 neurons (the "
+                                 "size that will actually be scored — the "
+                                 "cap, or more when your queried bodyIds "
+                                 "alone exceed it) warn that the "
                                  "run may take very long — they are not "
                                  "refused.",
                         )
@@ -632,7 +670,7 @@ def create_morphology_tab():
             comparison_query_input.set_input_enabled(not is_custom)
 
         def _sync_aggregation_options(_e=None):
-            """Drop the bodyId level while NBLAST is selected.
+            """Drop the bodyId level while NBLAST (or both) is selected.
 
             NBLAST scores every neuron pair TWICE and warns past 30 neurons
             (it no longer refuses), and at the bodyId level each row is one
@@ -641,7 +679,8 @@ def create_morphology_tab():
             choice also resets, so it can never reach the run record.
             """
             options = (["type", "custom group"]
-                       if str(comparison_method.value or "") == "nblast"
+                       if str(comparison_method.value or "") in
+                       ("nblast", "both")
                        else list(MORPH_AGGREGATION_OPTIONS))
             comparison_aggregation.options = options
             if comparison_aggregation.value not in options:
@@ -678,8 +717,12 @@ def create_morphology_tab():
         def _on_comparison_datasets_change(_e=None):
             selected = list(comparison_datasets.value or [])
             intra = len(selected) <= 1
-            intra_params_box.set_visibility(intra)
-            advanced_card.set_visibility(intra)
+            # Full parity with Connectivity > Comparison: a multi-dataset
+            # run computes every selected volume's intra matrices AND the
+            # cross pairs, so the intra controls stay visible and feed the
+            # intra half of the suite.
+            intra_params_box.set_visibility(True)
+            advanced_card.set_visibility(True)
             cross_params_box.set_visibility(not intra)
             options = ["(first selected)"] + selected
             cross_reference.options = options
@@ -896,34 +939,61 @@ def create_morphology_tab():
         output_path = _resolve_comparison_output_dir(
             comparison_output_dir.value)
         try:
+            visualization_values = (
+                comparison_visualization_settings.values())
+            viz_on = bool(comparison_visualize.value)
+            if viz_on:
+                comparison_visualization_settings.warn_empty_custom_palettes()
             if cross:
                 reference = cross_reference.value
                 if str(reference).startswith("("):
                     reference = None
+                cross_query = [str(v) for v in query]
+                if aggregation == "custom group":
+                    # The query box is disabled in custom mode; the cross
+                    # phase resolves each preset label through its own
+                    # dataset column.
+                    cross_query = _custom_group_labels(
+                        mapping_path, selected[0])
+                    if not cross_query:
+                        ui.notify(
+                            "The grouping preset defines no custom labels "
+                            "to compare", type="warning")
+                        return
                 constructor_params = {
                     "datasets": selected,
-                    "query": query,
+                    "query": cross_query,
                     "output_dir": output_path,
-                    "max_members_per_type": int(comparison_max_members.value),
+                    "method": comparison_method.value,
+                    "aggregation_level": _AGGREGATION_PARAM_VALUES[aggregation],
+                    "max_members_per_type": int(
+                        comparison_max_members.value),
+                    "max_total_neurons": int(comparison_max_total.value),
                     "null_k": int(cross_null_k.value),
                     "reference_template": reference,
-                    "scene_members_per_type": int(cross_scene_members.value),
+                    "scene_members_per_type": int(
+                        cross_scene_members.value),
                     "visualize": bool(cross_visualize.value),
+                    "intra_visualize": viz_on,
+                    "intra_visualization_settings": (
+                        visualization_values if viz_on else {}),
                     "fetch_online": bool(cross_fetch.value),
-                    "use_auto_type_mapping": bool(cross_auto_mapping.value),
+                    "intra_fetch_online": bool(comparison_fetch.value),
                     "use_cache": True,
+                    "intra_use_cache": bool(comparison_use_cache.value),
+                    "use_auto_type_mapping": bool(cross_auto_mapping.value),
+                    "generate_heatmaps": bool(comparison_heatmaps.value),
+                    "show_figures": bool(comparison_show_figures.value),
                     "verbose": True,
+                    "n_workers": 8,
                 }
-                tool = "morph_cross_dataset"
                 if mapping_path:
                     constructor_params["label_mapping_file"] = mapping_path
+                    if aggregation == "custom group":
+                        constructor_params["custom_mapping_file"] = (
+                            mapping_path)
+                tool = "morphology_multi_comparison"
             else:
-                visualization_values = (
-                    comparison_visualization_settings.values())
-                viz_on = bool(comparison_visualize.value)
-                if viz_on:
-                    comparison_visualization_settings \
-                        .warn_empty_custom_palettes()
                 constructor_params = {
                     "dataset": selected[0],
                     "query": query,

@@ -5,7 +5,7 @@ subtag: Morphology tab
 page_title: Morphology · Comparison (Cross-Dataset)
 ---
 
-Compare the morphology of the <b>queried neurons across datasets</b>: enter query types, select two or more datasets, and get pairwise <b>vector_v2</b> similarity matrices per dataset pair, a seeded null baseline for context, and 3D overlay scenes with every dataset bridged into one reference template.
+Compare the morphology of the <b>queried neurons across datasets</b>: enter query types, select two or more datasets, and get pairwise <b>vector_v2</b> similarity matrices per dataset pair, a seeded null baseline for context, and 3D overlay scenes with every dataset bridged into one reference template. The same run also writes <b>each selected volume's intra comparison</b> under <code>intra_dataset/&lt;DATASET&gt;/</code> — one folder holds both halves, the same contract as Connectivity ▸ Comparison. The intra controls (Method, Aggregation Level, caps, cache) stay visible and apply to that intra half.
 
 <div class="callout warn">
   <b>Dataset scope.</b> Only <b>FAFB</b>, <b>male-cns</b> and <b>BANC</b>
@@ -24,7 +24,7 @@ Compare the morphology of the <b>queried neurons across datasets</b>: enter quer
 1. Select <b>two or more datasets</b> (the list shows every dataset; pairs without a bridging transform are refused at run time with the red banner).
 2. Enter the <b>Neurons to Compare</b> — types or patterns (e.g. <code>APDN3</code>, <code>aMe.*</code>). With <b>Auto Type Mapping</b> on (the default), types are resolved through the shared validity-aware resolver — curated renames (e.g. APDN3 → SLP249) and valid splits resolve across datasets, and conflicted types fail closed; a type missing in one dataset shows up as an explicit empty row in the report. Turn the mapping off to fall back to raw same-name/pattern resolution.
 3. Optionally pick a <b>Reference Template</b> for the overlay scenes (defaults to the first selected dataset).
-4. Click <b>Run Comparison</b> (the same button as the intra-dataset mode — two or more selected datasets switch it to this mode).
+4. Click <b>Run Comparison</b> (the same button as the intra-dataset mode — two or more selected datasets switch it to this mode). The resulting folder holds <code>intra_dataset/</code>, <code>cross_dataset/</code> and a hub <code>report.html</code>.
 
 
 ## Cross-dataset options
