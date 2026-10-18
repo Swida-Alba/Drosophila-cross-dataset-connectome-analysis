@@ -12844,18 +12844,6 @@ class VisualizePath:
                 }};
             }}
 
-            // Edge-direction groups (L-L / R-R / R-L / L-R)
-            if (group.startsWith('dir_')) {{
-                const dir = group.slice(4);
-                cy.edges().filter(
-                    e => e.data('direction') === dir).forEach(edge => {{
-                    if (!edge.hasClass('highlighted')) {{
-                        setEdgeBaseAppearance(edge, color, opacity, true);
-                    }}
-                }});
-                groupDefaults[group] = {{ color: color, opacity: opacity * 100 }};
-            }}
-
             // Handle NT edge groups (prefixed with 'nt_')
             if (group.startsWith('nt_')) {{
                 const ntType = group.replace('nt_', '');
@@ -13010,6 +12998,18 @@ class VisualizePath:
                     }}
                 }});
                 groupDefaults.negative_edges = {{ color: color, opacity: opacity * 100 }};
+            }}
+
+            // Edge-direction groups (L-L / R-R / R-L / L-R)
+            if (group.startsWith('dir_')) {{
+                const dir = group.slice(4);
+                cy.edges().filter(
+                    e => e.data('direction') === dir).forEach(edge => {{
+                    if (!edge.hasClass('highlighted')) {{
+                        setEdgeBaseAppearance(edge, color, opacity, true);
+                    }}
+                }});
+                groupDefaults[group] = {{ color: color, opacity: opacity * 100 }};
             }}
 
             // Handle NT edge groups (prefixed with 'nt_')

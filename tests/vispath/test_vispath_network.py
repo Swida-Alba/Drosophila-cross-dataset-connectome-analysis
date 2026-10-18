@@ -3496,4 +3496,11 @@ def test_node_label_override_and_direction_group_options(tmp_path):
         assert page.js("return cy.edges(':selected').length;") == 1
         assert page.js("return cy.edges(':selected')[0].data('direction');") \
             == 'L-L'
+        # The group can be recoloured like positive/negative edges.
+        page.js("document.getElementById('groupColor').value='#ff00ff';"
+                "document.getElementById('groupColorText').value='#ff00ff';"
+                "applyGroupColor(); cy.edges().unselect(); return true;")
+        assert page.js("return cy.edges().filter(function (e) {"
+                       " return e.data('direction')==='L-L' && "
+                       "e.style('line-color')==='rgb(255,0,255)'; }).length;") == 1
         assert page.errors() == [], page.errors()
