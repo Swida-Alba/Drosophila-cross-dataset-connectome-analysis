@@ -900,8 +900,25 @@ def _cell_style_js_chunks(fields, outline_map):
             let bars = 0;
             active.keys.forEach((key) => {
                 const ramp = cellStyleRampFor(active.field, key);
-                if (!ramp) return;
                 const idx = active.keys.indexOf(key);
+                if (!ramp) {
+                    // A FLAT category (a caller colour rather than a ramp,
+                    // e.g. the transmitter page's grey "no agreement") has
+                    // no ramp. Paint it from the field's colour map in its
+                    // own masked trace; without this the base white trace
+                    // left the cell blank.
+                    const flat = (active.field.colors || {})[key];
+                    if (!flat) return;
+                    const z = data.map((row, i) => row.map((v, j) =>
+                        cellStyleCategoryIndex(i, j, active) === idx ? 1 : null));
+                    parts.push(Object.assign({}, base, {
+                        z: z,
+                        colorscale: [[0, flat], [1, flat]],
+                        zmin: 0, zmax: 1, showscale: false,
+                        hoverinfo: 'text', text: hoverText,
+                        hovertemplate: '%{text}<extra></extra>'}));
+                    return;
+                }
                 const z = data.map((row, i) => row.map((v, j) =>
                     cellStyleCategoryIndex(i, j, active) === idx ? v : null));
                 const stops = ramp.map((c, i) => [i / (ramp.length - 1), c]);

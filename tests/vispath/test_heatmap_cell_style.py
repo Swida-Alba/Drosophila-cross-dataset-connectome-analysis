@@ -855,3 +855,39 @@ def test_node_universe_keeps_a_type_with_no_edge_on_the_axis(tmp_path):
                         " rows: t.z.length, cols: t.z[0].length};")
         assert shape == {'x': 3, 'y': 3, 'rows': 3, 'cols': 3}, shape
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_a_flat_category_is_painted_not_left_blank(tmp_path):
+    """A flat (non-ramp) class colour must paint its cells; the masked
+    colour trace used to be skipped, leaving the cell on the white base."""
+    matrix = pd.DataFrame([[1.0, 2.0], [3.0, 4.0]],
+                          index=['S0', 'S1'], columns=['T0', 'T1'])
+    fill = {('S0', 'T0'): 'a', ('S0', 'T1'): 'b',
+            ('S1', 'T0'): 'a', ('S1', 'T1'): 'b'}
+    out = tmp_path / 'flat.html'
+    VisConnMatInteractive(matrix, str(out), title='flat', showfig=False,
+                          verbose=False, init_clustered=False,
+                          cell_fill=fill,
+                          fill_scale={'a': ['#ffffff', '#000000'],
+                                      'b': '#ff0000'},
+                          fill_range=(0, 10), fill_label='Class')
+    with Page(out) as page:
+        page.arm_error_watch()
+        assert page.wait(PAGE_READY)
+        d = page.js("""
+          var g = document.querySelector('.js-plotly-plot');
+          var flat = g.data.filter(function (t) {
+              return t.colorscale && t.colorscale.length === 2 &&
+                     t.colorscale[0][1] === '#ff0000' &&
+                     t.colorscale[1][1] === '#ff0000'; });
+          return {flatTraces: flat.length,
+                  painted: flat.length ? flat[0].z.map(function (r) {
+                      return r.map(function (v) { return v === null ? 0 : 1; });
+                  }) : null,
+                  color: cellStyleColorFor(0, 1)};
+        """)
+        assert d['flatTraces'] == 1, d
+        assert d['painted'] == [[0, 1], [0, 1]], d
+        assert d['color'] == '#ff0000', d
+        assert page.errors() == [], page.errors()
