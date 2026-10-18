@@ -20857,26 +20857,64 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 // Convert-to-Shape yields three sibling objects instead of one
                 // nest: the cell image(s), the label text, and the colourbars,
                 // which stay standalone groups of their own.
-                const finalSvg = regroupSvgForOffice(svgString);
-                downloadBlob(new Blob([finalSvg], {{ type: 'image/svg+xml' }}), filename);
-                showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
+                prepareSvgForOffice(svgString).then(function(finalSvg) {{
+                    downloadBlob(new Blob([finalSvg], {{ type: 'image/svg+xml' }}), filename);
+                    showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
+                }});
             }}).catch(function(error) {{
                 console.error('SVG export failed:', error);
                 showStatus('⚠️ SVG export failed. See console.', 'error');
             }});
         }}
         
-        // One pixel per cell keeps the cell image exact and cheap at any size,
-        // so the export never rebuilds the matrix as shapes. What it does is
-        // regroup the page for Office: the cell image(s), the label text and
-        // each colourbar become SIBLING groups, so Convert-to-Shape produces a
-        // picture, a text group and standalone bars rather than one nest that
-        // mixes them. Transforms are baked into each moved group, so every
-        // object keeps the position it had on the page.
-        function regroupSvgForOffice(svgString) {{
+        // Prepare the exported page for Office: resample the cell raster to the
+        // resolution it is drawn at (PowerPoint interpolates a 21-px image
+        // stretched over 600 px), then regroup so the cell image(s), the label
+        // text and each colourbar are SIBLING objects instead of one nest.
+        async function prepareSvgForOffice(svgString) {{
             const NS = 'http://www.w3.org/2000/svg';
+            const XLINK = 'http://www.w3.org/1999/xlink';
             const doc = new DOMParser().parseFromString(svgString, 'image/svg+xml');
             const root = doc.documentElement;
+
+            // 1) RESAMPLE each cell raster to the size it is DRAWN at, with
+            // nearest-neighbour. Plotly embeds ONE PIXEL PER CELL (21x21 for a
+            // 21x21 matrix) and scales it up in the page, where the browser
+            // honours `image-rendering: pixelated`. PowerPoint does not: on
+            // Convert-to-Shape a 21-px image stretched over ~600 px is smoothly
+            // interpolated into the blurred matrix the reader saw. Baking the
+            // display resolution into the bitmap leaves nothing to interpolate.
+            const loadImage = function (src) {{
+                return new Promise(function (resolve, reject) {{
+                    const im = new Image();
+                    im.onload = function () {{ resolve(im); }};
+                    im.onerror = function () {{ reject(new Error('cell raster failed')); }};
+                    im.src = src;
+                }});
+            }};
+            for (const img of [...root.querySelectorAll('image')]) {{
+                const src = img.getAttributeNS(XLINK, 'href')
+                          || img.getAttribute('href');
+                if (!src || src.indexOf('data:image/png;base64,') !== 0) continue;
+                const w = Math.max(1, Math.round(parseFloat(img.getAttribute('width') || '0')));
+                const h = Math.max(1, Math.round(parseFloat(img.getAttribute('height') || '0')));
+                if (!w || !h) continue;
+                const bmp = await loadImage(src);
+                if (bmp.naturalWidth === w && bmp.naturalHeight === h) continue;
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingEnabled = false;   // one flat block per cell
+                ctx.drawImage(bmp, 0, 0, w, h);
+                const data = canvas.toDataURL('image/png');
+                img.setAttributeNS(XLINK, 'xlink:href', data);
+                img.setAttribute('href', data);
+                img.setAttribute('width', String(w));
+                img.setAttribute('height', String(h));
+            }}
+
+            // 2) REGROUP, so Office converts the page into separate objects.
             const bake = function (node) {{
                 const parts = [];
                 for (let n = node; n && n !== root; n = n.parentNode) {{
@@ -20903,6 +20941,12 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             gather('g.overplot > *', 'drocat-cell-images');
             gather('g.xaxislayer-above, g.yaxislayer-above, g.g-xtitle, g.g-ytitle',
                    'drocat-labels');
+            // Text families the reader may want to edit on their own: the cell
+            // values (annotation groups) and the colourbar's tick labels and
+            // title. Each becomes a sibling group, isolated from the raster and
+            // from the shape layer, so Convert-to-Shape gives text boxes.
+            gather('g.annotation', 'drocat-cell-values');
+            gather('g.colorbar text', 'drocat-colorbar-texts');
             return '<?xml version="1.0" encoding="UTF-8"?>'
                  + new XMLSerializer().serializeToString(root);
         }}

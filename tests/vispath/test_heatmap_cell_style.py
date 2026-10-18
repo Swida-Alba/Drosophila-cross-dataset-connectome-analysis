@@ -792,6 +792,10 @@ def test_svg_export_keeps_the_raster_and_regroups_for_office(tmp_path):
     })()"""
     with Page(out) as page:
         assert page.wait(PAGE_READY)
+        # Cell values on, so the value-text group has something to hold.
+        page.js("window.toggleCellValues(); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return (g.layout.annotations || []).length === 441;")
         res = page.send('Runtime.evaluate', {'expression': expr,
                                             'awaitPromise': True,
                                             'returnByValue': True})
@@ -804,9 +808,22 @@ def test_svg_export_keeps_the_raster_and_regroups_for_office(tmp_path):
         assert '<image' in svg, 'the cells stay an image'
         assert 'heatmap-cells-vector' not in svg, 'the cells are never rebuilt as shapes'
         assert 'class="drocat-cell-images"' in svg, 'the image family is its own group'
-        assert 'class="drocat-labels"' in svg, 'the text family is its own group'
+        assert 'class="drocat-labels"' in svg, 'the axis text is its own group'
+        assert 'class="drocat-cell-values"' in svg, 'the cell values are their own group'
+        assert 'class="drocat-colorbar-texts"' in svg, 'the bar text is its own group'
         assert svg.count('colorbar') >= 1, 'the colourbars stay standalone'
         assert '<text' in svg, 'labels are text'
+        # The raster must be resampled to the size it is DRAWN at: PowerPoint
+        # interpolates a 21-px image stretched over hundreds of pixels.
+        import base64, re as _re, struct
+        tag = _re.search(r'<image[^>]*>', svg).group(0)
+        w = float(_re.search(r'width="([\d.]+)"', tag).group(1))
+        h = float(_re.search(r'height="([\d.]+)"', tag).group(1))
+        href = _re.search(r'base64,([A-Za-z0-9+/=]+)', tag).group(1)
+        raw = base64.b64decode(href)
+        iw, ih = struct.unpack('>II', raw[16:24])
+        assert (iw, ih) == (round(w), round(h)), (iw, ih, w, h)
+        assert iw > 21, 'the raster is still one pixel per cell'
         assert page.errors() == [], page.errors()
 
 

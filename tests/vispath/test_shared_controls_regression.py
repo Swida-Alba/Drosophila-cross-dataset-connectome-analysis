@@ -192,7 +192,8 @@ class TestPptSafeSvgExport:
 
     def test_heatmap_export_keeps_the_cells_an_image(self, tmp_path):
         heat_html = _heatmap_html(tmp_path)
-        assert "function regroupSvgForOffice" in heat_html
+        assert "function prepareSvgForOffice" in heat_html
+        assert "imageSmoothingEnabled = false" in heat_html
         assert "vectorizeHeatmapCells" not in heat_html
         assert "'drocat-cell-images'" in heat_html
         assert "'drocat-labels'" in heat_html
