@@ -3580,6 +3580,7 @@ class VisualizePath:
         has_ratios_adj = 'connection_ratios_adj' in self.path_df.columns
         has_probs = 'traversal_probabilities' in self.path_df.columns
         has_nt = 'nt_types' in self.path_df.columns
+        has_edge_group = 'edge_group' in self.path_df.columns
         short_nt_rows = 0  # rows whose nt_types list is shorter than the hop count
 
         for idx, row in self.path_df.iterrows():
@@ -3621,6 +3622,10 @@ class VisualizePath:
                     conn_data['probability'] = prob
                 if has_nt:
                     conn_data['nt_type'] = nt
+                if has_edge_group:
+                    grp = row.get('edge_group')
+                    conn_data['edge_group'] = ('' if pd.isna(grp)
+                                               else str(grp))
                     
                 connections.append(conn_data)
         
@@ -3647,6 +3652,8 @@ class VisualizePath:
                 cols.append('probability')
             if has_nt:
                 cols.append('nt_type')
+            if has_edge_group:
+                cols.append('edge_group')
             conn_df = pd.DataFrame(columns=cols)
         else:
             # Aggregate duplicate connections - only aggregate columns that exist
@@ -3662,6 +3669,8 @@ class VisualizePath:
                 # Use mode (most frequent) for categorical data like nt_type;
                 # blank slots (unannotated hops) must never win the election
                 agg_dict['nt_type'] = mode_ignoring_blank
+            if has_edge_group:
+                agg_dict['edge_group'] = 'first'
 
             conn_df = conn_df.groupby(['source', 'target'], as_index=False).agg(agg_dict)
 
@@ -3693,6 +3702,8 @@ class VisualizePath:
                 edge_attrs['refilled'] = row['refilled']
             if 'probability' in row:
                 edge_attrs['probability'] = row['probability']
+            if 'edge_group' in row and str(row['edge_group']).strip():
+                edge_attrs['edge_group'] = str(row['edge_group']).strip()
             
             G.add_edge(row['source'], row['target'], **edge_attrs)
         
@@ -6444,6 +6455,16 @@ class VisualizePath:
                 d = str(_attrs.get(_key) or '').strip()
                 if d and d not in edge_directions:
                     edge_directions.append(d)
+        # Declared groups follow the footer-legend order (a bin page's
+        # 1-20 / 21-50 / 51-100 / >100), not edge insertion order.
+        hemisphere = [d for d in edge_directions
+                      if d in ('L-L', 'R-R', 'R-L', 'L-R')]
+        others = [d for d in edge_directions if d not in hemisphere]
+        legend_order = [str(it.get('label', '')).split(' (')[0].strip()
+                        for it in (self.edge_group_legend or [])]
+        others.sort(key=lambda d: legend_order.index(d)
+                    if d in legend_order else len(legend_order))
+        edge_directions = hemisphere + others
         direction_group_options = ''
         if edge_directions:
             direction_group_options = (
