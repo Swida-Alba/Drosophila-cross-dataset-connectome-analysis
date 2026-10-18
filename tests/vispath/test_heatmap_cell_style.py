@@ -671,3 +671,51 @@ def test_a_pinned_domain_follows_the_scale_and_its_ramp_is_editable(tmp_path):
         ramps = page.js("return cellStyleState.ramps;")
         assert ramps['__fill__']['c'][0] == '#ff0000', ramps
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_each_colourbar_owns_its_value_range(tmp_path):
+    """A per-class range override must move that bar alone, with ticks rounded
+    to the range, and still follow the Scale buttons."""
+    matrix = pd.DataFrame([[1.0, 2.0], [3.0, 4.0]],
+                          index=['S0', 'S1'], columns=['T0', 'T1'])
+    fill = {('S0', 'T0'): 'a', ('S0', 'T1'): 'b',
+            ('S1', 'T0'): 'a', ('S1', 'T1'): 'b'}
+    out = tmp_path / 'ranges.html'
+    VisConnMatInteractive(matrix, str(out), title='ranges', showfig=False,
+                          verbose=False, init_clustered=False,
+                          cell_fill=fill,
+                          fill_scale={'a': ['#ffffff', '#000000'],
+                                      'b': ['#ffffff', '#2ca02c']},
+                          fill_range=(0, 800), fill_label='Classes')
+    bar = """
+    var g = document.querySelector('.js-plotly-plot');
+    var t = g.data.filter(function (x) { return x.showscale
+        && x.colorbar.title.text === '%s'; })[0];
+    return {zmax: t.zmax, ticks: t.colorbar.ticktext};
+    """
+    with Page(out) as page:
+        page.arm_error_watch()
+        assert page.wait(PAGE_READY)
+        assert page.js(bar % 'a')['ticks'] == ['0', '200', '400', '600', '800']
+
+        page.js("cellStyleSetRange('__fill__', 'a', 0, 100); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "var t=g.data.filter(function(x){return x.showscale"
+                         " && x.colorbar.title.text==='a';})[0];"
+                         "return t.zmax === 100;")
+        a = page.js(bar % 'a')
+        assert a['ticks'] == ['0', '25', '50', '75', '100'], a
+        b = page.js(bar % 'b')
+        assert b['ticks'] == ['0', '200', '400', '600', '800'], b
+        assert page.js("return cellStyleState.ranges;") == {
+            '__fill__': {'a': [0, 100]}}, page.js("return cellStyleState.ranges;")
+
+        page.js("window.setScale('log10'); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "var t=g.data.filter(function(x){return x.showscale"
+                         " && x.colorbar.title.text==='a';})[0];"
+                         "return t.zmax < 3;")
+        logged = page.js(bar % 'a')
+        assert logged['ticks'] == ['0', '25', '50', '75', '100'], logged
+        assert page.errors() == [], page.errors()

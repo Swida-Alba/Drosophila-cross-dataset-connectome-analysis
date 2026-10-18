@@ -565,6 +565,7 @@ def _cell_style_js_chunks(fields, outline_map):
         'fillId': field_ids[0] if field_ids else 'metric',
         'colors': {},
         'ramps': {},
+        'ranges': {},
         'binCounts': {},
         'outlineId': '__caller__' if outline_map else 'none',
         'outlineColor': default_outline.get('color',
@@ -675,6 +676,48 @@ def _cell_style_js_chunks(fields, outline_map):
         function cellStyleRampFor(field, key) {
             const byField = cellStyleState.ramps[field.id] || {};
             return byField[key] || (field.ramps && field.ramps[key]);
+        }
+
+        // The value range a colourbar spans: the reader's override, else the
+        // caller's pinned range, else the class's own data extent.
+        function cellStyleRangeFor(field, key) {
+            const byField = cellStyleState.ranges[field.id] || {};
+            const r = byField[key]
+                || field.range
+                || (field.ranges && field.ranges[key]);
+            if (!r) return null;
+            const lo = Number(r[0]), hi = Number(r[1]);
+            return (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo)
+                ? [lo, hi] : null;
+        }
+
+        function cellStyleSetRange(fieldId, key, lo, hi) {
+            const a = Number(lo), b = Number(hi);
+            if (!Number.isFinite(a) || !Number.isFinite(b) || !(b > a)) return;
+            const byField = cellStyleState.ranges[fieldId]
+                            || (cellStyleState.ranges[fieldId] = {});
+            byField[key] = [a, b];
+            applyCellStyle();
+        }
+
+        // ~count round ticks inside lo..hi, ends included: 0..800 -> 0,200..800,
+        // 0..37 -> 0,10,20,30,37. A fixed 0,200,.. list would put a whole small
+        // range on one tick.
+        function cellStyleNiceTicks(lo, hi, count) {
+            const span = hi - lo;
+            if (!(span > 0)) return [lo];
+            const raw = span / Math.max(1, count - 1);
+            const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+            const step = [1, 2, 2.5, 5, 10].map(x => x * mag)
+                .filter(x => x >= raw)[0] || 10 * mag;
+            const out = [];
+            for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9;
+                 v += step) {
+                out.push(Math.abs(v) < 1e-9 ? 0 : v);
+            }
+            if (!out.length || out[0] > lo + 1e-9) out.unshift(lo);
+            if (out[out.length - 1] < hi - 1e-9) out.push(hi);
+            return out;
         }
 
         // The same transform getDataForScale applies to the matrix, so a pinned
@@ -798,7 +841,7 @@ def _cell_style_js_chunks(fields, outline_map):
         // How far into its class's ramp this cell sits (0..1). Per class, so a
         // class with a narrow value range still uses its whole ramp.
         function cellStyleT(field, cat, key) {
-            const r = field.range || (field.ranges && field.ranges[cat]);
+            const r = cellStyleRangeFor(field, cat);
             const v = field.values_num ? field.values_num[key] : undefined;
             if (!r || v === undefined || v === null) return 0.5;
             const lo = Number(r[0]), hi = Number(r[1]);
@@ -827,9 +870,8 @@ def _cell_style_js_chunks(fields, outline_map):
             const lo = Number(active.field.range[0]);
             const hi = Number(active.field.range[1]);
             const f = v => cellStyleScaleValue(v, scale);
+            const fmt = v => String(Math.round(Number(v) * 100) / 100);
             const zlo = f(lo), zhi = f(hi);
-            const scaleTicks = [0, 200, 400, 600, 800]
-                .filter(v => v >= lo && v <= hi);
             const base = Object.assign({}, trace, {
                 z: data.map(row => row.map(() => zlo)),
                 colorscale: [[0, '#ffffff'], [1, '#ffffff']],
@@ -843,18 +885,22 @@ def _cell_style_js_chunks(fields, outline_map):
                 const z = data.map((row, i) => row.map((v, j) =>
                     cellStyleCategoryIndex(i, j, active) === idx ? v : null));
                 const stops = ramp.map((c, i) => [i / (ramp.length - 1), c]);
+                // Each bar owns its value range: the reader's override, the
+                // caller's pinned range, or the class's data extent.
+                const range = cellStyleRangeFor(active.field, key) || [lo, hi];
+                const ticks = cellStyleNiceTicks(range[0], range[1], 5);
                 parts.push(Object.assign({}, trace, {
                     z: z,
                     colorscale: stops,
-                    zmin: zlo, zmax: zhi,
+                    zmin: f(range[0]), zmax: f(range[1]),
                     showscale: true,
                     colorbar: {title: {text: String(key), side: 'top',
                                        font: {size: 10}},
                                thickness: 10, len: 0.85,
                                tickfont: {size: 9},
                                tickmode: 'array',
-                               tickvals: scaleTicks.map(f),
-                               ticktext: scaleTicks.map(String),
+                               tickvals: ticks.map(f),
+                               ticktext: ticks.map(fmt),
                                x: 1.02 + bars * 0.10},
                     hoverinfo: 'text', text: hoverText,
                     hovertemplate: '%{text}<extra></extra>'}));
@@ -1003,6 +1049,41 @@ def _cell_style_js_chunks(fields, outline_map):
                     preview.style.background = 'linear-gradient(to right,'
                         + current.join(',') + ')';
                     row.appendChild(preview);
+                    // Each colourbar's own value range, editable like the
+                    // metric's Min/Max in this card. Empty/invalid input is
+                    // ignored; the field keeps its last valid range.
+                    const effRange = cellStyleRangeFor(active.field, key);
+                    if (effRange) {
+                        const rangeRow = document.createElement('div');
+                        rangeRow.style.cssText = 'display:flex;gap:4px;'
+                            + 'align-items:center;flex:1 1 100%;';
+                        const num = function (val, title) {
+                            const n = document.createElement('input');
+                            n.type = 'number';
+                            n.step = 'any';
+                            n.value = val;
+                            n.title = title;
+                            n.style.cssText = 'width:60px;font-size:10px;'
+                                + 'padding:1px 3px;border:1px solid #dee2e6;'
+                                + 'border-radius:3px;';
+                            return n;
+                        };
+                        const loIn = num(effRange[0], 'colourbar minimum — the value at the ramp start');
+                        const hiIn = num(effRange[1], 'colourbar maximum — the value at the ramp end');
+                        const apply = function () {
+                            cellStyleSetRange(active.field.id, key,
+                                              loIn.value, hiIn.value);
+                        };
+                        loIn.onchange = apply;
+                        hiIn.onchange = apply;
+                        const unit = document.createElement('span');
+                        unit.textContent = 'range';
+                        unit.style.cssText = 'font-size:9px;color:#666;';
+                        rangeRow.appendChild(loIn);
+                        rangeRow.appendChild(hiIn);
+                        rangeRow.appendChild(unit);
+                        row.appendChild(rangeRow);
+                    }
                 } else {
                     const input = document.createElement('input');
                     input.type = 'color';
