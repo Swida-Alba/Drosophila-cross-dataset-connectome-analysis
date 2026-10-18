@@ -20884,87 +20884,66 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // cell raster — the matrix comes out stretched and the bars crowd.
             const expW = (gd._fullLayout && gd._fullLayout.width) || currentWidth;
             const expH = (gd._fullLayout && gd._fullLayout.height) || currentHeight;
-            // SVG. Heatmaps up to 50x50 export as vector <rect> cells (editable
-            // shapes, exact colours); larger ones keep Plotly's one-pixel-per-
-            // cell image, which is crisp because it is drawn pixelated.
+            // SVG at the native size; the cells stay Plotly's raster.
             Plotly.toImage(gd, {{ format: 'svg', width: expW, height: expH }}).then(function(dataUrl) {{
                 const svgString = decodeURIComponent(dataUrl.split(',')[1]);
-                // EVERY raster, not just the first: a classed page draws one
-                // heatmap trace per category and Plotly rasterises each, so the
-                // page carries N images (plus the base). Vectorising only the
-                // first left the class rasters as pictures, and PowerPoint
-                // interpolates a picture when the SVG is converted to shapes —
-                // the blurred matrix the reader saw.
-                const imgTags = [...svgString.matchAll(
-                    /<image[^>]*xlink:href="data:image\/png;base64,[^"]+"[^>]*>/g)].map(m => m[0]);
-                if (!imgTags.length) {{
-                    downloadBlob(new Blob([svgString], {{ type: 'image/svg+xml' }}), filename);
-                    showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
-                    return;
-                }}
-                (async function () {{
-                    let out = svgString;
-                    for (const tag of imgTags) {{
-                        const pngUrl = tag.match(/xlink:href="([^"]+)"/)[1];
-                        out = await vectorizeHeatmapCells(out, tag, pngUrl);
-                    }}
-                    downloadBlob(new Blob([out], {{ type: 'image/svg+xml' }}), filename);
-                    showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
-                }})();
+                // The cells stay an IMAGE: Plotly rasterises one pixel per cell,
+                // so the matrix is exact and cheap however large it is — a
+                // 500-cell page and a 4000-cell page cost the same to export.
+                // What is regrouped is the STRUCTURE, so PowerPoint's
+                // Convert-to-Shape yields three sibling objects instead of one
+                // nest: the cell image(s), the label text, and the colourbars,
+                // which stay standalone groups of their own.
+                const finalSvg = regroupSvgForOffice(svgString);
+                downloadBlob(new Blob([finalSvg], {{ type: 'image/svg+xml' }}), filename);
+                showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
             }}).catch(function(error) {{
                 console.error('SVG export failed:', error);
                 showStatus('⚠️ SVG export failed. See console.', 'error');
             }});
         }}
         
-        // Replace the rasterized heatmap-cell <image> with one <rect> per cell
-        // (colors taken from the rendered pixels, so the visual result is
-        // identical). Plotly's raster is ONE PIXEL PER CELL, so sampling is
-        // exact; up to 50x50 cells is still a small, editable shape group.
-        // Larger matrices keep the embedded pixel image.
-        function vectorizeHeatmapCells(svgString, imgTag, pngUrl) {{
-            return new Promise(function(resolve) {{
-                const img = new Image();
-                img.onload = function() {{
-                    const cols = img.naturalWidth;
-                    const rows = img.naturalHeight;
-                    if (!rows || !cols || rows * cols > 2500) {{
-                        resolve(svgString);  // beyond 50x50: keep the pixel image
-                        return;
-                    }}
-                    const x = parseFloat((imgTag.match(/ x="([^"]+)"/) || [])[1] || '0');
-                    const y = parseFloat((imgTag.match(/ y="([^"]+)"/) || [])[1] || '0');
-                    const w = parseFloat((imgTag.match(/ width="([^"]+)"/) || [])[1] || '0');
-                    const h = parseFloat((imgTag.match(/ height="([^"]+)"/) || [])[1] || '0');
-                    const canvas = document.createElement('canvas');
-                    canvas.width = cols;
-                    canvas.height = rows;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0);
-                    const data = ctx.getImageData(0, 0, cols, rows).data;
-                    const cellW = w / cols;
-                    const cellH = h / rows;
-                    let rects = '<g class="heatmap-cells-vector" shape-rendering="crispEdges">';
-                    for (let r = 0; r < rows; r++) {{
-                        for (let c = 0; c < cols; c++) {{
-                            const i = (r * cols + c) * 4;
-                            const a = data[i + 3];
-                            if (a === 0) continue;  // fully transparent (masked) cell
-                            const fill = a < 255
-                                ? 'rgba(' + data[i] + ',' + data[i + 1] + ',' + data[i + 2] + ',' + (a / 255) + ')'
-                                : 'rgb(' + data[i] + ',' + data[i + 1] + ',' + data[i + 2] + ')';
-                            rects += '<rect x="' + (x + c * cellW).toFixed(2) + '" y="' + (y + r * cellH).toFixed(2) +
-                                '" width="' + cellW.toFixed(2) + '" height="' + cellH.toFixed(2) + '" fill="' + fill + '"/>';
-                        }}
-                    }}
-                    rects += '</g>';
-                    resolve(svgString.replace(imgTag, rects));
-                }};
-                img.onerror = function() {{ resolve(svgString); }};
-                img.src = pngUrl;
-            }});
+        // One pixel per cell keeps the cell image exact and cheap at any size,
+        // so the export never rebuilds the matrix as shapes. What it does is
+        // regroup the page for Office: the cell image(s), the label text and
+        // each colourbar become SIBLING groups, so Convert-to-Shape produces a
+        // picture, a text group and standalone bars rather than one nest that
+        // mixes them. Transforms are baked into each moved group, so every
+        // object keeps the position it had on the page.
+        function regroupSvgForOffice(svgString) {{
+            const NS = 'http://www.w3.org/2000/svg';
+            const doc = new DOMParser().parseFromString(svgString, 'image/svg+xml');
+            const root = doc.documentElement;
+            const bake = function (node) {{
+                const parts = [];
+                for (let n = node; n && n !== root; n = n.parentNode) {{
+                    const t = n.getAttribute && n.getAttribute('transform');
+                    if (t) parts.unshift(t);
+                }}
+                if (parts.length) node.setAttribute('transform', parts.join(' '));
+            }};
+            // Insert BEFORE the shape layer: the outline paths live there and
+            // must stay above the cells. Images then labels, so the text keeps
+            // its place above the raster too; the colourbars stay in infolayer,
+            // above both.
+            const anchor = root.querySelector('g.layer-above')
+                        || root.querySelector('g.infolayer');
+            const gather = function (selector, cls) {{
+                const nodes = [...root.querySelectorAll(selector)];
+                if (!nodes.length) return null;
+                const g = doc.createElementNS(NS, 'g');
+                g.setAttribute('class', cls);
+                nodes.forEach(function (n) {{ bake(n); g.appendChild(n); }});
+                if (anchor) root.insertBefore(g, anchor); else root.appendChild(g);
+                return g;
+            }};
+            gather('g.overplot > *', 'drocat-cell-images');
+            gather('g.xaxislayer-above, g.yaxislayer-above, g.g-xtitle, g.g-ytitle',
+                   'drocat-labels');
+            return '<?xml version="1.0" encoding="UTF-8"?>'
+                 + new XMLSerializer().serializeToString(root);
         }}
-        
+
         function saveSettings() {{
             try {{
                 const settings = {{

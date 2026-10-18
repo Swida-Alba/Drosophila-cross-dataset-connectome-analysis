@@ -760,10 +760,11 @@ def test_square_cells_keep_the_pinned_range_and_draw_no_grid(tmp_path):
 
 
 @REQUIRES_CDP
-def test_svg_export_is_vector_at_the_rendered_size(tmp_path):
-    """The SVG button must export the RENDERED width (a widened layout with
-    parallel colourbars is wider than the window setting) and turn a 21x21
-    matrix into editable rects rather than a coarse pixel image."""
+def test_svg_export_keeps_the_raster_and_regroups_for_office(tmp_path):
+    """The export must write the RENDERED width (a widened layout with parallel
+    colourbars is wider than the window setting), leave the cells as Plotly's
+    one-pixel-per-cell raster at any size, and hand Office three sibling
+    objects: the cell image(s), the label text and the standalone colourbars."""
     import json
     rng = np.random.default_rng(3)
     matrix = pd.DataFrame(rng.integers(1, 90, size=(21, 21)).astype(float),
@@ -772,10 +773,6 @@ def test_svg_export_is_vector_at_the_rendered_size(tmp_path):
     out = tmp_path / 'export.html'
     VisConnMatInteractive(matrix, str(out), title='export', showfig=False,
                           verbose=False, init_clustered=False)
-    # Drive the page's OWN button: the handler is what downloads, so its stub
-    # captures exactly what a reader gets. It must vectorise EVERY raster: a
-    # classed page carries one per heatmap trace, and PowerPoint interpolates
-    # any picture left behind when the SVG is converted to shapes.
     expr = """(async () => {
       window.__captured = null;
       const orig = window.downloadBlob;
@@ -802,11 +799,13 @@ def test_svg_export_is_vector_at_the_rendered_size(tmp_path):
         layout = page.js("var fl=document.getElementById('heatmap')._fullLayout;"
                          "return {w: fl.width, h: fl.height};")
         assert (d['w'], d['h']) == (layout['w'], layout['h']), (d['w'], d['h'], layout)
-        assert '<image' not in d['svg'], 'the 21x21 matrix should export as rects'
-        assert d['svg'].count('class="heatmap-cells-vector"') == 1, \
-            d['svg'].count('class="heatmap-cells-vector"')
-        assert d['svg'].count('<rect') >= 441, d['svg'].count('<rect')
-        assert '<text' in d['svg'], 'labels must stay vector text'
+        svg = d['svg']
+        assert '<image' in svg, 'the cells stay an image'
+        assert 'heatmap-cells-vector' not in svg, 'the cells are never rebuilt as shapes'
+        assert 'class="drocat-cell-images"' in svg, 'the image family is its own group'
+        assert 'class="drocat-labels"' in svg, 'the text family is its own group'
+        assert svg.count('colorbar') >= 1, 'the colourbars stay standalone'
+        assert '<text' in svg, 'labels are text'
         assert page.errors() == [], page.errors()
 
 

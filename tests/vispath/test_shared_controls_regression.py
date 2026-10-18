@@ -183,29 +183,21 @@ class TestHeatmapCallerKwargs:
 
 
 class TestPptSafeSvgExport:
-    """Plotly renders the heatmap colormap to a rows×cols canvas and embeds
-    it as a data-URL PNG inside the exported SVG. The export then:
-      - vectorizes the cells (one <rect> per cell) for heatmaps with at most
-        100 cells, keeping text and axis elements vector;
-      - keeps the embedded pixel image for larger heatmaps so the colors stay
-        crisp (no diffusion) after PowerPoint's Convert-to-Shape."""
+    """Plotly renders the heatmap colormap to a rows×cols canvas (ONE PIXEL PER
+    CELL) and embeds it as a data-URL PNG inside the exported SVG. The cells
+    therefore always export as that image -- exact and equally cheap at any
+    matrix size -- and the page regroups the SVG for Office so the cell
+    image(s), the label text and the colourbars are SIBLING objects rather than
+    one nest that PowerPoint's Convert-to-Shape would flatten together."""
 
-    def test_heatmap_export_vectorizes_small_heatmaps(self, tmp_path):
+    def test_heatmap_export_keeps_the_cells_an_image(self, tmp_path):
         heat_html = _heatmap_html(tmp_path)
-        assert "function vectorizeHeatmapCells" in heat_html
-        assert 'class="heatmap-cells-vector"' in heat_html
-        assert "shape-rendering" in heat_html
-        # Export path routes through the vectorizer
-        assert "vectorizeHeatmapCells(svgString, imgTag, pngUrl)" in heat_html
+        assert "function regroupSvgForOffice" in heat_html
+        assert "vectorizeHeatmapCells" not in heat_html
+        assert "'drocat-cell-images'" in heat_html
+        assert "'drocat-labels'" in heat_html
         # Text must stay text: the export never outlines labels
         assert "decodeURIComponent(dataUrl.split(',')[1])" in heat_html
-
-    def test_heatmap_export_vectorises_up_to_2500_cells(self, tmp_path):
-        heat_html = _heatmap_html(tmp_path)
-        # One pixel per cell makes sampling exact, so a 21x21 clock matrix
-        # (441 cells) exports as editable rects; beyond 50x50 the vectorizer
-        # keeps Plotly's embedded pixel image instead.
-        assert "rows * cols > 2500" in heat_html
 
     def test_network_and_sankey_exports_do_not_rasterize(self, tmp_path):
         net_html, sankey_html = _network_sankey_htmls(tmp_path)
