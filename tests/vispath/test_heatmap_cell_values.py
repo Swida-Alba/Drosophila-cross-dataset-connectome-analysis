@@ -12,7 +12,7 @@ same block of `createHeatmap`:
   numbers run together.
 
 Values now come from the annotations only: synapse counts as whole numbers
-and ratio metrics as percentages at one decimal,
+and ratio metrics as percentage numbers at one decimal (the bar carries the %),
 and the font is re-hugged once to the cell the axis actually drew. The reader's
 "Cell Value Size" stays the upper bound.
 
@@ -136,8 +136,8 @@ FIT_LANDED = ("var g=document.querySelector('.js-plotly-plot');"
 
 @REQUIRES_CDP
 def test_ratio_cell_values_and_bars_read_as_percentages(tmp_path):
-    """Ratio metrics label cells and colourbars as percentages (one
-    decimal); synapse counts stay whole numbers."""
+    """Ratio metrics label cells as percentage NUMBERS (one decimal, no
+    % mark); the colour bar carries the %; synapses stay whole."""
     weight = pd.DataFrame([[10.0, 20.0], [30.0, 40.0]],
                           index=['S0', 'S1'], columns=['T0', 'T1'])
     ratio = weight / 1000.0
@@ -160,7 +160,7 @@ def test_ratio_cell_values_and_bars_read_as_percentages(tmp_path):
         ann = page.js("var g=document.querySelector('.js-plotly-plot');"
                       "return (g.layout.annotations || []).map(function (a) {"
                       " return String(a.text); }).sort();")
-        assert ann == ['1.0%', '2.0%', '3.0%', '4.0%'], ann
+        assert ann == ['1.0', '2.0', '3.0', '4.0'], ann
         cb = page.js("var t=document.querySelector('.js-plotly-plot')"
                      ".data[0];"
                      "return {title: (t.colorbar.title && t.colorbar.title.text)"

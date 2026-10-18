@@ -18608,11 +18608,12 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         function formatCellValue(value) {{
             const n = Number(value);
             if (value === '' || value === null || !Number.isFinite(n)) return String(value);
-            // Ratio metrics read as percentages (one decimal); every
+            // Ratio metrics are labelled as percentage NUMBERS (one
+            // decimal, no % mark — the colour bar carries the unit); every
             // synapse-count metric reads as a whole number.
             if (currentMetric === 'ratio' || currentMetric === 'ratio_adj' ||
                     currentMetric === 'probability') {{
-                return (n * 100).toFixed(1) + '%';
+                return (n * 100).toFixed(1);
             }}
             return String(Math.round(n));
         }}
