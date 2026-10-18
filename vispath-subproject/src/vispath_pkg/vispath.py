@@ -1168,7 +1168,7 @@ def _cell_style_js_chunks(fields, outline_map):
                             <button class="btn" id="cellStyleReset" onclick="resetCellStyle()"
                                     style="font-size:9px;padding:2px 6px;">Reset</button>
                         </div>
-                        <div id="cellStyleColors" style="max-height:170px;overflow-y:auto;"></div>
+                        <div id="cellStyleColors" style="max-height:320px;overflow-y:auto;"></div>
                     </div>
 '''
 
