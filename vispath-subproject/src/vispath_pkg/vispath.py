@@ -16522,8 +16522,7 @@ class VisualizePath:
     def create_heatmap(self, custom_row_order=None, custom_col_order=None,
                        cell_data=None, cell_fill=None, cell_outline=None,
                        fill_scale=None, fill_label=None, fill_value=None,
-                       fill_range=None, init_clustered=True,
-                       show_tick_labels=True):
+                       fill_range=None, init_clustered=True):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -16547,9 +16546,6 @@ class VisualizePath:
         init_clustered : bool, default True
             Start on the clustered order. Pass False together with a custom
             order to open the page on that order instead.
-        show_tick_labels : bool, default True
-            Draw the axis text. False opens the page with no row/column labels
-            (the toggle still restores them).
         
         Returns
         -------
@@ -16702,7 +16698,6 @@ class VisualizePath:
             cell_outline=cell_outline, fill_scale=fill_scale,
             fill_label=fill_label, fill_value=fill_value,
             fill_range=fill_range, init_clustered=init_clustered,
-            show_tick_labels=show_tick_labels,
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -17278,7 +17273,7 @@ def visualize_network(
 def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None,
                    cell_data=None, cell_fill=None, cell_outline=None,
                    fill_scale=None, fill_label=None, fill_value=None,
-                   fill_range=None, show_tick_labels=True):
+                   fill_range=None):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -18364,9 +18359,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         let currentHeight = {init_height if init_height else 800};
         let exportScale = 2;
         let squareCellsLocked = false;  // Track if square cells are locked
-        // A caller may open the page without axis text (a matrix read against a
-        // published type order); the Hide/Show Labels toggle still restores it.
-        let showLabels = {json.dumps(bool(show_tick_labels) and not is_large)};
+        let showLabels = !{json.dumps(is_large)};  // Show labels for small matrices, hide for large
         // The colourbar title createHeatmap actually drew, so the labels toggle
         // restores that string instead of recomputing a different one
         let colorbarTitleText = '';
