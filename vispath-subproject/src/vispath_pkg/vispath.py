@@ -680,11 +680,20 @@ def _cell_style_js_chunks(fields, outline_map):
 
         // The value range a colourbar spans: the reader's override, else the
         // caller's pinned range, else the class's own data extent.
+        // Which metric's units the ramps are in: the caller pins synapse units
+        // (0..800), the ratio metric lives on 0..1. Overrides are stored per
+        // metric, so tightening the synapse bar does not deform the ratio one.
+        function cellStyleMetricKey() {
+            return (typeof currentMetric !== 'undefined' && currentMetric === 'ratio')
+                ? 'ratio' : 'weight';
+        }
+
         function cellStyleRangeFor(field, key) {
+            const metric = cellStyleMetricKey();
             const byField = cellStyleState.ranges[field.id] || {};
-            const r = byField[key]
-                || field.range
-                || (field.ranges && field.ranges[key]);
+            const r = byField[key + '\t' + metric]
+                || (metric === 'ratio' ? [0, 1]
+                    : (field.range || (field.ranges && field.ranges[key])));
             if (!r) return null;
             const lo = Number(r[0]), hi = Number(r[1]);
             return (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo)
@@ -696,7 +705,7 @@ def _cell_style_js_chunks(fields, outline_map):
             if (!Number.isFinite(a) || !Number.isFinite(b) || !(b > a)) return;
             const byField = cellStyleState.ranges[fieldId]
                             || (cellStyleState.ranges[fieldId] = {});
-            byField[key] = [a, b];
+            byField[key + '\t' + cellStyleMetricKey()] = [a, b];
             applyCellStyle();
         }
 
@@ -867,14 +876,14 @@ def _cell_style_js_chunks(fields, outline_map):
         // side, plus a white base so an empty cell stays white whatever the page
         // background is. Without a pinned range one stitched trace is used.
         function cellStyleParallelTraces(trace, active, data, hoverText, scale) {
-            // The caller's pinned range is in the metric's own units — synapses,
-            // 0..800. The ratio metric lives on 0..1, so following the pin there
-            // would wash every cell white; the bars follow the metric instead.
-            const isRatio = (currentMetric === 'ratio');
-            const lo = isRatio ? 0 : Number(active.field.range[0]);
-            const hi = isRatio ? 1 : Number(active.field.range[1]);
+            // The range helper is metric-aware: synapse units keep the caller's
+            // pin and the reader's overrides, ratio uses 0..1 (its own unit).
             const f = v => cellStyleScaleValue(v, scale);
             const fmt = v => String(Math.round(Number(v) * 100) / 100);
+            const firstKey = active.keys.length ? active.keys[0] : null;
+            const baseRange = (firstKey && cellStyleRangeFor(active.field, firstKey))
+                || [Number(active.field.range[0]), Number(active.field.range[1])];
+            const lo = baseRange[0], hi = baseRange[1];
             const zlo = f(lo), zhi = f(hi);
             const base = Object.assign({}, trace, {
                 z: data.map(row => row.map(() => zlo)),
@@ -891,8 +900,7 @@ def _cell_style_js_chunks(fields, outline_map):
                 const stops = ramp.map((c, i) => [i / (ramp.length - 1), c]);
                 // Each bar owns its value range: the reader's override, the
                 // caller's pinned range, or the class's data extent.
-                const range = isRatio ? [lo, hi]
-                    : (cellStyleRangeFor(active.field, key) || [lo, hi]);
+                const range = cellStyleRangeFor(active.field, key) || [lo, hi];
                 const ticks = cellStyleNiceTicks(range[0], range[1], 5);
                 parts.push(Object.assign({}, trace, {
                     z: z,
@@ -917,7 +925,7 @@ def _cell_style_js_chunks(fields, outline_map):
         // The colour this cell is painted, or null when the metric owns colour.
         // Shared by the trace and by the cell-value contrast, so a number written
         // on a styled cell is legible against the colour actually behind it.
-        function cellStyleColorFor(i, jcol) {
+        function cellStyleColorFor(i, jcol, dataMatrix) {
             const active = cellStyleActiveCats();
             if (!active) return null;
             const idx = cellStyleCategoryIndex(i, jcol, active);
@@ -927,7 +935,18 @@ def _cell_style_js_chunks(fields, outline_map):
             if (key !== null && key in active.field.values) {
                 const cat = cellStyleCategoryOf(active.field, active.field.values[key]);
                 if (active.field.ramps && active.field.ramps[cat]) {
-                    t = cellStyleT(active.field, cat, key);
+                    // Contrast must read the colour THIS cell is painted: its
+                    // own class's ramp at its own metric value — not a shared
+                    // midpoint, and not the metric's one colormap. With several
+                    // colormaps the threshold therefore applies per colormap.
+                    const r = cellStyleRangeFor(active.field, cat);
+                    const v = (dataMatrix && dataMatrix[i]
+                               && dataMatrix[i][jcol] !== undefined)
+                        ? Number(dataMatrix[i][jcol]) : null;
+                    t = (r && v !== null && Number.isFinite(v))
+                        ? Math.max(0, Math.min(0.999,
+                                                (v - r[0]) / (r[1] - r[0])))
+                        : cellStyleT(active.field, cat, key);
                 }
             }
             return cellStyleColorOfCategory(active.field, keys[idx],
@@ -1247,7 +1266,7 @@ def _cell_style_js_chunks(fields, outline_map):
 '''
 
     contrast = '''
-                        const styleFillColor = cellStyleColorFor(i, j);
+                        const styleFillColor = cellStyleColorFor(i, j, data);
                         if (styleFillColor) bgColor = styleFillColor;
 '''
 

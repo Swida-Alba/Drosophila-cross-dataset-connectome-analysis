@@ -56,4 +56,32 @@ def test_the_ratio_metric_scales_the_bars_to_its_own_domain(tmp_path):
         ratio = page.js(bar)
         assert (ratio['zmin'], ratio['zmax']) == (0, 1), ratio
         assert ratio['ticks'] == ['0', '0.25', '0.5', '0.75', '1'], ratio
+
+        # The Cell style panel's own Min/Max follow the metric too, and an edit
+        # made under the ratio is stored against the ratio, not the synapse pin.
+        panel = ("return [...document.querySelectorAll("
+                 "'#cellStyleColors input[type=number]')]"
+                 ".map(function (i) { return i.value; });")
+        assert page.js(panel) == ['0', '1'], page.js(panel)
+        page.js("cellStyleSetRange('__fill__', 'c', 0.2, 0.5); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (x) {"
+                         " return x.showscale && x.zmax === 0.5; });")
+        page.js("var s=document.getElementById('metricSelect');"
+                "s.value='weight'; s.dispatchEvent(new Event('change'));"
+                "return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (x) {"
+                         " return x.showscale && x.zmax === 800; });")
+        assert page.js(panel) == ['0', '800'], page.js(panel)
+
+        # Contrast is decided against each cell's OWN colormap colour: a
+        # near-white cell gets dark text, a near-black one light text.
+        page.js("window.toggleCellValues(); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return (g.layout.annotations || []).length === 9;")
+        colours = page.js("var a=document.querySelector('.js-plotly-plot')"
+                          ".layout.annotations;"
+                          "return a.map(function (x) { return x.font.color; });")
+        assert 'black' in colours and 'white' in colours, colours
         assert page.errors() == [], page.errors()

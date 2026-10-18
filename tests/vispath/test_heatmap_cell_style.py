@@ -708,8 +708,9 @@ def test_each_colourbar_owns_its_value_range(tmp_path):
         assert a['ticks'] == ['0', '25', '50', '75', '100'], a
         b = page.js(bar % 'b')
         assert b['ticks'] == ['0', '200', '400', '600', '800'], b
+        # the override is stored against the metric it was made in
         assert page.js("return cellStyleState.ranges;") == {
-            '__fill__': {'a': [0, 100]}}, page.js("return cellStyleState.ranges;")
+            '__fill__': {'a\tweight': [0, 100]}}, page.js("return cellStyleState.ranges;")
 
         page.js("window.setScale('log10'); return true;")
         assert page.wait("var g=document.querySelector('.js-plotly-plot');"
