@@ -772,18 +772,25 @@ def test_svg_export_is_vector_at_the_rendered_size(tmp_path):
     out = tmp_path / 'export.html'
     VisConnMatInteractive(matrix, str(out), title='export', showfig=False,
                           verbose=False, init_clustered=False)
+    # Drive the page's OWN button: the handler is what downloads, so its stub
+    # captures exactly what a reader gets. It must vectorise EVERY raster: a
+    # classed page carries one per heatmap trace, and PowerPoint interpolates
+    # any picture left behind when the SVG is converted to shapes.
     expr = """(async () => {
-      const gd = document.getElementById('heatmap');
-      const expW = (gd._fullLayout && gd._fullLayout.width) || currentWidth;
-      const expH = (gd._fullLayout && gd._fullLayout.height) || currentHeight;
-      const url = await Plotly.toImage(gd, {format: 'svg', width: expW, height: expH});
-      let svg = decodeURIComponent(url.split(',')[1]);
-      const all = [...svg.matchAll(/<image[^>]*xlink:href="data:image\\/png;base64,[^"]+"[^>]*>/g)];
-      for (const m of all) {
-        const pngUrl = m[0].match(/xlink:href="([^"]+)"/)[1];
-        svg = await vectorizeHeatmapCells(svg, m[0], pngUrl);
+      window.__captured = null;
+      const orig = window.downloadBlob;
+      window.downloadBlob = function (blob) {
+        return blob.text().then(function (t) { window.__captured = t; });
+      };
+      exportSVG();
+      const t0 = Date.now();
+      while (window.__captured === null && Date.now() - t0 < 25000) {
+        await new Promise(r => setTimeout(r, 250));
       }
-      return JSON.stringify({w: expW, h: expH, svg: svg});
+      window.downloadBlob = orig;
+      const gd = document.getElementById('heatmap');
+      return JSON.stringify({w: gd._fullLayout.width, h: gd._fullLayout.height,
+                             svg: window.__captured});
     })()"""
     with Page(out) as page:
         assert page.wait(PAGE_READY)
@@ -791,11 +798,34 @@ def test_svg_export_is_vector_at_the_rendered_size(tmp_path):
                                             'awaitPromise': True,
                                             'returnByValue': True})
         d = json.loads(res['result']['value'])
+        assert d['svg'], 'the export button produced nothing'
         layout = page.js("var fl=document.getElementById('heatmap')._fullLayout;"
                          "return {w: fl.width, h: fl.height};")
         assert (d['w'], d['h']) == (layout['w'], layout['h']), (d['w'], d['h'], layout)
         assert '<image' not in d['svg'], 'the 21x21 matrix should export as rects'
-        assert d['svg'].count('class="heatmap-cells-vector"') == 1
+        assert d['svg'].count('class="heatmap-cells-vector"') == 1, \
+            d['svg'].count('class="heatmap-cells-vector"')
         assert d['svg'].count('<rect') >= 441, d['svg'].count('<rect')
         assert '<text' in d['svg'], 'labels must stay vector text'
+        assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_node_universe_keeps_a_type_with_no_edge_on_the_axis(tmp_path):
+    """A 21-type matrix built from an edge subset may not touch every type; the
+    declared universe keeps the axis square instead of silently losing a row."""
+    from vispath_pkg import VisualizePath
+    edges = pd.DataFrame([('A', 'A', 1.0), ('A', 'B', 2.0), ('B', 'A', 3.0)],
+                         columns=['source', 'target', 'weight'])
+    vp = VisualizePath(path_file=edges, output_folder=str(tmp_path),
+                       showfig=False, verbose=False)
+    vp.base_filename = 'universe'
+    vp.build_network()
+    out = vp.create_heatmap(node_universe=['A', 'B', 'C'])
+    with Page(out) as page:
+        assert page.wait(PAGE_READY)
+        shape = page.js("var t=document.querySelector('.js-plotly-plot').data[0];"
+                        "return {x: t.x.length, y: t.y.length,"
+                        " rows: t.z.length, cols: t.z[0].length};")
+        assert shape == {'x': 3, 'y': 3, 'rows': 3, 'cols': 3}, shape
         assert page.errors() == [], page.errors()

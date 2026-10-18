@@ -16522,7 +16522,8 @@ class VisualizePath:
     def create_heatmap(self, custom_row_order=None, custom_col_order=None,
                        cell_data=None, cell_fill=None, cell_outline=None,
                        fill_scale=None, fill_label=None, fill_value=None,
-                       fill_range=None, init_clustered=True):
+                       fill_range=None, init_clustered=True,
+                       node_universe=None):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -16546,6 +16547,10 @@ class VisualizePath:
         init_clustered : bool, default True
             Start on the clustered order. Pass False together with a custom
             order to open the page on that order instead.
+        node_universe : list of str, optional
+            Labels that must appear on BOTH axes even when no edge touches them
+            (a type-level matrix whose edge subset misses a type). Their rows and
+            columns are all-zero; the axis keeps the size the caller promised.
         
         Returns
         -------
@@ -16624,6 +16629,16 @@ class VisualizePath:
         # This ensures we don't miss any connections
         all_row_nodes = list(source_only) + list(intermediate_nodes)
         all_col_nodes = list(intermediate_nodes) + list(target_only)
+
+        # A caller-declared universe keeps an axis the edge subset does not
+        # reach: without it a 21-type matrix built from 117 edges would drop a
+        # type that appears in none of them and quietly become 20x20.
+        if node_universe:
+            for node in node_universe:
+                if node not in all_row_nodes:
+                    all_row_nodes.append(node)
+                if node not in all_col_nodes:
+                    all_col_nodes.append(node)
         
         # Apply custom ordering if provided
         # Priority: parameter > class attribute > default (sorted)
@@ -20869,18 +20884,28 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // cell image, which is crisp because it is drawn pixelated.
             Plotly.toImage(gd, {{ format: 'svg', width: expW, height: expH }}).then(function(dataUrl) {{
                 const svgString = decodeURIComponent(dataUrl.split(',')[1]);
-                const imgMatch = svgString.match(/<image[^>]*xlink:href="data:image\/png;base64,[^"]+"[^>]*>/);
-                if (!imgMatch) {{
+                // EVERY raster, not just the first: a classed page draws one
+                // heatmap trace per category and Plotly rasterises each, so the
+                // page carries N images (plus the base). Vectorising only the
+                // first left the class rasters as pictures, and PowerPoint
+                // interpolates a picture when the SVG is converted to shapes —
+                // the blurred matrix the reader saw.
+                const imgTags = [...svgString.matchAll(
+                    /<image[^>]*xlink:href="data:image\/png;base64,[^"]+"[^>]*>/g)].map(m => m[0]);
+                if (!imgTags.length) {{
                     downloadBlob(new Blob([svgString], {{ type: 'image/svg+xml' }}), filename);
                     showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
                     return;
                 }}
-                const imgTag = imgMatch[0];
-                const pngUrl = imgTag.match(/xlink:href="([^"]+)"/)[1];
-                vectorizeHeatmapCells(svgString, imgTag, pngUrl).then(function(finalSvg) {{
-                    downloadBlob(new Blob([finalSvg], {{ type: 'image/svg+xml' }}), filename);
+                (async function () {{
+                    let out = svgString;
+                    for (const tag of imgTags) {{
+                        const pngUrl = tag.match(/xlink:href="([^"]+)"/)[1];
+                        out = await vectorizeHeatmapCells(out, tag, pngUrl);
+                    }}
+                    downloadBlob(new Blob([out], {{ type: 'image/svg+xml' }}), filename);
                     showStatus('✅ SVG exported: ' + expW + 'x' + expH + 'px', 'success');
-                }});
+                }})();
             }}).catch(function(error) {{
                 console.error('SVG export failed:', error);
                 showStatus('⚠️ SVG export failed. See console.', 'error');
