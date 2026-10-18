@@ -867,8 +867,12 @@ def _cell_style_js_chunks(fields, outline_map):
         // side, plus a white base so an empty cell stays white whatever the page
         // background is. Without a pinned range one stitched trace is used.
         function cellStyleParallelTraces(trace, active, data, hoverText, scale) {
-            const lo = Number(active.field.range[0]);
-            const hi = Number(active.field.range[1]);
+            // The caller's pinned range is in the metric's own units — synapses,
+            // 0..800. The ratio metric lives on 0..1, so following the pin there
+            // would wash every cell white; the bars follow the metric instead.
+            const isRatio = (currentMetric === 'ratio');
+            const lo = isRatio ? 0 : Number(active.field.range[0]);
+            const hi = isRatio ? 1 : Number(active.field.range[1]);
             const f = v => cellStyleScaleValue(v, scale);
             const fmt = v => String(Math.round(Number(v) * 100) / 100);
             const zlo = f(lo), zhi = f(hi);
@@ -887,7 +891,8 @@ def _cell_style_js_chunks(fields, outline_map):
                 const stops = ramp.map((c, i) => [i / (ramp.length - 1), c]);
                 // Each bar owns its value range: the reader's override, the
                 // caller's pinned range, or the class's data extent.
-                const range = cellStyleRangeFor(active.field, key) || [lo, hi];
+                const range = isRatio ? [lo, hi]
+                    : (cellStyleRangeFor(active.field, key) || [lo, hi]);
                 const ticks = cellStyleNiceTicks(range[0], range[1], 5);
                 parts.push(Object.assign({}, trace, {
                     z: z,
