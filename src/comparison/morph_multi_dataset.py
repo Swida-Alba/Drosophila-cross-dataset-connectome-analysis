@@ -249,7 +249,8 @@ class MultiDatasetMorphComparer:
             dataset=dataset, query=None, aggregation_level="custom",
             custom_mapping_file=self.custom_mapping_file,
             label_mapping_file=self.label_mapping_file,
-            max_members_per_type=10 ** 9, max_total_neurons=10 ** 9,
+            max_members_per_type=self.max_members_per_type,
+            max_total_neurons=10 ** 9,
             fetch_online=self.fetch_online, use_cache=self.use_cache,
             generate_heatmaps=False, verbose=False,
             project_root=self.project_root, n_workers=self.n_workers)
