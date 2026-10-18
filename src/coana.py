@@ -14467,6 +14467,12 @@ class FindNeuronConnection:
         # order follows polars thread scheduling — sort on total keys so
         # repeated runs are byte-identical (shared helper, see
         # _sort_connection_export).
+        # The threshold-CONDITIONED share belongs in this export as well: the
+        # plain ratio's denominator is threshold-free (F9), so at Min Synapse
+        # > 1 it understates the share among the edges the run can see. The
+        # paths flows already attach it (see _attach_ratio_adj_columns).
+        conn_type = self._attach_ratio_adj_columns(
+            conn_type, 'type_pre', 'type_post')
         conn_type = self._sort_connection_export(conn_type)
         conn_df = self._sort_connection_export(conn_df)
         if conn_group is not None and len(conn_group) > 0:
