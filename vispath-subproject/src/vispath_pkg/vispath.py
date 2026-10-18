@@ -20892,26 +20892,79 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     im.src = src;
                 }});
             }};
-            for (const img of [...root.querySelectorAll('image')]) {{
+            // Composite the stacked cell rasters into ONE opaque image. A
+            // classed page draws a base raster plus one per class, each with
+            // transparent cells; stacked, PowerPoint resamples several
+            // translucent pictures over each other and their edges blend toward
+            // the background — the faint "phantom" lines between cells. One
+            // flattened picture has no interior edges to interpolate.
+            const images = [...root.querySelectorAll('image')];
+            const geoOf = function (im) {{
+                return {{
+                    x: im.getAttribute('x'), y: im.getAttribute('y'),
+                    w: Math.max(1, Math.round(parseFloat(im.getAttribute('width') || '0'))),
+                    h: Math.max(1, Math.round(parseFloat(im.getAttribute('height') || '0'))),
+                }};
+            }};
+            const resampleOne = async function (img, w, h) {{
                 const src = img.getAttributeNS(XLINK, 'href')
                           || img.getAttribute('href');
-                if (!src || src.indexOf('data:image/png;base64,') !== 0) continue;
-                const w = Math.max(1, Math.round(parseFloat(img.getAttribute('width') || '0')));
-                const h = Math.max(1, Math.round(parseFloat(img.getAttribute('height') || '0')));
-                if (!w || !h) continue;
+                if (!src || src.indexOf('data:image/png;base64,') !== 0) return;
                 const bmp = await loadImage(src);
-                if (bmp.naturalWidth === w && bmp.naturalHeight === h) continue;
-                const canvas = document.createElement('canvas');
-                canvas.width = w;
-                canvas.height = h;
-                const ctx = canvas.getContext('2d');
-                ctx.imageSmoothingEnabled = false;   // one flat block per cell
-                ctx.drawImage(bmp, 0, 0, w, h);
-                const data = canvas.toDataURL('image/png');
+                if (bmp.naturalWidth === w && bmp.naturalHeight === h) return;
+                const c = document.createElement('canvas');
+                c.width = w;
+                c.height = h;
+                const cx = c.getContext('2d');
+                cx.imageSmoothingEnabled = false;   // one flat block per cell
+                cx.drawImage(bmp, 0, 0, w, h);
+                const data = c.toDataURL('image/png');
                 img.setAttributeNS(XLINK, 'xlink:href', data);
                 img.setAttribute('href', data);
                 img.setAttribute('width', String(w));
                 img.setAttribute('height', String(h));
+            }};
+            if (images.length) {{
+                const first = geoOf(images[0]);
+                const sameGeo = first.w > 0 && first.h > 0
+                    && images.every(function (im) {{
+                        const g = geoOf(im);
+                        return g.w === first.w && g.h === first.h
+                            && g.x === first.x && g.y === first.y;
+                    }});
+                if (sameGeo) {{
+                    const canvas = document.createElement('canvas');
+                    canvas.width = first.w;
+                    canvas.height = first.h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.imageSmoothingEnabled = false;
+                    const used = [];
+                    for (const im of images) {{
+                        const src = im.getAttributeNS(XLINK, 'href')
+                                  || im.getAttribute('href');
+                        if (!src || src.indexOf('data:image/png;base64,') !== 0) continue;
+                        ctx.drawImage(await loadImage(src), 0, 0, first.w, first.h);
+                        used.push(im);
+                    }}
+                    if (used.length) {{
+                        const data = canvas.toDataURL('image/png');
+                        used.forEach(function (im, i) {{
+                            if (i === 0) {{
+                                im.setAttributeNS(XLINK, 'xlink:href', data);
+                                im.setAttribute('href', data);
+                                im.setAttribute('width', String(first.w));
+                                im.setAttribute('height', String(first.h));
+                            }} else {{
+                                im.parentNode.removeChild(im);
+                            }}
+                        }});
+                    }}
+                }} else {{
+                    for (const im of images) {{
+                        const g = geoOf(im);
+                        await resampleOne(im, g.w, g.h);
+                    }}
+                }}
             }}
 
             // 2) REGROUP, so Office converts the page into separate objects.

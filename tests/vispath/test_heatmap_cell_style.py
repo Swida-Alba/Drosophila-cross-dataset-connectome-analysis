@@ -772,8 +772,16 @@ def test_svg_export_keeps_the_raster_and_regroups_for_office(tmp_path):
                           index=[f'R{i}' for i in range(21)],
                           columns=[f'C{i}' for i in range(21)])
     out = tmp_path / 'export.html'
+    # Two fill classes -> a base raster plus one per class: the export must
+    # flatten them, or PowerPoint blends the translucent edges into seams.
+    fill = {(r, c): ('a' if (i + j) % 2 else 'b')
+            for i, r in enumerate(matrix.index) for j, c in enumerate(matrix.columns)}
     VisConnMatInteractive(matrix, str(out), title='export', showfig=False,
-                          verbose=False, init_clustered=False)
+                          verbose=False, init_clustered=False,
+                          cell_fill=fill,
+                          fill_scale={'a': ['#ffffff', '#000000'],
+                                      'b': ['#ffffff', '#2ca02c']},
+                          fill_range=(0, 100), fill_label='Classes')
     expr = """(async () => {
       window.__captured = null;
       const orig = window.downloadBlob;
@@ -805,7 +813,8 @@ def test_svg_export_keeps_the_raster_and_regroups_for_office(tmp_path):
                          "return {w: fl.width, h: fl.height};")
         assert (d['w'], d['h']) == (layout['w'], layout['h']), (d['w'], d['h'], layout)
         svg = d['svg']
-        assert '<image' in svg, 'the cells stay an image'
+        assert svg.count('<image') == 1, \
+            'the stacked cell rasters must flatten to one picture'
         assert 'heatmap-cells-vector' not in svg, 'the cells are never rebuilt as shapes'
         assert 'class="drocat-cell-images"' in svg, 'the image family is its own group'
         assert 'class="drocat-labels"' in svg, 'the axis text is its own group'
