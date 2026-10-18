@@ -890,4 +890,14 @@ def test_a_flat_category_is_painted_not_left_blank(tmp_path):
         assert d['flatTraces'] == 1, d
         assert d['painted'] == [[0, 1], [0, 1]], d
         assert d['color'] == '#ff0000', d
+
+        # Editing the flat class's colour in the Cell style panel repaints
+        # the trace (the static field colour used to be read instead).
+        page.js("cellStyleState.colors['__fill__'] = {b: '#00ff00'};"
+                "applyCellStyle(); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (t) {"
+                         " return t.colorscale && t.colorscale[0][1]==='#00ff00'"
+                         " && t.z && t.z[0][1] !== null; });")
+        assert page.js("return cellStyleColorFor(0, 1);") == '#00ff00'
         assert page.errors() == [], page.errors()

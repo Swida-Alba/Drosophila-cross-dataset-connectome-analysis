@@ -775,11 +775,14 @@ def _cell_style_js_chunks(fields, outline_map):
         }
 
         function cellStyleColorOfCategory(field, key, index, total, t) {
-            const edited = (cellStyleState.colors[field.id] || {})[key];
-            if (edited) return edited;
             if (key === '__unmapped__') return field.unmapped || '#f2f2f2';
+            // A class that HAS a ramp is edited through its two endpoints;
+            // a flat colour saved by an older page (when the class had no
+            // ramp) must not shadow the ramp.
             const ramp = cellStyleRampFor(field, key);
             if (ramp) return cellStyleRampColor(ramp, t === undefined ? 0.5 : t);
+            const edited = (cellStyleState.colors[field.id] || {})[key];
+            if (edited) return edited;
             if (field.colors && field.colors[key]) return field.colors[key];
             if (field.kind === 'numeric' && total > 1) {
                 // an ordered field stays readable without the reader picking ten
@@ -907,7 +910,8 @@ def _cell_style_js_chunks(fields, outline_map):
                     // no ramp. Paint it from the field's colour map in its
                     // own masked trace; without this the base white trace
                     // left the cell blank.
-                    const flat = (active.field.colors || {})[key];
+                    const flat = cellStyleColorOfCategory(
+                        active.field, key, idx, active.keys.length);
                     if (!flat) return;
                     const z = data.map((row, i) => row.map((v, j) =>
                         cellStyleCategoryIndex(i, j, active) === idx ? 1 : null));
