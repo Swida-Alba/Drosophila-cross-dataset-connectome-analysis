@@ -16522,7 +16522,8 @@ class VisualizePath:
     def create_heatmap(self, custom_row_order=None, custom_col_order=None,
                        cell_data=None, cell_fill=None, cell_outline=None,
                        fill_scale=None, fill_label=None, fill_value=None,
-                       fill_range=None):
+                       fill_range=None, init_clustered=True,
+                       show_tick_labels=True):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -16543,6 +16544,12 @@ class VisualizePath:
         fill_range
             Optional per-cell style channels, passed straight to
             `VisConnMatInteractive` and keyed by node label (see there).
+        init_clustered : bool, default True
+            Start on the clustered order. Pass False together with a custom
+            order to open the page on that order instead.
+        show_tick_labels : bool, default True
+            Draw the axis text. False opens the page with no row/column labels
+            (the toggle still restores them).
         
         Returns
         -------
@@ -16694,7 +16701,8 @@ class VisualizePath:
             cell_data=cell_data, cell_fill=cell_fill,
             cell_outline=cell_outline, fill_scale=fill_scale,
             fill_label=fill_label, fill_value=fill_value,
-            fill_range=fill_range,
+            fill_range=fill_range, init_clustered=init_clustered,
+            show_tick_labels=show_tick_labels,
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -17270,7 +17278,7 @@ def visualize_network(
 def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None,
                    cell_data=None, cell_fill=None, cell_outline=None,
                    fill_scale=None, fill_label=None, fill_value=None,
-                   fill_range=None):
+                   fill_range=None, show_tick_labels=True):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -18356,7 +18364,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         let currentHeight = {init_height if init_height else 800};
         let exportScale = 2;
         let squareCellsLocked = false;  // Track if square cells are locked
-        let showLabels = !{json.dumps(is_large)};  // Show labels for small matrices, hide for large
+        // A caller may open the page without axis text (a matrix read against a
+        // published type order); the Hide/Show Labels toggle still restores it.
+        let showLabels = {json.dumps(bool(show_tick_labels) and not is_large)};
         // The colourbar title createHeatmap actually drew, so the labels toggle
         // restores that string instead of recomputing a different one
         let colorbarTitleText = '';
@@ -19026,6 +19036,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     titlefont: {{size: currentFontSize + 2, color: '#333333'}},
                     tickangle: displayXLabels.length > 1 ? -45 : 0,  // Always rotate when multiple labels
                     showticklabels: showLabels,
+                    ticks: '',  // no tick marks: the axis text is the only cue
                     tickmode: 'array',  // Use explicit tick values
                     tickvals: displayXLabels.map((_, i) => i),  // Use indices as tick positions
                     ticktext: displayXLabels  // Use labels as tick text
@@ -19036,6 +19047,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     titlefont: {{size: currentFontSize + 2, color: '#333333'}},
                     autorange: 'reversed',
                     showticklabels: showLabels,
+                    ticks: '',  // no tick marks: the axis text is the only cue
                     tickmode: 'array',  // Use explicit tick values
                     tickvals: displayYLabels.map((_, i) => i),  // Use indices as tick positions
                     ticktext: displayYLabels  // Use labels as tick text
