@@ -10373,6 +10373,8 @@ class VisualizePath:
             const edgeStyles = cy.edges().map(e => ({{
                 id: e.id(),
                 baseColor: e.data(EDGE_BASE_COLOR_KEY) || e.style('line-color'),
+                baseArrowColor: e.data(EDGE_BASE_ARROW_KEY)
+                    || e.style('target-arrow-color'),
                 baseOpacity: (e.data(EDGE_BASE_OPACITY_KEY) !== undefined)
                     ? parseFloat(e.data(EDGE_BASE_OPACITY_KEY))
                     : (parseFloat(e.style('line-opacity')) || 1)
@@ -10737,7 +10739,8 @@ class VisualizePath:
                     const edge = cy.getElementById(item.id);
                     if (edge.length === 0 || !edge.isEdge()) return;
                     const canApplyBase = !edge.selected() && !edge.hasClass('highlighted');
-                    setEdgeBaseAppearance(edge, item.baseColor, item.baseOpacity, canApplyBase);
+                    setEdgeBaseAppearance(edge, item.baseColor, item.baseOpacity, canApplyBase,
+                                          item.baseArrowColor);
                     if (!canApplyBase) applyEdgeHighlightOverride(edge);
                 }});
 
@@ -12595,6 +12598,7 @@ class VisualizePath:
 
         const EDGE_BASE_COLOR_KEY = '__baseColor';
         const EDGE_BASE_OPACITY_KEY = '__baseOpacity';
+        const EDGE_BASE_ARROW_KEY = '__baseArrowColor';
 
         // This Cytoscape build supports neither target/source-arrow-opacity
         // nor alpha in an arrow colour, so an alpha of 0 can only be honoured
@@ -12610,9 +12614,11 @@ class VisualizePath:
             }}
         }}
 
-        function setEdgeBaseAppearance(edge, color, opacity, applyImmediately = true) {{
+        function setEdgeBaseAppearance(edge, color, opacity, applyImmediately = true,
+                                      arrowColor = color) {{
             edge.data(EDGE_BASE_COLOR_KEY, color);
             edge.data(EDGE_BASE_OPACITY_KEY, opacity);
+            edge.data(EDGE_BASE_ARROW_KEY, arrowColor);
             if (applyImmediately) {{
                 // Body-only alpha: line + arrows fade; the edge's weight
                 // LABEL (text) keeps its own text-opacity. Whole-element
@@ -12621,8 +12627,8 @@ class VisualizePath:
                 // bidirectional edge matching the line after a recolor.
                 edge.style({{
                     'line-color': color,
-                    'target-arrow-color': color,
-                    'source-arrow-color': color,
+                    'target-arrow-color': arrowColor,
+                    'source-arrow-color': arrowColor,
                     'line-opacity': opacity
                 }});
                 if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, opacity);
@@ -12633,7 +12639,8 @@ class VisualizePath:
             if (!edge.data(EDGE_BASE_COLOR_KEY)) {{
                 const currentColor = edge.style('line-color');
                 const currentOpacity = parseFloat(edge.style('line-opacity')) || 1;
-                setEdgeBaseAppearance(edge, currentColor, currentOpacity, false);
+                setEdgeBaseAppearance(edge, currentColor, currentOpacity, false,
+                                      edge.data('arrow_color') || currentColor);
             }}
         }}
 
@@ -12644,10 +12651,12 @@ class VisualizePath:
             // source-arrow-color restores too: the highlight override paints
             // it, so a merged edge's source arrowhead would otherwise stay
             // stuck at the highlight color after the highlight clears.
+            const arrow = edge.data(EDGE_BASE_ARROW_KEY)
+                || edge.data('arrow_color') || color;
             edge.style({{
                 'line-color': color,
-                'target-arrow-color': color,
-                'source-arrow-color': color,
+                'target-arrow-color': arrow,
+                'source-arrow-color': arrow,
                 'line-opacity': opacity
             }});
             if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, opacity);
@@ -12696,7 +12705,8 @@ class VisualizePath:
             cy.edges().forEach(edge => {{
                 const color = edge.style('line-color');
                 const opacity = parseFloat(edge.style('line-opacity')) || 1;
-                setEdgeBaseAppearance(edge, color, opacity, false);
+                setEdgeBaseAppearance(edge, color, opacity, false,
+                                      edge.data('arrow_color') || color);
             }});
         }}
 
@@ -14938,8 +14948,12 @@ class VisualizePath:
                     'source-arrow-color': arrowColor
                 }});
                 if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, opacity);
-                setEdgeBaseAppearance(edge, currentColor, opacity, false);
+                setEdgeBaseAppearance(edge, currentColor, opacity, false,
+                                      arrowColor);
             }});
+            // Styles changed after the first paint; repaint so the
+            // arrowheads take their band colours without a user click.
+            if (typeof cy.forceRender === 'function') cy.forceRender();
             
             console.log('✓ Initial opacity applied from input colors (nodes + edges)');
         }}
