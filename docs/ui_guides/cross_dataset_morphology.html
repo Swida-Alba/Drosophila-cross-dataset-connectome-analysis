@@ -39,7 +39,7 @@
 <li><b>Null Sample Size</b> (default 200, range 10–1000): how many seeded random target neurons per query feed the null baseline.</li>
 <li><b>3D Overlay Scenes</b> (on): render the bridged overlay scenes.</li>
 <li><b>Fetch Missing Skeletons Online</b> (on): fetch skeletons that are not in the local cache.</li>
-<li><b>Custom Groups (LabelMapper)</b>: the always-visible grouping card doubles as the cross run's <b>tier-0 label overlay</b> (a loaded preset or inline board). It also feeds the query's first resolution lane: a token naming one of the preset's labels pools <b>that label's members from each dataset's own column</b>, so the same label pairs across the datasets being compared, and it claims the token before the auto type mapper — a label that is also a native type name resolves as the group, and the pooled set is the group's neurons rather than the whole mapped type's population. The members still split into dataset-scoped native-type rows; the label-folded view stays <code>morph_labeltype_matrix.csv</code>. Labels are identities and are never re-resolved through the auto type mapper — see <a href="label_mapper.html">the label-mapper guide</a>.</li>
+<li><b>Custom Groups (LabelMapper)</b>: the always-visible grouping card doubles as the cross run's <b>tier-0 label overlay</b> (a loaded preset or inline board). It also feeds the query's first resolution lane: a token naming one of the preset's labels pools <b>that label's members from each dataset's own column</b>, so the same label pairs across the datasets being compared, and it claims the token before the auto type mapper — a label that is also a native type name resolves as the group, and the pooled set is the group's neurons rather than the whole mapped type's population. With a preset the type-level comparison is the label × label matrix (<code>morph_labeltype_matrix.csv</code>) and the inter-dataset comparison is the same-label diagonal (<code>overview.csv</code>, <code>morph_matched_label.csv</code>); the native type matrix stays a diagnostic. Labels are identities and are never re-resolved through the auto type mapper — see <a href="label_mapper.html">the label-mapper guide</a>.</li>
 </ul>
 <h2>How scoring works</h2>
 <ul>
@@ -51,24 +51,29 @@
 </ul>
 <h2>Output</h2>
 <pre><code>{output_dir}/morph_cross_{datasets}_{queries}_{timestamp}/
-overview.csv                    # queried type × pair: best target-type match
-                                #   + a `label` column when a LabelMapper
-                                #   preset was loaded ('/'-joined when a
-                                #   native type settles to two labels)
+overview.csv                    # inter-dataset comparison: one row per
+                                #   LabelMapper label × one score column per
+                                #   ordered pair (the SAME label in source
+                                #   and target only, like Connectivity's
+                                #   cross overview) + its null baseline;
+                                #   cross-label cells are NOT part of this view
 members_summary.csv             # compared member counts per type/dataset
 parameters.json / README.txt    # run config, warnings, resolution notes
 report.html                     # tabbed report (same generator as the
                                 # connectivity-profiling report: pair tabs,
-                                # Type/BodyId levels, Ward-clustered cards,
-                                # Plotly embedded — renders offline)
+                                # Type (LabelMapper labels)/BodyId levels,
+                                # Ward-clustered cards, Plotly embedded)
 &lt;SRC&gt;_to_&lt;TGT&gt;/                 # one folder per dataset pair
   results/
-    morph_type_matrix.csv       # type × type mean vector_v2 (STAYS native-keyed)
-    morph_labeltype_matrix.csv  # LabelMapper view beside the native one
-                                #   (one row per standard label; multi-label
-                                #   native types expand; unmapped members
-                                #   keep their native name) — only written
-                                #   when a preset was loaded
+    morph_labeltype_matrix.csv  # TYPE-LEVEL comparison: label × label
+                                #   (one row per LabelMapper label; the
+                                #   diagonal is the matched-label score;
+                                #   multi-label native types expand; unmapped
+                                #   members keep their native name)
+    morph_matched_label.csv     # the pair's same-label rows (label,
+                                #   morph_v2, null_p95, above_baseline)
+    morph_type_matrix.csv       # type × type mean vector_v2 (native-keyed
+                                #   DIAGNOSTIC; not the report's type level)
     morph_bodyid_matrix.csv     # bodyId × bodyId vector_v2 (tree-legend
                                 #   labels; with a preset, resolved ids
                                 #   read {bodyId}_{label}({native}) — the
@@ -77,9 +82,19 @@ report.html                     # tabbed report (same generator as the
     morph_bodyid_scores.csv     # long-form scores + above_baseline flag
     null_baseline.json          # seeded null reference per query
   visualization/
-    heatmap_morph_&lt;SRC&gt;_to_&lt;TGT&gt;_{type,bodyid}.html
+    heatmap_morph_&lt;SRC&gt;_to_&lt;TGT&gt;_{labeltype,bodyid}.html
                                 # interactive VisPath heatmaps
 plot-3d_crossmorph_*/           # overlay scenes (reference template)</code></pre>
+
+<div class="callout info">
+  <b>Inter-dataset = matched label only.</b> With a LabelMapper preset the
+  type-level comparison carries the preset labels; the overview and
+  <code>morph_matched_label.csv</code> report only the same label across the
+  source and target (the label matrix diagonal), matching the Connectivity
+  Comparison tab's cross overview. The native type × type matrix remains on
+  disk as a diagnostic CSV; cross-label cells are not part of the inter-dataset
+  comparison.
+</div>
 
 <div class="callout info">
   <b>Comparison, not discovery.</b> With two or more datasets this mode compares the neurons you
