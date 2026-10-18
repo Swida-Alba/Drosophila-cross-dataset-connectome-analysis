@@ -1397,6 +1397,7 @@ class VisualizePath:
                                    # the adjusted ratio, so its label names it
         node_shape='circle',  # NEW: Node geometry ('circle'|'round-square'|'sharp-square'|'by-role')
         merge_reciprocal_edges=False,  # NEW: Collapse reciprocal pairs into one both-end-arrow edge
+        network_node_universe=None,  # NEW: declared nodes kept on the network canvas even with no edge
     ):
         """
         Initialize VisualizePath with pathway data and visualization settings.
@@ -1721,6 +1722,9 @@ class VisualizePath:
 
         # Hemisphere visualization options
         self.separate_hemispheres = separate_hemispheres
+        # Declared nodes the network must show even when no edge touches
+        # them (a 21-type x L/R hemisphere canvas needs all 42).
+        self.network_node_universe = [str(n) for n in (network_node_universe or [])]
         self.hemisphere_desaturate_side = (hemisphere_desaturate_side or 'R').upper()
         self.hemisphere_desaturate_factor = max(0.0, min(1.0, hemisphere_desaturate_factor))
         # Mirror layout auto-enables when Separate Hemispheres (L/R) is checked,
@@ -3706,6 +3710,17 @@ class VisualizePath:
         #   instead: nodes with ONLY outgoing edges are sources, nodes with
         #   ONLY incoming edges are targets. Self-loop edges are excluded
         #   from both counts — they neither emit nor receive connections.
+        # A caller-declared node universe keeps nodes the edge list does not
+        # touch on the canvas (a hemisphere view must show all 42 L/R nodes
+        # even when a type carries no conserved edge). They enter as
+        # intermediates: no path position and no edge gives them a role.
+        universe_added = [n for n in getattr(self, 'network_node_universe', [])
+                          if n not in G]
+        for node in universe_added:
+            G.add_node(node, node_type='intermediate')
+        if universe_added:
+            self._vprint(f"  Added {len(universe_added)} declared node(s) "
+                         "with no edges")
         all_nodes = set(G.nodes())
         source_nodes = set()
         target_nodes = set()

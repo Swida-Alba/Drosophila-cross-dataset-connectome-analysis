@@ -3262,3 +3262,23 @@ def test_square_lock_sizing_accounts_dendrogram_bands():
     src = Path(vp.__file__).read_text(encoding="utf-8")
     assert src.count("Math.max(0.05, ydom[1] - ydom[0])") == 3
     assert "xdom[1] - xdom[0]" in src
+
+
+def test_declared_node_universe_keeps_isolated_nodes(tmp_path):
+    """A caller-declared node universe puts nodes with no edge on the
+    canvas (a 21-type x L/R hemisphere network must show all 42)."""
+    df = pd.DataFrame({
+        "source": ["A", "B"], "target": ["B", "C"],
+        "weight": [3.0, 4.0], "ratio": [0.1, 0.2],
+    })
+    vp = VisualizePath(path_file=df, output_folder=str(tmp_path),
+                       showfig=False, verbose=False, network_layout="dagre",
+                       network_node_universe=["A", "B", "C", "ISO_L", "ISO_R"])
+    vp.base_filename = "universe"
+    vp.build_network()
+    nodes, edges, _ = _elements_of(vp.create_network())
+    ids = {n["data"]["id"] for n in nodes}
+    assert {"ISO_L", "ISO_R"} <= ids, ids
+    assert len(nodes) == 5 and len(edges) == 2, (len(nodes), len(edges))
+    assert not any(e["data"]["source"] == "ISO_L"
+                   or e["data"]["target"] == "ISO_L" for e in edges)
