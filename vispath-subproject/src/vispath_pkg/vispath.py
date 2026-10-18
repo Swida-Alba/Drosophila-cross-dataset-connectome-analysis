@@ -19071,6 +19071,13 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
 
             // Square-cells lock rides in the same layout build so every
             // re-render (dendrogram toggles, method switches) stays constrained
+            // The cells ARE the grid. Axis grid lines are invisible under an
+            // opaque matrix but show in every empty margin as a background
+            // grid, so they are off whether or not a dendrogram shares the axes.
+            layout.xaxis.showgrid = false;
+            layout.yaxis.showgrid = false;
+            layout.xaxis.zeroline = false;
+            layout.yaxis.zeroline = false;
             if (squareCellsLocked) {{
                 layout.xaxis.scaleanchor = 'y';
                 layout.xaxis.scaleratio = 1;
@@ -20567,8 +20574,13 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 const marginHorizontal = margins.l + margins.r;
                 const marginVertical = margins.t + margins.b;
 
-                // Calculate height for square cells based on current width
-                const plotAreaWidth = currentWidth - marginHorizontal;
+                // The page may render WIDER than currentWidth: parallel
+                // colourbars add their room to both the width and the right
+                // margin, so sizing from currentWidth under-counts the plot and
+                // the square-cells anchor then pads the x RANGE instead — a
+                // blank, grid-lined band between the labels and the matrix.
+                const layoutWidth = (gd.layout && gd.layout.width) || currentWidth;
+                const plotAreaWidth = layoutWidth - marginHorizontal;
                 // The dendrogram bands carve their fractions out of the
                 // plot area (xaxis/yaxis domains), so size the HEATMAP's
                 // own area, not the whole plot area: with the tree on, the

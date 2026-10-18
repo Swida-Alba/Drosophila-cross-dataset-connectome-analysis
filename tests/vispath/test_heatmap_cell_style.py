@@ -719,3 +719,41 @@ def test_each_colourbar_owns_its_value_range(tmp_path):
         logged = page.js(bar % 'a')
         assert logged['ticks'] == ['0', '25', '50', '75', '100'], logged
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_square_cells_keep_the_pinned_range_and_draw_no_grid(tmp_path):
+    """The square-cells lock sizes the canvas from the width the page ACTUALLY
+    renders — parallel colourbars make it wider than the window setting — so the
+    anchor has nothing to pad. Padding the x range was the blank, grid-lined band
+    between the row labels and the matrix."""
+    matrix = pd.DataFrame([[1.0, 2.0], [3.0, 4.0]],
+                          index=['S0', 'S1'], columns=['T0', 'T1'])
+    fill = {('S0', 'T0'): 'a', ('S0', 'T1'): 'b',
+            ('S1', 'T0'): 'a', ('S1', 'T1'): 'b'}
+    out = tmp_path / 'square.html'
+    VisConnMatInteractive(matrix, str(out), title='square', showfig=False,
+                          verbose=False, init_clustered=False,
+                          cell_fill=fill,
+                          fill_scale={'a': ['#ffffff', '#000000'],
+                                      'b': ['#ffffff', '#2ca02c']},
+                          fill_range=(0, 800), fill_label='Classes')
+    geo = """
+    var gd = document.getElementById('heatmap');
+    var fl = gd._fullLayout;
+    return {xr: fl.xaxis.range, xl: fl.xaxis._length, yl: fl.yaxis._length,
+            gx: fl.xaxis.showgrid, gy: fl.yaxis.showgrid,
+            w: fl.width, h: fl.height};
+    """
+    with Page(out) as page:
+        assert page.wait(PAGE_READY)
+        before = page.js(geo)
+        assert before['gx'] is False and before['gy'] is False, before
+
+        page.js("document.getElementById('squareCellsBtn').click(); return true;")
+        assert page.wait("var fl=document.getElementById('heatmap')._fullLayout;"
+                         "return Math.abs(fl.xaxis._length - fl.yaxis._length) < 1;")
+        after = page.js(geo)
+        assert after['xr'] == [-0.5, 1.5], after
+        assert after['gx'] is False and after['gy'] is False, after
+        assert page.errors() == [], page.errors()
