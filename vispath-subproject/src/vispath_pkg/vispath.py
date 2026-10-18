@@ -735,7 +735,6 @@ def _cell_style_js_chunks(fields, outline_map):
             const x = Number(v);
             if (!Number.isFinite(x)) return x;
             switch (scale) {
-                case 'log2': return x < 0 ? -Math.log2(-x + 1) : Math.log2(x + 1);
                 case 'log10': return x < 0 ? -Math.log10(-x + 1) : Math.log10(x + 1);
                 case 'sqrt': return x < 0 ? -Math.sqrt(-x) : Math.sqrt(x);
                 default: return x;
@@ -17343,7 +17342,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
       clustered heatmap (column tree above, row tree right) via the "🌳 Dendrogram"
       toggle, with adjustable tree line width and band size; coexists with the
       square-cells lock (band edges re-align onto the cell edges automatically)
-    - Scale switcher: Linear / Log2 / Log10 / Sqrt
+    - Scale switcher: Linear / Log10 / Sqrt
     - Colorscale selector with presets (Greens, Purples, Oranges, Blues, Reds, Viridis, etc.)
     - Font size slider
     - Label toggle ("🏷️ Show/Hide Labels"): hides the tick labels together with the
@@ -18048,7 +18047,6 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                         <label style="font-size: 10px; display: block; margin-bottom: 2px;">Scale:</label>
                         <div class="button-group">
                             <button id="btn-linear" class="active" onclick="setScale('linear')">Linear</button>
-                            <button id="btn-log2" onclick="setScale('log2')">Log₂</button>
                             <button id="btn-log10" onclick="setScale('log10')">Log₁₀</button>
                             <button id="btn-sqrt" onclick="setScale('sqrt')">√</button>
                         </div>
@@ -18264,7 +18262,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             
             <div class="info-box">
                 <strong>💡 Tips:</strong>
-                Use Log₂ or Log₁₀ scales for large dynamic ranges • 
+                Use Log₁₀ or √ scales for large dynamic ranges • 
                 Adjust plot size with width/height sliders for better visualization • 
                 Use export scale (1x-5x) to control SVG resolution • 
                 3-point custom colors ideal for diverging data (negative → zero → positive) • 
@@ -18331,7 +18329,6 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         const hoverText = {json_safe(hover_text)};
         
         // Cache for lazy-computed transforms
-        let cachedDataLog2 = null;
         let cachedDataLog10 = null;
         let cachedDataSqrt = null;
         
@@ -18447,16 +18444,6 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // log10(synapses), 0.75..2.34, against a 0..0.30 domain).
             // The caches are cleared by updateMetric.
             switch(scale) {{
-                case 'log2':
-                    if (cachedDataLog2 === null) {{
-                        console.log('Computing log₂ transform...');
-                        cachedDataLog2 = dataLinear.map(row => row.map(v => {{
-                            // Handle negative values: sign(v) * log2(|v| + 1)
-                            if (v < 0) return -Math.log2(-v + 1);
-                            return Math.log2(v + 1);
-                        }}));
-                    }}
-                    return cachedDataLog2;
                 case 'log10':
                     if (cachedDataLog10 === null) {{
                         console.log('Computing log₁₀ transform...');
@@ -18484,7 +18471,6 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         
         function getScaleLabel(scale) {{
             switch(scale) {{
-                case 'log2': return ' (log₂)';
                 case 'log10': return ' (log₁₀)';
                 case 'sqrt': return ' (√)';
                 default: return '';
@@ -19334,7 +19320,6 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             dataLinear = metricsData[currentMetric];
             
             // Clear cached transforms so they're recomputed for new metric
-            cachedDataLog2 = null;
             cachedDataLog10 = null;
             cachedDataSqrt = null;
             
@@ -20980,6 +20965,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 try {{
                     const settings = JSON.parse(saved);
                 currentScale = settings.scale || 'linear';
+                if (currentScale === 'log2') currentScale = 'linear';  // retired option
                 currentColorscale = settings.colorscale || '{default_colorscale}';
                 currentFontSize = settings.fontSize || {fontsize};
                 useAutoRange = settings.useAutoRange !== undefined ? settings.useAutoRange : true;
