@@ -108,3 +108,64 @@ def test_the_ratio_metric_scales_the_bars_to_its_own_domain(tmp_path):
                           "return a.map(function (x) { return x.font.color; });")
         assert 'black' in colours and 'white' in colours, colours
         assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_the_adjusted_ratio_metric_is_selectable_on_its_own_domain(tmp_path):
+    """A `ratio_adj` column becomes a THIRD metric option, on the ratio's own
+    0..1 domain and with its own override key (not the plain ratio's)."""
+    edges = pd.DataFrame(
+        [(a, b, float((i + 1) * 100), float((i + 1) / 20),
+          float((i + 1) / 10))
+         for i, (a, b) in enumerate(
+             [(a, b) for a in LABELS for b in LABELS])],
+        columns=['source', 'target', 'weight', 'ratio', 'ratio_adj'])
+    vp = VisualizePath(path_file=edges, output_folder=str(tmp_path),
+                       showfig=False, verbose=False)
+    vp.base_filename = 'metric_adj'
+    vp.build_network()
+    out = vp.create_heatmap(
+        cell_fill={(a, b): 'c' for a in LABELS for b in LABELS},
+        fill_scale={'c': ['#ffffff', '#000000']},
+        fill_range=(0, 800), fill_label='Class')
+    bar = """
+    var g = document.querySelector('.js-plotly-plot');
+    var t = g.data.filter(function (x) { return x.showscale; })[0];
+    return {zmin: t.zmin, zmax: t.zmax, ticks: t.colorbar.ticktext};
+    """
+    panel = ("return [...document.querySelectorAll("
+             "'#cellStyleColors input[type=number]')]"
+             ".map(function (i) { return i.value; });")
+    with Page(out) as page:
+        assert page.wait(PAGE_READY)
+        opts = page.js(
+            "return [...document.querySelectorAll('#metricSelect option')]"
+            ".map(function (o) { return [o.value, o.disabled]; });")
+        assert opts[:3] == [['weight', False], ['ratio', False],
+                            ['ratio_adj', False]], opts
+        assert page.js("return (metricsData['ratio_adj'] || []).length;") == 3
+
+        page.js("var s=document.getElementById('metricSelect');"
+                "s.value='ratio_adj'; s.dispatchEvent(new Event('change'));"
+                "return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (x) {"
+                         " return x.showscale && x.zmax === 1; });")
+        adj = page.js(bar)
+        assert (adj['zmin'], adj['zmax']) == (0, 1), adj
+        assert adj['ticks'] == ['0', '0.25', '0.5', '0.75', '1'], adj
+        assert page.js(panel) == ['0', '1'], page.js(panel)
+
+        # Its override is keyed separately from the plain ratio's.
+        page.js("cellStyleSetRange('__fill__', 'c', 0.3, 0.6); return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (x) {"
+                         " return x.showscale && x.zmax === 0.6; });")
+        page.js("var s=document.getElementById('metricSelect');"
+                "s.value='ratio'; s.dispatchEvent(new Event('change'));"
+                "return true;")
+        assert page.wait("var g=document.querySelector('.js-plotly-plot');"
+                         "return g.data.some(function (x) {"
+                         " return x.showscale && x.zmax === 1; });")
+        assert page.js(panel) == ['0', '1'], page.js(panel)
+        assert page.errors() == [], page.errors()

@@ -681,18 +681,20 @@ def _cell_style_js_chunks(fields, outline_map):
         // The value range a colourbar spans: the reader's override, else the
         // caller's pinned range, else the class's own data extent.
         // Which metric's units the ramps are in: the caller pins synapse units
-        // (0..800), the ratio metric lives on 0..1. Overrides are stored per
-        // metric, so tightening the synapse bar does not deform the ratio one.
+        // (0..800); BOTH ratio metrics (plain and threshold-conditioned) live
+        // on 0..1, but keep separate keys so an override made in one does not
+        // deform the other.
         function cellStyleMetricKey() {
-            return (typeof currentMetric !== 'undefined' && currentMetric === 'ratio')
-                ? 'ratio' : 'weight';
+            if (typeof currentMetric === 'undefined') return 'weight';
+            return (currentMetric === 'ratio' || currentMetric === 'ratio_adj')
+                ? currentMetric : 'weight';
         }
 
         function cellStyleRangeFor(field, key) {
             const metric = cellStyleMetricKey();
             const byField = cellStyleState.ranges[field.id] || {};
             const r = byField[key + '\t' + metric]
-                || (metric === 'ratio' ? [0, 1]
+                || ((metric === 'ratio' || metric === 'ratio_adj') ? [0, 1]
                     : (field.range || (field.ranges && field.ranges[key])));
             if (!r) return null;
             const lo = Number(r[0]), hi = Number(r[1]);
@@ -18001,6 +18003,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     {'<select id="metricSelect" onchange="updateMetric()">' if has_multiple_metrics else ''}
                         {'<option value="weight">Synapse Count</option>' if has_multiple_metrics and 'weight' in available_metrics else ''}
                         {'<option value="ratio"' + (' selected' if metric_type == 'ratio' else '') + '>Connection Ratio</option>' if has_multiple_metrics and 'ratio' in available_metrics else ''}
+                        {'<option value="ratio_adj"' + (' selected' if metric_type == 'ratio_adj' else '') + '>' + metric_label_adj + '</option>' if has_multiple_metrics and 'ratio_adj' in available_metrics else ''}
                         <!-- PROBABILITY SUSPENSION (2026-10-06): the Traversal Probability option is removed. -->
                     {'</select></div>' if has_multiple_metrics else ''}
                     
