@@ -153,6 +153,7 @@ function buildScope(cy) {
         let edgeFilterGroups = [];
         const EDGE_BASE_COLOR_KEY = '__baseColor';
         const EDGE_BASE_OPACITY_KEY = '__baseOpacity';
+        const EDGE_BASE_ARROW_KEY = '__baseArrowColor';
         const declaredGroupsActive = false;
         const extraNodeGroups = [];
         const datasetLegendCodes = new Set();

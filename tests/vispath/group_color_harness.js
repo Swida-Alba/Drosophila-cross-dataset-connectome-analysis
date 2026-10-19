@@ -55,6 +55,7 @@ function buildScope(cy, domValues) {
         const extraNodeGroups = [];
         const EDGE_BASE_COLOR_KEY = '__baseColor';
         const EDGE_BASE_OPACITY_KEY = '__baseOpacity';
+        const EDGE_BASE_ARROW_KEY = '__baseArrowColor';
         function pushHistory() {}
         function refreshLegend() {}
         const els = {};

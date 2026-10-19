@@ -118,7 +118,8 @@ function parseCSV(text) {
 // to execute those extracted functions against a headless Cytoscape core.
 function makeExporter(cy, customGroups) {
     const preamble = "const EDGE_BASE_COLOR_KEY = '__baseColor';\n" +
-                     "const EDGE_BASE_OPACITY_KEY = '__baseOpacity';\n";
+                     "const EDGE_BASE_OPACITY_KEY = '__baseOpacity';\n" +
+                     "const EDGE_BASE_ARROW_KEY = '__baseArrowColor';\n";
     const src = preamble +
         extractFunction('setEdgeBaseAppearance', html) + '\n' +
         extractFunction('initializeEdgeBaseStyles', html) + '\n' +
