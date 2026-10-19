@@ -13552,7 +13552,7 @@ class ConnectivityProfileComparer:
         plotly_state: Dict[str, bool],
         square_cells: bool = False,
     ) -> None:
-        """Append six metric cards in a responsive two-column grid."""
+        """Append the three visual metric cards in one column."""
         report_kit.append_report_metric_grid(
             lines, output_path, metric_matrices, title_prefix,
             csv_paths, vispath_paths, x_title, y_title, plotly_state,

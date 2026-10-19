@@ -757,6 +757,9 @@ def test_run_multi_dataset_output_structure(tmp_path, monkeypatch):
     assert "metric-grid one-column" in ds_report
     assert "Weighted Jaccard" not in report and "Weighted Jaccard" not in ds_report
     assert "Rank Correlation<" not in report and "Rank Correlation<" not in ds_report
+    readme = (out / "README.txt").read_text(encoding="utf-8")
+    assert "five metrics" not in readme
+    assert "plotly.min.js" not in readme
     params = json.loads((out / "parameters.json").read_text(encoding="utf-8"))
     assert params["datasets"] == [DS_A, DS_B]
     assert params["aggregation_level"] == "type"
