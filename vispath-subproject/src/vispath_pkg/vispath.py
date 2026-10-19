@@ -21491,6 +21491,12 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     if (metricBtn) {{
                         metricBtn.classList.add('active');
                     }}
+                    // The select is the metric control on the heatmap pages;
+                    // keep its displayed value in step with the restored matrix.
+                    const metricSelect = document.getElementById('metricSelect');
+                    if (metricSelect) {{
+                        metricSelect.value = currentMetric;
+                    }}
                 }}
                 
                 if (settings.useClusteredOrder !== undefined && clusteringAvailable) {{
