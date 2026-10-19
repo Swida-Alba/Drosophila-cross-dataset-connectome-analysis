@@ -3148,7 +3148,9 @@ class TestEdgeStyleControl:
         # bursts coalesce into one undo entry
         assert "queueStyleHistory('Change edge style');" in js
         assert "e.style('line-style', patch.lineStyle);" in js
-        assert "setEdgeBaseAppearance(e, color, alpha);" in js
+        assert "const arrowColor = (patch.color !== undefined)" in js
+        assert "e.data(EDGE_BASE_ARROW_KEY)" in js
+        assert "setEdgeBaseAppearance(e, color, alpha, true, arrowColor);" in js
         assert "'source-arrow-color': arrowColor," in js
         # capture/restore carry the pattern override
         assert "if (hasBypass(e, 'line-style')) item.lineStyle = e.style('line-style');" in js
@@ -3545,4 +3547,66 @@ def test_edge_alpha_zero_hides_the_arrowheads(tmp_path):
         assert abs(float(half['line']) - 0.4) < 1e-9, half
         assert half['tgt'] == 'triangle', half
         assert half['src'] == 'none', half
+        assert page.errors() == [], page.errors()
+
+
+@REQUIRES_CDP
+def test_edge_alpha_preserves_declared_arrow_colour(tmp_path):
+    """An alpha-only Edge Style edit must not repaint a band arrowhead.
+
+    The line and arrow are deliberately different colours (blue translucent
+    line, red arrow).  Dragging Line opacity changes only the line opacity;
+    an explicit colour edit repaints both ends.
+    """
+    df = pd.DataFrame({
+        "source": ["A", "B"], "target": ["C", "D"], "weight": [5.0, 6.0],
+        "color": ["rgba(0, 0, 255, 0.2)", "rgba(0, 0, 255, 0.2)"],
+        "arrow_color": ["#ff0000", "#ff0000"],
+        "edge_alpha": [0.2, 0.2],
+    })
+    vp = VisualizePath(path_file=df, output_folder=str(tmp_path),
+                       showfig=False, verbose=False, network_layout="dagre")
+    vp.base_filename = "band_arrow"
+    vp.build_network()
+    out = vp.create_network()
+    with Page(Path(out)) as page:
+        assert page.wait(
+            "return typeof cy !== 'undefined' && cy.edges().length === 2;")
+        loaded = page.js("""
+          var e = cy.edges()[0];
+          return {arrow: e.style('target-arrow-color'),
+                  source: e.style('source-arrow-color'),
+                  base: e.data('__baseArrowColor'),
+                  opacity: e.style('line-opacity')};
+        """)
+        assert loaded['arrow'] == 'rgb(255,0,0)', loaded
+        assert loaded['source'] == 'rgb(255,0,0)', loaded
+        assert loaded['base'] == '#ff0000', loaded
+        assert abs(float(loaded['opacity']) - 0.2) < 1e-9, loaded
+
+        page.js("cy.edges().select(); "
+                "applyEdgeLineStyle({alpha: 0.6}); return true;")
+        after = page.js("""
+          var e = cy.edges()[0];
+          return {arrow: e.style('target-arrow-color'),
+                  source: e.style('source-arrow-color'),
+                  base: e.data('__baseArrowColor'),
+                  opacity: e.style('line-opacity')};
+        """)
+        assert after['arrow'] == 'rgb(255,0,0)', after
+        assert after['source'] == 'rgb(255,0,0)', after
+        assert after['base'] == '#ff0000', after
+        assert abs(float(after['opacity']) - 0.6) < 1e-9, after
+
+        page.js("applyEdgeLineStyle({color: '#00ff00'}); return true;")
+        recol = page.js("""
+          var e = cy.edges()[0];
+          return {arrow: e.style('target-arrow-color'),
+                  source: e.style('source-arrow-color'),
+                  base: e.data('__baseArrowColor'),
+                  line: e.style('line-color')};
+        """)
+        assert recol['arrow'] == 'rgb(0,255,0)', recol
+        assert recol['source'] == 'rgb(0,255,0)', recol
+        assert recol['base'] == '#00ff00', recol
         assert page.errors() == [], page.errors()

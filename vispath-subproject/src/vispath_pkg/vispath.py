@@ -14879,8 +14879,17 @@ class VisualizePath:
                         : (e.data(EDGE_BASE_OPACITY_KEY) !== undefined
                             ? parseFloat(e.data(EDGE_BASE_OPACITY_KEY))
                             : (parseFloat(e.style('line-opacity')) || 1));
+                    // An alpha-only edit must not repaint a band arrowhead:
+                    // keep the stored/base arrow unless the caller declared a
+                    // new line colour, in which case the whole edge is being
+                    // repainted.  (The default parameter of
+                    // setEdgeBaseAppearance would otherwise use `color`.)
+                    const arrowColor = (patch.color !== undefined)
+                        ? patch.color
+                        : (e.data(EDGE_BASE_ARROW_KEY)
+                            || e.data('arrow_color') || color);
                     if (patch.color !== undefined || patch.alpha !== undefined) {{
-                        setEdgeBaseAppearance(e, color, alpha);
+                        setEdgeBaseAppearance(e, color, alpha, true, arrowColor);
                     }}
                 }});
             }});
