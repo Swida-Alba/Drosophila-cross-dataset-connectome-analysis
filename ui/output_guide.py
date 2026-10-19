@@ -2674,6 +2674,49 @@ TOOL_GUIDE_SPECS = {
                             "bridged into the reference template."},
         ],
     },
+    "morphology_multi_comparison": {
+        "title": "Morphology · Multi-Dataset Comparison",
+        "summary": "One folder holding BOTH morphology halves for the same "
+                   "resolved population: per-dataset intra comparisons and "
+                   "the cross-dataset ordered pairs with null baselines, "
+                   "plus a hub report linking both.",
+        "files": [
+            {"pattern": "report.html",
+             "description": "Hub report: links the intra-dataset and "
+                            "cross-dataset halves and surfaces the key "
+                            "tables from each."},
+            {"pattern": "parameters.json",
+             "description": "Combined provenance for both phases "
+                            "(datasets, query, method, caps)."},
+            {"pattern": "README.txt",
+             "description": "Human-readable summary with the output "
+                            "structure."},
+            {"pattern": "user_warning_notes.txt",
+             "description": "Combined disclosures from both halves "
+                            "(present only when any apply)."},
+            {"pattern": "intra_dataset/*/report.html",
+             "description": "One self-contained intra comparison per "
+                            "dataset (group/type/bodyId levels side by "
+                            "side when method='both'), each with its own "
+                            "members.csv, parameters.json and README."},
+            {"pattern": "intra_dataset/*/members.csv",
+             "description": "The resolved comparison population per "
+                            "dataset: one row per compared neuron with "
+                            "its matrix row and availability status.",
+             "preview": True,
+             "preview_title": "Intra members"},
+            {"pattern": "cross_dataset/*/results/",
+             "description": "Ordered cross-dataset pairs with null "
+                            "baselines: overview.csv, "
+                            "members_summary.csv, report.html and "
+                            "parameters.json per direction."},
+            {"pattern": "cross_dataset/overview.csv",
+             "description": "Cross-phase overview: one row per ordered "
+                            "pair with its similarity summary.",
+             "preview": True,
+             "preview_title": "Cross overview"},
+        ],
+    },
     "morphology_comparison": {
         "title": "Morphology · Comparison",
         "summary": "Intra-dataset N×N morphology comparison of the queried "
