@@ -75,6 +75,10 @@ ARM_ERROR_WATCH = (
 PAGE_READY = ("var g=document.querySelector('.js-plotly-plot');"
               "return !!(g && g._fullLayout && g.data && g.data[0] && g.data[0].x);")
 
+#: The error watch is page-scoped, so a document without it was never armed —
+#: i.e. a `location.reload()` has committed.
+FRESH_CONTEXT = "return typeof window.__probeErrors === 'undefined';"
+
 
 class Page:
     """One headless Chrome tab over a file:// page."""
@@ -159,6 +163,24 @@ class Page:
         end = time.time() + timeout
         while time.time() < end:
             if self.js(predicate_js):
+                return True
+            time.sleep(0.4)
+        return False
+
+    def wait_reload(self, predicate_js, timeout=90):
+        """Wait out a `location.reload()` for a page-scoped predicate.
+
+        `wait()` alone can be answered by the still-standing pre-reload DOM —
+        its plot satisfies PAGE_READY while the new document is loading — and
+        the predicate is then measured against a page that has already been
+        replaced. Requiring the armed watch to be gone first pins the check to
+        the reloaded document, and the watch is re-armed on it so a throw
+        during the reload is still reported by `errors()`.
+        """
+        end = time.time() + timeout
+        while time.time() < end:
+            if self.js(FRESH_CONTEXT) is True and self.js(predicate_js) is True:
+                self.arm_error_watch()
                 return True
             time.sleep(0.4)
         return False

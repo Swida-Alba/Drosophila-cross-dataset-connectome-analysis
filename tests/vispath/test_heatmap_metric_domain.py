@@ -192,7 +192,7 @@ def test_saved_metric_swaps_the_matrix_on_initialization(tmp_path):
                  '"showCellValues":true,"showLabels":true}')
         page.js("localStorage.setItem(" + repr(key).replace("'", '"')
                 + ", " + repr(saved) + "); location.reload(); return true;")
-        assert page.wait(PAGE_READY)
+        assert page.wait_reload(PAGE_READY)
         d = page.js("""
           var g = document.querySelector('.js-plotly-plot');
           var ann = (g.layout.annotations || []).map(function (a) {
@@ -205,7 +205,7 @@ def test_saved_metric_swaps_the_matrix_on_initialization(tmp_path):
                   ann: ann.sort(),
                   ticks: (t.colorbar || {}).ticktext || null};
         """)
-        assert d['metric'] == 'ratio', d
+        assert d.get('metric') == 'ratio', d
         assert abs(d['linear'] - d['ratio']) < 1e-12, d
         assert '1.0' in d['ann'], d          # 0.01 as a percentage number
         assert '100000.0' not in d['ann'], d  # the weight x100 bug
