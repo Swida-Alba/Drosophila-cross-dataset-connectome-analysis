@@ -218,24 +218,6 @@ def _compact_script_blocks(fragment: str) -> str:
     return _SCRIPT_BLOCK_RE.sub(_compact, fragment)
 
 
-def ensure_plotly_lib(output_path: Path, filename: str = 'plotly.min.js') -> Optional[str]:
-    """Write the bundled plotly.js beside the report files exactly once.
-
-    Report files then reference it with ``<script src='plotly.min.js'>`` so
-    every file in the run folder shares one 4.8 MB library instead of inlining
-    its own copy. Returns the filename for the ``src`` attribute, or ``None``
-    when plotly is unavailable (callers fall back to the inline embed).
-    """
-    try:
-        import plotly.offline
-    except ImportError:
-        return None
-    lib_path = output_path / filename
-    if not lib_path.exists():
-        lib_path.write_text(plotly.offline.get_plotlyjs(), encoding='utf-8')
-    return filename
-
-
 def _thinned_ticks(labels: List[str], max_ticks: int = 45) -> Tuple[List[int], List[str]]:
     """(tickvals, ticktext) for the dendrogram's shared leaf-slot axis.
 
@@ -615,7 +597,9 @@ a:hover { text-decoration: underline; }
   gap: 15px; align-items: stretch;
 }
 .metric-grid.single { grid-template-columns: minmax(0, 1fr); }
-.metric-grid.single .plotly-graph-div { max-width: 1100px; }
+.metric-grid.one-column { grid-template-columns: minmax(0, 1fr); }
+.metric-grid.single .plotly-graph-div,
+.metric-grid.one-column .plotly-graph-div { max-width: 1100px; margin: 0 auto; }
 .heatmap-card {
   min-width: 0; background: var(--surface); border: 1px solid var(--line);
   border-radius: 13px; box-shadow: 0 5px 15px rgba(27, 52, 84, .05);
@@ -912,23 +896,31 @@ def append_report_metric_grid(
     plotly_state: Dict[str, bool],
     styles: Optional[Dict[str, MetricStyle]] = None,
     square_cells: bool = False,
+    columns: int = 2,
 ) -> None:
-    """Append metric cards in a responsive two-column grid.
+    """Append metric cards in a responsive grid.
 
     ``styles`` maps metric key -> MetricStyle and fixes the card order;
     when omitted, default styles are derived per key on the fly.
+    ``columns=1`` stacks every card in one column (the connectivity report's
+    three-metric layout); the default stays two.
     """
+    if columns not in (1, 2):
+        raise ValueError(f"columns must be 1 or 2, got {columns!r}")
     metric_matrices = metric_matrices or {}
-    lines.append("<div class='metric-grid'>")
     if styles:
         items = [(key, styles[key]) for key in styles]
     else:
         items = [(key, metric_style(key)) for key in metric_matrices]
+    classes = 'metric-grid'
     if len(items) == 1:
         # One-card grids (single-metric features like the morphology
         # comparison) span the full width instead of leaving half of the
         # two-column grid empty.
-        lines[-1] = "<div class='metric-grid single'>"
+        classes += ' single'
+    elif columns == 1:
+        classes += ' one-column'
+    lines.append(f"<div class='{classes}'>")
     for metric, style in items:
         display = style.display_name
         append_report_heatmap(

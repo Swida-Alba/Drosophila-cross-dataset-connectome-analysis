@@ -261,8 +261,11 @@ def test_single_dataset_report_indexes_all_metrics(tmp_path):
     )
     text = report.read_text(encoding="utf-8")
     assert report.exists()
-    for metric in metrics:
+    for metric in ("jaccard", "cosine", "rank_corr_union"):
         assert metric in text
+    assert "weighted_jaccard" not in text
+    assert "rank_corr_overall" not in text
+    assert "Rank Correlation<" not in text
     assert "type_level/results/type_similarity_jaccard_overall.csv" in text
 
 
@@ -294,8 +297,8 @@ def test_report_redraws_plotly_and_links_vispath_editor(tmp_path):
     assert "type_level/visualization/heatmap_type_overall_jaccard.html" in text
     assert "data-tab-button" in text
     assert "Overall" in text
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in text
-    assert "2 cards per row · 5 metrics" in text
+    assert "metric-grid one-column" in text
+    assert "1 card per row · 3 metrics" in text
     # The inline Plotly bundle contains its own example call; inspect the
     # actual generated chart invocation at the end of the report instead.
     plot_call = text.rsplit("Plotly.newPlot(", 1)[1].split(");", 1)[0]
@@ -745,10 +748,15 @@ def test_run_multi_dataset_output_structure(tmp_path, monkeypatch):
     assert "href='report.html'" in ds_report
     assert "cross_dataset/all_types/" not in ds_report
 
-    # one shared plotly library written once, referenced by every report
-    assert (out / "plotly.min.js").exists()
-    assert "src='plotly.min.js'" in report
-    assert "src='plotly.min.js'" in ds_report
+    # every report embeds Plotly: no sibling library, no external script
+    assert not (out / "plotly.min.js").exists()
+    assert "src='plotly.min.js'" not in report
+    assert "src='plotly.min.js'" not in ds_report
+    assert "plotly.js v" in report and "plotly.js v" in ds_report
+    assert "metric-grid one-column" in report
+    assert "metric-grid one-column" in ds_report
+    assert "Weighted Jaccard" not in report and "Weighted Jaccard" not in ds_report
+    assert "Rank Correlation<" not in report and "Rank Correlation<" not in ds_report
     params = json.loads((out / "parameters.json").read_text(encoding="utf-8"))
     assert params["datasets"] == [DS_A, DS_B]
     assert params["aggregation_level"] == "type"
@@ -816,15 +824,21 @@ def test_multi_dataset_saves_bodyid_and_type_average_intra_levels(tmp_path, monk
 
     assert result["bodyid_level_skipped"] is False
     assert result["n_bodyid_profiles"] == 4
+    for metric in ("jaccard", "cosine", "rank_corr_union"):
+        assert (
+            intra_results / f"bodyid_similarity_{metric}_overall.csv"
+        ).exists()
+        assert (
+            intra_results / f"type_avg_bodyid_similarity_{metric}_overall.csv"
+        ).exists()
+    # Data keeps all five metrics; the report links only the three visual ones.
     assert (
         intra_results / "bodyid_similarity_weighted_jaccard_overall.csv"
-    ).exists()
-    assert (
-        intra_results / "type_avg_bodyid_similarity_weighted_jaccard_overall.csv"
     ).exists()
 
     ds_report = (out / f"report_{safe_a}.html").read_text(encoding="utf-8")
     assert "BodyId level" in ds_report
     assert "Type average of bodyIds" in ds_report
-    assert "bodyid_similarity_weighted_jaccard_overall.csv" in ds_report
-    assert "type_avg_bodyid_similarity_weighted_jaccard_overall.csv" in ds_report
+    assert "bodyid_similarity_jaccard_overall.csv" in ds_report
+    assert "bodyid_similarity_weighted_jaccard_overall.csv" not in ds_report
+    assert "type_avg_bodyid_similarity_rank_corr_union_overall.csv" in ds_report

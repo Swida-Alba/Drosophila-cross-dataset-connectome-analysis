@@ -2812,7 +2812,8 @@ def test_comparer_run_single_dataset(tmp_path, pc_fake_repo, monkeypatch):
     assert len(list((out / 'profiles' / 'aggregated').glob('*.json'))) == 2
     # heatmap fallback path (vispath blocked above); every call carries the
     # metric's colormap and fixed domain (jaccard et al. are [0, 1])
-    assert calls and len(res['heatmaps_generated']) == 45
+    # Three visual metrics × three directions × three levels.
+    assert calls and len(res['heatmaps_generated']) == 27
     assert len(heatmap_kwargs) == len(calls)
     assert all(kw['color_scale'] is not None and kw['zmin'] is not None
                and kw['zmax'] is not None for kw in heatmap_kwargs)

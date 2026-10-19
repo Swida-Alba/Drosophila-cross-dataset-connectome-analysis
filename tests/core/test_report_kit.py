@@ -412,13 +412,39 @@ def test_fragment_hover_and_z_stay_compact_at_scale():
         assert not re.search(r'\n\s', script), 'script indentation survived'
 
 
-def test_ensure_plotly_lib_writes_shared_library_once(tmp_path):
+def test_metric_grid_one_column_inlines_plotly(tmp_path):
+    """The connectivity report's three-metric stack is one column, and the
+    first card embeds Plotly so the file has no sibling library dependency."""
     pytest.importorskip("plotly")
-    first = report_kit.ensure_plotly_lib(tmp_path)
-    assert first == 'plotly.min.js'
-    lib_path = tmp_path / 'plotly.min.js'
-    assert lib_path.exists() and lib_path.stat().st_size > 1_000_000
-    stamp = lib_path.stat().st_mtime_ns
-    second = report_kit.ensure_plotly_lib(tmp_path)
-    assert second == 'plotly.min.js'
-    assert lib_path.stat().st_mtime_ns == stamp  # idempotent
+    matrix = pd.DataFrame([[1.0, 0.5], [0.5, 1.0]],
+                          index=["a", "b"], columns=["a", "b"])
+    keys = ("jaccard", "cosine", "rank_corr_union")
+    names = {"jaccard": "Jaccard Similarity",
+             "cosine": "Cosine Similarity",
+             "rank_corr_union": "Rank Correlation (Union)"}
+    styles = {key: report_kit.metric_style(key, names[key]) for key in keys}
+    matrices = {key: matrix for key in keys}
+    lines = []
+    state = {"include_plotlyjs": True}
+    report_kit.append_report_metric_grid(
+        lines, tmp_path, matrices, "APDN3 · Type level · Overall",
+        {key: f"results/{key}.csv" for key in keys},
+        {key: None for key in keys}, "Neuron", "Neuron", state,
+        styles=styles, columns=1)
+    text = "\n".join(lines)
+    assert "metric-grid one-column" in text
+    assert text.count("heatmap-card-title") == 3
+    assert "Jaccard Similarity" in text
+    assert "Cosine Similarity" in text
+    assert "Rank Correlation (Union)" in text
+    assert "Weighted Jaccard" not in text
+    assert "src='plotly.min.js'" not in text
+    assert "plotly.js v" in text
+    assert "Plotly.newPlot" in text
+    assert state["include_plotlyjs"] is False
+
+
+def test_metric_grid_rejects_unknown_column_count(tmp_path):
+    with pytest.raises(ValueError, match="columns must be 1 or 2"):
+        report_kit.append_report_metric_grid(
+            [], tmp_path, {}, "x", {}, {}, "x", "y", {}, columns=3)
