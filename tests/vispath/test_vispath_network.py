@@ -930,12 +930,13 @@ class TestPanelCollapseAndRegrouping:
         assert "captureStyleBypass(n)" in html
         assert "EDGE_BASE_COLOR_KEY" in html
         assert "EDGE_BASE_OPACITY_KEY" in html
+        assert "EDGE_BASE_ARROW_KEY" in html
         capture_block = html[html.index("function captureNetworkState("):html.index("function applyNetworkState(")]
         for key in ("version: 2", "edgeStyles", "assignedGroups", "groupDefaults",
                     "customGroups", "background: bgCtrl", "labelFontColor",
                     "edgeWeightLabels", "hemisphereMirrorEnabled", "reciprocal:",
                     "filter:", "hideToggles", "edgeLabelFontSize", "metric:",
-                    "spacingX", "rotation", "background-opacity"):
+                    "spacingX", "rotation", "background-opacity", "baseArrowColor"):
             assert key in capture_block, f"capture payload missing {key!r}"
         # apply side: guarded restore paths + re-derivation of class hiding;
         # alpha restores as BODY-only (background-opacity) so the label font
@@ -944,7 +945,8 @@ class TestPanelCollapseAndRegrouping:
         assert "restoringHistoryState = true" in apply_block
         assert "node.style('background-opacity', item.opacity)" in apply_block
         assert "node.removeStyle('opacity')" in apply_block
-        assert "setEdgeBaseAppearance(edge, item.baseColor, item.baseOpacity, canApplyBase)" in apply_block
+        assert "setEdgeBaseAppearance(edge, item.baseColor, item.baseOpacity, canApplyBase," in apply_block
+        assert "item.baseArrowColor" in apply_block    # the band arrow survives a restore
         assert "reapplySelfLoopHiding()" in apply_block
         assert "syncToggleButtons()" in apply_block
         assert "bgCtrl.apply(state.background)" in apply_block
@@ -961,7 +963,7 @@ class TestPanelCollapseAndRegrouping:
         assert "node.style('background-opacity', sourceOpacity)" in html    # initial opacity
         assert "node.style('background-opacity', intermediateOpacity)" in html
         assert "node.style('background-opacity', targetOpacity)" in html
-        assert "'line-opacity': edgeOpacity" in html            # initial edge opacity
+        assert "const opacity = hasBand ? Number(bandAlpha) : edgeOpacity" in html  # initial edge opacity
         assert "'line-opacity': opacity" in html                # edge base appearance
         assert "'background-opacity': ((def.opacity" in html    # applyGroupLook
         # the alpha read-backs match
@@ -2056,7 +2058,7 @@ class TestEdgeListFileColors:
         )
         js = _script_text(html_path)
         assert "'line-color': 'data(color)'" in js
-        assert "'target-arrow-color': 'data(color)'" in js
+        assert "'target-arrow-color': 'data(arrow_color)'" in js
         assert f"'line-color': '{vp.edge_color}'" not in js
 
     def test_file_colors_land_in_edge_data(self, tmp_path):
@@ -2066,6 +2068,8 @@ class TestEdgeListFileColors:
         html = html_path.read_text(encoding="utf-8")
         for color in ("#FF0000", "#00FF00"):
             assert f'"color": "{color}"' in html, f"missing edge color {color}"
+            # the arrowhead carries its own field, defaulting to the line colour
+            assert f'"arrow_color": "{color}"' in html, f"missing arrow color {color}"
 
     def test_edges_without_file_color_keep_link_color(self, tmp_path):
         vp, html_path = self._html_with_colors(tmp_path)
@@ -2464,7 +2468,7 @@ class TestMergedBidirectionalEdges:
         js = _script_text(merged_html)
         assert "selector: 'edge[bidirectional = 1]'" in js
         assert "'source-arrow-shape': 'triangle'" in js
-        assert "'source-arrow-color': 'data(color)'" in js
+        assert "'source-arrow-color': 'data(arrow_color)'" in js
 
     def test_dead_end_counting_reads_bidirectional_flag(self, merged_html):
         js = _script_text(merged_html)
@@ -2957,19 +2961,21 @@ class TestEdgeListCsvReimportRoundTrip:
 
 
 class TestArrowColorConsistencyAndAssignRow:
-    """Arrowhead colors always follow the line (one color per edge), and the
-    Group Assign row stays inside the panel with long group names."""
+    """Arrowhead colors follow the edge's own arrow colour (which defaults to
+    the line colour: one colour per edge), and the Group Assign row stays
+    inside the panel with long group names."""
 
     def test_base_appearance_covers_source_arrow_color(self, network_html, merged_html):
         """The highlight override paints the source arrowhead (merged
         edges); the restore/recolor paths must repaint it too — otherwise
         the source arrow stays stuck at the highlight color."""
-        # the bidir selector paints source arrows from the line color
-        assert "'source-arrow-color': 'data(color)'" in _script_text(merged_html)
+        # the bidir selector paints source arrows from the edge's arrow colour
+        assert "'source-arrow-color': 'data(arrow_color)'" in _script_text(merged_html)
         js = _script_text(network_html)
         assert "'source-arrow-color': highlightColor," in js        # highlight override
         # ...and the base-appearance pair repaints it on clear/recolor
-        assert "'source-arrow-color': color," in js
+        assert "'source-arrow-color': arrowColor," in js            # setEdgeBaseAppearance
+        assert "'source-arrow-color': arrow," in js                 # restoreEdgeBaseAppearance
 
     def test_assign_select_can_shrink_inside_panel(self, network_html):
         html = network_html.read_text(encoding="utf-8")
@@ -3143,7 +3149,7 @@ class TestEdgeStyleControl:
         assert "queueStyleHistory('Change edge style');" in js
         assert "e.style('line-style', patch.lineStyle);" in js
         assert "setEdgeBaseAppearance(e, color, alpha);" in js
-        assert "'source-arrow-color': color," in js
+        assert "'source-arrow-color': arrowColor," in js
         # capture/restore carry the pattern override
         assert "if (hasBypass(e, 'line-style')) item.lineStyle = e.style('line-style');" in js
         assert "e.removeStyle('line-style');" in js
