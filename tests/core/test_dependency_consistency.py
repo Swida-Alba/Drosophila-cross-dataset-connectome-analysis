@@ -176,6 +176,19 @@ def test_declared_py_modules_exist_in_src():
     assert not missing, f"pyproject.toml declares missing py-modules: {missing}"
 
 
+def test_every_flat_src_module_is_declared_as_py_module():
+    """The other direction: a src/<name>.py not listed here is absent from a
+    non-editable install, so the wheel gate (.github/workflows/ci.yml) fails
+    on it. Checking the source tree catches it before the push."""
+    project = _toml(PROJECT_ROOT / "pyproject.toml")
+    declared = set(project["tool"]["setuptools"]["py-modules"])
+    undeclared = sorted(
+        p.stem for p in (PROJECT_ROOT / "src").glob("*.py")
+        if p.name != "__init__.py" and p.stem not in declared
+    )
+    assert not undeclared, f"src modules missing from py-modules: {undeclared}"
+
+
 def test_supported_python_window_and_removed_conflicts():
     project = _toml(PROJECT_ROOT / "pyproject.toml")
     vispath = _toml(PROJECT_ROOT / "vispath-subproject" / "pyproject.toml")

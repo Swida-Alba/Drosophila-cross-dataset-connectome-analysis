@@ -162,6 +162,7 @@ py-modules = [
     "paths_pair_report",
     "roi_screening",
     "roi_sensitive_segmentation",
+    "route_plan",
     "shortest_discovery_store",
     "skeleton_provenance",
     "skeleton_simplification",
