@@ -537,6 +537,8 @@ def normalize_cell_style(row_labels, col_labels, cell_data=None, cell_fill=None,
             outline[key] = {
                 'width': spec.get('width', CELL_OUTLINE_DEFAULT['width']),
                 'color': spec.get('color', CELL_OUTLINE_DEFAULT['color'])}
+            if spec.get('dash'):
+                outline[key]['dash'] = str(spec['dash'])
         elif spec:
             # a bare True asks for a border, not for a colour the caller must
             # have remembered to name
@@ -995,9 +997,13 @@ def _cell_style_js_chunks(fields, outline_map):
             if (id === '__caller__') {
                 const own = cellOutlineMap[key];
                 if (!own) return null;
-                return {width: own.width !== undefined ? own.width : width,
-                        color: (own.color !== undefined && own.color !== null)
-                            ? own.color : color};
+                const o = {width: own.width !== undefined ? own.width : width,
+                           color: (own.color !== undefined && own.color !== null)
+                               ? own.color : color};
+                // Per-cell dash (e.g. a dotted inconsistency border);
+                // Plotly shape lines accept solid/dot/dash.
+                if (own.dash) o.dash = own.dash;
+                return o;
             }
             const field = cellStyleFieldById(id);
             if (!field || !(key in field.values)) return null;
