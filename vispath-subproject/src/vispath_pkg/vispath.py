@@ -1018,14 +1018,42 @@ def _cell_style_js_chunks(fields, outline_map):
         function cellStyleShapes() {
             if (!cellStyleCtx) return [];
             const shapes = [];
-            for (let i = 0; i < cellStyleCtx.ys.length; i++) {
-                for (let jj = 0; jj < cellStyleCtx.xs.length; jj++) {
-                    const o = cellStyleOutlineFor(i, jj);
+            const nx = cellStyleCtx.xs.length;
+            const ny = cellStyleCtx.ys.length;
+            const styleAt = (i, j) => (i >= 0 && i < ny && j >= 0 && j < nx)
+                ? cellStyleOutlineFor(i, j) : null;
+            const styleKey = o => o.color + '|' + o.width + '|' + (o.dash || 'solid');
+            const isDashed = o => !!(o && o.dash && o.dash !== 'solid');
+            for (let i = 0; i < ny; i++) {
+                for (let jj = 0; jj < nx; jj++) {
+                    const o = styleAt(i, jj);
                     if (!o) continue;
-                    shapes.push({type: 'rect', xref: 'x', yref: 'y',
-                                 x0: jj - 0.5, x1: jj + 0.5,
-                                 y0: i - 0.5, y1: i + 0.5,
-                                 fillcolor: 'rgba(0,0,0,0)', line: o, layer: 'above'});
+                    if (!isDashed(o)) {
+                        shapes.push({type: 'rect', xref: 'x', yref: 'y',
+                                     x0: jj - 0.5, x1: jj + 0.5,
+                                     y0: i - 0.5, y1: i + 0.5,
+                                     fillcolor: 'rgba(0,0,0,0)', line: o, layer: 'above'});
+                        continue;
+                    }
+                    // A shared edge between same-styled dashed cells is drawn
+                    // once, owned by the upper (horizontal) / left (vertical)
+                    // cell: two overlapping dot patterns otherwise read solid.
+                    const k = styleKey(o);
+                    const same = n => isDashed(n) && styleKey(n) === k;
+                    const topShared = same(styleAt(i - 1, jj));
+                    const leftShared = same(styleAt(i, jj - 1));
+                    const edges = [
+                        [jj - 0.5, i - 0.5, jj + 0.5, i - 0.5, topShared],
+                        [jj - 0.5, i + 0.5, jj + 0.5, i + 0.5, false],
+                        [jj - 0.5, i - 0.5, jj - 0.5, i + 0.5, leftShared],
+                        [jj + 0.5, i - 0.5, jj + 0.5, i + 0.5, false]
+                    ];
+                    for (const e of edges) {
+                        if (e[4]) continue;
+                        shapes.push({type: 'line', xref: 'x', yref: 'y',
+                                     x0: e[0], y0: e[1], x1: e[2], y1: e[3],
+                                     line: o, layer: 'above'});
+                    }
                 }
             }
             return shapes;
