@@ -186,7 +186,7 @@ Cross-dataset comparisons forward the mode to every per-dataset run (firing only
   
 ## Cost profile (time & memory)
 
-Measured on the MCNS long-haul query (ORN* &rarr; DN*, 2,635 sources,
+Measured on the MCNS long-haul query (ORN\* &rarr; DN\*, 2,635 sources,
 1,350 targets, max intermediate layers = 8, bound 9): the <strong>Complete
 mode</strong> is output-linear &mdash; its cost scales with the emitted
 bodyId path count P through materialization, the enrichment join and the

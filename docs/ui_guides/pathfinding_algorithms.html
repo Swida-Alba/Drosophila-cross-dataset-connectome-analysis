@@ -170,7 +170,7 @@ full analysis in
 <p>Cross-dataset comparisons forward the mode to every per-dataset run (firing only at each dataset's lowest swept threshold) and the report gains a presence-driven corridor section comparing corridors through the canonical type mapping.</p>
 <p><strong>Ratio flavors and visualization bases (shared with the refill lane):</strong> corridor walk rows carry BOTH per-hop share flavors &mdash; plain (realized mass &divide; the post type's full-membership incoming) and adjusted (&divide; the &ge;-threshold incoming; equal to plain when the asked threshold is 1). The same four metric bases are selectable across the pathfinding visualizations &mdash; Synapses / Ratio (all inputs) / the adjusted ratio, labelled Adj. Ratio with the tier its denominator was conditioned at / Refilled &mdash; on the heatmap toggle and the network + Sankey Connection-Metric selectors (options appear when the data carries them; hover always lists every metric; Sankey labels stay weight-based with metrics on hover; NT coloring, when enabled, overrides colors only). BodyId-level visualizations keep weight+ratio only: adjusted/refilled bodyId data lives in the exported CSVs.</p>
 <h2>Cost profile (time &amp; memory)</h2>
-<p>Measured on the MCNS long-haul query (ORN<em> &rarr; DN</em>, 2,635 sources,
+<p>Measured on the MCNS long-haul query (ORN* &rarr; DN*, 2,635 sources,
 1,350 targets, max intermediate layers = 8, bound 9): the <strong>Complete
 mode</strong> is output-linear &mdash; its cost scales with the emitted
 bodyId path count P through materialization, the enrichment join and the
