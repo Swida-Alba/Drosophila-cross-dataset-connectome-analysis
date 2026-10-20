@@ -309,6 +309,12 @@ class ComparisonAnalyzer:
         self._hemisphere_symmetry_cache: Dict[int, Dict[str, Dict]] = {}
         self._network_aligned_cache: Dict[Any, pd.DataFrame] = {}
         self._output_base_printed: bool = False  # Track if base dir was printed
+        # Per-(dataset, threshold) autapse census for the run manifest and
+        # user_warning_notes.txt. See ComparisonParameters.exclude_autapses:
+        # the Paths and Network tabs share one default so their tables
+        # describe the same connection set.
+        self._autapse_found: Dict[Tuple[str, Any], Dict[str, Any]] = {}
+        self._autapse_excluded: Dict[Tuple[str, Any], Dict[str, Any]] = {}
         # Shared-resolver state for canonical merge keys (auto type
         # mapping): one snapshot per run, a merge-key cache, and per-status
         # resolution counts exported with the run's mapping metadata.
@@ -695,6 +701,13 @@ class ComparisonAnalyzer:
         state.setdefault('requested_threshold', threshold)
         state.setdefault('path_mode', path_mode)
         state.setdefault('applied_folder', threshold)
+        # Autapse census (default-on contract): the delegated run exports
+        # both numbers as public attributes, so the comparison manifest can
+        # explain a Paths/Network weight difference without re-deriving it.
+        state.setdefault('autapses_excluded',
+                         getattr(fnc, 'autapses_excluded', None))
+        state.setdefault('autapses_found',
+                         getattr(fnc, 'autapses_found', None))
         return self._path_run_meta_from_state(dataset_name, threshold, state)
 
     def _read_cached_path_meta(self, dataset_name: str,
@@ -759,6 +772,11 @@ class ComparisonAnalyzer:
                                                        threshold)
                 self._path_run_meta[key] = self._path_run_meta_from_state(
                     dataset_name, threshold, meta)
+                normalized = self._path_run_meta[key]
+                found = normalized.get('autapses_found')
+                if not isinstance(found, dict):
+                    found = normalized.get('autapses_excluded')
+                self._record_autapse_stats(dataset_name, threshold, found)
 
     def _path_provenance_row(self, dataset_name: str, threshold: int) -> Dict:
         """Build the stable CSV/JSON projection used by comparison outputs."""
@@ -1660,7 +1678,7 @@ class ComparisonAnalyzer:
     # split first, which changes published text.
     _BULLET_HEADED_TAGS = ('[untyped dropped]', '[threshold comparability]',
                            '[query resolution]', '[auto threshold]',
-                           '[density]')
+                           '[density]', '[autapses]')
 
     @classmethod
     def _note_block_tag(cls, text: Any) -> Optional[str]:
@@ -2112,6 +2130,11 @@ class ComparisonAnalyzer:
             # drop_untyped fires post label-mapping in the analyzer, so the
             # delegated per-dataset run keeps every row.
             drop_untyped=False,
+            # Shared autapse contract (default on): the delegated path run
+            # removes bodyId self-edges before graph construction and
+            # reports the dropped mass in all_attributes.json.
+            exclude_autapses=getattr(
+                self.parameters, 'exclude_autapses', True),
             # Density curves are a first-class output of every mode: capture
             # the query-scoped classified cone for all delegated runs.
             capture_density=True,
@@ -2337,9 +2360,80 @@ class ComparisonAnalyzer:
         from statvis import apply_typing_columns
         return apply_typing_columns(conn_df.copy(), registry)
 
+    def _autapse_rule_enabled(self) -> bool:
+        return bool(getattr(self.parameters, 'exclude_autapses', True))
+
+    @staticmethod
+    def _autapse_mass_value(mass):
+        try:
+            return int(mass) if float(mass).is_integer() else float(mass)
+        except (TypeError, ValueError):
+            return 0
+
+    def _record_autapse_stats(self, dataset_name: str, threshold,
+                              found: Optional[Dict[str, Any]]) -> None:
+        """Keep the LARGER census for a (dataset, threshold) row.
+
+        The same edge set can be read twice (path output + direct query, or
+        a cached bodyId table + its finalize pass); max-by-(rows, synapses)
+        records the set once instead of summing duplicates.
+        """
+        if not isinstance(found, dict):
+            return
+        stats = {
+            'rows': int(found.get('rows', 0) or 0),
+            'synapses': self._autapse_mass_value(
+                found.get('synapses', 0) or 0),
+        }
+        key = (dataset_name, threshold)
+        previous = self._autapse_found.get(key)
+        if previous is None or (stats['rows'], stats['synapses']) > (
+                previous['rows'], previous['synapses']):
+            self._autapse_found[key] = stats
+        merged = self._autapse_found.get(key) or stats
+        self._autapse_excluded[key] = (
+            dict(merged) if self._autapse_rule_enabled()
+            else {'rows': 0, 'synapses': 0})
+
+    def _filter_autapses(self, dataset_name: str, threshold,
+                         frame: pd.DataFrame,
+                         weight_col: str = 'weight') -> pd.DataFrame:
+        """Drop ``bodyId_pre == bodyId_post`` rows from a direct-edge frame.
+
+        Idempotent and pair-keyed for the census: the same frame passing
+        through the cached-bodyId reader and the finalize pass is not
+        double-counted. A type-level self-cell is not an autapse (the
+        aggregate is built later from the surviving bodyId rows).
+        """
+        if frame is None or getattr(frame, 'empty', True) \
+                or 'bodyId_pre' not in frame.columns \
+                or 'bodyId_post' not in frame.columns:
+            return frame
+        pre = frame['bodyId_pre'].astype(str)
+        post = frame['bodyId_post'].astype(str)
+        mask = ((pre == post)
+                & frame['bodyId_pre'].notna()
+                & frame['bodyId_post'].notna())
+        if not mask.any():
+            self._record_autapse_stats(dataset_name, threshold,
+                                       {'rows': 0, 'synapses': 0})
+            return frame
+        if weight_col in frame.columns:
+            weights = frame.loc[mask, weight_col]
+            mass = weights.fillna(0).sum()
+        else:
+            mass = 0
+        self._record_autapse_stats(
+            dataset_name, threshold,
+            {'rows': int(mask.sum()), 'synapses': mass})
+        if not self._autapse_rule_enabled():
+            return frame
+        return frame.loc[~mask].copy()
+
     def _finalize_loaded_result(self, dataset_name: str, threshold: int,
                                 conn_df: pd.DataFrame) -> pd.DataFrame:
         """Normalize a cached/replayed frame exactly like a fresh result."""
+        conn_df = self._filter_autapses(dataset_name, threshold, conn_df)
         conn_df = self._verify_label_mapping_in_dataframe(
             dataset_name, threshold, conn_df)
         return self._drop_untyped_neurons(dataset_name, threshold, conn_df)
@@ -2427,8 +2521,10 @@ class ComparisonAnalyzer:
             filtered = base_edges[base_edges['weight'] >= threshold].copy()
             filtered['threshold'] = threshold
             self._log(f"Filtered {len(filtered)} edges from base at threshold={threshold}", 'debug')
-            return self._finalize_loaded_result(
+            result = self._finalize_loaded_result(
                 dataset_name, threshold, filtered)
+            self._write_autapse_note(self.parameters.full_output_path)
+            return result
         
         # Otherwise, query edges directly
         conn_df = self._query_edges_for_dataset(
@@ -2446,6 +2542,7 @@ class ComparisonAnalyzer:
             
         conn_df = self._finalize_loaded_result(
             dataset_name, threshold, conn_df)
+        self._write_autapse_note(self.parameters.full_output_path)
         return conn_df
     
     def _query_edges_for_dataset(
@@ -2548,7 +2645,7 @@ class ComparisonAnalyzer:
             if not result.empty:
                 self._log(f"Queried {len(result)} edges from NeuPrint for {dataset_name}")
             
-            return result
+            return self._filter_autapses(dataset_name, min_weight, result)
             
         except Exception as e:
             self._log(f"Warning: Failed to query NeuPrint edges for {dataset_name}: {e}")
@@ -2613,6 +2710,7 @@ class ComparisonAnalyzer:
         # Filter by weight
         if 'weight' in conn_df.columns:
             conn_df = conn_df[conn_df['weight'] >= min_weight]
+
         
         # If type columns don't exist, join with neuron info to get them
         if 'type_pre' not in conn_df.columns or 'type_post' not in conn_df.columns:
@@ -2672,6 +2770,12 @@ class ComparisonAnalyzer:
                 pbar.update(1)
             mask = mask_pre | mask_post
             conn_df = conn_df[mask]
+
+        # Shared autapse rule (default on): bodyId self-edges never belong
+        # to the cross-dataset edge set. Applied at the direct-edge read —
+        # after the query scope is resolved, so the census reports the
+        # autapses this query would have carried, not the whole dataset's.
+        conn_df = self._filter_autapses(dataset_name, min_weight, conn_df)
         
         self._log(f"Filtered to {len(conn_df)} edges for {dataset_name}")
         return conn_df
@@ -2710,6 +2814,8 @@ class ComparisonAnalyzer:
             Nested dict {dataset_name: {threshold: DataFrame}}
         """
         self._reset_mapping_state()
+        self._autapse_found = {}
+        self._autapse_excluded = {}
         mode = self.parameters.comparison_mode
         self._log(f"Starting analysis across all datasets and thresholds (mode={mode})")
         
@@ -4813,6 +4919,10 @@ class ComparisonAnalyzer:
         self._reconcile_applied_folders()
         self._export_untyped_drop_records()
         self._export_effective_threshold_banner()
+        # Report the autapse census at the point the query set is settled —
+        # before (and independently of) export_results(), so a run-only
+        # caller still gets the explicit note.
+        self._write_autapse_note(self.parameters.full_output_path)
         self._log(f"Completed path analysis for {len(dataset_names)} datasets")
         return self.raw_results
 
@@ -4884,6 +4994,9 @@ class ComparisonAnalyzer:
                             'strongest_retained_bottleneck'),
                         'graph_pruning_record': dict(
                             prev_meta.get('graph_pruning_record') or {}),
+                        'autapses_found': prev_meta.get('autapses_found'),
+                        'autapses_excluded': prev_meta.get(
+                            'autapses_excluded'),
                         '_threshold': threshold,
                     }
                     # Independent copy (directive 2): shared references
@@ -4981,6 +5094,8 @@ class ComparisonAnalyzer:
                         'strongest_retained_bottleneck'),
                     'graph_pruning_record': dict(
                         raw.get('graph_pruning_record') or {}),
+                    'autapses_found': raw.get('autapses_found'),
+                    'autapses_excluded': raw.get('autapses_excluded'),
                 }
                 df = self._load_multi_threshold_result(dataset_name, applied)
                 self.raw_results[dataset_name][t] = df
@@ -5022,6 +5137,8 @@ class ComparisonAnalyzer:
                     'strongest_retained_bottleneck'),
                 'graph_pruning_record': dict(
                     raw.get('graph_pruning_record') or {}),
+                'autapses_found': raw.get('autapses_found'),
+                'autapses_excluded': raw.get('autapses_excluded'),
             }
             df = self._load_multi_threshold_result(dataset_name, t)
             self.raw_results[dataset_name][t] = df
@@ -5116,6 +5233,11 @@ class ComparisonAnalyzer:
             # standardized cross-dataset labels are resolved (post
             # label-mapping), which is the later, authoritative timing.
             drop_untyped=False,
+            # Shared autapse contract (default on): the delegated path run
+            # removes bodyId self-edges before graph construction and
+            # reports the dropped mass in all_attributes.json.
+            exclude_autapses=getattr(
+                self.parameters, 'exclude_autapses', True),
             # Density curves for every mode (see run_path_analysis).
             capture_density=True,
         )
@@ -5349,6 +5471,11 @@ class ComparisonAnalyzer:
                 try:
                     df = self._read_csv(bodyid_file)
                     if not df.empty:
+                        # A bodyId table written before the autapse contract
+                        # (or by a lane that kept them) must not re-enter the
+                        # graph through the cache.
+                        df = self._filter_autapses(
+                            dataset_name, threshold, df)
                         # Build label map from the data
                         label_map = self._build_label_map_from_df(df)
                         self._log(f"Loaded cached bodyId data from {bodyid_file}")
@@ -5372,6 +5499,8 @@ class ComparisonAnalyzer:
                     try:
                         df = self._read_csv(bodyid_file)
                         if not df.empty:
+                            df = self._filter_autapses(
+                                dataset_name, threshold, df)
                             label_map = self._build_label_map_from_df(df)
                             return df, label_map
                     except Exception:
@@ -7561,6 +7690,10 @@ class ComparisonAnalyzer:
             'datasets': self.parameters.get_dataset_names(),
             'nicknames': self.parameters.get_dataset_nicknames(),
             'parameters': params,
+            # Shared default-on autapse rule: per-dataset/threshold bodyId
+            # self-edges removed before pathfinding / direct aggregation, with
+            # their synapse mass. Empty dicts mean the lanes never ran.
+            'autapses_excluded': self._autapse_manifest_payload(),
             'applied_thresholds': {
                 ds: self.get_applied_thresholds(ds)
                 for ds in self.parameters.get_dataset_names()},
@@ -7587,6 +7720,76 @@ class ComparisonAnalyzer:
                   encoding='utf-8') as f:
             json.dump(manifest, f, indent=2, default=str)
         self._log("Saved: run_manifest.json")
+        self._write_autapse_note(out_dir)
+
+    def _autapse_manifest_payload(self) -> Dict[str, Dict[str, Any]]:
+        """Per dataset/threshold census, reading cached run folders if needed.
+
+        A resume/re-export may not execute the lanes in this session; the
+        delegated folders' ``all_attributes.json`` is the durable copy.
+        """
+        for dataset_name in self.parameters.get_dataset_names():
+            for threshold in self.parameters.get_thresholds_for_dataset(
+                    dataset_name):
+                key = (dataset_name, threshold)
+                if key in self._autapse_found:
+                    continue
+                attrs_path = os.path.join(
+                    self.parameters.get_dataset_output_path(
+                        dataset_name, threshold), 'all_attributes.json')
+                if not os.path.exists(attrs_path):
+                    continue
+                try:
+                    with open(attrs_path, encoding='utf-8') as handle:
+                        attrs = json.load(handle)
+                except (OSError, ValueError, TypeError):
+                    continue
+                found = attrs.get('autapses_found')
+                if not isinstance(found, dict):
+                    found = attrs.get('autapses_excluded')
+                self._record_autapse_stats(dataset_name, threshold, found)
+        return {
+            f'{ds}@{t}': dict(stats)
+            for (ds, t), stats in sorted(
+                (self._autapse_excluded or {}).items(),
+                key=lambda item: (str(item[0][0]), float(item[0][1])))
+        }
+
+    def _write_autapse_note(self, out_dir: str) -> None:
+        """Name the shared autapse rule and its dropped mass in the notes.
+
+        State-owned (one ``[autapses]`` bullet): a re-export replaces its
+        previous count instead of accumulating a stale one.
+        """
+        self._autapse_manifest_payload()
+        found = self._autapse_found or {}
+        if not found or not out_dir:
+            return
+        os.makedirs(out_dir, exist_ok=True)
+        details = '; '.join(
+            f'{ds}@{t} {stats.get("rows", 0):,} row(s) / '
+            f'{stats.get("synapses", 0):,} synapse(s)'
+            for (ds, t), stats in sorted(
+                found.items(),
+                key=lambda item: (str(item[0][0]), float(item[0][1]))))
+        if self._autapse_rule_enabled():
+            block = (
+                '- [autapses] exclude_autapses=True (default): bodyId '
+                'self-edges (bodyId_pre == bodyId_post) were removed from '
+                'every dataset lane before pathfinding / direct-edge '
+                f'aggregation. Dropped: {details}. A type-level self-cell '
+                'backed by distinct neurons is not an autapse and is '
+                'unaffected; the Paths and Network tabs share this rule. '
+                'Set exclude_autapses=False to keep the rows.')
+        else:
+            block = (
+                '- [autapses] exclude_autapses=False: bodyId self-edges were '
+                f'KEPT in this run. Present mass: {details}. A self-edge is '
+                'never a hop of a simple path, so path tables cannot carry '
+                'these rows; the Network type table does. The default '
+                'excludes them.')
+        blocks = self._replace_state_notes([block], out_dir)
+        self._append_user_warning_notes(out_dir, blocks)
 
     def _augment_type_mapping_with_appearance(self, out_dir: str) -> None:
         """Add ``appearance_rank`` (+ counts) to auto_type_mapping.csv.

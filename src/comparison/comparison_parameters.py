@@ -597,6 +597,20 @@ class ComparisonParameters:
     source detection.
     """
 
+    exclude_autapses: bool = True
+    """Drop bodyId self-edges (bodyId_pre == bodyId_post) from every
+    dataset lane before pathfinding / direct-edge aggregation (default
+    on, 2026-10-20). This makes the Paths and Network tabs describe the
+    same connection set: Complete/Shortest Paths never traversed a
+    self-edge, while Network used to keep it, so the 21 type self-cells
+    (and five autapse-only clock types on BANC) disagreed. The dropped
+    mass is reported per dataset/threshold as ``autapses_excluded:
+    {rows, synapses}`` in run_manifest.json and named in
+    user_warning_notes.txt. Set False to keep the rows (autapse
+    studies); a type-level self-cell backed by distinct neurons is not
+    an autapse and is always kept. Appended last so existing positional
+    constructor calls keep their bindings."""
+
     def __post_init__(self):
         """Validate and process parameters after initialization."""
         from .label_mapper import LabelMapper
@@ -2094,6 +2108,7 @@ class ComparisonParameters:
             'density_normalizer': self.density_normalizer,
             'threshold_auto': bool(getattr(self, 'threshold_auto', False)),
             'drop_untyped': self.drop_untyped,
+            'exclude_autapses': self.exclude_autapses,
             'report_layout': self.report_layout,
             'edgeN_limit': self.edgeN_limit,
             'comparison_mode': self.comparison_mode,
@@ -2371,6 +2386,7 @@ class ComparisonParameters:
             density_normalizer=data.get('density_normalizer', 'per_node'),
             threshold_auto=data.get('threshold_auto', False),
             drop_untyped=data.get('drop_untyped', True),
+            exclude_autapses=data.get('exclude_autapses', True),
             edgeN_limit=data.get('edgeN_limit', 500),
             comparison_mode=data.get('comparison_mode', 'path'),
             path_mode=data.get('path_mode', 'all'),
