@@ -165,6 +165,9 @@ def read_run_provenance(run_dir) -> dict:
                   re.MULTILINE)
     if m:
         prov['exclude_intra_type_connections'] = _parse_scalar(m.group(1))
+    m = re.search(r'^exclude autapses:\s*(\S+)', text, re.MULTILINE)
+    if m:
+        prov['exclude_autapses'] = _parse_scalar(m.group(1))
     m = re.search(r'^aggregate method:\s*(\S+)', text, re.MULTILINE)
     if m:
         prov['aggregate_method'] = _parse_scalar(m.group(1))
@@ -299,7 +302,7 @@ def _load_fast_graph():
 def _polars_stream_passes(edge_lf, type_map, emitted, node_set, *,
                           ratio_mode, asked, and_syn_floor, and_ratio_tier,
                           min_syn_active, min_syn, exclude_intra,
-                          want_full=False):
+                          exclude_autapses=False, want_full=False):
     """Polars fast path for the all-mode stream work (PERF 2026-10-08):
     the accumulators (body_in / type_in / type_in_adj / F9 post_totals /
     AND post_totals) and the route-scoped induced admissions, computed by
@@ -435,6 +438,10 @@ def _polars_stream_passes(edge_lf, type_map, emitted, node_set, *,
     if exclude_intra:
         node_passing = node_passing.filter(
             pl.col('typ_pre') != pl.col('typ_post'))
+    if exclude_autapses:
+        # BodyId self-edges never enter a default run's graph; keeping them
+        # here would re-inflate exactly the type self-cells the run reduced.
+        node_passing = node_passing.filter(pl.col('u') != pl.col('v'))
 
     # emitted-pair classification of the tier-passing, node-passing,
     # intra-filtered mass (grouped: integer sums, order-free) — computed
@@ -476,6 +483,8 @@ def _polars_stream_passes(edge_lf, type_map, emitted, node_set, *,
         if exclude_intra:
             full_frame = full_frame.filter(
                 pl.col('typ_pre') != pl.col('typ_post'))
+        if exclude_autapses:
+            full_frame = full_frame.filter(pl.col('u') != pl.col('v'))
         full_frame = (full_frame
                       .join(ns.lazy().rename({'nid': 'u'}), on='u',
                             how='semi')
@@ -1365,6 +1374,9 @@ def compute_type_level_refill(
     bitten = prov.get('strongest_first_budget_bitten', 'False') == 'True'
     exclude_intra = prov.get(
         'exclude_intra_type_connections', 'False') == 'True'
+    # Absent on pre-2026-10-20 runs: keep the legacy refill universe (the
+    # flag only became explicit with the default-on contract).
+    exclude_autapses = prov.get('exclude_autapses', 'False') == 'True'
     aggregate_method = prov.get('aggregate_method') or 'product'
 
     rec: dict = {
@@ -1389,6 +1401,7 @@ def compute_type_level_refill(
         # cutoff is the forced min synapse
         'weight_basis': ('connection_ratio' if ratio_mode else 'synapse'),
         'min_synapse': prov.get('min_synapse'),
+        'exclude_autapses': exclude_autapses,
     }
 
     # -- DUAL REFILL (2026-10-08): emitted rows + the induced graph feed
@@ -1464,7 +1477,8 @@ def compute_type_level_refill(
             ratio_mode=ratio_mode, asked=asked,
             and_syn_floor=and_syn_floor, and_ratio_tier=and_ratio_tier,
             min_syn_active=_min_syn_active, min_syn=_min_syn,
-            exclude_intra=exclude_intra, want_full=True)
+            exclude_intra=exclude_intra, exclude_autapses=exclude_autapses,
+            want_full=True)
         body_in = pol['body_in']
         type_in = pol['type_in']
         type_in_adj = pol['type_in_adj']
@@ -1899,6 +1913,7 @@ def compute_type_level_refill(
                 if (wf_full >= 1 and u in node_set and v in node_set
                         and not (exclude_intra
                                  and type_map.get(u) == type_map.get(v))
+                        and not (exclude_autapses and u == v)
                         and (type_map[u], type_map[v]) in emitted):
                     if ratio_mode:
                         _den_f = post_totals.get(v, 0.0)
@@ -1926,6 +1941,8 @@ def compute_type_level_refill(
                     non_involved_excluded += 1
                     continue
                 if exclude_intra and type_map.get(u) == type_map.get(v):
+                    continue
+                if exclude_autapses and u == v:
                     continue
                 _pair = (type_map[u], type_map[v])
                 if _pair in emitted:

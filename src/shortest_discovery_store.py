@@ -639,6 +639,7 @@ def _edge_filter_config(fc):
         'aggregate_method': getattr(fc, 'aggregate_method', None),
         'exclude_intra_type_connections':
             getattr(fc, 'exclude_intra_type_connections', None),
+        'exclude_autapses': getattr(fc, 'exclude_autapses', True),
         'drop_untyped': getattr(fc, 'drop_untyped', None),
         'separate_hemispheres': getattr(fc, 'separate_hemispheres', None),
         'hemisphere_filter': getattr(fc, 'hemisphere_filter', None),
