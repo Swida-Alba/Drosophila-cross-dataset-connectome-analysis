@@ -2077,6 +2077,27 @@ class FindNeuronConnection:
                 df['hemisphere'] = ''
         if 'hemisphere_code' not in df.columns:
             df['hemisphere_code'] = self._normalize_hemisphere_series(df['hemisphere'])
+        over = getattr(self, 'soma_side_overrides', None)
+        if over:
+            id_col = next((c for c in ('bodyId', 'body_id')
+                           if c in df.columns), None)
+            if id_col is None:
+                raise ValueError('soma_side_overrides needs a bodyId column '
+                                 'in the neuron table')
+            codes = {str(k): self._HEMI_CODE_ALIASES.get(
+                         str(v).strip().lower(), str(v).strip().upper())
+                     for k, v in over.items()}
+            bad = sorted(k for k, v in codes.items() if v not in ('L', 'R'))
+            if bad:
+                raise ValueError('soma_side_overrides values must be L/R: '
+                                 f'{bad[:5]}')
+            want = df[id_col].astype(str).map(codes)
+            hit = want.notna()
+            if hit.any():
+                df.loc[hit, 'hemisphere'] = want[hit]
+                df.loc[hit, 'hemisphere_code'] = want[hit]
+                self._vprint(f'  Soma-side overrides applied: '
+                             f'{int(hit.sum())} neuron(s)', level='full')
         return df
 
     def _append_hemi_suffix(self, label: str, hemi_code: str) -> str:
@@ -3721,6 +3742,16 @@ class FindNeuronConnection:
     keep_only_hemisphere_conserved_connections: If True, keep only edges that are conserved between
     hemispheres (e.g., A_L->B_L paired with A_R->B_R). Works by extracting hemisphere info from
     type labels with _L/_R/_U suffixes - edges without hemisphere info are kept as-is.
+    '''
+
+    soma_side_overrides: Optional[dict] = None
+    '''
+    Optional {bodyId: 'L'|'R'|'left'|'right'} map applied AFTER the dataset's
+    own side column is read and BEFORE hemisphere suffixing/filtering: the
+    dataset stays the default for every neuron it classifies, and an override
+    wins for the neurons it lists (e.g. a curated side table filling blanks in
+    the release). Supplying an override with no bodyId column raises rather
+    than silently doing nothing.
     '''
 
     hemisphere_filter: str = 'both'
