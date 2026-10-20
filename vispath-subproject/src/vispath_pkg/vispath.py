@@ -16933,7 +16933,8 @@ class VisualizePath:
                        fill_scale=None, fill_label=None, fill_value=None,
                        fill_range=None, init_clustered=True,
                        node_universe=None, metric_name=None,
-                       cell_value_decimals=None, cell_value_ignore=''):
+                       cell_value_decimals=None, cell_value_ignore='',
+                   cell_value_integers_bare=False):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -17131,6 +17132,7 @@ class VisualizePath:
             fill_range=fill_range, init_clustered=init_clustered,
             cell_value_decimals=cell_value_decimals,
             cell_value_ignore=cell_value_ignore,
+            cell_value_integers_bare=cell_value_integers_bare,
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -17720,7 +17722,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                    cell_data=None, cell_fill=None, cell_outline=None,
                    fill_scale=None, fill_label=None, fill_value=None,
                    fill_range=None, margin_left=None, margin_bottom=None,
-                   cell_value_decimals=None, cell_value_ignore=''):
+                   cell_value_decimals=None, cell_value_ignore='',
+                   cell_value_integers_bare=False):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -17737,12 +17740,16 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     ratios); a value of exactly 100 prints without decimals, so a percentage
     scale's top reads "100" rather than "100.0". ``cell_value_ignore`` seeds
     the Show-Values ignore list (same syntax as the panel: "0, >20"), so cells
-    whose value means "no edge" can stay unlabelled.
+    whose value means "no edge" can stay unlabelled. ``cell_value_integers_bare``
+    prints whole values without decimals (3, not 3.0) while keeping the
+    ``cell_value_decimals`` precision for the rest — a strength scale reads
+    naturally without turning 10.8 into 11.
     """
     metric_label_adj = str(metric_label_adj
                            or 'Adj. Ratio (threshold-conditioned)')
     cell_value_decimals_js = ('null' if cell_value_decimals is None
                               else str(int(cell_value_decimals)))
+    cell_value_integers_bare_js = ('true' if cell_value_integers_bare else 'false')
     # Remember whether the CALLER passed a colorscale: only then do we seed the
     # heatmap with a custom colorscale (the default below is a legacy leftover).
     provided_color_scale = color_scale
@@ -18787,6 +18794,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         // Caller's Show-Values precision (null = the metric's default).
         const CELL_VALUE_DECIMALS = {cell_value_decimals_js};
         const CELL_VALUE_WHOLE_AT = 100;
+        const CELL_VALUE_INTEGERS_BARE = {cell_value_integers_bare_js};
         let useClusteredOrder = {json.dumps(init_clustered and clustering_successful)};  // Track current ordering mode (use init_clustered parameter)
         let currentClusteringMethod = 'ward';  // Current clustering method (ward, average, complete, single)
         let showDendrogram = {json.dumps(init_clustered and clustering_successful)};  // Draw dendrogram bands when clustered ordering is active
@@ -18907,6 +18915,10 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             if (CELL_VALUE_DECIMALS !== null && currentMetric !== 'ratio'
                     && currentMetric !== 'ratio_adj'
                     && currentMetric !== 'probability') {{
+                if (CELL_VALUE_INTEGERS_BARE
+                        && Math.abs(n - Math.round(n)) < 1e-9) {{
+                    return String(Math.round(n));
+                }}
                 if (Math.abs(n - CELL_VALUE_WHOLE_AT) < 1e-9) {{
                     return String(CELL_VALUE_WHOLE_AT);
                 }}
