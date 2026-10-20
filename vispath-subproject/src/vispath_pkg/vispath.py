@@ -16932,7 +16932,7 @@ class VisualizePath:
                        cell_data=None, cell_fill=None, cell_outline=None,
                        fill_scale=None, fill_label=None, fill_value=None,
                        fill_range=None, init_clustered=True,
-                       node_universe=None):
+                       node_universe=None, metric_name=None):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -16960,6 +16960,11 @@ class VisualizePath:
             Labels that must appear on BOTH axes even when no edge touches them
             (a type-level matrix whose edge subset misses a type). Their rows and
             columns are all-zero; the axis keeps the size the caller promised.
+        metric_name : str, optional
+            Display name for the weight matrix (default "Synapses"). The hover,
+            the cell values and the colourbar title use it, so a caller whose
+            `weight` column carries a different quantity (bodyId pairs, mean
+            synapses per pair, a coverage share) names it here.
         
         Returns
         -------
@@ -17117,6 +17122,7 @@ class VisualizePath:
             matrices_dict=matrices_dict,  # Pass all matrices for metric toggle
             verbose=self.verbose,
             metric_label_adj=self.adj_ratio_label_plain,
+            metric_name=metric_name,
             inline_plotly=True,  # single-file page survives relocation
             cell_data=cell_data, cell_fill=cell_fill,
             cell_outline=cell_outline, fill_scale=fill_scale,
@@ -18790,7 +18796,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             
             // Get metric display name
             const metricNames = {{
-                'weight': 'Synapses',
+                'weight': '{js_escape(metric_name or "Synapses")}',
                 'ratio': 'Ratio',
                 'ratio_adj': '{metric_label_adj}',
                 'refilled': 'Refilled',
