@@ -16932,7 +16932,8 @@ class VisualizePath:
                        cell_data=None, cell_fill=None, cell_outline=None,
                        fill_scale=None, fill_label=None, fill_value=None,
                        fill_range=None, init_clustered=True,
-                       node_universe=None, metric_name=None):
+                       node_universe=None, metric_name=None,
+                       cell_value_decimals=None, cell_value_ignore=''):
         """
         Create an interactive heatmap from the connection DataFrame.
         
@@ -17128,6 +17129,8 @@ class VisualizePath:
             cell_outline=cell_outline, fill_scale=fill_scale,
             fill_label=fill_label, fill_value=fill_value,
             fill_range=fill_range, init_clustered=init_clustered,
+            cell_value_decimals=cell_value_decimals,
+            cell_value_ignore=cell_value_ignore,
         )
         
         self._vprint(f"  Heatmap saved: {heatmap_file}")
@@ -17716,7 +17719,8 @@ def heatmap_margins(x_labels, y_labels):
 def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None,
                    cell_data=None, cell_fill=None, cell_outline=None,
                    fill_scale=None, fill_label=None, fill_value=None,
-                   fill_range=None, margin_left=None, margin_bottom=None):
+                   fill_range=None, margin_left=None, margin_bottom=None,
+                   cell_value_decimals=None, cell_value_ignore=''):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -17728,10 +17732,17 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     label is passed in rather than read off an instance.
     ``margin_left`` / ``margin_bottom`` override the label-derived margins;
     pass the same values to sibling pages so equal canvas sizes give equal
-    matrix boxes.
+    matrix boxes. ``cell_value_decimals`` sets the Show-Values label precision
+    (None keeps the metric default: whole numbers for counts, one decimal for
+    ratios); a value of exactly 100 prints without decimals, so a percentage
+    scale's top reads "100" rather than "100.0". ``cell_value_ignore`` seeds
+    the Show-Values ignore list (same syntax as the panel: "0, >20"), so cells
+    whose value means "no edge" can stay unlabelled.
     """
     metric_label_adj = str(metric_label_adj
                            or 'Adj. Ratio (threshold-conditioned)')
+    cell_value_decimals_js = ('null' if cell_value_decimals is None
+                              else str(int(cell_value_decimals)))
     # Remember whether the CALLER passed a colorscale: only then do we seed the
     # heatmap with a custom colorscale (the default below is a legacy leftover).
     provided_color_scale = color_scale
@@ -18578,7 +18589,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     </div>
                     <div style="margin-top: 8px;">
                         <label style="font-size: 11px; display: block; margin-bottom: 4px;">Ignore Values (comma-separated):</label>
-                        <input type="text" id="ignoreValuesInput" placeholder="e.g., 0, >20, <=5" style="width: 100%; padding: 4px; font-size: 10px; border: 1px solid #dee2e6; border-radius: 3px; box-sizing: border-box;" oninput="updateIgnoredValues()">
+                        <input type="text" id="ignoreValuesInput" value="{cell_value_ignore}" placeholder="e.g., 0, >20, <=5" style="width: 100%; padding: 4px; font-size: 10px; border: 1px solid #dee2e6; border-radius: 3px; box-sizing: border-box;" oninput="updateIgnoredValues()">
                     </div>
                     <div class="slider-control" style="margin-top: 8px;">
                         <label>
@@ -18770,8 +18781,12 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         let showCellValues = false;  // Track if cell values should be displayed in cells (default: false)
         let cellValueFontSize = 10;  // Font size for cell value annotations
         let ignoredValues = new Set();  // Set of values to ignore when displaying cell values
+        if (document.getElementById('ignoreValuesInput')) updateIgnoredValues();
         let contrastThreshold = 0.5;  // Luminance threshold for contrast color (0-1, default: 0.5)
         let reverseContrast = false;  // Whether to reverse black/white contrast colors
+        // Caller's Show-Values precision (null = the metric's default).
+        const CELL_VALUE_DECIMALS = {cell_value_decimals_js};
+        const CELL_VALUE_WHOLE_AT = 100;
         let useClusteredOrder = {json.dumps(init_clustered and clustering_successful)};  // Track current ordering mode (use init_clustered parameter)
         let currentClusteringMethod = 'ward';  // Current clustering method (ward, average, complete, single)
         let showDendrogram = {json.dumps(init_clustered and clustering_successful)};  // Draw dendrogram bands when clustered ordering is active
@@ -18889,6 +18904,14 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         function formatCellValue(value) {{
             const n = Number(value);
             if (value === '' || value === null || !Number.isFinite(n)) return String(value);
+            if (CELL_VALUE_DECIMALS !== null && currentMetric !== 'ratio'
+                    && currentMetric !== 'ratio_adj'
+                    && currentMetric !== 'probability') {{
+                if (Math.abs(n - CELL_VALUE_WHOLE_AT) < 1e-9) {{
+                    return String(CELL_VALUE_WHOLE_AT);
+                }}
+                return n.toFixed(CELL_VALUE_DECIMALS);
+            }}
             // Ratio metrics are labelled as percentage NUMBERS (one
             // decimal, no % mark — the colour bar carries the unit); every
             // synapse-count metric reads as a whole number.
