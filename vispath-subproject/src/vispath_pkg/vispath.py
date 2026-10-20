@@ -19404,7 +19404,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     title: isLarge ? '<b>' + xAxisLabel + '</b> (' + xAxisCount + ' neurons)' : '<b>' + xAxisLabel + '</b>',
                     side: 'bottom',
                     titlefont: {{size: currentFontSize + 2, color: '#333333'}},
-                    tickangle: displayXLabels.length > 1 ? -45 : 0,  // Always rotate when multiple labels
+                    tickangle: displayXLabels.length > 1 ? -90 : 0,  // Vertical labels when multiple
                     showticklabels: showLabels,
                     ticks: '',  // no tick marks: the axis text is the only cue
                     tickmode: 'array',  // Use explicit tick values
