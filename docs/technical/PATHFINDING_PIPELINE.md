@@ -105,6 +105,35 @@ node of a returned path or visualization.
 - `drop_untyped` is part of the FindAllPath graph-cache key
   (`_findallpath_cache_key`).
 
+### Stage 1c — Autapse filter (`exclude_autapses`, both modes; default on)
+
+`FindNeuronConnection.exclude_autapses` (default `True`, 2026-10-20) removes
+bodyId self-edges (`bodyId_pre == bodyId_post`) from the graph frames in
+`_graph_edge_frames` — BEFORE lossless pruning, the Edge Budget and graph
+construction, in both Complete Paths and Shortest Paths, and for cached and
+harness graphs alike. FindNetwork applies the same rule immediately after its
+direct-connection fetch, before the type/group aggregation. Autapses add no
+graph nodes and can never be a hop of a simple path, so the explored
+membership/layers are unchanged; only the self-edge mass leaves the run.
+
+- **Why it is explicit**: the Paths pipeline used to drop autapses only
+  implicitly (a self-edge is never a path hop) while the Network tab kept
+  them, so the two tabs of one application disagreed silently on exactly the
+  self-cells. The shared default makes both tables describe the same
+  connection set. A type-level self-cell (`type_pre == type_post`) backed by
+  DISTINCT neurons is not an autapse and is untouched.
+- **Provenance**: each run's `all_attributes.json` carries
+  `autapses_excluded: {rows, synapses}`; the comparison
+  `run_manifest.json` carries it per dataset/threshold (pair-keyed, so
+  refetches count once). `autapses_found` always carries the present mass.
+  `user_warning_notes.txt` gains a `[autapses]` bullet stating the rule and
+  the dropped mass; with the flag off it states the KEPT mass instead.
+  `parameters.txt` stamps `exclude autapses: True|False`, and the
+  type-level refill reads it so its admission universe matches the run.
+- **Escape hatch**: pass `exclude_autapses=False` to keep the rows (autapse
+  studies). Network then keeps the type self-cells the Paths tabs can never
+  emit; the notes say so.
+
 ### Stage 2 — Lossless hop-budget pruning (fixpoint)
 `prune_layers_hop_budget` (`max_passes=4` since 2026-09-06):
 

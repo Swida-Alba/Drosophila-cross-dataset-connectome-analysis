@@ -221,6 +221,7 @@ Use these settings to split types by hemisphere, compute symmetry statistics, an
 
 | Parameter                                    | Type | Default | Description                                                                                                                                                                       |
 | -------------------------------------------- | ---- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `exclude_autapses`                           | bool | True    | Remove bodyId self-edges (`bodyId_pre == bodyId_post`) before pathfinding / direct-edge aggregation. Matches the Network tab's default; the dropped mass is reported per dataset/threshold in `run_manifest.json`. Set False for autapse studies.          |
 | `separate_hemispheres`                       | bool | False   | When True, type/group labels are suffixed with `_L/_R/_U` using dataset hemisphere annotations. All type-level and custom-group aggregations are split by hemisphere.             |
 | `symmetry_analysis`                          | bool | True    | Generates per-dataset, per-threshold hemisphere symmetry summaries (ipsilateral vs contralateral). Auto-enabled when `separate_hemispheres=True`.                                 |
 | `keep_only_hemisphere_conserved_connections` | bool | False   | When True, keep only edges that are conserved between hemispheres (e.g., `A_L→B_L` and `A_R→B_R`). Requires `separate_hemispheres=True` and is disabled with a warning otherwise. |
@@ -644,6 +645,7 @@ comparison_results_20251127_155513/
 ├── comparison_report.html          # Interactive HTML report
 ├── vis_summary.pdf                 # PDF summary of visualizations
 ├── parameters.json                  # comparison settings + provenance contract
+├── run_manifest.json                # self-describing manifest incl. autapses_excluded
 ├── effective_thresholds.json        # requested → applied notice per dataset
 │
 ├── comparison_results/             # CSV data files
@@ -979,6 +981,28 @@ pre- or post-neuron before aggregation. Dropped rows are written once at
 `user_warning_notes.txt`; delegated per-dataset path folders intentionally
 retain their raw rows so the comparison-level filter is the single source of
 truth.
+
+### Exclude Autapses (default on)
+
+`ComparisonParameters.exclude_autapses` (default `True`, 2026-10-20) removes
+bodyId self-edges (`bodyId_pre == bodyId_post`) from every dataset lane before
+pathfinding / direct-edge aggregation. This is the shared contract with the
+Network tab: Complete/Shortest Paths never traversed a self-edge, while
+Network used to keep it, so the two tabs disagreed on exactly the type
+self-cells (and autapse-only types). With the default on, both describe the
+same connection set.
+
+- The delegated path runs receive the flag directly; the analyzer also filters
+  its own direct-edge reads (`_query_edges_local` / `_query_edges_neuprint`)
+  and cached bodyId tables, so the rule does not depend on path traversal.
+- The census is per dataset/threshold: `run_manifest.json` carries
+  `autapses_excluded: {"<dataset>@<threshold>": {rows, synapses}}` and the
+  root `user_warning_notes.txt` names the rule and the dropped mass.
+  With `False`, the manifest reports 0 dropped and the note states the KEPT
+  mass instead.
+- A type-level self-cell (`type_pre == type_post`) backed by DISTINCT neurons
+  is not an autapse and is always kept. Set `exclude_autapses=False` for
+  autapse studies.
 
 ### Path presence matrices key through the merge policy
 

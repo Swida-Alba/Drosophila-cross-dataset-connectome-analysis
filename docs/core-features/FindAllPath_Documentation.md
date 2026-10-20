@@ -189,6 +189,19 @@ Result: Complete picture of all PPL1→MBON pathways within 3 layers.
   graph budgets, path budgets and the drawing cap. `drop_untyped` is part
   of the FindAllPath graph-cache key, so runs with different values never
   reuse each other's cached graphs.
+- `exclude_autapses`: Remove bodyId self-edges (`bodyId_pre ==
+  bodyId_post`) before graph construction (type `bool`, default `True`,
+  2026-10-20). A self-edge is never a hop of a simple path, so Complete and
+  Shortest Paths used to lose autapses only implicitly while the Network
+  tab kept them — the two tabs disagreed on exactly the self-cells. The
+  rule is now explicit and shared (Complete Paths, Shortest Paths,
+  Network, Cross-Dataset Comparison); the dropped mass is reported as
+  `autapses_excluded: {rows, synapses}` in `all_attributes.json` (and the
+  comparison `run_manifest.json`) and named in `user_warning_notes.txt`.
+  `autapses_found` always carries the mass present, so a run with the flag
+  off discloses what it kept. A type-level self-cell (`type_pre ==
+  type_post`) backed by DISTINCT neurons is not an autapse and is never
+  removed by this switch. Pass `False` to keep the rows.
 
 ### Threshold provenance
 

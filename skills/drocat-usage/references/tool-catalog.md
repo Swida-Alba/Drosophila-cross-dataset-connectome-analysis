@@ -21,6 +21,7 @@ fc = FindNeuronConnection(
     min_traversal_probability=0.0,
     filter_by="bodyId",          # or "type"
     exclude_intra_type_connections=False,
+    exclude_autapses=True,       # default: drop bodyId self-edges (network/paths agree)
     use_cache=True,
     output_format="csv",         # or "xlsx"
     network_layout="distributed",
