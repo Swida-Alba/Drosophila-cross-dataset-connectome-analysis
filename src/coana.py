@@ -14481,6 +14481,13 @@ class FindNeuronConnection:
         # paths flows already attach it (see _attach_ratio_adj_columns).
         conn_type = self._attach_ratio_adj_columns(
             conn_type, 'type_pre', 'type_post')
+        # Same treatment for the bodyId table, as FindAllPaths already does
+        # (see the 22409 call): the plain ratio's denominator is
+        # threshold-free, so above Min Synapse 1 only the conditioned share
+        # describes the edges the run can actually see.
+        if not self.skip_bodyId:
+            conn_df = self._attach_ratio_adj_columns(
+                conn_df, 'bodyId_pre', 'bodyId_post')
         conn_type = self._sort_connection_export(conn_type)
         conn_df = self._sort_connection_export(conn_df)
         if conn_group is not None and len(conn_group) > 0:
