@@ -18018,7 +18018,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     # Calculate left margin: min 120px, max 400px, ~7px per character + 40px padding
     dynamic_left_margin = min(400, max(120, max_row_label_length * 7 + 40))
     # Calculate bottom margin for rotated column labels: min 120px, ~5px per char (due to 45° rotation)
-    dynamic_bottom_margin = min(300, max(120, max_col_label_length * 5 + 40))
+    dynamic_bottom_margin = min(360, max(160, max_col_label_length * 7 + 60))
     
     # Generate unique storage key for this heatmap
     from datetime import datetime
