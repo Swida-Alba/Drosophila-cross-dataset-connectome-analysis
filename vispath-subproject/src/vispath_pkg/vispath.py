@@ -19834,6 +19834,60 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // Remove trailing zeros and decimal point if not needed
             return str.replace(/\.?0+$/, '');
         }}
+
+        function colorValueToHex(value) {{
+            if (typeof value !== 'string') return '#ffffff';
+            const text = value.trim();
+            if (text.charAt(0) === '#') return text;
+            const match = text.match(/rgba?\(([^)]+)\)/i);
+            if (!match) return '#ffffff';
+            return '#' + match[1].split(',').slice(0, 3).map(function (v) {{
+                return Math.max(0, Math.min(255, Math.round(Number(v))))
+                    .toString(16).padStart(2, '0');
+            }}).join('');
+        }}
+
+        function seedCustomColorPanel() {{
+            // Show the caller-provided ramp in the panel so it can be edited
+            // from the colours actually drawn, not the legacy defaults.
+            if (!Array.isArray(customColorScale) || customColorScale.length < 2) return;
+            const stops = customColorScale.slice().sort((a, b) => a[0] - b[0]);
+            const three = stops.length >= 3;
+            use3PointScale = three;
+            const checkbox = document.getElementById('use3PointScale');
+            if (checkbox) checkbox.checked = three;
+            const two = document.getElementById('twoPointColors');
+            const threeBox = document.getElementById('threePointColors');
+            if (two) two.style.display = three ? 'none' : 'block';
+            if (threeBox) threeBox.style.display = three ? 'block' : 'none';
+            const zmin = Number.isFinite(customZmin) ? customZmin :
+                (window.customColorRange ? window.customColorRange.min : null);
+            const zmax = Number.isFinite(customZmax) ? customZmax :
+                (window.customColorRange ? window.customColorRange.max : null);
+            const valueAt = function (pos) {{
+                return (zmin !== null && zmax !== null)
+                    ? formatValueDisplay(zmin + pos * (zmax - zmin)) : null;
+            }};
+            if (three) {{
+                const mid = stops[Math.floor(stops.length / 2)];
+                document.getElementById('colorMin3').value = colorValueToHex(stops[0][1]);
+                document.getElementById('colorMid3').value = colorValueToHex(mid[1]);
+                document.getElementById('colorMax3').value = colorValueToHex(stops[stops.length - 1][1]);
+                const vmin = valueAt(stops[0][0]);
+                const vmid = valueAt(mid[0]);
+                const vmax = valueAt(stops[stops.length - 1][0]);
+                if (vmin !== null) document.getElementById('valueMin3').value = vmin;
+                if (vmid !== null) document.getElementById('valueMid3').value = vmid;
+                if (vmax !== null) document.getElementById('valueMax3').value = vmax;
+            }} else {{
+                document.getElementById('colorMin').value = colorValueToHex(stops[0][1]);
+                document.getElementById('colorMax').value = colorValueToHex(stops[stops.length - 1][1]);
+                const vmin = valueAt(stops[0][0]);
+                const vmax = valueAt(stops[stops.length - 1][0]);
+                if (vmin !== null) document.getElementById('valueMin2').value = vmin;
+                if (vmax !== null) document.getElementById('valueMax2').value = vmax;
+            }}
+        }}
         
         function applyCustomColors() {{
             if (use3PointScale) {{
@@ -21807,6 +21861,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 console.log('Initialized custom color range from Python parameters:', window.customColorRange);
             }}
             
+            seedCustomColorPanel();
             const saved = localStorage.getItem(storageKey);
             if (saved) {{
                 loadSettings(false);  // Silent load on initialization
