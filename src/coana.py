@@ -1846,6 +1846,162 @@ class FindNeuronConnection:
         self._shortest_scope_limited = False
         self._shortest_bodyid_pairs_may_be_missing = False
         self._shortest_target_hop_limits = {}
+        self._reset_autapse_tracking()
+
+    def _reset_autapse_tracking(self):
+        """Fresh per-run autapse census (see ``exclude_autapses``).
+
+        ``_autapse_pairs`` keys a self-edge by bodyId pair so a pair fetched
+        into several layer frames (shortest per-target refetches) is counted
+        once; a pair seen with different weights keeps the larger physical
+        mass. ``_autapse_filter_ran`` gates the note: harness objects that
+        never reach a graph must not grow a user_warning_notes file.
+        """
+        self._autapse_pairs = {}
+        self._autapse_filter_ran = False
+        self.autapses_found = {'rows': 0, 'synapses': 0}
+        self.autapses_excluded = {'rows': 0, 'synapses': 0}
+        # Replay slices write notes before/after materialization; this
+        # overrides ``autapses_found`` for the note only, so a slice at t>t0
+        # does not claim the t0 discovery's autapse mass (the slice's own
+        # all_attributes.json already carries the per-tier census).
+        self._autapse_note_stats = None
+
+    @staticmethod
+    def _autapse_weight(value):
+        """One autapse row's mass, with nulls counted as 0 (never NaN)."""
+        if value is None:
+            return 0
+        try:
+            if pd.isna(value):
+                return 0
+        except (TypeError, ValueError):
+            pass
+        return value
+
+    @staticmethod
+    def _autapse_mass_value(mass):
+        """JSON/CSV-friendly mass: int when integral, else float."""
+        try:
+            return int(mass) if float(mass).is_integer() else float(mass)
+        except (TypeError, ValueError):
+            return 0
+
+    def _record_autapse_pairs(self, pairs):
+        """Merge one frame's self-edge census into the run total."""
+        if not hasattr(self, '_autapse_pairs'):
+            self._reset_autapse_tracking()
+        for pair, weight in pairs.items():
+            previous = self._autapse_pairs.get(pair)
+            if previous is None or weight > previous:
+                self._autapse_pairs[pair] = weight
+        self._sync_autapse_mass()
+
+    def _sync_autapse_mass(self):
+        pairs = getattr(self, '_autapse_pairs', {}) or {}
+        mass = self._autapse_mass_value(sum(pairs.values()))
+        self.autapses_found = {'rows': len(pairs), 'synapses': mass}
+        if getattr(self, 'exclude_autapses', True):
+            self.autapses_excluded = {'rows': len(pairs),
+                                      'synapses': mass}
+        else:
+            self.autapses_excluded = {'rows': 0, 'synapses': 0}
+
+    def _autapse_stats_at_threshold(self, threshold):
+        """Census restricted to the rows a threshold's graph would admit.
+
+        Replay slices are materialized from a t0 discovery, so the run's
+        full census overstates a higher tier: this returns the self-edges
+        whose SYNAPSE mass clears the tier (the ratio lane floors on
+        min_synapse instead — a ratio tier does not gate synapse mass).
+        """
+        pairs = getattr(self, '_autapse_pairs', {}) or {}
+        if not pairs:
+            return {'rows': 0, 'synapses': 0}
+        if str(getattr(self, 'weight_basis', 'synapse')) == 'connection_ratio':
+            floor = float(getattr(self, 'min_synapse_num', 1) or 1)
+        else:
+            floor = float(threshold)
+        kept = {pair: mass for pair, mass in pairs.items()
+                if float(mass) >= floor}
+        return {'rows': len(kept),
+                'synapses': self._autapse_mass_value(sum(kept.values()))}
+
+    def _autapse_parameter_line(self):
+        """The ``parameters.txt`` stamp read by the type-level refill.
+
+        Written explicitly instead of joining ``parameter_dict``: that dict
+        also feeds FindDirectConnections (which does not apply this rule),
+        and a stamp there would claim a filter the tool never ran.
+        """
+        key = 'exclude autapses'
+        return (f'{key}:{" " * max(1, 30 - len(key))}'
+                f'{str(bool(getattr(self, "exclude_autapses", True)))}')
+
+    def _filter_autapses_in_frames(self, frames, weight_col='weight'):
+        """Drop bodyId self-edges from graph layers and record their mass.
+
+        Runs before graph construction (the path tools) and before the type
+        aggregation (FindNetwork). Works on pandas or Polars frames; the
+        census is pair-keyed so repeated fetch rows count once. ``weight``
+        is the physical pair mass by the time a frame reaches here (slice
+        collapse happened upstream); a missing weight column counts 0.
+        """
+        import polars as pl
+
+        self._autapse_filter_ran = True
+        found = {}
+        filtered = []
+        for frame in frames:
+            if frame is None:
+                filtered.append(frame)
+                continue
+            is_polars = isinstance(frame, pl.DataFrame)
+            height = frame.height if is_polars else len(frame)
+            if height == 0 or 'bodyId_pre' not in frame.columns \
+                    or 'bodyId_post' not in frame.columns:
+                filtered.append(frame)
+                continue
+            if is_polars:
+                hit = frame.filter(
+                    pl.col('bodyId_pre').cast(pl.Utf8)
+                    == pl.col('bodyId_post').cast(pl.Utf8))
+                if hit.height:
+                    columns = ['bodyId_pre', 'bodyId_post']
+                    if weight_col in hit.columns:
+                        columns.append(weight_col)
+                    for row in hit.select(columns).iter_rows(named=True):
+                        found[(str(row['bodyId_pre']),
+                               str(row['bodyId_post']))] = self._autapse_weight(
+                                   row.get(weight_col, 0))
+                if getattr(self, 'exclude_autapses', True) and hit.height:
+                    frame = frame.filter(
+                        pl.col('bodyId_pre').cast(pl.Utf8)
+                        != pl.col('bodyId_post').cast(pl.Utf8))
+            else:
+                pre = frame['bodyId_pre'].astype(str)
+                post = frame['bodyId_post'].astype(str)
+                mask = ((pre == post)
+                        & frame['bodyId_pre'].notna()
+                        & frame['bodyId_post'].notna())
+                if mask.any():
+                    weights = (frame.loc[mask, weight_col]
+                               if weight_col in frame.columns
+                               else pd.Series([0] * int(mask.sum()),
+                                              index=frame.index[mask]))
+                    for pre_id, weight in zip(
+                            pre[mask].tolist(), weights.tolist()):
+                        found[(pre_id, pre_id)] = self._autapse_weight(weight)
+                if getattr(self, 'exclude_autapses', True) and mask.any():
+                    frame = frame.loc[~mask].copy()
+            filtered.append(frame)
+        self._record_autapse_pairs(found)
+        return filtered
+
+    def _filter_autapses_in_frame(self, frame, weight_col='weight'):
+        """Single-frame form of :meth:`_filter_autapses_in_frames`."""
+        return self._filter_autapses_in_frames(
+            [frame], weight_col=weight_col)[0]
 
     def _record_search_priority_warnings(self, role, search_infos):
         """Record analysis queries resolved below the identity columns.
@@ -4178,6 +4334,33 @@ class FindNeuronConnection:
     (forwarded to ``pull_dataset``) so the Settings-tab pulls can stop a
     first-time full dataset download when the user presses Cancel.  Other
     callers leave it None.
+    '''
+
+    exclude_autapses: bool = True
+    '''
+    Whether to remove bodyId self-edges (bodyId_pre == bodyId_post) before the
+    path graph is built / the Network type table is aggregated.
+
+    Default True (2026-10-20). A self-edge is never a hop of a simple path, so
+    Complete Paths and Shortest Paths used to drop autapses only implicitly
+    (the edge never appeared on a path); Network kept them, and the two tabs
+    of one application disagreed on exactly the self-cells. The rule is now
+    explicit and shared:
+
+    - FindAllPath / FindShortestPath remove the rows in
+      ``_graph_edge_frames`` before graph construction (both modes, cached
+      and harness graphs included).
+    - FindNetwork removes them right after the direct-connection fetch,
+      before the type/group aggregation.
+    - The dropped mass is recorded as ``autapses_excluded: {rows, synapses}``
+      in ``all_attributes.json`` (and the comparison run manifest), and named
+      in ``user_warning_notes.txt``; ``autapses_found`` always carries the
+      mass present, so the False state is disclosed too.
+
+    Appended to the dataclass last so existing positional constructor calls
+    keep their bindings. Set False to keep the rows (autapse studies). A
+    type-level self-cell (type_pre == type_post) backed by DISTINCT neurons
+    is not an autapse and is never touched by this switch.
     '''
     
     def __post_init__(self):
@@ -14307,6 +14490,10 @@ class FindNeuronConnection:
         import polars as pl
 
         self._reset_temp_columns()
+        # A repeated Network call on one instance must not inherit the
+        # previous run's untyped-drop records — the autapse-empty branch
+        # below writes them before the normal-path reset point.
+        self._reset_untyped_drop_tracking()
         if self.source_df.empty:
             self._refuse_empty_query('Source/target (network)')
 
@@ -14407,6 +14594,7 @@ class FindNeuronConnection:
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
                 f.write(f'{key}:{" "*max(1, 30-keylen)}{value}\n')
+            f.write(self._autapse_parameter_line() + '\n')
             f.write(f'path_mode:{" " * 21}network\n')
             f.write(f'run mode:{" " * 22}n/a (direct connections)\n')
             f.write('\n')
@@ -14424,11 +14612,32 @@ class FindNeuronConnection:
         self._save_df_to_csv_polars(self.source_df, os.path.join(details_folder, 'neurons.csv'))
 
         conn_df = self._fetch_direct_connections_for_nodes(node_ids)
+        # The Network tab now follows the SAME default autapse rule as the
+        # Paths tabs (2026-10-20): bodyId self-edges are removed before the
+        # type/group aggregation, and their mass is recorded. Without this
+        # the 21 self-cells (and five autapse-only cell types on the clock
+        # BANC query) made Network's type table disagree with Paths.
+        conn_df = self._filter_autapses_in_frame(conn_df)
+        # Re-stamp the run metadata now that the autapse census exists: the
+        # early write above ran before the fetch, so its
+        # autapses_excluded/autapses_found were still 0.
+        if self._autapse_filter_ran:
+            _final_attrs = self._run_export_attributes(path_mode='network')
+            _final_attrs['tool'] = 'findnetwork'
+            _final_attrs['run_mode'] = 'n/a (direct connections)'
+            with open(os.path.join(network_folder, 'all_attributes.json'),
+                      'w', encoding='utf-8') as f:
+                json.dump(_final_attrs, f, indent=4,
+                          default=lambda o: '<not serializable>')
         if conn_df.empty:
             self._vprint('\033[33mNo direct connections found among the queried neurons.\033[0m', level='always')
             self._vprint('Note: FindNetwork only covers direct connections WITHIN the queried '
                          'set. For a more complete network involving intermediate neurons, use '
                          'Find Path with Find Reciprocal Connections.', level='always')
+            # The empty state may be CAUSED by the autapse rule (a query whose
+            # only edges were self-edges); its census belongs in the folder.
+            self._write_user_warning_notes(network_folder)
+            self._export_untyped_drop_records(network_folder)
             return
 
         conn_df['bodyId_pre'] = conn_df['bodyId_pre'].astype(str)
@@ -14437,8 +14646,8 @@ class FindNeuronConnection:
         # Shared untyped-label filter (same default/predicate as Complete
         # Paths, Shortest Paths and Cross-Dataset Comparison). Applied
         # BEFORE enrichment so untyped edges never enter the type/group
-        # aggregation or visualizations.
-        self._reset_untyped_drop_tracking()
+        # aggregation or visualizations. (The per-run tracking was reset at
+        # the method entry.)
         conn_df = self._filter_untyped_pandas(conn_df, 'network')
         if conn_df.empty:
             self._vprint(
@@ -14964,6 +15173,15 @@ class FindNeuronConnection:
         refetches of the same physical edge, and summing them multiplied
         weights by the fetch multiplicity (engine issue 2026-10-05 I1).
         """
+        # Explicit autapse rule (default on, 2026-10-20): a bodyId self-edge
+        # is never a hop of a simple path, so path outputs used to lose
+        # autapses only implicitly while the Network tab kept them. Remove
+        # the rows HERE — before pruning/budget/graph construction, in both
+        # modes — and record the dropped mass. Autapses add no nodes, so the
+        # discovered membership/layers are unaffected. The gate runs on
+        # cached and harness graphs too (the prune/ratio gates below take
+        # the same second-pass route).
+        conn_layers = self._filter_autapses_in_frames(conn_layers)
         # Round-13 AND mode under the synapse basis: the ratio
         # co-threshold gates the GRAPH FRAMES too. The live fetch already
         # applies it; this second gate keeps stubbed/harness fetches and
@@ -16231,6 +16449,28 @@ class FindNeuronConnection:
                 'source_neurons.csv/target_neurons.csv while its incident '
                 'edges were removed.'
             )
+        if getattr(self, '_autapse_filter_ran', False):
+            _found = (getattr(self, '_autapse_note_stats', None)
+                      or getattr(self, 'autapses_found', None) or {})
+            _found_rows = int(_found.get('rows', 0) or 0)
+            _found_mass = _found.get('synapses', 0) or 0
+            if getattr(self, 'exclude_autapses', True):
+                notes.append(
+                    '- [autapses] exclude_autapses=True (default): bodyId '
+                    'self-edges (bodyId_pre == bodyId_post) were removed '
+                    'before the path graph / type aggregation; '
+                    f'{_found_rows:,} row(s) / {_found_mass:,} synapse(s) '
+                    'dropped. Pass exclude_autapses=False to keep them. '
+                    'A type-level self-cell backed by distinct neurons is '
+                    'not an autapse and is unaffected.')
+            else:
+                notes.append(
+                    '- [autapses] exclude_autapses=False: bodyId self-edges '
+                    'were KEPT in this run — '
+                    f'{_found_rows:,} row(s) / {_found_mass:,} synapse(s). '
+                    'A self-edge is never a hop of a simple path, so path '
+                    'tables cannot carry these rows; the Network type table '
+                    'does. The default excludes them.')
         if (getattr(self, 'max_interlayer', 0) >= 4
                 and getattr(self, '_depth_cap_reached', False)):
             notes.append(
@@ -17877,6 +18117,14 @@ class FindNeuronConnection:
 
         public_attrs = self._run_export_attributes(path_mode='all')
         public_attrs['replay_source_threshold'] = base_threshold
+        # Per-tier autapse census: the slice is materialized from the t0
+        # discovery, so report only self-edges this tier would admit.
+        _slice_autapses = self._autapse_stats_at_threshold(threshold)
+        public_attrs['autapses_found'] = _slice_autapses
+        public_attrs['autapses_excluded'] = (
+            dict(_slice_autapses)
+            if getattr(self, 'exclude_autapses', True)
+            else {'rows': 0, 'synapses': 0})
         with open(os.path.join(new_base, 'all_attributes.json'), 'w', encoding='utf-8') as f:
             json.dump(public_attrs, f, indent=4,
                       default=lambda o: '<not serializable>')
@@ -17886,6 +18134,7 @@ class FindNeuronConnection:
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
                 f.write(f'{key}:{" " * max(1, 30 - keylen)}{value}\n')
+            f.write(self._autapse_parameter_line() + '\n')
             f.write(f'path_mode:{" " * 21}all\n')
             # A slice folder is a folder a reader can return to on its own,
             # so it answers the same three questions as the run's own folder
@@ -19092,6 +19341,7 @@ class FindNeuronConnection:
                 for key, value in self.parameter_dict.items():
                     keylen = len(key)
                     f.write(f'{key}:{" " * max(1, 30 - keylen)}{value}\n')
+                f.write(self._autapse_parameter_line() + '\n')
                 f.write(f'path_mode:{" " * 21}{path_mode}\n')
                 f.write(f'run mode:{" " * 22}{self.run_mode}\n')
                 if prov:
@@ -19297,6 +19547,10 @@ class FindNeuronConnection:
                 'graph_pruning_record': dict(
                     getattr(self, 'graph_pruning_record', {}) or {}),
                 'replayed': False,
+                'autapses_found': dict(getattr(
+                    self, 'autapses_found', {}) or {}),
+                'autapses_excluded': dict(getattr(
+                    self, 'autapses_excluded', {}) or {}),
             }
         }
         capture = getattr(self, '_replay_capture', None)
@@ -19422,6 +19676,11 @@ class FindNeuronConnection:
                             pl.col('weight') >= t))
 
             self._replay_output_folder_for_threshold(t, capture['threshold'])
+            # The slice's notes are written inside _materialize_paths; pin
+            # the note to THIS tier's census (the folder attrs already were).
+            _slice_autapses = self._autapse_stats_at_threshold(t)
+            _previous_note_stats = getattr(self, '_autapse_note_stats', None)
+            self._autapse_note_stats = dict(_slice_autapses)
             self._materialize_paths(
                 'all',
                 all_connections=filtered_tables,
@@ -19451,9 +19710,15 @@ class FindNeuronConnection:
                 self._write_user_warning_notes(self.allpath_folder)
             if self._maybe_generate_corridor_deep_dive():
                 self._write_user_warning_notes(self.allpath_folder)
+            self._autapse_note_stats = _previous_note_stats
             return {
                 'tau': tau,
                 'budget_bitten': not paths_complete and t0_bitten,
+                'autapses_found': _slice_autapses,
+                'autapses_excluded': (
+                    dict(_slice_autapses)
+                    if getattr(self, 'exclude_autapses', True)
+                    else {'rows': 0, 'synapses': 0}),
                 'strongest_first_budget': capture.get(
                     'strongest_first_budget',
                     self.max_paths_bodyid if self.max_paths_bodyid else 1000000),
@@ -19562,6 +19827,11 @@ class FindNeuronConnection:
                         'strongest_retained_bottleneck'),
                     'graph_pruning_record': dict(
                         capture.get('graph_pruning_record') or {}),
+                    'autapses_found': self._autapse_stats_at_threshold(t),
+                    'autapses_excluded': (
+                        self._autapse_stats_at_threshold(t)
+                        if getattr(self, 'exclude_autapses', True)
+                        else {'rows': 0, 'synapses': 0}),
                 }
                 continue
             results[t] = _materialize_threshold(t)
@@ -19970,6 +20240,7 @@ class FindNeuronConnection:
             for key, value in self.parameter_dict.items():
                 keylen = len(key)
                 f.write(f'{key}:{" "*max(1, 30-keylen)}{value}\n')
+            f.write(self._autapse_parameter_line() + '\n')
             f.write(f'path_mode:{" "*21}{path_mode}\n')
             f.write(f'run mode:{" "*22}{self.run_mode}\n')
             f.write('\n')
