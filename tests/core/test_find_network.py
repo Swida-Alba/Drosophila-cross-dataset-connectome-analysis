@@ -15,7 +15,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "vispath-subproject" / "src"))
 
-_NETWORK_TYPES = {"S": "TS", "A": "TA", "B": "TB", "X": "TX", "T": "TT"}
+_NETWORK_TYPES = {"S": "TS", "A": "TA", "A2": "TA", "B": "TB", "X": "TX",
+                  "T": "TT"}
 
 
 def _make_network_fc(monkeypatch, tmp_path, edges, node_ids, **overrides):
@@ -121,6 +122,7 @@ def _make_network_fc(monkeypatch, tmp_path, edges, node_ids, **overrides):
     fc.keep_only_hemisphere_conserved_connections = overrides.get(
         "keep_only_hemisphere_conserved_connections", False)
     fc.skip_bodyId = overrides.get("skip_bodyId", True)
+    fc.exclude_autapses = overrides.get("exclude_autapses", True)
     fc.edgeN_limit = 0
     fc.network_layout = "hierarchical"
     fc.showfig = False

@@ -499,7 +499,10 @@ def test_the_network_path_table_is_ordered_like_the_other_three_tools(tmp_path,
 
     fc, *_rest = _make_network_fc(
         monkeypatch, tmp_path,
-        [("A", "B", 5), ("B", "A", 90), ("A", "A", 50)], ["A", "B"])
+        [("A", "B", 5), ("B", "A", 90), ("A", "A", 50)], ["A", "B"],
+        # The ordering fixture needs three rows; autapses are excluded by
+        # default since 2026-10-20, so opt out for this sort-law test.
+        exclude_autapses=False)
     fc.FindNetwork()
     folder = Path(fc.network_folder)
     csv = next(folder.glob('*_allpaths_type.csv'))
