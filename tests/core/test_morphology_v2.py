@@ -364,6 +364,44 @@ class TestV2Similarity:
         _, v_r_plain = morph.vectorize_neuron_v2(right, bounds)
         assert not np.allclose(v_l[a:b], v_r_plain[a:b], atol=1e-6)
 
+    def test_side_midline_helper(self):
+        cents = [90.0, 91.0, 89.0, 90.0, 90.0,
+                 170.0, 171.0, 169.0, 170.0, 170.0]
+        sides = ["left"] * 5 + ["right"] * 5
+        out = morph.side_midline(cents, sides)
+        assert out is not None
+        assert np.isclose(out["midline"], 130.0)
+        assert out["reflect_side"] == "right"
+        assert (out["n_left"], out["n_right"]) == (5, 5)
+        assert morph.side_midline([1.0, 2.0], ["left", "right"]) is None
+
+    def test_explicit_midline_and_reflect_override(self):
+        # True midline 130, bbox midpoint 100: the left arbor stays put,
+        # the mirrored right arbor is reflected about 130. Explicit
+        # midline_x/reflect must recover identical spatial blocks.
+        bounds = np.array([[0.0, 0.0, 0.0], [200.0, 100.0, 80.0]])
+        left = blob_neuron(center=(90, 50, 40), seed=6)
+        pts = left.nodes[["x", "y", "z"]].to_numpy().copy()
+        pts[:, 0] = 260.0 - pts[:, 0]               # mirror about x=130
+        right = make_neuron(pts, left.nodes["parent_id"].to_numpy())
+        _, v_l = morph.vectorize_neuron_v2(
+            left, bounds, lateral_normalize=True, midline_x=130.0)
+        _, v_r = morph.vectorize_neuron_v2(
+            right, bounds, lateral_normalize=True, midline_x=130.0,
+            reflect=True)
+        a, b = morph.V2_SPATIAL_SLICE
+        np.testing.assert_allclose(v_l[a:b], v_r[a:b], atol=1e-6)
+        # The same right arbor reflected about the bbox midpoint instead
+        # does not align.
+        _, v_bbox = morph.vectorize_neuron_v2(
+            right, bounds, lateral_normalize=True)
+        assert not np.allclose(v_l[a:b], v_bbox[a:b], atol=1e-6)
+        # Forcing reflect=False leaves it unreflected.
+        _, v_plain = morph.vectorize_neuron_v2(
+            right, bounds, lateral_normalize=True, midline_x=130.0,
+            reflect=False)
+        assert not np.allclose(v_r[a:b], v_plain[a:b], atol=1e-6)
+
     def test_spatial_overlap_term(self):
         # The mass-overlap component scores the fraction of the query's
         # arbor distribution the candidate actually shares: a candidate
@@ -726,3 +764,19 @@ class TestRoiExpansionRows:
         # The screen still works afterwards (state untouched).
         scores = store.screen([1])
         assert len(scores) == 2   # bodyIds 2 and 3
+
+
+def test_soma_side_map_reads_banc_soma_side(tmp_path):
+    """The BANC index calls the column 'Soma side', not 'somaSide'."""
+    import polars as pl
+    folder = tmp_path / "neuron_indexes" / "banc_v888"
+    folder.mkdir(parents=True)
+    pl.DataFrame({
+        "bodyId": ["1", "2", "3", "4"],
+        "Soma side": ["left", "right", None, "left"],
+    }).write_parquet(folder / "neuron_index.parquet")
+    sides = morph._dataset_soma_side_map("banc_v888", str(tmp_path))
+    assert sides[1] == "left"
+    assert sides[2] == "right"
+    assert sides[3] == ""
+    assert sides[4] == "left"

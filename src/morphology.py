@@ -245,7 +245,7 @@ DEFAULT_EXPAND_PER_TYPE = 10
 # this the V2 comparison falls back to z-scored per-block cosine.
 MIN_ROWS_FOR_WHITENING = 64
 
-VECTOR_CACHE_V2_VERSION = 6   # 6 = raw skeleton basis (simplification is visualization-only): vectors are computed from raw trees, never releveled to simp90; 5 = bbox_xy_ratio capped at 1e6 (planar arbors with zero y-span produced 1e13-scale features that dominated the population stats); 4 = topology block removed, +8 sx_* +16 spatial profile dims (rp_/md_)
+VECTOR_CACHE_V2_VERSION = 7   # 7 = side-estimated midline + side-based reflection (6 = raw skeleton basis; 5 = bbox ratio cap; 4 = spatial schema)
 
 # Bump when the whitening fit changes so persisted matrices are refit.
 WHITEN_FIT_VERSION = 3
@@ -817,6 +817,29 @@ def compute_spatial_profile_extras(neuron,
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def side_midline(centroids, sides, min_per_side: int = 5):
+    """Bilateral midline from per-neuron centroid x and normalized sides.
+
+    ``sides`` values are 'left'/'right'; anything else is ignored. Returns
+    ``{midline, left, right, reflect_side, n_left, n_right}`` or None when
+    either side has fewer than ``min_per_side`` observations.
+    """
+    left = [float(c) for c, s in zip(centroids, sides) if s == "left"]
+    right = [float(c) for c, s in zip(centroids, sides) if s == "right"]
+    if len(left) < min_per_side or len(right) < min_per_side:
+        return None
+    med_left = float(np.median(left))
+    med_right = float(np.median(right))
+    return {
+        "midline": 0.5 * (med_left + med_right),
+        "left": med_left,
+        "right": med_right,
+        "reflect_side": "left" if med_left > med_right else "right",
+        "n_left": len(left),
+        "n_right": len(right),
+    }
+
+
 def _lateral_reflected(neuron, mid_x: float):
     """View of ``neuron`` reflected about the x = mid_x plane.
 
@@ -839,7 +862,9 @@ def _lateral_reflected(neuron, mid_x: float):
 
 def vectorize_neuron_v2(neuron,
                         spatial_bounds: Optional[np.ndarray] = None,
-                        lateral_normalize: bool = False
+                        lateral_normalize: bool = False,
+                        midline_x: Optional[float] = None,
+                        reflect: Optional[bool] = None
                         ) -> Tuple[Dict[str, float], np.ndarray]:
     """Return (24-feature dict, 256-dim V2 vector).
 
@@ -851,20 +876,29 @@ def vectorize_neuron_v2(neuron,
     comes from the cache's population estimate; without it the histogram
     and midline-profile blocks are zeros (ellipsoid/radial still apply).
 
-    ``lateral_normalize`` reflects right-hemisphere arbors (centroid x past
-    the bounds midline) onto the left BEFORE the spatial features are
-    computed. Stored this way, every neuron of a dataset is represented on
-    one hemisphere, so type-level aggregation can no longer average L and R
-    positions into a midline blur; L/R homologs compare directly. The V1
-    prefix and shape extras are reflection-invariant and unaffected, and
-    the radial/midline profiles are mirror-invariant too.
+    ``lateral_normalize`` reflects high-x arbors onto the other side BEFORE
+    the spatial features are computed. ``midline_x`` overrides the plane
+    (defaults to the population-bbox midpoint); ``reflect`` overrides the
+    side decision (defaults to arbor centroid x past the midline). Stored
+    this way, every neuron of a dataset is represented on one hemisphere,
+    so type-level aggregation can no longer average L and R positions into
+    a midline blur; L/R homologs compare directly. The V1 prefix and shape
+    extras are reflection-invariant and unaffected, and the radial/midline
+    profiles are mirror-invariant too.
     """
     morph, v1 = vectorize_neuron(neuron)
     spatial_view = neuron
-    if lateral_normalize and spatial_bounds is not None:
-        mid_x = 0.5 * (float(spatial_bounds[0][0]) + float(spatial_bounds[1][0]))
-        pts = _neuron_points(neuron)
-        if len(pts) and float(np.mean(pts[:, 0])) > mid_x:
+    if lateral_normalize and (spatial_bounds is not None
+                              or midline_x is not None):
+        if midline_x is None:
+            mid_x = 0.5 * (float(spatial_bounds[0][0])
+                           + float(spatial_bounds[1][0]))
+        else:
+            mid_x = float(midline_x)
+        if reflect is None:
+            pts = _neuron_points(neuron)
+            reflect = bool(len(pts) and float(np.mean(pts[:, 0])) > mid_x)
+        if reflect:
             spatial_view = _lateral_reflected(neuron, mid_x)
     vector = np.concatenate([
         v1,
@@ -1318,19 +1352,22 @@ def _vectorize_one_swc(body_id: int
 # population spatial bounds travel through the pool initializer / argument
 # so every worker bins the histogram identically.
 _V2_WORKER_BOUNDS = None
+_V2_WORKER_MIDLINE = None
 
 
-def _init_v2_swc_worker(source_path: str, zip_path: Optional[str], bounds):
-    global _FAFB_WORKER_BUNDLE, _V2_WORKER_BOUNDS
+def _init_v2_swc_worker(source_path: str, zip_path: Optional[str], bounds,
+                        midline=None):
+    global _FAFB_WORKER_BUNDLE, _V2_WORKER_BOUNDS, _V2_WORKER_MIDLINE
     _init_fafb_zip_worker(source_path, zip_path)
     _V2_WORKER_BOUNDS = bounds
+    _V2_WORKER_MIDLINE = midline
 
 
-def _vectorize_one_file_v2(path: str,
-                           bounds=None
+def _vectorize_one_file_v2(path: str, bounds=None, midline=None,
+                           reflect=None
                            ) -> Optional[Tuple[int, List[float], str]]:
     """Module-level V2 worker for one cached skeleton/mesh file."""
-    global _V2_WORKER_BOUNDS
+    global _V2_WORKER_BOUNDS, _V2_WORKER_MIDLINE
     try:
         neuron = _load_cached_skeleton_file(path)
         # Raw basis: only level-0 (raw) trees are vectorized; simplified
@@ -1338,17 +1375,20 @@ def _vectorize_one_file_v2(path: str,
         if (getattr(neuron, "_drocat_simplification", 0) or 0) != 0:
             return None
         used_bounds = bounds if bounds is not None else _V2_WORKER_BOUNDS
-        _, vector = vectorize_neuron_v2(neuron, used_bounds,
-                                        lateral_normalize=True)
+        used_midline = midline if midline is not None else _V2_WORKER_MIDLINE
+        _, vector = vectorize_neuron_v2(
+            neuron, used_bounds, lateral_normalize=True,
+            midline_x=used_midline, reflect=reflect)
         rep = _neuron_rep(neuron)
     except Exception:
         return None
     return (_skeleton_body_id(path), vector.tolist(), rep)
 
 
-def _vectorize_one_swc_v2(body_id: int) -> Optional[Tuple[int, List[float], str]]:
+def _vectorize_one_swc_v2(body_id: int, reflect=None
+                          ) -> Optional[Tuple[int, List[float], str]]:
     """Module-level V2 worker for one healed-zip skeleton."""
-    global _FAFB_WORKER_BUNDLE, _V2_WORKER_BOUNDS
+    global _FAFB_WORKER_BUNDLE, _V2_WORKER_BOUNDS, _V2_WORKER_MIDLINE
     import io
 
     try:
@@ -1357,8 +1397,9 @@ def _vectorize_one_swc_v2(body_id: int) -> Optional[Tuple[int, List[float], str]
             return None
         neuron = navis.read_swc(io.StringIO(content))
         neuron.units = "nm"
-        _, vector = vectorize_neuron_v2(neuron, _V2_WORKER_BOUNDS,
-                                        lateral_normalize=True)
+        _, vector = vectorize_neuron_v2(
+            neuron, _V2_WORKER_BOUNDS, lateral_normalize=True,
+            midline_x=_V2_WORKER_MIDLINE, reflect=reflect)
     except Exception:
         return None
     return (int(body_id), vector.tolist(), "skeleton")
@@ -3696,6 +3737,11 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             f"mesh_whiten{suffix}.npz" if self.mesh_only else f"whiten{suffix}.npz")
         self._spatial_bounds: Optional[np.ndarray] = None
         self._bounds_resolved = False
+        self._spatial_midline: Optional[float] = None
+        self._spatial_reflect_side: Optional[str] = None
+        self._midline_source: Optional[str] = None
+        self._midline_resolved = False
+        self._soma_sides: Optional[Dict[int, str]] = None
 
     # ------------------------------------------------------- schema hooks
     @staticmethod
@@ -3736,8 +3782,9 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
     def _vectorize_neuron(self, neuron):
         # Raw basis: vectorize the stored skeleton as-is (the caller's
         # _file_level_ok gate keeps simplified files out).
-        return vectorize_neuron_v2(neuron, self.spatial_bounds(),
-                                   lateral_normalize=True)
+        return vectorize_neuron_v2(
+            neuron, self.spatial_bounds(), lateral_normalize=True,
+            midline_x=self.spatial_midline())
 
     def _in_memory_vector_row(self, body_id, neuron):
         """V2 cache row for an in-memory (loader-resolved) tree.
@@ -3747,7 +3794,9 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         """
         try:
             _, vector = vectorize_neuron_v2(
-                neuron, self.spatial_bounds(), lateral_normalize=True)
+                neuron, self.spatial_bounds(), lateral_normalize=True,
+                midline_x=self.spatial_midline(),
+                reflect=self._reflect_flag(body_id))
             rep = _neuron_rep(neuron)
         except Exception:
             return None
@@ -3825,8 +3874,148 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             pass
         return self._spatial_bounds
 
+    # ------------------------------------------------------ lateral midline
+    def soma_side_map(self) -> Dict[int, str]:
+        if self._soma_sides is None:
+            self._soma_sides = _dataset_soma_side_map(
+                self.dataset, str(self.project_root))
+        return self._soma_sides
+
+    def _reflect_flag(self, body_id) -> Optional[bool]:
+        """Whether this body's arbor belongs on the high-x (reflected) side."""
+        reflect_side = self.spatial_reflect_side()
+        if reflect_side not in ("left", "right"):
+            return None
+        try:
+            side = self.soma_side_map().get(int(body_id), "")
+        except (TypeError, ValueError):
+            return None
+        if side not in ("left", "right"):
+            return None
+        return side == reflect_side
+
+    def _midline_centroids(self) -> Tuple[List[float], List[str]]:
+        """Centroid x and normalized side for up to 200 cached neurons."""
+        files = self._discover_skeleton_files()
+        if len(files) > 200:
+            rng = np.random.default_rng(0)
+            files = [files[i] for i in
+                     rng.choice(len(files), 200, replace=False)]
+        cents: List[float] = []
+        sides: List[str] = []
+        for path in files:
+            try:
+                neuron = _load_cached_skeleton_file(path)
+                pts = _neuron_points(neuron)
+                if not len(pts):
+                    continue
+                side = self.soma_side_map().get(
+                    int(_skeleton_body_id(path)), "")
+                if side in ("left", "right"):
+                    cents.append(float(np.mean(pts[:, 0])))
+                    sides.append(side)
+            except Exception:
+                continue
+        if len(cents) >= 10 or self.mesh_only:
+            return cents, sides
+        if is_fafb_dataset(self.dataset):
+            bundle = _fafb_bundle(self.dataset, str(self.project_root))
+            if bundle is not None:
+                try:
+                    ids = sorted(int(b) for b in bundle.ids())
+                    rng = np.random.default_rng(0)
+                    picks = [int(b) for b in rng.choice(
+                        ids, size=min(200, len(ids)), replace=False)]
+                    for bid in picks:
+                        content = bundle.get(bid)
+                        if not content:
+                            continue
+                        try:
+                            import io
+                            neuron = navis.read_swc(io.StringIO(content))
+                            side = self.soma_side_map().get(bid, "")
+                            if side in ("left", "right"):
+                                cents.append(float(neuron.nodes["x"].mean()))
+                                sides.append(side)
+                        except Exception:
+                            continue
+                finally:
+                    try:
+                        bundle.close()
+                    except Exception:
+                        pass
+        return cents, sides
+
+    def spatial_midline(self) -> Optional[float]:
+        """Lateral reflection plane: side estimate, else the bbox midpoint.
+
+        The side estimate is the midpoint of the median centroid x of the
+        annotated left and right samples. It is used only when it differs
+        from the bbox midpoint by at least 2% of the x span; otherwise the
+        bbox already agrees with the bilateral estimate and is kept.
+        Persisted in meta so every row of the cache shares one plane.
+        """
+        if self._midline_resolved:
+            return self._spatial_midline
+        self._midline_resolved = True
+        meta = self._load_meta() or {}
+        stored = meta.get("spatial_midline_x")
+        if stored is not None:
+            try:
+                self._spatial_midline = float(stored)
+                self._spatial_reflect_side = meta.get(
+                    "spatial_reflect_side") or None
+                self._midline_source = meta.get(
+                    "spatial_midline_source") or "stored"
+                return self._spatial_midline
+            except (TypeError, ValueError):
+                pass
+        bounds = self.spatial_bounds()
+        bbox_mid = (0.5 * (float(bounds[0][0]) + float(bounds[1][0]))
+                    if bounds is not None else None)
+        cents, sides = self._midline_centroids()
+        estimate = side_midline(cents, sides)
+        if estimate is None:
+            self._spatial_midline = bbox_mid
+            self._midline_source = "bbox"
+        else:
+            self._spatial_reflect_side = estimate["reflect_side"]
+            span = (float(bounds[1][0] - bounds[0][0])
+                    if bounds is not None else 0.0)
+            far = (bbox_mid is None or span <= 0
+                   or abs(estimate["midline"] - bbox_mid) >= 0.02 * span)
+            self._spatial_midline = float(estimate["midline"] if far
+                                          else bbox_mid)
+            self._midline_source = "side" if far else "bbox"
+            meta = self._load_meta() or {}
+            meta["spatial_midline_x"] = float(self._spatial_midline)
+            meta["spatial_midline_source"] = self._midline_source
+            meta["spatial_midline_left"] = float(estimate["left"])
+            meta["spatial_midline_right"] = float(estimate["right"])
+            meta["spatial_midline_n_left"] = int(estimate["n_left"])
+            meta["spatial_midline_n_right"] = int(estimate["n_right"])
+            meta["spatial_reflect_side"] = self._spatial_reflect_side
+            try:
+                self.meta_path.parent.mkdir(parents=True, exist_ok=True)
+                self.meta_path.write_text(json.dumps(meta, indent=2),
+                                          encoding="utf-8")
+            except OSError:
+                pass
+        return self._spatial_midline
+
+    def spatial_reflect_side(self) -> Optional[str]:
+        self.spatial_midline()
+        return self._spatial_reflect_side
+
     def _write_meta(self, stats: Dict[str, List[float]], n_rows: int,
                     rep: str = "", vector_basis: str = VECTOR_BASIS_RAW):
+        prior = self._load_meta() or {}
+
+        def midline_value(key):
+            value = (getattr(self, "_spatial_midline", None)
+                     if self._midline_resolved else prior.get(key))
+            return float(value) if value is not None else None
+
         meta = {
             "version": self._cache_version(),
             "dataset": self.dataset,
@@ -3834,7 +4023,18 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             "persistence_dim": PERSISTENCE_DIM,
             "spatial_bounds": (self._spatial_bounds.tolist()
                                if self._spatial_bounds is not None
-                               else (self._load_meta() or {}).get("spatial_bounds")),
+                               else prior.get("spatial_bounds")),
+            "spatial_midline_x": midline_value("spatial_midline_x"),
+            "spatial_midline_source": (
+                self._midline_source if self._midline_resolved
+                else prior.get("spatial_midline_source")),
+            "spatial_midline_left": prior.get("spatial_midline_left"),
+            "spatial_midline_right": prior.get("spatial_midline_right"),
+            "spatial_midline_n_left": prior.get("spatial_midline_n_left"),
+            "spatial_midline_n_right": prior.get("spatial_midline_n_right"),
+            "spatial_reflect_side": (
+                self._spatial_reflect_side if self._midline_resolved
+                else prior.get("spatial_reflect_side")),
             "lateral_normalize": True,
             "block_weights": dict(DEFAULT_V2_BLOCK_WEIGHTS),
             "n_rows": n_rows,
@@ -3930,18 +4130,23 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
                                    bounds) -> List[Tuple[int, List[float], str]]:
         """Bundle skeletons -> V2 vectors in a worker pool (FAFB sampling)."""
         ctx = mp.get_context("fork") if hasattr(mp, "get_context") and "fork" in mp.get_all_start_methods() else mp.get_context()
+        reflects = [self._reflect_flag(b) for b in bids]
         with ProcessPoolExecutor(max_workers=self.n_workers, mp_context=ctx,
                                  initializer=_init_v2_swc_worker,
-                                 initargs=(source_path, zip_path, bounds)) as ex:
-            return list(ex.map(_vectorize_one_swc_v2, bids, chunksize=8))
+                                 initargs=(source_path, zip_path, bounds,
+                                           self.spatial_midline())) as ex:
+            return list(ex.map(_vectorize_one_swc_v2, bids, reflects,
+                               chunksize=8))
 
     def _vectorize_swc_serial_v2(self, source_path: str,
                                  zip_path: Optional[str], bids: List[int],
                                  bounds) -> List[Tuple[int, List[float], str]]:
-        global _FAFB_WORKER_BUNDLE, _V2_WORKER_BOUNDS
-        _init_v2_swc_worker(source_path, zip_path, bounds)
+        global _FAFB_WORKER_BUNDLE, _V2_WORKER_BOUNDS, _V2_WORKER_MIDLINE
+        _init_v2_swc_worker(source_path, zip_path, bounds,
+                            self.spatial_midline())
         try:
-            return [_vectorize_one_swc_v2(b) for b in bids]
+            return [_vectorize_one_swc_v2(b, self._reflect_flag(b))
+                    for b in bids]
         finally:
             if _FAFB_WORKER_BUNDLE is not None:
                 _FAFB_WORKER_BUNDLE.close()
@@ -4112,6 +4317,13 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         # the build shares one histogram binning.
         bounds = self.spatial_bounds()
         bounds_list = bounds.tolist() if bounds is not None else None
+        midline = self.spatial_midline()
+        reflects = {}
+        for path in pending:
+            try:
+                reflects[path] = self._reflect_flag(_skeleton_body_id(path))
+            except (TypeError, ValueError):
+                reflects[path] = None
         self._log(f"[SkeletonVectorCacheV2] Vectorizing {len(pending)} "
                   f"skeletons ({self.dataset}, bounds="
                   f"{'estimated' if bounds is not None else 'unavailable'})...")
@@ -4123,14 +4335,19 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             try:
                 with ProcessPoolExecutor(max_workers=self.n_workers,
                                          mp_context=ctx) as ex:
-                    futures = [ex.submit(_vectorize_one_file_v2, f, bounds_list)
-                               for f in pending]
+                    futures = [
+                        ex.submit(_vectorize_one_file_v2, f, bounds_list,
+                                  midline, reflects[f])
+                        for f in pending]
                     rows = [f.result() for f in futures]
             except Exception:
-                rows = [_vectorize_one_file_v2(f, bounds_list)
+                rows = [_vectorize_one_file_v2(f, bounds_list, midline,
+                                               reflects[f])
                         for f in pending]
         else:
-            rows = [_vectorize_one_file_v2(f, bounds_list) for f in pending]
+            rows = [_vectorize_one_file_v2(f, bounds_list, midline,
+                                           reflects[f])
+                    for f in pending]
         if fafb_fetch_rows:
             # Loader-resolved FAFB trees (zip / repair caches) are vectorized
             # into the same population; they were never written to disk.
@@ -8747,6 +8964,7 @@ def _dataset_soma_side_map(dataset: str,
         if p.exists():
             schema = pl.read_parquet_schema(p)
             col = ("somaSide" if "somaSide" in schema
+                   else "Soma side" if "Soma side" in schema
                    else "hemisphere" if "hemisphere" in schema else "")
             if col:
                 df = pl.read_parquet(p, columns=["bodyId", col])
