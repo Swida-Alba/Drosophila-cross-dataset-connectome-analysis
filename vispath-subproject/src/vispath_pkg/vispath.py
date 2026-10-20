@@ -3617,6 +3617,7 @@ class VisualizePath:
         has_edge_group = 'edge_group' in self.path_df.columns
         has_arrow_color = 'arrow_color' in self.path_df.columns
         has_edge_alpha = 'edge_alpha' in self.path_df.columns
+        has_line_style = 'line_style' in self.path_df.columns
         short_nt_rows = 0  # rows whose nt_types list is shorter than the hop count
 
         for idx, row in self.path_df.iterrows():
@@ -3677,6 +3678,12 @@ class VisualizePath:
                         a = a[i] if i < len(a) else np.nan
                     conn_data['edge_alpha'] = (None if pd.isna(a)
                                                else float(a))
+                if has_line_style:
+                    ls = row.get('line_style')
+                    ls = '' if pd.isna(ls) else str(ls).strip().lower()
+                    if ls not in ('solid', 'dashed', 'dotted'):
+                        ls = ''
+                    conn_data['line_style'] = ls
                     
                 connections.append(conn_data)
         
@@ -3709,6 +3716,8 @@ class VisualizePath:
                 cols.append('arrow_color')
             if has_edge_alpha:
                 cols.append('edge_alpha')
+            if has_line_style:
+                cols.append('line_style')
             conn_df = pd.DataFrame(columns=cols)
         else:
             # Aggregate duplicate connections - only aggregate columns that exist
@@ -3730,6 +3739,8 @@ class VisualizePath:
                 agg_dict['arrow_color'] = 'first'
             if has_edge_alpha:
                 agg_dict['edge_alpha'] = 'first'
+            if has_line_style:
+                agg_dict['line_style'] = 'first'
 
             conn_df = conn_df.groupby(['source', 'target'], as_index=False).agg(agg_dict)
 
@@ -3767,6 +3778,8 @@ class VisualizePath:
                 edge_attrs['arrow_color'] = str(row['arrow_color']).strip()
             if 'edge_alpha' in row and pd.notna(row['edge_alpha']):
                 edge_attrs['edge_alpha'] = float(row['edge_alpha'])
+            if 'line_style' in row and str(row['line_style']).strip():
+                edge_attrs['line_style'] = str(row['line_style']).strip().lower()
             
             G.add_edge(row['source'], row['target'], **edge_attrs)
         
@@ -6280,7 +6293,7 @@ class VisualizePath:
             if self.custom_edge_colors and (source, target) in self.custom_edge_colors:
                 edge_color = self.custom_edge_colors[(source, target)]
 
-            return {
+            payload = {
                 'weight': abs(weight),
                 'original_weight': weight,
                 'is_negative': 1 if is_negative else 0,
@@ -6296,6 +6309,12 @@ class VisualizePath:
                 'custom_labels': custom_labels_json,
                 'direction': direction,
             }
+            # Per-edge stroke pattern (a declared `line_style` column):
+            # only emitted when set, so a page without the column keeps its
+            # edge payload byte-identical.
+            if data.get('line_style'):
+                payload['line_style'] = str(data['line_style'])
+            return payload
 
         for source, target, data in G.edges(data=True):
             pair = ((source, target) if str(source) < str(target)
@@ -6464,6 +6483,24 @@ class VisualizePath:
                         'source-arrow-color': 'data(arrow_color)'
                     }
                 },"""
+
+        # Per-edge stroke pattern: a declared `line_style` column
+        # ('dashed'|'dotted') emits a data-selector rule; solid (or no value)
+        # keeps the base line. Nothing is emitted when no edge declares a
+        # non-solid style, so a page without the column stays byte-identical
+        # (the payload key is emitted under the same condition).
+        edge_line_style_styles = ""
+        if self.path_df is not None and 'line_style' in self.path_df.columns:
+            _declared_styles = {str(v).strip().lower()
+                                for v in self.path_df['line_style'].dropna()}
+            for _style in sorted(_declared_styles & {'dashed', 'dotted'}):
+                edge_line_style_styles += f"""
+                {{
+                    selector: 'edge[line_style = "{_style}"]',
+                    style: {{
+                        'line-style': '{_style}'
+                    }}
+                }},"""
 
         # Square-node geometry: the passthrough + corner radius only join
         # the stylesheet when at least one node is non-circle (the node
@@ -8397,7 +8434,7 @@ class VisualizePath:
                         'color': '#333'
                     }}
                 }},
-                {nt_edge_styles}
+                {nt_edge_styles}{edge_line_style_styles}
                 {bidir_edge_styles}
                 {{
                     selector: 'edge.hidden',
