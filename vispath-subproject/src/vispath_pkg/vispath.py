@@ -17700,10 +17700,23 @@ def visualize_network(
     return vp.visualize_network()
 
 
+def heatmap_margins(x_labels, y_labels):
+    """Default left and bottom heatmap margins for a label set.
+
+    Pages in one figure family can pass the maxima to ``margin_left`` and
+    ``margin_bottom`` so an equal canvas size yields an equal matrix box.
+    """
+    max_row = max((len(str(label)) for label in y_labels), default=0)
+    max_col = max((len(str(label)) for label in x_labels), default=0)
+    left = min(400, max(120, max_row * 7 + 40))
+    bottom = min(360, max(160, max_col * 7 + 60))
+    return left, bottom
+
+
 def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=True, fontsize=12, conn_df=None, matrices_dict=None, verbose=True, zmin=None, zmax=None, init_width=None, init_height=None, init_clustered=True, metric_name=None, square_cells=False, inline_plotly=False, metric_label_adj=None,
                    cell_data=None, cell_fill=None, cell_outline=None,
                    fill_scale=None, fill_label=None, fill_value=None,
-                   fill_range=None):
+                   fill_range=None, margin_left=None, margin_bottom=None):
     """Standalone interactive heatmap page (ordering, color, export controls).
 
     ``square_cells=True`` opens the page with cells locked square and the
@@ -17713,6 +17726,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     ``metric_label_adj`` names the adjusted-ratio metric (with its
     conditioning tier) — this generator is a function, not a method, so the
     label is passed in rather than read off an instance.
+    ``margin_left`` / ``margin_bottom`` override the label-derived margins;
+    pass the same values to sibling pages so equal canvas sizes give equal
+    matrix boxes.
     """
     metric_label_adj = str(metric_label_adj
                            or 'Adj. Ratio (threshold-conditioned)')
@@ -18017,14 +18033,12 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
     x_labels = cmat.columns.astype(str).tolist()
     y_labels = cmat.index.astype(str).tolist()
     
-    # Calculate dynamic left margin based on longest row label
-    # Approximate character width: ~7px per character at default font size
-    max_row_label_length = max(len(str(label)) for label in y_labels) if y_labels else 0
-    max_col_label_length = max(len(str(label)) for label in x_labels) if x_labels else 0
-    # Calculate left margin: min 120px, max 400px, ~7px per character + 40px padding
-    dynamic_left_margin = min(400, max(120, max_row_label_length * 7 + 40))
-    # Calculate bottom margin for rotated column labels: min 120px, ~5px per char (due to 45° rotation)
-    dynamic_bottom_margin = min(360, max(160, max_col_label_length * 7 + 60))
+    # Label-derived margins; callers can pin them so sibling pages align.
+    default_left, default_bottom = heatmap_margins(x_labels, y_labels)
+    dynamic_left_margin = (default_left if margin_left is None
+                           else max(0, int(margin_left)))
+    dynamic_bottom_margin = (default_bottom if margin_bottom is None
+                             else max(0, int(margin_bottom)))
     
     # Generate unique storage key for this heatmap
     from datetime import datetime
