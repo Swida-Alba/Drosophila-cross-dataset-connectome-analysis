@@ -780,3 +780,29 @@ def test_soma_side_map_reads_banc_soma_side(tmp_path):
     assert sides[2] == "right"
     assert sides[3] == ""
     assert sides[4] == "left"
+
+
+def test_fafb_bundle_bounds_fallback(tmp_path, monkeypatch):
+    """A bundle-only FAFB cache gets bounds before fetched rows are vectorized."""
+    class _Bundle:
+        def ids(self):
+            return list(range(1, 7))
+
+        def get(self, body_id):
+            return (f"1 0 0 0 0 1 -1\n"
+                    f"2 0 {body_id * 10.0} {body_id * 2.0} 5 1 1\n")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(morph, "_fafb_bundle", lambda *a, **k: _Bundle())
+    cache = morph.SkeletonVectorCacheV2(
+        "flywire_FAFB_v783", project_root=str(tmp_path), n_workers=1,
+        verbose=False, representation="skeleton")
+    monkeypatch.setattr(cache, "_discover_skeleton_files", lambda: [])
+    bounds = cache.spatial_bounds()
+    assert bounds is not None and bounds.shape == (2, 3)
+    assert np.all(bounds[0] < bounds[1])
+    # 2% padding on every axis (the root node contributes x=0).
+    assert np.isclose(bounds[0, 0], -0.02 * 60.0)
+    assert np.isclose(bounds[1, 0], 60.0 + 0.02 * 60.0)

@@ -3793,8 +3793,13 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         None on failure.
         """
         try:
+            bounds = self.spatial_bounds()
+            if bounds is None:
+                # Never persist a row whose histogram/profiles were silently
+                # zeroed for lack of a population frame.
+                return None
             _, vector = vectorize_neuron_v2(
-                neuron, self.spatial_bounds(), lateral_normalize=True,
+                neuron, bounds, lateral_normalize=True,
                 midline_x=self.spatial_midline(),
                 reflect=self._reflect_flag(body_id))
             rep = _neuron_rep(neuron)
@@ -3819,6 +3824,43 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
                 or meta.get("lateral_normalize") is not True)
 
     # ------------------------------------------------------ spatial bounds
+    def _fafb_bundle_bounds(self, sample: int = 60
+                            ) -> Optional[np.ndarray]:
+        """Population bbox from a small healed-bundle sample (FAFB only)."""
+        if self.mesh_only or not is_fafb_dataset(self.dataset):
+            return None
+        bundle = _fafb_bundle(self.dataset, str(self.project_root))
+        if bundle is None:
+            return None
+        try:
+            import io
+            ids = sorted(int(b) for b in bundle.ids())
+            rng = np.random.default_rng(0)
+            picks = [int(b) for b in rng.choice(
+                ids, size=min(sample, len(ids)), replace=False)]
+            lo = np.full(3, np.inf)
+            hi = np.full(3, -np.inf)
+            for bid in picks:
+                content = bundle.get(bid)
+                if not content:
+                    continue
+                try:
+                    neuron = navis.read_swc(io.StringIO(content))
+                    pts = neuron.nodes[["x", "y", "z"]].to_numpy(dtype=float)
+                except Exception:
+                    continue
+                lo = np.minimum(lo, pts.min(axis=0))
+                hi = np.maximum(hi, pts.max(axis=0))
+            if not np.isfinite(lo).all():
+                return None
+            pad = 0.02 * np.maximum(hi - lo, 0.0)
+            return np.vstack([lo - pad, hi + pad])
+        finally:
+            try:
+                bundle.close()
+            except Exception:
+                pass
+
     def spatial_bounds(self) -> Optional[np.ndarray]:
         """Population bounding box for the histogram block: [lo(3), hi(3)].
 
@@ -3856,9 +3898,17 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             hi = np.maximum(hi, pts.max(axis=0))
             seen += 1
         if not seen:
-            return None
-        pad = 0.02 * np.maximum(hi - lo, 0.0)
-        bounds = np.vstack([lo - pad, hi + pad])
+            # FAFB is served from the healed bundle, not from local files:
+            # estimate the same population frame from a small bundle sample
+            # BEFORE any fetched row is vectorized. Without it those rows
+            # silently carried zero histograms/profiles and inflated every
+            # pairwise score once the cache was standardized.
+            bounds = self._fafb_bundle_bounds()
+            if bounds is None:
+                return None
+        else:
+            pad = 0.02 * np.maximum(hi - lo, 0.0)
+            bounds = np.vstack([lo - pad, hi + pad])
         self._spatial_bounds = bounds
         try:
             meta = self._load_meta() or {}
