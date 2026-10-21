@@ -2058,7 +2058,7 @@ class TestEdgeListFileColors:
         )
         js = _script_text(html_path)
         assert "'line-color': 'data(color)'" in js
-        assert "'target-arrow-color': 'data(arrow_color)'" in js
+        assert "'target-arrow-color': 'data(color)'" in js
         assert f"'line-color': '{vp.edge_color}'" not in js
 
     def test_file_colors_land_in_edge_data(self, tmp_path):
@@ -2068,8 +2068,9 @@ class TestEdgeListFileColors:
         html = html_path.read_text(encoding="utf-8")
         for color in ("#FF0000", "#00FF00"):
             assert f'"color": "{color}"' in html, f"missing edge color {color}"
-            # the arrowhead carries its own field, defaulting to the line colour
-            assert f'"arrow_color": "{color}"' in html, f"missing arrow color {color}"
+        # No arrow_color column was supplied: the arrows follow the line
+        # through the base stylesheet rule, so no per-edge key is emitted.
+        assert '"arrow_color"' not in html
 
     def test_edges_without_file_color_keep_link_color(self, tmp_path):
         vp, html_path = self._html_with_colors(tmp_path)
@@ -2468,7 +2469,9 @@ class TestMergedBidirectionalEdges:
         js = _script_text(merged_html)
         assert "selector: 'edge[bidirectional = 1]'" in js
         assert "'source-arrow-shape': 'triangle'" in js
-        assert "'source-arrow-color': 'data(arrow_color)'" in js
+        # colour stays with the line/NT rules so an NT edge's source arrow
+        # matches its line
+        assert "'source-arrow-color': 'data(color)'" in js
 
     def test_dead_end_counting_reads_bidirectional_flag(self, merged_html):
         js = _script_text(merged_html)
@@ -2969,8 +2972,9 @@ class TestArrowColorConsistencyAndAssignRow:
         """The highlight override paints the source arrowhead (merged
         edges); the restore/recolor paths must repaint it too — otherwise
         the source arrow stays stuck at the highlight color."""
-        # the bidir selector paints source arrows from the edge's arrow colour
-        assert "'source-arrow-color': 'data(arrow_color)'" in _script_text(merged_html)
+        # the base rule paints both arrows from the line colour, so a
+        # merged edge's source arrow starts out matching its line
+        assert "'source-arrow-color': 'data(color)'" in _script_text(merged_html)
         js = _script_text(network_html)
         assert "'source-arrow-color': highlightColor," in js        # highlight override
         # ...and the base-appearance pair repaints it on clear/recolor

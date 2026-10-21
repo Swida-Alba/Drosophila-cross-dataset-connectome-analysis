@@ -6192,6 +6192,7 @@ class VisualizePath:
         has_unknown_nt_network = False   # Any edge the vocabulary leaves blank
         unique_nts_network = set()  # Collect unique NT types for CSS
         has_bidirectional_edges = False  # Merged/declared double-headed edges
+        has_explicit_arrow_color = False  # Any edge row declares arrow_color
 
         # ---- Merged bidirectional edge planning ----
         # ---- Reciprocal pair metadata (runtime-renderable) ----
@@ -6226,7 +6227,7 @@ class VisualizePath:
             """Per-direction fields for one directed edge (no bidirectional
             extras) — shared by the plain and the merged emission paths."""
             nonlocal has_negative, has_nt_coloring_network, \
-                has_unknown_nt_network
+                has_unknown_nt_network, has_explicit_arrow_color
             weight = data.get('weight', 0)
             is_negative = weight < 0
             if is_negative:
@@ -6299,7 +6300,6 @@ class VisualizePath:
                 'is_negative': 1 if is_negative else 0,
                 'nt_type': nt_type if nt_type else '',
                 'color': edge_color,
-                'arrow_color': data.get('arrow_color') or edge_color,
                 'edge_alpha': data.get('edge_alpha'),
                 'ratio': ratio if not np.isnan(ratio) else 0,
                 'ratio_adj': (ratio_adj if not np.isnan(ratio_adj) else None),
@@ -6314,6 +6314,13 @@ class VisualizePath:
             # edge payload byte-identical.
             if data.get('line_style'):
                 payload['line_style'] = str(data['line_style'])
+            # Only a declared arrow colour claims the key.  Defaulting it to
+            # the base edge colour would win over the rendered line colour in
+            # applyInitialOpacity and leave NT pages with grey arrowheads
+            # (report 2026-10-21).
+            if data.get('arrow_color'):
+                payload['arrow_color'] = str(data['arrow_color'])
+                has_explicit_arrow_color = True
             return payload
 
         for source, target, data in G.edges(data=True):
@@ -6474,12 +6481,29 @@ class VisualizePath:
         # whenever pairs or declared rows EXIST (not only when merged is
         # the initial mode) so switching to Merged at runtime works; the
         # selector matches nothing until edges carry bidirectional = 1.
+        # Colour is deliberately left unset here (the base rule's
+        # source-arrow-color, an NT rule or an explicit arrow_color wins):
+        # setting data(arrow_color) here would override an NT rule on the
+        # source side of a double-headed edge.
         bidir_edge_styles = ""
         if has_bidirectional_edges or merge_pairs:
             bidir_edge_styles = """{
                     selector: 'edge[bidirectional = 1]',
                     style: {
-                        'source-arrow-shape': 'triangle',
+                        'source-arrow-shape': 'triangle'
+                    }
+                },"""
+
+        # Explicit per-edge arrow colours get their own late rule: the base
+        # edge rule points arrowheads at data(color), and this selector
+        # restores a declared value above the NT/negative rules.  Nothing is
+        # emitted for pages without an explicit arrow colour.
+        explicit_arrow_styles = ""
+        if has_explicit_arrow_color:
+            explicit_arrow_styles = """{
+                    selector: 'edge[arrow_color]',
+                    style: {
+                        'target-arrow-color': 'data(arrow_color)',
                         'source-arrow-color': 'data(arrow_color)'
                     }
                 },"""
@@ -8393,7 +8417,10 @@ class VisualizePath:
                     style: {{
                         'width': 'mapData(scaled_width, {min_scaled_width}, {max_scaled_width}, 1, 10)',
                         'line-color': 'data(color)',  // Per-edge color from the uploaded edge list (falls back to link_color)
-                        'target-arrow-color': 'data(arrow_color)',
+                        // Arrowheads follow the line unless the edge row
+                        // declares arrow_color (late explicit rule below).
+                        'target-arrow-color': 'data(color)',
+                        'source-arrow-color': 'data(color)',
                         'target-arrow-shape': 'triangle',
                         'curve-style': 'bezier',
                         'arrow-scale': 1.5,
@@ -8436,6 +8463,7 @@ class VisualizePath:
                 }},
                 {nt_edge_styles}{edge_line_style_styles}
                 {bidir_edge_styles}
+                {explicit_arrow_styles}
                 {{
                     selector: 'edge.hidden',
                     style: {{
