@@ -4002,6 +4002,53 @@ class FindNeuronConnection:
     the class emits the strongest head of its validated walks until 100
     paths accumulate (tie-drain at the class tau).'''
 
+    type_pruned: bool = False
+    '''Type-pruned COMPLETE lane (plan-drocat-type-pruned-pathfinding
+    Phase B): after the Complete run, prune the type graph coarsely,
+    enumerate the COMPLETE type-walk set over it (bounded revisits by
+    default), validate each at bodyId
+    level against the full-floor lossless-pruned universe and export the
+    paths clearing the EXACT realized min_ratio_adj gate. Separate from
+    the Fast lane's Run Mode vocabulary; it runs alongside Complete and
+    never modifies the run's own outputs (writes route_scope_paths/).'''
+
+    type_prune_basis: str = 'ratio_adj'
+    '''Coarse pair-level prune basis: 'ratio_adj' | 'connection_ratio' |
+    'synapse'.'''
+
+    type_prune_scope: str = 'full_floor'
+    '''The universe the type graph is built from. Only 'full_floor' (the
+    lossless discovery cone) can carry a completeness claim.'''
+
+    type_min_ratio_adj: float = 0.01
+    '''Pair-level adjusted-ratio floor for the ratio bases AND the exact
+    realized-path gate. The two are different quantities (P0-B).'''
+
+    type_min_synapse: int = 0
+    '''Optional type-pair mass floor on the prune (w_sum).'''
+
+    type_min_wmax: int = 0
+    '''Optional bodyId realization floor on the prune (pair w_max).'''
+
+    type_walk_mode: str = 'complete'
+    '''Only 'complete' carries the type_pruned_complete claim.'''
+
+    type_walk_cap: int = 2_000_000
+    '''Disclosed cap on the complete type-walk enumeration; a cap forbids
+    the completeness claim.'''
+
+    type_revisit_policy: str = 'bounded'
+    ''''simple' (no repeated types) | 'bounded' (the default — the article's
+    Complete tables carry type revisits).'''
+
+    type_max_type_visits: int = 0
+    '''Bounded-policy visit cap per type; 0 = the hop bound (the complete
+    revisit set for walks up to that bound).'''
+
+    type_validate_work_cap: int = 2_000_000
+    '''Per-walk bodyId validation work cap; a cap hit marks the walk
+    unverified, never phantom.'''
+
     max_paths_bodyid: Optional[int] = None
     '''
     Path budget for bodyId-level path enumeration.
@@ -13300,8 +13347,40 @@ class FindNeuronConnection:
                 # stays byte-identical whether or not the lane exists.
                 "corridor_mode", "route_top_m_base", "route_length_decay",
                 "route_path_budget_per_pair_length",
+                # The type-pruned lane's knobs are stamped as ONE
+                # `type_prune` block below, never as loose __dict__ keys.
+                "type_pruned", "type_prune_basis", "type_prune_scope",
+                "type_min_ratio_adj",
+                "type_min_synapse", "type_min_wmax", "type_walk_mode",
+                "type_walk_cap", "type_revisit_policy",
+                "type_max_type_visits", "type_validate_work_cap",
             )
         }
+        if getattr(self, 'type_pruned', False):
+            public_attrs['type_prune'] = {
+                'enabled': True,
+                'basis': str(getattr(self, 'type_prune_basis',
+                                     'ratio_adj')),
+                'scope': str(getattr(self, 'type_prune_scope',
+                                     'full_floor')),
+                'min_ratio_adj': float(getattr(
+                    self, 'type_min_ratio_adj', 0.01)),
+                'min_synapse': int(getattr(
+                    self, 'type_min_synapse', 0) or 0),
+                'min_wmax': int(getattr(self, 'type_min_wmax', 0) or 0),
+                'walk_mode': str(getattr(self, 'type_walk_mode',
+                                         'complete')),
+                'walk_cap': int(getattr(self, 'type_walk_cap',
+                                        2_000_000) or 2_000_000),
+                'revisit_policy': str(getattr(
+                    self, 'type_revisit_policy', 'bounded')),
+                'max_type_visits': int(getattr(
+                    self, 'type_max_type_visits', 0) or 0),
+                'validate_work_cap': int(getattr(
+                    self, 'type_validate_work_cap', 2_000_000) or
+                    2_000_000),
+                'completeness_field': 'type_pruned_complete',
+            }
         public_attrs["requested_source_neurons"] = self._requested_query_for_export(
             "source"
         )
@@ -18142,6 +18221,8 @@ class FindNeuronConnection:
             # Fast-lane state was readable from the base folder but absent
             # from every replay slice.
             f.write(f'run mode:{" " * 22}{self._resolved_run_mode()}\n')
+            for _line in self._type_prune_parameter_lines():
+                f.write(_line + '\n')
             prov = getattr(self, '_last_provenance', None) or {}
             tau = prov.get('strongest_first_tau')
             tau_str = (repr(tau) if isinstance(tau, float)
@@ -18909,6 +18990,27 @@ class FindNeuronConnection:
             f'{limit} (drawing only; tables keep every edge)' if limit > 0
             else 'no drawing cap')
 
+    def _type_prune_parameter_lines(self):
+        """P2-S: the type-pruned lane's knobs in the run's own
+        parameters.txt grammar (spaced keys, parsed by
+        route_plan.read_run_params). Empty when the lane is off, so a
+        pre-typed folder's bytes are unchanged."""
+        if not getattr(self, 'type_pruned', False):
+            return []
+        return [
+            f'type_pruned: {bool(self.type_pruned)}',
+            f'type prune basis: {getattr(self, "type_prune_basis", "ratio_adj")}',
+            f'type prune scope: {getattr(self, "type_prune_scope", "full_floor")}',
+            f'type min ratio adj: {float(getattr(self, "type_min_ratio_adj", 0.01))}',
+            f'type min synapse: {int(getattr(self, "type_min_synapse", 0) or 0)}',
+            f'type min wmax: {int(getattr(self, "type_min_wmax", 0) or 0)}',
+            f'type walk mode: {getattr(self, "type_walk_mode", "complete")}',
+            f'type walk cap: {int(getattr(self, "type_walk_cap", 2_000_000) or 2_000_000)}',
+            f'type revisit policy: {getattr(self, "type_revisit_policy", "bounded")}',
+            f'type max type visits: {int(getattr(self, "type_max_type_visits", 0) or 0)}',
+            f'type validate work cap: {int(getattr(self, "type_validate_work_cap", 2_000_000) or 2_000_000)}',
+        ]
+
     def _resolved_run_mode(self):
         """The Run Mode knob as its canonical value: 'complete' | 'auto' |
         'both' | 'fast' (legacy 'off'/'on' normalize). The corridor knobs
@@ -18940,17 +19042,22 @@ class FindNeuronConnection:
         in-hook anchor). The child resolves connection/neuron tables from
         the run's own parameters.txt (dataset key)."""
         mode = self._resolved_run_mode()
+        typed = bool(getattr(self, 'type_pruned', False))
         # NAME UNIFICATION (2026-10-11): canonical values are
         # 'complete' (Complete mode only), 'auto' (Fast on deep runs,
         # max_interlayer >= 4), 'both' (Complete + Fast always). Legacy
         # 'off'/'on' payloads normalize inside _resolved_run_mode().
+        # TYPE-PRUNED (plan-drocat-type-pruned-pathfinding): a SEPARATE
+        # lane, not a Run Mode value — it runs at the run's own bound (the
+        # article's 3-interlayer run must not inherit the Fast lane's
+        # >= 4 auto gate, P2-M) and does not require a Fast selection.
         if mode == 'fast':
             # STANDALONE FAST (2026-10-14): the hook may be reached on a
             # fast-only folder (defensive) -- the lane always runs
             mode = 'both'
-        if mode not in ('auto', 'both'):
+        if not typed and mode not in ('auto', 'both'):
             return False
-        if (mode == 'auto'
+        if (not typed and mode == 'auto'
                 and int(getattr(self, 'max_interlayer', 0) or 0) < 4):
             return False
         run_dir = getattr(self, 'allpath_folder', None)
@@ -18982,6 +19089,30 @@ class FindNeuronConnection:
                 str(int(getattr(
                     self, 'route_path_budget_per_pair_length', 100))),
             ]
+            if typed:
+                cmd += [
+                    '--type-pruned',
+                    '--type-prune-basis',
+                    str(getattr(self, 'type_prune_basis', 'ratio_adj')),
+                    '--type-prune-scope',
+                    str(getattr(self, 'type_prune_scope', 'full_floor')),
+                    '--type-min-ratio-adj',
+                    str(float(getattr(self, 'type_min_ratio_adj', 0.01))),
+                    '--type-min-synapse',
+                    str(int(getattr(self, 'type_min_synapse', 0) or 0)),
+                    '--type-min-wmax',
+                    str(int(getattr(self, 'type_min_wmax', 0) or 0)),
+                    '--type-walk-cap',
+                    str(int(getattr(self, 'type_walk_cap',
+                                    2_000_000) or 2_000_000)),
+                    '--type-revisit-policy',
+                    str(getattr(self, 'type_revisit_policy', 'bounded')),
+                    '--type-max-type-visits',
+                    str(int(getattr(self, 'type_max_type_visits', 0) or 0)),
+                    '--type-validate-work-cap',
+                    str(int(getattr(self, 'type_validate_work_cap',
+                                    2_000_000) or 2_000_000)),
+                ]
             if getattr(self, 'skip_bodyId', False):
                 cmd.append('--no-bodyid')
             # CORRIDOR-ON-RATIO: the adaptive ratio cone makes the lane's
@@ -18989,9 +19120,10 @@ class FindNeuronConnection:
             # ~900 s where the synapse lane needs ~270 s) -- double the
             # in-run budget on the ratio basis so the lane is not killed
             # at its own completion threshold.
-            budget_s = 1800 if str(getattr(
-                self, 'weight_basis', 'synapse')).startswith(
-                'connection_ratio') else 900
+            budget_s = (3600 if typed else
+                        1800 if str(getattr(
+                            self, 'weight_basis', 'synapse')).startswith(
+                            'connection_ratio') else 900)
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True,
@@ -19181,6 +19313,16 @@ class FindNeuronConnection:
                 rec = compute_type_level_refill(
                     run_dir, edges=stream, type_map=type_map, out_dir=None,
                     source_note='auto (post-materialization hook)')
+            _full_rec = rec.get('full') or {}
+            if _full_rec.get('refill_status') not in (None, 'ok'):
+                # P0-E: a refused full scope is a per-dataset UNAVAILABLE
+                # status, disclosed in the run's own notes.
+                self._warn_notes.append(
+                    '- [type-level refill] full-scope scope is UNAVAILABLE '
+                    f'({_full_rec.get("refill_status")}): '
+                    f'{_full_rec.get("error") or "guard not satisfied"}. '
+                    'The asked-scope refill (when present) is unaffected; '
+                    'a lane needing the full floor must not use it.')
             if (rec.get('status') in ('refilled', 'complete_at_asked')
                     or rec.get('full')):
                 # The standalone mirror folder's parameters.csv (same
@@ -19344,6 +19486,8 @@ class FindNeuronConnection:
                 f.write(self._autapse_parameter_line() + '\n')
                 f.write(f'path_mode:{" " * 21}{path_mode}\n')
                 f.write(f'run mode:{" " * 22}{self.run_mode}\n')
+                for _line in self._type_prune_parameter_lines():
+                    f.write(_line + '\n')
                 if prov:
                     # Backward-compatible aliases (pre-provenance readers
                     # grep these two lines).
@@ -20243,6 +20387,8 @@ class FindNeuronConnection:
             f.write(self._autapse_parameter_line() + '\n')
             f.write(f'path_mode:{" "*21}{path_mode}\n')
             f.write(f'run mode:{" "*22}{self.run_mode}\n')
+            for _line in self._type_prune_parameter_lines():
+                f.write(_line + '\n')
             f.write('\n')
 
         # STANDALONE FAST MODE (corridor_mode='fast', 2026-10-14): the
@@ -22838,6 +22984,20 @@ class FindNeuronConnection:
                 conn_types_pd = conn_types.to_pandas()
         except ImportError:
             pass
+        # P1-L: the PAIR's total mass per hop, beside the realized hop mass
+        # the weights column carries. A pair can connect at several depths,
+        # so the pair total is deliberately NOT the path's realized mass.
+        _pair_mass = {}
+        try:
+            if hasattr(conn_types_pd, 'columns') and all(
+                    c in conn_types_pd.columns for c in
+                    ('type_pre', 'type_post', 'weight')):
+                _pm = conn_types_pd.groupby(
+                    ['type_pre', 'type_post'])['weight'].sum()
+                _pair_mass = {(str(a), str(b)): float(w)
+                              for (a, b), w in _pm.items()}
+        except Exception:  # noqa: BLE001 - additive column
+            _pair_mass = {}
 
         # Prepare output paths for streaming
         output_path_type_csv = os.path.join(self.allpath_folder, self.source_fname+'_to_'+self.target_fname+'_allpaths_type.csv')
@@ -23061,6 +23221,12 @@ class FindNeuronConnection:
                         _mass_want.update(
                             str(_lab) for _lab in _seq_key[1:])
                     _type_mass = self._realized_ratio_type_mass(_mass_want)
+                # P0-A (plan-drocat-type-pruned-pathfinding): the conditioned
+                # denominator is what a path's ADJUSTED ratio divides by. It is
+                # recorded from the same frame `connection_ratio_adj` was
+                # computed from, so chain and pair ratios are one measure.
+                _type_mass_adj = dict(
+                    getattr(self, '_type_incoming_conditioned', None) or {})
                 try:
                     def _fmt_w(x):
                         return (str(int(x)) if float(x).is_integer()
@@ -23074,6 +23240,8 @@ class FindNeuronConnection:
                         # patched — the probabilities / path_prob arms are
                         # removed (those columns are no longer exported).
                         new_w, new_mw = [], []
+                        new_ra, new_mra, new_rac = [], [], []
+                        new_pw = []
                         new_r = new_mr = None
                         _ratio_cols_ok = all(
                             c in df.columns for c in
@@ -23094,6 +23262,15 @@ class FindNeuronConnection:
                         for (_path_str, _old_w, _old_mw, _old_r,
                              _old_mr) in _rows:
                             _seq = tuple(str(_path_str).split('->'))
+                            _pw = [_pair_mass.get(
+                                (_seq[_i], _seq[_i + 1]))
+                                for _i in range(len(_seq) - 1)]
+                            if any(_v is not None for _v in _pw):
+                                new_pw.append('[' + ', '.join(
+                                    'None' if _v is None else _fmt_w(_v)
+                                    for _v in _pw) + ']')
+                            else:
+                                new_pw.append(None)
                             _rw = _realized_w.get(_seq)
                             try:
                                 _ow = (ast.literal_eval(_old_w)
@@ -23102,7 +23279,8 @@ class FindNeuronConnection:
                             except (ValueError, SyntaxError):
                                 _ow = None
                             _ok = (_rw is not None and _ow is not None
-                                   and len(_rw) == len(_ow))
+                                   and len(_rw) == len(_ow)
+                                   and len(_seq) == len(_rw) + 1)
                             if _ok:
                                 new_w.append('[' + ', '.join(
                                     _fmt_w(w) for w in _rw) + ']')
@@ -23132,6 +23310,33 @@ class FindNeuronConnection:
                                     _unresolvable_paths += 1
                                     new_r.append(None)
                                     new_mr.append(None)
+                            # P0-A: the ADJUSTED realized readout. Pair-level
+                            # connection_ratio_adj is a candidate filter, not a
+                            # path value; a hop's adjusted ratio is its
+                            # REALIZED mass over the conditioned denominator.
+                            # Missing denominators stay per-hop None (never a
+                            # fabricated 0) and the completeness flag says so.
+                            _adj_ratios = None
+                            if _ok:
+                                _adj_ratios = []
+                                for _w_hop, _post in zip(_rw, _seq[1:]):
+                                    _am = _type_mass_adj.get(str(_post))
+                                    _adj_ratios.append(
+                                        float(_w_hop) / _am
+                                        if _am and _am > 0 else None)
+                                new_ra.append('[' + ', '.join(
+                                    'None' if _v is None else repr(_v)
+                                    for _v in _adj_ratios) + ']')
+                                _finite_adj = [v for v in _adj_ratios
+                                               if v is not None]
+                                new_mra.append(min(_finite_adj)
+                                               if _finite_adj else None)
+                                new_rac.append(
+                                    len(_finite_adj) == len(_adj_ratios))
+                            else:
+                                new_ra.append(None)
+                                new_mra.append(None)
+                                new_rac.append(False)
                         _mw_all_int = all(
                             float(v).is_integer()
                             for v in new_mw if v is not None)
@@ -23150,6 +23355,15 @@ class FindNeuronConnection:
                                 pl.Series('min_ratio', new_mr,
                                           dtype=pl.Float64),
                             ]
+                        cols += [
+                            pl.Series('ratios_adj', new_ra, dtype=pl.Utf8),
+                            pl.Series('min_ratio_adj', new_mra,
+                                      dtype=pl.Float64),
+                            pl.Series('ratio_adj_complete', new_rac,
+                                      dtype=pl.Boolean),
+                            pl.Series('pair_weights', new_pw,
+                                      dtype=pl.Utf8),
+                        ]
                         return df.with_columns(cols)
 
                     df_paths = _patch_weights(df_paths)

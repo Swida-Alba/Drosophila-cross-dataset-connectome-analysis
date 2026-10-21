@@ -148,6 +148,11 @@ def main(argv=None) -> int:
         help='Neuron table CSV (bodyId, type[, hemisphere|somaSide|'
              'rootSide|instance]) — the same table the run used.')
     parser.add_argument(
+        '--mapping-file',
+        help='LabelMapper JSON to use when the run folder does not record '
+             'its custom mapping file (the override is hashed into the '
+             'refill provenance).')
+    parser.add_argument(
         '--out', default=DEFAULT_OUT,
         help=f'Output root (per-run subfolders). Default ./{DEFAULT_OUT}. '
              f'The run folders themselves are never modified.')
@@ -195,14 +200,20 @@ def main(argv=None) -> int:
         try:
             separate, hemi_filter, mapping_file, dataset = read_run_flags(
                 run_dir)
-            if mapping_file and not Path(mapping_file).exists():
+            # P0-D: an explicit override rescues a run folder whose
+            # parameters.txt lost its mapping record; the effective map is
+            # hashed into the provenance either way.
+            _mapping = str(args.mapping_file or mapping_file or '').strip()
+            if _mapping and not Path(_mapping).exists():
                 raise SystemExit(
-                    f'{run_dir.name}: parameters.txt records custom mapping '
-                    f'file {mapping_file!r} which does not exist — the '
-                    f'refill cannot reproduce the run\'s labels without it.')
+                    f'{run_dir.name}: custom mapping file {_mapping!r} does '
+                    f'not exist — the refill cannot reproduce the run\'s '
+                    f'labels without it.')
             type_map = build_type_map(neuron_table, separate,
-                                      mapping_file=mapping_file,
+                                      mapping_file=_mapping or None,
                                       dataset=dataset)
+            _map_note = (f', mapping={Path(_mapping).name}'
+                         if _mapping else ', mapping=native')
             if (connections_path.suffix.lower() == '.parquet'
                     and hemi_filter not in ('left', 'right')):
                 # PERF (2026-10-08): vectorized fast path — the lazy frame
@@ -216,7 +227,8 @@ def main(argv=None) -> int:
                     out_dir=(None if args.in_run
                              else out_root / run_dir.name),
                     source_note=f'CLI: connections={connections_path.name}, '
-                                f'neuron_table={neuron_table.name}')
+                                f'neuron_table={neuron_table.name}'
+                                f'{_map_note}')
             else:
                 edges = filter_edges_by_hemisphere(
                     load_connections(connections_path), type_map,
@@ -227,7 +239,8 @@ def main(argv=None) -> int:
                     out_dir=(None if args.in_run
                              else out_root / run_dir.name),
                     source_note=f'CLI: connections={connections_path.name}, '
-                                f'neuron_table={neuron_table.name}')
+                                f'neuron_table={neuron_table.name}'
+                                f'{_map_note}')
             if rec['status'] == 'refilled':
                 msg = (f"refilled: {rec['refill_edges']} bodyId edges / "
                        f"{rec['refill_weight_total']} syn "

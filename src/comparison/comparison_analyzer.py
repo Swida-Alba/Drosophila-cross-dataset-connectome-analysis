@@ -206,6 +206,21 @@ def _corridor_mode_for_threshold(dataset_name, threshold, parameters) -> str:
     return 'complete'
 
 
+def _type_pruned_for_threshold(dataset_name, threshold, parameters) -> bool:
+    """P2-O: the type-pruned lane is a SINGLE-FLOOR lane. A threshold sweep
+    would otherwise run it once per tier and invite the report to read the
+    series as a sensitivity curve; only the lowest tier (the superset floor)
+    gets the lane, and every higher tier records `type_pruned=False`."""
+    if not bool(getattr(parameters, 'type_pruned', False)):
+        return False
+    try:
+        tiers = sorted(float(t) for t in
+                       parameters.get_thresholds_for_dataset(dataset_name))
+    except Exception:
+        return True
+    return not tiers or float(threshold) == tiers[0]
+
+
 class ComparisonAnalyzer:
     """
     Main orchestrator for cross-dataset comparison analysis.
@@ -799,6 +814,17 @@ class ComparisonAnalyzer:
         edge_meta = {k: meta.get(k) for k in (
             'edge_mode', 'side_path_run', 'comparison_mode')
             if meta.get(k) is not None}
+        # P2-S: the typed lane's own provenance block, read from the lane
+        # manifest it wrote (presence-driven, never inferred).
+        type_block = {}
+        try:
+            _base = Path(parameters.get_dataset_output_path(
+                dataset_name, threshold))
+            _tp = _base / 'route_scope_paths' / 'type_prune_manifest.json'
+            if _tp.exists():
+                type_block = json.loads(_tp.read_text(encoding='utf-8'))
+        except Exception:
+            type_block = {}
         return {
             **edge_meta,
             'dataset': dataset_name,
@@ -846,6 +872,34 @@ class ComparisonAnalyzer:
             'untyped_dropped_rows': stats.get('rows'),
             'untyped_dropped_neurons': stats.get('neurons'),
             'untyped_dropped_fraction': stats.get('fraction'),
+            # P2-N/P2-S: the typed lane's identity and completeness are
+            # SEPARATE columns from `paths_complete`.
+            'type_pruned': bool(getattr(parameters, 'type_pruned', False)),
+            'type_pruned_complete': type_block.get(
+                'type_pruned_complete'),
+            'type_prune_basis': type_block.get(
+                'basis', getattr(parameters, 'type_prune_basis', None)),
+            'type_prune_scope': type_block.get(
+                'scope', getattr(parameters, 'type_prune_scope', None)),
+            'type_min_ratio_adj': type_block.get(
+                'min_ratio_adj', getattr(
+                    parameters, 'type_min_ratio_adj', None)),
+            'type_prune_revisit_policy': type_block.get(
+                'revisit_policy'),
+            'type_prune_max_visits': type_block.get('max_type_visits'),
+            'type_prune_type_map_sha': type_block.get('type_map_sha'),
+            'type_prune_drop_untyped': type_block.get('drop_untyped'),
+            'type_prune_pairs_before': type_block.get('pairs_before'),
+            'type_prune_pairs_after': type_block.get('pairs_after'),
+            'type_prune_candidate_walks': type_block.get(
+                'candidate_walks'),
+            'type_prune_validated': type_block.get('validated_walks'),
+            'type_prune_phantoms': type_block.get('phantoms'),
+            'type_prune_unverified': type_block.get('unverified'),
+            'type_prune_filtered_weak': type_block.get('filtered_weak'),
+            'type_prune_accepted': type_block.get('accepted_paths'),
+            'type_prune_completeness_reason': type_block.get(
+                'completeness_reason'),
         }
 
     @staticmethod
@@ -2114,6 +2168,22 @@ class ComparisonAnalyzer:
             pathfinding=self.parameters.pathfinding,  # Pass pathfinding algorithm
             graph_edge_limit_bodyid=self.parameters.graph_edge_limit_bodyid,  # bodyId edge limit (deep searches)
             corridor_mode=_corridor_mode_for_threshold(dataset_name, threshold, self.parameters),
+            # P2-M/P2-O: the typed lane is a separate single-floor lane,
+            # threaded through the same per-dataset run constructor.
+            type_pruned=_type_pruned_for_threshold(
+                dataset_name, threshold, self.parameters),
+            type_prune_basis=getattr(
+                self.parameters, 'type_prune_basis', 'ratio_adj'),
+            type_prune_scope=getattr(
+                self.parameters, 'type_prune_scope', 'full_floor'),
+            type_min_ratio_adj=float(getattr(
+                self.parameters, 'type_min_ratio_adj', 0.01)),
+            type_min_synapse=int(getattr(
+                self.parameters, 'type_min_synapse', 0) or 0),
+            type_min_wmax=int(getattr(
+                self.parameters, 'type_min_wmax', 0) or 0),
+            type_max_type_visits=int(getattr(
+                self.parameters, 'type_max_type_visits', 0) or 0),
             max_paths_bodyid=self.parameters.max_paths_bodyid,  # StrongestFirst path budget (None = per-mode default)
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),
@@ -5216,6 +5286,22 @@ class ComparisonAnalyzer:
             pathfinding=self.parameters.pathfinding,
             graph_edge_limit_bodyid=self.parameters.graph_edge_limit_bodyid,
             corridor_mode=_corridor_mode_for_threshold(dataset_name, threshold, self.parameters),
+            # P2-M/P2-O: the typed lane is a separate single-floor lane,
+            # threaded through the same per-dataset run constructor.
+            type_pruned=_type_pruned_for_threshold(
+                dataset_name, threshold, self.parameters),
+            type_prune_basis=getattr(
+                self.parameters, 'type_prune_basis', 'ratio_adj'),
+            type_prune_scope=getattr(
+                self.parameters, 'type_prune_scope', 'full_floor'),
+            type_min_ratio_adj=float(getattr(
+                self.parameters, 'type_min_ratio_adj', 0.01)),
+            type_min_synapse=int(getattr(
+                self.parameters, 'type_min_synapse', 0) or 0),
+            type_min_wmax=int(getattr(
+                self.parameters, 'type_min_wmax', 0) or 0),
+            type_max_type_visits=int(getattr(
+                self.parameters, 'type_max_type_visits', 0) or 0),
             max_paths_bodyid=self.parameters.max_paths_bodyid,
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),

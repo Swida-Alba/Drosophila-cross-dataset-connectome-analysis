@@ -297,6 +297,31 @@ class ComparisonParameters:
     layers >= 4), per dataset, writing route_scope_paths/ beside each
     run folder. The lane never modifies the compared runs' own outputs."""
 
+    type_pruned: bool = False
+    """Type-pruned COMPLETE lane (plan-drocat-type-pruned-pathfinding
+    Phase B/C): forwarded to every per-dataset run. A SEPARATE lane, not
+    a Run Mode value; runs at the run's own bound and carries its own
+    `type_pruned_complete` field."""
+
+    type_prune_basis: str = "ratio_adj"
+    """Coarse pair-level prune basis: ratio_adj | connection_ratio | synapse."""
+
+    type_prune_scope: str = "full_floor"
+    """Only 'full_floor' (the lossless discovery cone) is supported."""
+
+    type_min_ratio_adj: float = 0.01
+    """Pair-level adjusted-ratio floor AND the exact realized-path gate
+    (two different quantities; both recorded)."""
+
+    type_min_synapse: int = 0
+    """Optional type-pair mass floor on the prune."""
+
+    type_min_wmax: int = 0
+    """Optional bodyId realization floor on the prune."""
+
+    type_max_type_visits: int = 0
+    """Bounded-revisit cap per type; 0 = the hop bound (complete)."""
+
     max_paths_bodyid: Optional[int] = None
     """Path budget for the StrongestFirst enumerator (the default
     pathfinding): enumeration emits intact paths strongest-first and stops
@@ -2100,6 +2125,13 @@ class ComparisonParameters:
             'graph_edge_limit_bodyid': self.graph_edge_limit_bodyid,
             'max_paths_bodyid': self.max_paths_bodyid,
             'corridor_mode': self.corridor_mode,
+            'type_pruned': self.type_pruned,
+            'type_prune_basis': self.type_prune_basis,
+            'type_prune_scope': self.type_prune_scope,
+            'type_min_ratio_adj': self.type_min_ratio_adj,
+            'type_min_synapse': self.type_min_synapse,
+            'type_min_wmax': self.type_min_wmax,
+            'type_max_type_visits': self.type_max_type_visits,
             'replay_paths': self.replay_paths,
             # F7: auto-extend collapsed thresholds (k x tau_ref, capped at
             # 2x the max asked threshold) after the run reveals a collapse.
@@ -2380,6 +2412,13 @@ class ComparisonParameters:
             graph_edge_limit_bodyid=data.get('graph_edge_limit_bodyid', None),
             max_paths_bodyid=data.get('max_paths_bodyid', None),
             corridor_mode=data.get('corridor_mode', 'auto'),
+            type_pruned=data.get('type_pruned', False),
+            type_prune_basis=data.get('type_prune_basis', 'ratio_adj'),
+            type_prune_scope=data.get('type_prune_scope', 'full_floor'),
+            type_min_ratio_adj=data.get('type_min_ratio_adj', 0.01),
+            type_min_synapse=data.get('type_min_synapse', 0),
+            type_min_wmax=data.get('type_min_wmax', 0),
+            type_max_type_visits=data.get('type_max_type_visits', 0),
             replay_paths=data.get('replay_paths', True),
             auto_extend_thresholds=data.get('auto_extend_thresholds', False),
             capture_density=data.get('capture_density', False),

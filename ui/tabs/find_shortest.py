@@ -491,6 +491,7 @@ def create_find_shortest_tab():
             # against a fresh lossless prune at the asked threshold, not
             # yet the run's shortest-DAG store — refinement pending.
             "corridor_mode": run_mode.value,
+            **run_mode.payload(),
             "target_batch_size": int(target_batch_size.value) or 0,
             # plan-shortest-store-retention: post-run store handling.
             "discovery_store_retention": store_retention.value,

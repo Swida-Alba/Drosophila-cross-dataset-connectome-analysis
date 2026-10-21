@@ -79,6 +79,40 @@ def main():
                          "exported top-share is then the true strongest "
                          "actual routes (slower: cost tracks bound "
                          "tightness; F-PF-002 D2-B)")
+    ap.add_argument("--type-pruned", action="store_true",
+                    help="Phase B: prune the type graph coarsely, enumerate "
+                         "EVERY type walk over it, validate each at bodyId "
+                         "level and apply the exact realized "
+                         "min_ratio_adj filter. No top-M share.")
+    ap.add_argument("--type-prune-basis",
+                    choices=["ratio_adj", "connection_ratio", "synapse"],
+                    default="ratio_adj",
+                    help="coarse pair-level prune basis (default ratio_adj)")
+    ap.add_argument("--type-prune-scope", default="full_floor",
+                    choices=["full_floor"],
+                    help="universe the type graph is built from (only "
+                         "full_floor carries a completeness claim)")
+    ap.add_argument("--type-min-ratio-adj", type=float, default=0.01,
+                    help="pair-level adjusted-ratio floor for ratio bases "
+                         "AND the exact realized-path gate (default 0.01)")
+    ap.add_argument("--type-min-synapse", type=int, default=0,
+                    help="optional pair mass floor (w_sum) on the prune")
+    ap.add_argument("--type-min-wmax", type=int, default=0,
+                    help="optional bodyId realization floor (w_max) on the "
+                         "prune")
+    ap.add_argument("--type-walk-cap", type=int, default=2_000_000,
+                    help="disclosed cap on the complete type-walk "
+                         "enumeration (a cap forbids completeness)")
+    ap.add_argument("--type-revisit-policy", choices=["simple", "bounded"],
+                    default="bounded",
+                    help="bounded (default) allows up to two visits per type; "
+                         "simple forbids repeated types")
+    ap.add_argument("--type-max-type-visits", type=int, default=0,
+                    help="bounded-policy visit cap per type; 0 = the hop "
+                         "bound (the complete revisit set for that bound)")
+    ap.add_argument("--type-validate-work-cap", type=int, default=2_000_000,
+                    help="per-walk bodyId validation work cap (a cap hit "
+                         "marks the walk unverified, never phantom)")
     ap.add_argument("--trigger", default="run-folder",
                     help="provenance trigger label (the in-run hook "
                          "passes 'in-run (subprocess)')")
@@ -88,7 +122,7 @@ def main():
 
     from route_plan import CorridorRefusal, run_lane
 
-    common = dict(corridor_mode="both",
+    common = dict(corridor_mode=("typed" if args.type_pruned else "both"),
                   allow_multi_visit=args.allow_multi_visit,
                   certify_actual=args.certify_actual,
                   trigger=args.trigger,
@@ -96,7 +130,17 @@ def main():
                   length_decay=args.length_decay,
                   per_pair_length_budget=args.pair_length_budget,
                   write_bodyid=not args.no_bodyid,
-                  time_budget_s=(args.time_budget or None))
+                  time_budget_s=(args.time_budget or None),
+                  type_pruned=args.type_pruned,
+                  type_prune_basis=args.type_prune_basis,
+                  type_prune_scope=args.type_prune_scope,
+                  type_min_ratio_adj=args.type_min_ratio_adj,
+                  type_min_synapse=args.type_min_synapse,
+                  type_min_wmax=args.type_min_wmax,
+                  type_walk_cap=args.type_walk_cap,
+                  type_revisit_policy=args.type_revisit_policy,
+                  type_max_type_visits=args.type_max_type_visits,
+                  type_validate_work_cap=args.type_validate_work_cap)
     try:
         if args.run_dir:
             run_lane(args.run_dir, connections_path=args.connections,

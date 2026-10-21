@@ -1805,3 +1805,347 @@ def test_lane_universe_is_the_dataset_ge1_pair_mass(tmp_path):
         key = (row["type_pre"], row["type_post"])
         assert key in want, (key, sorted(want))
         assert float(row["universe_type_weights"]) == want[key], row
+
+
+# ---------------------------------------------------------------- Phase B
+def _typed_dataset(tmp_path, edges, types, name="ds"):
+    """Write a bodyId edge table + neuron table for the typed-lane tests."""
+    import pandas as pd
+    root = tmp_path / name
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": [e[0] for e in edges],
+        "bodyId_post": [e[1] for e in edges],
+        "weight": [e[2] for e in edges],
+    }).write_parquet(root / "connections.parquet")
+    pd.DataFrame({
+        "bodyId": list(types),
+        "type": [types[b] for b in types],
+    }).to_parquet(root / "neurons.parquet", index=False)
+    return root
+
+
+def _run_typed(root, out, **kw):
+    opts = dict(asked=1, max_interlayer=2, source_types=["A"],
+                target_types=["C"], connections_path=root / "connections.parquet",
+                neuron_table=root / "neurons.parquet", out_dir=out,
+                type_pruned=True, type_prune_basis="synapse",
+                type_min_synapse=1, type_min_ratio_adj=0.0)
+    opts.update(kw)
+    assert run_lane(None, **opts)
+    rows = pl.read_csv(out / "route_paths_type.csv")
+    manifest = json.loads((out / "type_prune_manifest.json").read_text())
+    return rows, manifest
+
+
+def test_type_pruned_phantom_rejected(tmp_path):
+    """Phase D.1: A->B and B->C exist, but the B bodies carrying the
+    incoming hop are disjoint from the B bodies carrying the outgoing
+    hop. No single B body realizes A->B->C, so the walk is a phantom and
+    must not be exported. The realizable A->D->C stays."""
+    # Every type pair below sits on SOME source->target body path, so the
+    # lossless cone keeps it. But the A->B edge's B body (b1) and the
+    # B->C edge's B body (b2) are disjoint — no single B body composes
+    # A->B->C, so the TYPE walk is a phantom. A->B->D->C and A->D->B->C
+    # are realizable; A->E->C is the clean control.
+    edges = [
+        ("a1", "b1", 100), ("b1", "d1", 90), ("d1", "c1", 80),
+        ("a2", "d2", 70), ("d2", "b2", 60), ("b2", "c1", 50),
+        ("a1", "e1", 40), ("e1", "c2", 30),
+    ]
+    types = {"a1": "A", "a2": "A", "b1": "B", "b2": "B",
+             "d1": "D", "d2": "D", "e1": "E", "c1": "C", "c2": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(root, tmp_path / "out", max_interlayer=3)
+    assert "A->B->C" not in set(rows["path"])
+    assert {"A->B->D->C", "A->D->B->C", "A->E->C"} <= set(rows["path"])
+    assert manifest["phantoms"] >= 1
+    assert manifest["accepted_paths"] == rows.height
+    assert manifest["type_pruned_complete"] is True
+    assert manifest["completeness_reason"] == "exhausted"
+
+
+def test_type_pruned_prunes_pair_and_enumerates_complete(tmp_path):
+    """Phase D.2: the pair below the mass floor is removed from the
+    candidate graph; the surviving A->E->C walk is enumerated and
+    validated. `type_pruned_complete` is claimed only on exhaustion."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "c1", 30),    # pruned (30 < 100)
+        ("a1", "e1", 200), ("e1", "c1", 150),   # kept
+    ]
+    types = {"a1": "A", "b1": "B", "e1": "E", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(root, tmp_path / "out", type_min_synapse=100)
+    assert set(rows["path"]) == {"A->E->C"}
+    assert manifest["pairs_before"] == 4
+    assert manifest["pairs_after"] == 3
+    assert manifest["pairs_removed"] == 1
+    assert manifest["candidate_walks"] == 1
+    assert manifest["validated_walks"] == 1
+    assert manifest["type_pruned_complete"] is True
+
+
+def test_type_pruned_cap_forbids_completeness(tmp_path):
+    """Phase D.6: a type-walk cap is a disclosed stop, never a complete
+    claim."""
+    edges = [
+        ("a1", "e1", 200), ("e1", "c1", 150),
+        ("a1", "f1", 180), ("f1", "c1", 140),
+    ]
+    types = {"a1": "A", "e1": "E", "f1": "F", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(root, tmp_path / "out", type_walk_cap=1)
+    assert manifest["enumeration_capped"] is True
+    assert manifest["type_pruned_complete"] is False
+    assert manifest["completeness_reason"] == "type_walk_cap"
+    assert rows.height == 1
+
+
+def test_type_pruned_exact_realized_filter(tmp_path):
+    """Phase D.2/P0-B: the pair prune is coarse; the exact gate is the
+    REALIZED min_ratio_adj. A realizable but weak path is counted as
+    filtered, not exported."""
+    edges = [
+        ("a1", "e1", 200), ("e1", "c1", 150),   # C share 150/170
+        ("a1", "g1", 30), ("g1", "c1", 20),     # C share 20/170
+    ]
+    types = {"a1": "A", "e1": "E", "g1": "G", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(
+        root, tmp_path / "out", type_min_ratio_adj=0.5)
+    assert set(rows["path"]) == {"A->E->C"}
+    assert manifest["validated_walks"] == 2
+    assert manifest["filtered_weak"] == 1
+    assert all(float(v) > 0.5 for v in rows["min_ratio_adj"])
+    # the exact gate is strictly greater; the weak path is absent
+    assert "A->G->C" not in set(rows["path"])
+
+
+def test_type_pruned_first_target_stops_the_walk(tmp_path):
+    """Phase B.3: exactly one clock token at the final node — a target is
+    recorded and never expanded through."""
+    from route_plan import _enumerate_type_walks
+    pairs = pl.DataFrame({
+        "type_pre": ["A", "B", "C"],
+        "type_post": ["B", "C", "D"],
+        "w_sum": [1.0, 1.0, 1.0],
+        "w_max": [1.0, 1.0, 1.0],
+        "n": [1, 1, 1],
+    })
+    walks, stats = _enumerate_type_walks(
+        pairs, ["A"], {"C"}, bound=3)
+    assert stats["capped"] is False
+    assert walks == [("A", "B", "C")]
+
+
+def test_type_pruned_complete_matches_bruteforce_type_walk_set(tmp_path):
+    """Phase D.2: on a toy graph the lane's candidate set equals an
+    independent exhaustive simple-walk DFS over the pruned pair table."""
+    edges = [
+        ("a1", "e1", 200), ("e1", "c1", 150),
+        ("a1", "f1", 180), ("f1", "c1", 140),
+        ("a1", "e1", 10), ("e1", "f1", 5), ("f1", "c1", 5),
+    ]
+    types = {"a1": "A", "e1": "E", "f1": "F", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(root, tmp_path / "out", type_min_synapse=6)
+    # independent type-level brute force over the same kept pairs
+    pairs = [("A", "E"), ("E", "C"), ("A", "F"), ("F", "C")]
+    adj = {}
+    for a, b in pairs:
+        adj.setdefault(a, set()).add(b)
+    found = set()
+
+    def dfs(node, walk):
+        for nxt in adj.get(node, ()):
+            if nxt == "C":
+                found.add(tuple(walk + (nxt,)))
+                continue
+            if nxt in walk:
+                continue
+            dfs(nxt, walk + (nxt,))
+
+    dfs("A", ("A",))
+    assert manifest["candidate_walks"] == len(found)
+    assert manifest["enumeration_capped"] is False
+    assert set(rows["path"]) <= {"->".join(w) for w in found}
+
+
+def test_type_pruned_bounded_revisit_is_enumerated(tmp_path):
+    """P1-I: the article's Complete tables carry type revisits realized by
+    DIFFERENT bodies. The lane's default `bounded` policy enumerates
+    A->B->A->C; `simple` does not. The revisit is a type-level event, not
+    a bodyId autapse."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "a2", 90), ("a2", "c1", 80),
+    ]
+    types = {"a1": "A", "a2": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(
+        root, tmp_path / "out_bounded", max_interlayer=3)
+    assert "A->B->A->C" in set(rows["path"])
+    assert manifest["revisit_policy"] == "bounded"
+    assert manifest["chains_revisit"] >= 1
+    assert manifest["type_pruned_complete"] is True
+    rows_s, manifest_s = _run_typed(
+        root, tmp_path / "out_simple", max_interlayer=3,
+        type_revisit_policy="simple")
+    assert "A->B->A->C" not in set(rows_s["path"])
+    assert manifest_s["revisit_policy"] == "simple"
+
+
+def test_type_pruned_manifest_records_filter_and_label_parity(tmp_path):
+    """P1-K/P2-S: the manifest carries the universe's scope, filters, label
+    map digest and enrollment, so the walk set can be reproduced."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(root, tmp_path / "out")
+    assert manifest["scope"] == "full_floor"
+    assert manifest["type_prune_scope"] == "full_floor"
+    assert manifest["drop_untyped"] is True
+    assert manifest["exclude_intra_type_connections"] is False
+    assert manifest["separate_hemispheres"] is False
+    assert manifest["hemisphere_filter"] == "both"
+    assert manifest["weight_basis"] == "synapse"
+    assert len(manifest["type_map_sha"]) == 12
+    assert manifest["type_map_size"] == 3
+    assert manifest["enrollment"]["sources"] == "types"
+    assert manifest["requested_floor"] == 1
+    assert manifest["typed_lane_floor"] == 1
+    prov = json.loads((tmp_path / "out" / "route_provenance.json").read_text())
+    assert prov["type_map_sha"] == manifest["type_map_sha"]
+    assert prov["type_map_size"] == 3
+
+
+def test_type_pruned_covers_exhaustive_bodyid_paths(tmp_path):
+    """Phase D.5 (budget independence): with a zero exact filter, the lane's
+    exported type paths must equal an exhaustive bodyId simple-path search
+    projected to types — no path budget, no class share, no corridor quota.
+    A phantom type walk that no single body realizes must not appear."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "c1", 80),      # A->B->C
+        ("a1", "d1", 90), ("d1", "c1", 70),       # A->D->C
+        ("a1", "b2", 60), ("b2", "d1", 50),       # A->B->D->C
+        ("a1", "e1", 40), ("e1", "b1", 30),       # A->E->B->C
+        ("a1", "e2", 20), ("f1", "c1", 10),       # keeps E2/F on no A path
+    ]
+    types = {"a1": "A", "b1": "B", "b2": "B", "d1": "D",
+             "e1": "E", "e2": "E", "f1": "F", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(
+        root, tmp_path / "out", max_interlayer=3, type_min_ratio_adj=0.0)
+    # exhaustive body-simple DFS from every A body to every C body
+    adj = {}
+    for u, v, _w in edges:
+        adj.setdefault(u, []).append(v)
+    found = set()
+
+    def dfs(body, walk):
+        for nxt in adj.get(body, ()):
+            if types.get(nxt) == "C":
+                found.add(tuple(types[b] for b in walk + (nxt,)))
+                continue
+            if nxt in walk or len(walk) >= 4:
+                continue
+            dfs(nxt, walk + (nxt,))
+
+    for body, typ in types.items():
+        if typ == "A":
+            dfs(body, (body,))
+    assert found == {
+        ("A", "B", "C"), ("A", "D", "C"),
+        ("A", "B", "D", "C"), ("A", "E", "B", "C")}
+    assert set(rows["path"]) == {"->".join(x) for x in found}
+    assert manifest["accepted_paths"] == len(found)
+    assert manifest["type_pruned_complete"] is True
+
+
+def test_typed_knobs_round_trip_from_parameters_txt(tmp_path):
+    """P2-S: a folder stamped by a typed run reproduces the lane on a bare
+    run-folder invocation (no CLI flags)."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "dataset:                    synth\n"
+        "path_mode:                  all\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n"
+        "type prune scope:           full_floor\n"
+        "type min ratio adj:         0.0\n"
+        "type min synapse:           1\n"
+        "type min wmax:              0\n"
+        "type walk mode:             complete\n"
+        "type walk cap:              1000\n"
+        "type revisit policy:        bounded\n"
+        "type max type visits:       0\n"
+        "type validate work cap:     2000000\n",
+        encoding="utf-8")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    lane = run / "route_scope_paths"
+    rows = pl.read_csv(lane / "route_paths_type.csv")
+    manifest = json.loads((lane / "type_prune_manifest.json").read_text())
+    assert set(rows["path"]) == {"A->B->C"}
+    assert manifest["basis"] == "synapse"
+    assert manifest["type_walk_cap"] == 1000
+    assert manifest["type_pruned_complete"] is True
+    prov = json.loads((lane / "route_provenance.json").read_text())
+    assert prov["type_pruned"] is True
+
+
+def test_typed_lane_honors_exclude_autapses(tmp_path):
+    """P1-I: bodyId autapses are removed by the run's rule, while a TYPE
+    self-edge realized by two different bodies stays. The A->A pair must
+    carry n=1, not 2, and A->A->B->C must still be realizable."""
+    edges = [
+        ("a1", "a1", 100),   # body autapse — removed
+        ("a1", "a2", 10),    # A->A across two bodies — kept
+        ("a2", "b1", 5), ("b1", "c1", 4),
+    ]
+    types = {"a1": "A", "a2": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+
+    def _lane(name, exclude):
+        run = tmp_path / name
+        run.mkdir()
+        (run / "parameters.txt").write_text(
+            "source neurons:             ['A']\n"
+            "target neurons:             ['C']\n"
+            "min synapse number:         1\n"
+            "max interlayer:             3\n"
+            "path_mode:                  all\n"
+            f"exclude autapses:           {exclude}\n",
+            encoding="utf-8")
+        assert run_lane(run, connections_path=root / "connections.parquet",
+                        neuron_table=root / "neurons.parquet",
+                        type_pruned=True, type_prune_basis="synapse",
+                        type_min_synapse=1, type_min_ratio_adj=0.0,
+                        type_revisit_policy="bounded")
+        lane = run / "route_scope_paths"
+        pairs = pl.read_csv(lane / "route_type_pairs_pruned.csv")
+        aa = pairs.filter((pl.col("type_pre") == "A")
+                          & (pl.col("type_post") == "A"))
+        rows = pl.read_csv(lane / "route_paths_type.csv")
+        manifest = json.loads(
+            (lane / "type_prune_manifest.json").read_text())
+        return aa["n"][0] if aa.height else 0, set(rows["path"]), manifest
+
+    kept, paths, manifest = _lane("with_rule", True)
+    assert kept == 1
+    assert "A->A->B->C" in paths
+    assert manifest["exclude_autapses"] is True
+    both, paths2, manifest2 = _lane("without_rule", False)
+    # With the rule off, the lossless edge union retains the body autapse
+    # in the A->A pair. What must survive either way is the TYPE self-edge
+    # realized by two different bodies.
+    assert both == 2
+    assert "A->A->B->C" in paths2
+    assert manifest2["exclude_autapses"] is False

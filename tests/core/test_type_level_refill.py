@@ -2554,3 +2554,42 @@ def test_no_transmitter_source_means_no_claim(tmp_path):
     from type_level_refill import _pair_nt_lookup
 
     assert _pair_nt_lookup(tmp_path) == ({}, {})
+
+
+def test_full_floor_type_pairs_export(tmp_path):
+    """P0-C/A.4: the full-floor table is the ALL-PAIRS, asked-floor type
+    universe (not emitted-chain-only) and carries both pair ratios."""
+    _fc, run_dir = make_run(tmp_path, 'full_floor')
+    out = tmp_path / 'recs'
+    rec = compute_type_level_refill(
+        run_dir, edges=EDGES, type_map=TYPE_MAP, out_dir=out, write=True)
+    full = rec['full']
+    assert full['full_floor']['status'] == 'ok'
+    csv = out / 'refill_full_floor_type_pairs.csv'
+    assert csv.exists()
+    frame = pd.read_csv(csv)
+    assert list(frame.columns) == [
+        'type_pre', 'type_post', 'w_sum', 'w_max', 'n',
+        'connection_ratio', 'connection_ratio_adj', 'nt_type',
+        'non_emitted_mass', 'in_emitted_cone', 'source_type',
+        'target_type']
+    assert len(frame) > 0
+    # all-pairs: at least every emitted pair is represented
+    emitted = read_emitted_pairs(run_dir)
+    got = set(zip(frame['type_pre'], frame['type_post']))
+    assert set(emitted) <= got
+    assert frame['connection_ratio_adj'].notna().any()
+    # the chain-scoped full pair table carries the adjusted column too
+    pair_csv = out / 'refill_full_type_pairs.csv'
+    cols = pd.read_csv(pair_csv, nrows=0).columns
+    assert 'refilled_connection_ratio_adj' in cols
+    # and the full path table carries the realized adjusted readout
+    path_csv = run_dir / 'type_level_refill' / 'refill_full_paths_type.csv'
+    pcols = pd.read_csv(path_csv, nrows=0).columns
+    assert {'ratios_adj', 'min_ratio_adj',
+            'ratio_adj_complete'} <= set(pcols)
+    assert rec['full']['refill_status'] in (
+        'ok', 'unavailable_guard_not_checked')
+    # P0-E: the primary guard is bodyId-level (label-agnostic), so the
+    # settled-vs-native label mismatch cannot fail a complete cache.
+    assert rec['full']['cache_guard'] in ('ok', 'ok_bodyid')

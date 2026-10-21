@@ -12,6 +12,7 @@
 - Fallback: REPLAY_BUDGET exceeded -> results['_fallback'].
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -336,3 +337,33 @@ def test_replay_mid_gap_threshold_materializes_under_request(monkeypatch, tmp_pa
     # t=30 > tau: materialized complete run at 30.
     assert results[30]["paths_complete"] is True
     assert os.path.isdir(str(tmp_path / "minsyn_30"))
+
+
+def test_complete_type_paths_carry_adjusted_ratio_columns(monkeypatch, tmp_path):
+    """P0-A (plan-drocat-type-pruned-pathfinding): the Complete path export
+    must carry the REALIZED adjusted readout, not a blank cell. The
+    conditioned denominator is the same one `connection_ratio_adj` uses."""
+    fc, _c, _l = _fixture(monkeypatch, tmp_path)
+    # Pin the conditioned denominator; the synthetic pipeline does not run
+    # the F9 pair fetch that normally records it.
+    fc._remember_type_incoming_conditioned = lambda *a, **k: None
+    fc._type_incoming_conditioned = {"TA": 100.0, "TB": 100.0,
+                                     "TC": 100.0, "TT": 100.0}
+    fc.FindAllPath()
+    csv = os.path.join(fc.allpath_folder, "src_to_tgt_allpaths_type.csv")
+    frame = pl.read_csv(csv)
+    assert {"ratios_adj", "min_ratio_adj",
+            "ratio_adj_complete", "pair_weights"} <= set(frame.columns)
+    assert frame.height >= 1
+    assert frame["ratio_adj_complete"].all()
+    assert frame["min_ratio_adj"].null_count() == 0
+    # every hop's adjusted ratio is the realized mass / 100
+    for row in frame.iter_rows(named=True):
+        w = json.loads(row["weights"])
+        ra = json.loads(row["ratios_adj"])
+        assert len(ra) == len(w)
+        for mass, ratio in zip(w, ra):
+            assert abs(float(mass) / 100.0 - float(ratio)) < 1e-12
+        pw = json.loads(row["pair_weights"])
+        assert len(pw) == len(w)
+        assert all(float(p) >= float(m) for p, m in zip(pw, w))

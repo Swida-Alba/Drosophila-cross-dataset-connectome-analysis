@@ -79,6 +79,15 @@ class TypeLevelRefillError(Exception):
     """Refusal: the refill cannot be computed honestly for this run."""
 
 
+def _mapping_digest(type_map) -> str:
+    """Stable 12-hex digest of the effective bodyId->label map (P0-D)."""
+    import hashlib
+    h = hashlib.md5()
+    for body, label in sorted((type_map or {}).items()):
+        h.update(f'{body}\x1f{label}\x1e'.encode('utf-8', 'replace'))
+    return h.hexdigest()[:12]
+
+
 # ---------------------------------------------------------------------------
 # Run-folder readers
 # ---------------------------------------------------------------------------
@@ -1396,6 +1405,11 @@ def compute_type_level_refill(
         'aggregate_method': aggregate_method,
         'graph_pruning_record': prov.get('graph_pruning_record'),
         'source_note': source_note,
+        # P0-D: the EFFECTIVE bodyId->label map the refill actually used,
+        # hashed so a reader can tell two label resolutions apart even when
+        # the run folder's mapping file is missing.
+        'type_map_size': len(type_map or {}),
+        'type_map_sha': _mapping_digest(type_map),
         # basis disclosure (the report's cutoff labels are mode-aware):
         # on ratio runs the applied threshold is a RATIO and the mass
         # cutoff is the forced min synapse
@@ -1599,8 +1613,8 @@ def compute_type_level_refill(
         hops: Dict[Tuple[str, str], set] = defaultdict(set)
         for chain in seq_cls_full:
             for i, cls_at in enumerate(seq_cls_full[chain]):
-                for _cls, edges in cls_at.items():
-                    for (u, v) in edges:
+                for _cls, cls_edges in cls_at.items():
+                    for (u, v) in cls_edges:
                         hops[(u, v)].add(i)
         estar_full = {k: {'w': weight_full[k],
                           'hops': sorted(hops[k])}
@@ -1638,12 +1652,20 @@ def compute_type_level_refill(
         # independently of the mirror block below, so each owns its
         # lookup rather than sharing a name across branches)
         _pair_nt_full, _type_nt_full = _pair_nt_lookup(run_dir)
+        # At asked <= 1 the conditioning is vacuous, so the adjusted
+        # denominator IS the plain one (gate L1); the accumulator is only
+        # populated when a mass floor is active, so fall back explicitly
+        # instead of publishing an all-None adjusted column.
+        type_in_adj_eff = type_in_adj if type_in_adj else type_in
         rows_full = []
         for pair in sorted(emitted):
             emit_w = int(emitted[pair])
             ref_w = int(full_totals.get(pair, 0.0))
             denom = type_in.get(pair[1], 0.0)
             ratio = ((emit_w + ref_w) / denom) if denom > 0 else None
+            denom_adj = type_in_adj_eff.get(pair[1], 0.0)
+            ratio_adj = (((emit_w + ref_w) / denom_adj)
+                         if denom_adj > 0 else None)
             rows_full.append({
                 'type_pre': pair[0], 'type_post': pair[1],
                 'nt_type': _pair_nt_full.get(
@@ -1653,6 +1675,12 @@ def compute_type_level_refill(
                 'refilled_total': emit_w + ref_w,
                 'refilled_connection_ratio': (
                     round(ratio, 6) if ratio is not None else None),
+                # P0-A/P0-C: the pair's conditioned share, so the >1 %
+                # candidate filter can be applied to the FULL table
+                # without recomputing a denominator from a different
+                # source.
+                'refilled_connection_ratio_adj': (
+                    round(ratio_adj, 6) if ratio_adj is not None else None),
                 'pair_offchain_mass': int(offchain.get(pair, 0.0)),
             })
         # DP-fed row assembly (same helpers the path-fed asked view
@@ -1671,11 +1699,176 @@ def compute_type_level_refill(
             seq_cls=seq_cls_full)
         complete_rows_full, complete_stats_full = \
             _complete_rows_from_structures(
-                seq_cls_full, seq_nodes_full, type_n_full, type_in)
+                seq_cls_full, seq_nodes_full, type_n_full, type_in,
+                type_in_adj=type_in_adj_eff)
         # kept-edge census (all classes incl. emitted-class): the
         # layered reference's own disclosures (plan §9.4)
         kept_mass_total = sum(
             anchor_full(uv) for uv in sorted(estar_full))
+
+        # -- P0-C/A.4: the FULL-FLOOR type universe -----------------------
+        # The tables above are chain-scoped by design (emitted chains only).
+        # A type-pruned lane must not inherit that restriction, so this
+        # export is the whole type-pair table at the run's ASKED floor,
+        # restricted only by type-level reachability s->t within the hop
+        # bound (a superset of the body-level lossless cone, disclosed as
+        # such). It is built from the same full connection source and the
+        # same effective labels as the denominators.
+        def _build_full_floor_pairs():
+            import polars as pl
+            if edge_lf is not None:
+                base = (edge_lf
+                        .select(pl.col('bodyId_pre').cast(pl.Utf8).alias('u'),
+                                pl.col('bodyId_post').cast(pl.Utf8).alias('v'),
+                                pl.col('weight').cast(pl.Float64).alias('w'))
+                        .group_by(['u', 'v'])
+                        .agg(pl.col('w').sum().alias('w')))
+                src_note = 'lazy edge frame (run connection source)'
+            elif edges is not None:
+                base = pl.DataFrame(
+                    {'u': [str(u) for u, _v, _w in edges],
+                     'v': [str(v) for _u, v, _w in edges],
+                     'w': [float(w) for _u, _v, w in edges]},
+                    schema={'u': pl.Utf8, 'v': pl.Utf8,
+                            'w': pl.Float64})
+                src_note = 'edge tuple stream (materialized)'
+            else:
+                return [], {'status': 'unavailable',
+                            'reason': 'no edge source was supplied'}
+            if ratio_mode:
+                den = pl.DataFrame(
+                    {'v': list(post_totals.keys()),
+                     'd': [float(x) for x in post_totals.values()]},
+                    schema={'v': pl.Utf8, 'd': pl.Float64})
+                base = (base.join(den, on='v', how='left')
+                        .with_columns(
+                            pl.when(pl.col('d') > 0)
+                            .then(pl.col('w') / pl.col('d'))
+                            .otherwise(0.0).alias('_thr')))
+                floor = (int(and_syn_floor)
+                         if and_syn_floor is not None else 1)
+                base = base.filter((pl.col('w') >= max(1, floor))
+                                   & (pl.col('_thr') >= float(asked)))
+            else:
+                base = base.filter(pl.col('w') >= float(asked))
+                if and_ratio_tier:
+                    den = pl.DataFrame(
+                        {'v': list(and_post_totals.keys()),
+                         'd': [float(x) for x in and_post_totals.values()]},
+                        schema={'v': pl.Utf8, 'd': pl.Float64})
+                    base = (base.join(den, on='v', how='left')
+                            .with_columns(
+                                pl.when(pl.col('d') > 0)
+                                .then(pl.col('w') / pl.col('d'))
+                                .otherwise(0.0).alias('_thr'))
+                            .filter(pl.col('_thr') >= float(and_ratio_tier)))
+            if exclude_autapses:
+                base = base.filter(pl.col('u') != pl.col('v'))
+            if base.height == 0:
+                return [], {'status': 'empty',
+                            'scope': 'full_floor_type_reachable',
+                            'source': src_note}
+            tm = pl.DataFrame(
+                {'bid': [str(k) for k in type_map.keys()],
+                 't': [str(v) for v in type_map.values()]},
+                schema={'bid': pl.Utf8, 't': pl.Utf8})
+            e = (base.join(tm.rename({'bid': 'u', 't': 'tp'}), on='u',
+                           how='inner')
+                     .join(tm.rename({'bid': 'v', 't': 'tq'}), on='v',
+                           how='inner'))
+            if exclude_intra:
+                e = e.filter(pl.col('tp') != pl.col('tq'))
+            if e.height == 0:
+                return [], {'status': 'empty',
+                            'scope': 'full_floor_type_reachable',
+                            'source': src_note}
+            pairs = (e.group_by(['tp', 'tq'])
+                     .agg(pl.col('w').sum().alias('w_sum'),
+                          pl.col('w').max().alias('w_max'),
+                          pl.len().alias('n')))
+            # type-level reachability s->t <= bound (a SUPERSET of the
+            # body-level lossless cone: every body path projects to a
+            # type walk, so no realizable pair is lost)
+            pre = pairs['tp'].to_list()
+            post = pairs['tq'].to_list()
+            seed_s = {type_map[b] for b in sources if b in type_map}
+            seed_t = {type_map[b] for b in targets if b in type_map}
+
+            def _bfs(seeds, forward):
+                dist = {t: 0 for t in seeds}
+                frontier = set(seeds)
+                for layer in range(1, int(bound) + 1):
+                    nxt = set()
+                    if forward:
+                        for a, b in zip(pre, post):
+                            if a in frontier and b not in dist:
+                                nxt.add(b)
+                    else:
+                        for a, b in zip(pre, post):
+                            if b in frontier and a not in dist:
+                                nxt.add(a)
+                    if not nxt:
+                        break
+                    for t in nxt:
+                        dist[t] = layer
+                    frontier = nxt
+                return dist
+            ds = _bfs(seed_s, True)
+            dt = _bfs(seed_t, False)
+            keep = [(a, b) for a, b in zip(pre, post)
+                    if a in ds and b in dt
+                    and ds[a] + 1 + dt[b] <= int(bound)]
+            if not keep:
+                return [], {'status': 'empty',
+                            'scope': 'full_floor_type_reachable',
+                            'source': src_note}
+            keep_df = pl.DataFrame(
+                {'tp': [a for a, _b in keep],
+                 'tq': [b for _a, b in keep]},
+                schema={'tp': pl.Utf8, 'tq': pl.Utf8})
+            pairs = (pairs.join(keep_df, on=['tp', 'tq'], how='semi')
+                     .sort(['tp', 'tq']))
+            _pair_nt, _type_nt = _pair_nt_lookup(run_dir)
+            rows = []
+            for r in pairs.iter_rows(named=True):
+                a, b = str(r['tp']), str(r['tq'])
+                w_sum = float(r['w_sum'])
+                den = type_in.get(b, 0.0)
+                den_adj = type_in_adj_eff.get(b, 0.0)
+                rows.append({
+                    'type_pre': a, 'type_post': b,
+                    'w_sum': w_sum, 'w_max': float(r['w_max']),
+                    'n': int(r['n']),
+                    'connection_ratio': (round(w_sum / den, 6)
+                                         if den > 0 else None),
+                    'connection_ratio_adj': (round(w_sum / den_adj, 6)
+                                             if den_adj > 0 else None),
+                    'nt_type': _pair_nt.get(
+                        (a, b), _type_nt.get(a, '')),
+                    'non_emitted_mass': max(
+                        w_sum - float(emitted.get((a, b), 0)), 0.0),
+                    'in_emitted_cone': (a, b) in emitted,
+                    'source_type': a in seed_s,
+                    'target_type': b in seed_t,
+                })
+            return rows, {'status': 'ok',
+                          'scope': 'full_floor_type_reachable',
+                          'reachability': 'type_level_superset_of_'
+                                          'body_lossless_cone',
+                          'asked': asked, 'bound': int(bound),
+                          'source': src_note,
+                          'rows': len(rows),
+                          'emitted_pairs': sum(
+                              1 for r in rows if r['in_emitted_cone'])}
+
+        try:
+            full_floor_rows, full_floor_block = _build_full_floor_pairs()
+        except Exception as exc:  # noqa: BLE001 - additive export
+            import traceback
+            full_floor_rows = []
+            full_floor_block = {'status': 'failed',
+                                'error': repr(exc),
+                                'traceback': traceback.format_exc()[-2000:]}
         block = {
             'status': 'ok',   # layered per-position filter (chain-scoped)
             'refill_star': True,
@@ -1701,44 +1894,111 @@ def compute_type_level_refill(
             'position_set_memberships': position_set_memberships,
             'position_set_max': position_set_max,
             'truncated': False,
+            # P0-C/A.4: the all-pairs, all-floor table this run's typed
+            # lane can use; chain-scoped tables above are unchanged.
+            'full_floor': full_floor_block,
         }
-        # FULL-SCOPE CACHE GUARD (2026-10-10, user-approved): the asked
-        # scope is anchored by table_reproduced, but the full scope had
-        # no check — an incomplete connection cache would silently
-        # undercount it. Cheap cross-check: the stream-derived all-post
-        # incoming must dominate the run's own exported emitted-cone
-        # incoming (type_incoming_emitted.csv) by a sane margin — the
-        # emitted file sums a SUBSET of the same dataset's edges (every
-        # emitted-network edge, each >= the applied cut). type_in <
-        # emitted_in is impossible under a complete cache.
+        # FULL-SCOPE CACHE GUARD (2026-10-10, user-approved; hardened
+        # 2026-10-22, P0-E): the asked scope is anchored by
+        # table_reproduced, but the full scope had no check — an
+        # incomplete connection cache would silently undercount it.
+        #
+        # The BODYID check is the primary one: the run's
+        # `connection_info_bodyId.csv` names the exact physical edges the
+        # Complete lane emitted. Comparing those masses to the cache is
+        # LABEL-AGNOSTIC, so a settled-vs-native label mismatch can no
+        # longer fail the guard for a complete cache (the BANC 524-type
+        # failure was label-only: stream 0 vs applied 3). The type-level
+        # incoming check remains the fallback for runs without bodyId
+        # detail, with the same fail-closed contract.
+        def _cache_pair_mass(uv):
+            if ratio_mode:
+                return float(syn_of.get(uv, weight_full.get(uv, 0.0)))
+            return float(weight_full.get(uv, 0.0))
+
+        guard_error = None
+        guard_checked = False
         try:
-            emitted_csv = (run_dir / 'data_details'
-                           / 'type_incoming_emitted.csv')
-            if emitted_csv.exists():
-                _applied = pd.read_csv(emitted_csv)
-                _bad = [
-                    (str(r['type']), float(r['incoming']),
-                     float(type_in.get(str(r['type']), 0.0)))
-                    for _, r in _applied.iterrows()
-                    if pd.notna(r['incoming'])
-                    and float(r['incoming'])
-                    > float(type_in.get(str(r['type']), 0.0)) + 1e-6]
-                if _bad:
-                    raise TypeLevelRefillError(
-                        f'{run_dir}: full-scope cache guard FAILED — '
-                        f'{len(_bad)} type(s) have a smaller stream-derived '
-                        'all-post incoming than the run\'s own exported '
-                        'applied-tier incoming (first: '
-                        f'{_bad[0][0]}: stream {_bad[0][2]:g} < applied '
-                        f'{_bad[0][1]:g}). The connection source appears '
-                        'incomplete relative to the run; refusing to '
-                        'write full-scope data that would silently '
-                        'undercount it.')
-                block['cache_guard'] = 'ok'
-        except TypeLevelRefillError:
-            raise
+            info_path = (run_dir / 'data_details'
+                         / 'connection_info_bodyId.csv')
+            guard_done = False
+            if info_path.exists():
+                ci = pd.read_csv(
+                    info_path,
+                    usecols=['bodyId_pre', 'bodyId_post', 'weight'],
+                    dtype={'bodyId_pre': str, 'bodyId_post': str,
+                           'weight': float})
+                if not ci.empty:
+                    ci = ci.drop_duplicates()
+                    agg = ci.groupby(['bodyId_pre', 'bodyId_post'])[
+                        'weight'].sum()
+                    bad_pairs = []
+                    for (u, v), w in agg.items():
+                        got = _cache_pair_mass((str(u), str(v)))
+                        if float(w) > got + 1e-6:
+                            bad_pairs.append((str(u), str(v),
+                                              float(w), got))
+                    if bad_pairs:
+                        guard_error = (
+                            f'{run_dir}: full-scope bodyId cache guard '
+                            f'FAILED — {len(bad_pairs):,} emitted bodyId '
+                            'pair(s) carry more mass in the run than in '
+                            'the supplied connection source (first: '
+                            f'{bad_pairs[0][0]}->{bad_pairs[0][1]}: '
+                            f'run {bad_pairs[0][2]:g} > source '
+                            f'{bad_pairs[0][3]:g}). The source appears '
+                            'incomplete relative to the run; refusing to '
+                            'write full-scope data that would silently '
+                            'undercount it.')
+                    block['cache_guard'] = 'ok_bodyid'
+                    block['cache_guard_pairs'] = int(len(agg))
+                    guard_checked = True
+                    guard_done = True
+            if not guard_done:
+                emitted_csv = (run_dir / 'data_details'
+                               / 'type_incoming_emitted.csv')
+                if emitted_csv.exists():
+                    _applied = pd.read_csv(emitted_csv)
+                    _bad = [
+                        (str(r['type']), float(r['incoming']),
+                         float(type_in.get(str(r['type']), 0.0)))
+                        for _, r in _applied.iterrows()
+                        if pd.notna(r['incoming'])
+                        and float(r['incoming'])
+                        > float(type_in.get(str(r['type']), 0.0)) + 1e-6]
+                    if _bad:
+                        guard_error = (
+                            f'{run_dir}: full-scope cache guard FAILED — '
+                            f'{len(_bad)} type(s) have a smaller '
+                            'stream-derived all-post incoming than the '
+                            'run\'s own exported applied-tier incoming '
+                            f'(first: {_bad[0][0]}: stream {_bad[0][2]:g} '
+                            f'< applied {_bad[0][1]:g}). The connection '
+                            'source appears incomplete relative to the '
+                            'run; refusing to write full-scope data that '
+                            'would silently undercount it.')
+                    block['cache_guard'] = 'ok'
+                    guard_checked = True
         except Exception:  # noqa: BLE001 — guard is best-effort
             pass
+        if guard_error is None and not guard_checked:
+            # P0-E: a full-scope export without a readable guard reference
+            # is UNVERIFIED, not silently "ok". The chain-scoped tables are
+            # withheld; the asked scope (anchored separately) stands.
+            guard_error = (
+                f'{run_dir}: no readable full-scope guard reference '
+                '(data_details/connection_info_bodyId.csv or '
+                'data_details/type_incoming_emitted.csv) — refusing to '
+                'publish an unverified full floor.')
+        if guard_error:
+            # P0-E: a guard failure is a per-dataset UNAVAILABLE status,
+            # not a crash and not a silent skip. The chain-scoped tables
+            # stay unwritten; the asked scope (anchored separately) stands.
+            block['status'] = 'unavailable'
+            block['cache_guard'] = 'FAILED'
+            block['error'] = guard_error
+            block['refill_status'] = 'unavailable'
+            return block
         if write:
             full_dir = (Path(out_dir) if out_dir is not None
                         else run_dir / 'data_details'
@@ -1746,6 +2006,12 @@ def compute_type_level_refill(
             full_dir.mkdir(parents=True, exist_ok=True)
             pd.DataFrame(rows_full).to_csv(
                 full_dir / 'refill_full_type_pairs.csv', index=False)
+            if full_floor_rows:
+                pd.DataFrame(
+                    full_floor_rows,
+                    columns=list(_FULL_FLOOR_TYPE_COLUMNS)).to_csv(
+                    full_dir / 'refill_full_floor_type_pairs.csv',
+                    index=False)
             # The >=threshold incoming per type (the Adj. ratios'
             # conditioned denominator at the asked tier) — exported so the
             # report computes CHAIN-derived adjusted ratios (realized hop
@@ -1762,8 +2028,9 @@ def compute_type_level_refill(
             if out_dir is None:
                 mirror = run_dir / _MIRROR_FOLDER_NAME
                 mirror.mkdir(parents=True, exist_ok=True)
-                pd.DataFrame(complete_rows_full,
-                             columns=list(_COMPLETE_PATHS_COLUMNS)).to_csv(
+                pd.DataFrame(
+                    complete_rows_full,
+                    columns=list(_FULL_COMPLETE_PATHS_COLUMNS)).to_csv(
                     mirror / 'refill_full_paths_type.csv', index=False)
                 # Header-only when nothing carries sub-threshold mass
                 # (never a zero-byte file): the report's loader reads the
@@ -1776,6 +2043,21 @@ def compute_type_level_refill(
                 pd.DataFrame(rows_full).to_csv(
                     mirror / 'refilled_full_connection_type.csv',
                     index=False)
+                if full_floor_rows:
+                    pd.DataFrame(
+                        full_floor_rows,
+                        columns=list(_FULL_FLOOR_TYPE_COLUMNS)).to_csv(
+                        mirror / 'refill_full_floor_type_pairs.csv',
+                        index=False)
+        # P0-E: a full-scope export without its guard reference is
+        # USABLE-BUT-UNVERIFIED, not silently "ok". The typed lane reads
+        # this field and refuses a universe whose guard is absent.
+        block['refill_status'] = (
+            'ok' if block.get('cache_guard') in ('ok', 'ok_bodyid')
+            and full_floor_block.get('status') == 'ok'
+            else 'unavailable_guard_not_checked'
+            if block.get('cache_guard') != 'ok'
+            else 'unavailable_full_floor')
         return block
 
     if is_shortest:
@@ -2569,6 +2851,14 @@ _TYPE_MIRROR_COLUMNS = (
     'type_pre', 'type_post', 'weight', 'nt_type', 'connection_ratio',
     'conn_layer', 'connection_ratio_adj')
 
+# P0-C/A.4: the ALL-PAIRS, ASKED-FLOOR type universe. Distinct from the
+# emitted-chain-scoped full tables — a type-pruned lane needs every pair in
+# the reachable cone, with the conditioned ratio beside it.
+_FULL_FLOOR_TYPE_COLUMNS = (
+    'type_pre', 'type_post', 'w_sum', 'w_max', 'n',
+    'connection_ratio', 'connection_ratio_adj', 'nt_type',
+    'non_emitted_mass', 'in_emitted_cone', 'source_type', 'target_type')
+
 _BODYID_MIRROR_COLUMNS = (
     'bodyId_pre', 'bodyId_post', 'weight', 'roi', 'type_pre', 'type_post',
     'instance_pre', 'instance_post', 'nt_type', 'nt_type_pre',
@@ -2665,17 +2955,25 @@ def _refill_rows_from_structures(seq_edges, seq_nodes, type_n, type_in,
     return rows
 
 
-def _complete_rows_from_structures(seq_cls, seq_nodes, type_n, type_in):
+def _complete_rows_from_structures(seq_cls, seq_nodes, type_n, type_in,
+                                   type_in_adj=None):
     """Row assembly for the COMPLETE-AT-ASKED path tables from per-chain
     classed structures — shared by the path-fed asked view and the
-    DP-fed full scope (2026-10-11)."""
+    DP-fed full scope (2026-10-11).
+
+    P0-A (plan-drocat-type-pruned-pathfinding): the full path table also
+    carries the ADJUSTED realized readout. `ratios_adj` divides the same
+    realized hop mass by the CONDITIONED denominator (the pair column's
+    own denominator); a missing denominator is a per-hop None and
+    `ratio_adj_complete` says the row is not a complete adjusted
+    readout."""
     rows = []
     for seq in sorted(seq_cls,
                       key=lambda s: (s[0], s[-1], len(s), s)):
         classes_at = seq_cls[seq]
         nodes_at = seq_nodes[seq]
         weights, emitted_w, refill_w = [], [], []
-        ratios = []
+        ratios, ratios_adj = [], []
         for i, post in enumerate(seq[1:]):
             per_cls = {cls: sum(edge.values())
                        for cls, edge in classes_at[i].items()}
@@ -2684,13 +2982,23 @@ def _complete_rows_from_structures(seq_cls, seq_nodes, type_n, type_in):
             refill_w.append(per_cls.get('refill', 0.0))
             denom = type_in.get(post, 0.0)
             ratios.append((weights[-1] / denom) if denom > 0 else None)
+            if type_in_adj is not None:
+                denom_adj = type_in_adj.get(post, 0.0)
+                ratios_adj.append((weights[-1] / denom_adj)
+                                  if denom_adj > 0 else None)
+            else:
+                ratios_adj.append(None)
         finite = [r for r in ratios if r is not None]
+        finite_adj = [r for r in ratios_adj if r is not None]
         coverage = '[' + ', '.join(
             f'{len(nodes_at[i])}/{type_n.get(label, 0)}'
             for i, label in enumerate(seq)) + ']'
         ratios_txt = ('[' + ', '.join(
             'None' if r is None else repr(r) for r in ratios) + ']'
             if ratios else '')
+        ratios_adj_txt = ('[' + ', '.join(
+            'None' if r is None else repr(r) for r in ratios_adj) + ']'
+            if ratios_adj else '')
 
         def _arr(vals):
             return '[' + ', '.join(_fmt_mass(v) for v in vals) + ']'
@@ -2699,8 +3007,12 @@ def _complete_rows_from_structures(seq_cls, seq_nodes, type_n, type_in):
             'path': '->'.join(seq),
             'weights': _arr(weights),
             'ratios': ratios_txt,
+            'ratios_adj': ratios_adj_txt,
             'min_weight': min(weights) if weights else 0,
             'min_ratio': (min(finite) if finite else None),
+            'min_ratio_adj': (min(finite_adj) if finite_adj else None),
+            'ratio_adj_complete': (len(finite_adj) == len(ratios_adj)
+                                   and bool(ratios_adj)),
             'length': len(seq) - 1,
             'nt_types': '',
             'coverage': coverage,
@@ -2784,6 +3096,13 @@ def _aggregate_refill_paths(paths_asked, refill_edge_keys, chain_keys,
 # cannot occur — the split is emitted + refill == weights.
 _COMPLETE_PATHS_COLUMNS = _PATHS_MIRROR_COLUMNS + (
     'emitted_weights', 'refill_weights')
+
+# P0-A: the FULL-SCOPE path table's adjusted realized readout. Kept
+# separate from the asked mirror's column contract so the existing
+# paired-file readers of `refill_complete_paths_type.csv` keep their
+# exact schema.
+_FULL_COMPLETE_PATHS_COLUMNS = _COMPLETE_PATHS_COLUMNS + (
+    'ratios_adj', 'min_ratio_adj', 'ratio_adj_complete')
 
 
 def _aggregate_complete_paths(paths_asked, cut_keys, refill_keys,

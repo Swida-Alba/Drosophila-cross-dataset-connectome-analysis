@@ -973,6 +973,7 @@ def create_inter_dataset_tab():
             "path_mode": path_mode.value,
             "max_interlayer": int(max_interlayer.value),
             "corridor_mode": run_mode.value,
+            **run_mode.payload(),
             "thresholds": thresholds,
             "threshold_mode": threshold_mode,
             "threshold_dataset_order": list(datasets),

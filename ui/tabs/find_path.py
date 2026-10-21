@@ -348,6 +348,7 @@ def create_find_path_tab():
             # Corridor lane (plan-corridor-lane.md): off/auto/on; auto
             # runs the standalone route-scoped pass after deep runs.
             "corridor_mode": run_mode.value,
+            **run_mode.payload(),
             # Fix D: the Edge Budget (lossy floor above the N-th strongest
             # edge, w0 = w1 + 1). 0 = off.
             "graph_edge_limit_bodyid": int(edge_budget.value),

@@ -77,8 +77,15 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
     if not lanes and not refused:
         return ""
 
+    typed_only = bool(lanes) and all(
+        isinstance(lane["prov"].get("type_prune"), dict)
+        for _t, lane in lanes.values())
     parts = ['<div class="card">']
-    parts.append('<h2>Fast mode (corridor lane — strongest type-level routes at the asked threshold)</h2>')
+    parts.append(
+        '<h2>Type-pruned complete lane (every type walk over the pruned '
+        'graph, bodyId-validated)</h2>' if typed_only else
+        '<h2>Fast mode (corridor lane — strongest type-level routes at the '
+        'asked threshold)</h2>')
     for ds, (t, lane) in sorted(refused.items()):
         reason = str(lane["prov"].get("reason") or "refused")
         parts.append(
@@ -87,6 +94,15 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
             + ': Fast mode refused &mdash; ' + html.escape(reason)
             + '</p>')
     parts.append(
+        '<p>The type graph is pruned coarsely, EVERY type walk over the '
+        'pruned graph is enumerated, each is validated at bodyId level, '
+        'and only realized paths clearing the exact <code>min_ratio_adj</code> '
+        'gate are exported (<code>route_scope_paths/</code> per run folder; '
+        'never merged into the compared paths). The lane is single-floor and '
+        'its <code>type_pruned_complete</code> is separate from the Complete '
+        'lane\'s <code>paths_complete</code>. Datasets without lane '
+        'artifacts are listed with "—" cells.</p>'
+        if typed_only else
         '<p>Standalone route-scoped re-enumeration at each run\'s ASKED '
         'threshold, restricted to validated top-M* type corridors '
         '(<code>route_scope_paths/</code> per run folder; never merged '
@@ -127,6 +143,51 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
             f'<td>{prov.get("runtime_s", "—")}</td>'
             f'<td>{html.escape(", ".join(notes))}</td></tr>')
     parts.append('</tbody></table></div>')
+
+    # ---- type-pruned complete lane (P2-N/P2-O) --------------------------
+    typed_rows = []
+    for ds, (t, lane) in sorted(lanes.items()):
+        block = lane["prov"].get("type_prune")
+        if not isinstance(block, dict):
+            continue
+        typed_rows.append((nickname_map.get(ds, ds), t, block,
+                           lane["prov"].get("type_pruned_complete")))
+    if typed_rows:
+        parts.append('<div class="card"><h3>Type-pruned complete lane</h3>')
+        parts.append(
+            '<p>Separate SINGLE-FLOOR lane: the type graph is pruned on the '
+            'pair-level basis, EVERY type walk over the pruned graph is '
+            'enumerated, each is validated at bodyId level, and only paths '
+            'clearing the exact realized <code>min_ratio_adj</code> gate are '
+            'exported. <code>type_pruned_complete</code> is a different '
+            'claim from the Complete lane\'s <code>paths_complete</code>; a '
+            'cap or an unverified walk forbids it.</p>')
+        parts.append('<table><thead><tr><th>Dataset</th><th>Threshold</th>'
+                     '<th>Basis / floor</th><th>Pairs</th>'
+                     '<th>Candidate walks</th><th>Validated</th>'
+                     '<th>Phantoms</th><th>Unverified</th>'
+                     '<th>Weak-filtered</th><th>Exported</th>'
+                     '<th>type_pruned_complete</th><th>Stop</th>'
+                     '</tr></thead><tbody>')
+        for nick, t, block, complete in typed_rows:
+            pair_txt = (f"{block.get('pairs_before', '—')} → "
+                        f"{block.get('pairs_after', '—')}")
+            basis_txt = (f"{block.get('basis', '—')} @ "
+                         f"{block.get('min_ratio_adj', '—')}")
+            parts.append(
+                f'<tr><td>{html.escape(str(nick))}</td><td>{t}</td>'
+                f'<td>{html.escape(basis_txt)}</td>'
+                f'<td>{pair_txt}</td>'
+                f'<td>{block.get("candidate_walks", "—")}</td>'
+                f'<td>{block.get("validated_walks", "—")}</td>'
+                f'<td>{block.get("phantoms", "—")}</td>'
+                f'<td>{block.get("unverified", "—")}</td>'
+                f'<td>{block.get("filtered_weak", "—")}</td>'
+                f'<td>{block.get("accepted_paths", "—")}</td>'
+                f'<td>{complete}</td>'
+                f'<td>{html.escape(str(block.get("completeness_reason", "—")))}'
+                f'</td></tr>')
+        parts.append('</tbody></table></div>')
 
     # ---- canonical-mapped corridor matrix -------------------------------
     parts.append('<div class="card"><h3>Corridor comparison '

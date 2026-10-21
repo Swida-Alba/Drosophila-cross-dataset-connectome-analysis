@@ -106,6 +106,8 @@ def test_mode_control_unified_naming():
         assert f'"{value}": "{label}"' in vocab, value
     assert "RUN_MODE_OPTIONS = CORRIDOR_MODE_CHOICES" in shared
     assert 'help_doc="pathfinding_algorithms"' in shared
+    # the typed lane's scope is disclosed on the control itself
+    assert "Scope: full_floor" in shared
     from ui.components import pathfinding_controls as pc
     assert set(pc.RUN_MODE_OPTIONS) == canonical
     # the built-in default must be one of the offered values, or every tab
@@ -171,7 +173,10 @@ def test_hook_isolation_in_coana_source():
     # the mode gate (resolved through _resolved_run_mode since the
     # run_mode stamping landed) still precedes any import/subprocess work
     assert body.index("_resolved_run_mode()") < body.index("import subprocess")
-    assert "if mode not in ('auto', 'both'):" in body
+    # The typed lane is a separate gate: it runs alongside Complete at the
+    # run's own bound, so the mode test is conditional on `not typed`.
+    assert "mode not in ('auto', 'both'):" in body
+    assert "not typed" in body and "type_pruned" in body
     assert "_run_folder_is_replay_slice" in body  # §6 step 8 replay gate
     assert "except Exception as exc" in body  # contained failure (§3b tier 3)
     assert "TimeoutExpired" in body  # hard wall-clock budget
@@ -977,3 +982,87 @@ def test_data_tab_links_every_sidecar_the_run_wrote(tmp_path):
     assert "comparison_results" not in html
     assert 'href="data_details/total_weight_layer.csv"' not in html
 
+
+
+def test_typed_lane_fields_and_hook_flags(tmp_path, monkeypatch):
+    """Plan-drocat-type-pruned-pathfinding Phase C: the typed lane is a
+    separate checkbox/field (not a fifth Run Mode value), runs at the run's
+    own bound even when the Fast lane's auto gate would not fire, and its
+    knobs reach the CLI."""
+    import subprocess
+    inst = _make_cache_only_fnc()
+    assert inst.type_pruned is False
+    assert inst.type_prune_basis == "ratio_adj"
+    assert inst.type_min_ratio_adj == 0.01
+    inst.type_pruned = True
+    inst.corridor_mode = "complete"       # no Fast lane requested
+    inst.max_interlayer = 3               # below the auto gate
+    inst.allpath_folder = str(tmp_path)
+    (tmp_path / "parameters.txt").write_text("max interlayer: 3\n")
+    calls = {}
+
+    def _spy(cmd, **kw):
+        calls["cmd"] = cmd
+        return type("_P", (), {"returncode": 0, "stdout": "",
+                               "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+    assert inst._maybe_generate_corridor_deep_dive() is False
+    cmd = calls["cmd"]
+    for flag in ("--type-pruned", "--type-prune-basis", "ratio_adj",
+                 "--type-prune-scope", "full_floor",
+                 "--type-min-ratio-adj", "0.01", "--type-min-synapse",
+                 "--type-min-wmax", "--type-walk-cap",
+                 "--type-revisit-policy", "--type-max-type-visits",
+                 "--type-validate-work-cap"):
+        assert flag in cmd, flag
+    # the typed knobs are stamped as ONE block, never loose attributes
+    attrs = inst._run_export_attributes("all")
+    assert attrs["type_prune"]["enabled"] is True
+    assert attrs["type_prune"]["scope"] == "full_floor"
+    assert attrs["type_prune"]["completeness_field"] == \
+        "type_pruned_complete"
+    assert "type_pruned" not in attrs
+    # parameters.txt carries the spaced keys read_run_params parses
+    lines = inst._type_prune_parameter_lines()
+    assert any(line.startswith("type prune basis:") for line in lines)
+    assert any(line.startswith("type min ratio adj:") for line in lines)
+
+
+def test_corridor_section_names_the_typed_lane(tmp_path):
+    """P2-N/P2-O: a typed-only lane must not be presented as the Fast
+    top-M lane, and its completeness field is separate."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from comparison.corridor_report_section import generate_corridor_section
+
+    run = _lane_only_run(tmp_path)
+    prov = json.loads((run / "route_scope_paths"
+                       / "route_provenance.json").read_text())
+    prov["type_prune"] = {
+        "mode": "type_pruned_complete", "basis": "ratio_adj",
+        "min_ratio_adj": 0.01, "pairs_before": 20, "pairs_after": 8,
+        "candidate_walks": 12, "validated_walks": 10, "phantoms": 2,
+        "unverified": 0, "filtered_weak": 3, "accepted_paths": 7,
+        "type_pruned_complete": True, "completeness_reason": "exhausted"}
+    prov["type_pruned_complete"] = True
+    (run / "route_scope_paths" / "route_provenance.json").write_text(
+        json.dumps(prov), encoding="utf-8")
+
+    class _Params:
+        def get_dataset_output_path(self, ds, t):
+            return str(run)
+
+    class _Analyzer:
+        def __init__(self):
+            self.parameters = _Params()
+
+        def _get_canonical_type(self, t, ds):
+            return t
+
+    html = generate_corridor_section(_Analyzer(), ["ds_a"], [1], {})
+    assert "Type-pruned complete lane" in html
+    assert "top-M*" not in html
+    assert "phantoms" in html.lower()
+    # the separate completeness claim is printed, not conflated
+    assert "paths_complete" in html

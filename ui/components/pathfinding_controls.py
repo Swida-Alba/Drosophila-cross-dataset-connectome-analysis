@@ -22,7 +22,7 @@ from nicegui import ui
 
 from ..config import (
     CORRIDOR_MODE_CHOICES, THRESHOLD_BASIS_CHOICES,
-    THRESHOLD_COMBINATION_CHOICES,
+    THRESHOLD_COMBINATION_CHOICES, get_user_default,
 )
 from .common import checkbox_input, number_input, select_input
 
@@ -258,8 +258,23 @@ def run_mode_note_text(mode: str, depth: int, extra: str = "") -> str:
             + extra)
 
 
+TYPE_PRUNE_BASIS_CHOICES = {
+    "ratio_adj": "Adjusted ratio",
+    "connection_ratio": "Connection ratio",
+    "synapse": "Synapse mass",
+}
+_TYPE_PRUNE_BASIS_KEYS = {label: key
+                          for key, label in TYPE_PRUNE_BASIS_CHOICES.items()}
+
+
 class RunModeControl:
-    """The selector plus its live status line, wired to a depth source."""
+    """The selector plus its live status line, wired to a depth source.
+
+    The TYPE-PRUNED COMPLETE lane is a separate checkbox, not a fifth Run
+    Mode value: it runs alongside Complete at the run's own bound and has
+    its own completeness field, so folding it into the Fast lane's
+    vocabulary would make two different claims share one label.
+    """
 
     def __init__(self, depth_getter, extra=''):
         self.depth_getter = depth_getter
@@ -267,11 +282,76 @@ class RunModeControl:
         self.control = run_mode_selector()
         self.note = ui.label("").classes("text-caption text-blue-8")
         self.control.on_value_change(lambda _e: self.refresh())
+        with ui.row().classes("items-center gap-4 flex-wrap"):
+            self.type_pruned = checkbox_input(
+                "Type-pruned complete lane",
+                bool(get_user_default("type_pruned")),
+                hint="Prune the type graph coarsely, enumerate EVERY type "
+                     "walk, validate each at bodyId level and export only "
+                     "paths clearing the exact realized min_ratio_adj gate. "
+                     "Writes route_scope_paths/ (type_prune_manifest.json).",
+            )
+        _basis_default = TYPE_PRUNE_BASIS_CHOICES.get(
+            str(get_user_default("type_prune_basis")), "Adjusted ratio")
+        _ratio_default = float(
+            get_user_default("type_min_ratio_adj") or 0.01) * 100.0
+        with ui.row().classes("items-center gap-4 flex-wrap") as self._type_row:
+            self.type_basis = select_input(
+                "Type prune basis", list(TYPE_PRUNE_BASIS_CHOICES.values()),
+                _basis_default,
+                hint="Coarse pair-level filter. The exact path gate is the "
+                     "REALIZED min_ratio_adj, not this pair value.",
+                inline=True,
+            )
+            self.type_min_ratio_percent = number_input(
+                "Type ratio floor (%)", _ratio_default,
+                min_val=0.0, max_val=100.0, step=0.1,
+            )
+            self.type_min_synapse = number_input(
+                "Pair min synapses",
+                int(get_user_default("type_min_synapse") or 0),
+                min_val=0, max_val=1_000_000_000, step=1,
+            )
+            self.type_min_wmax = number_input(
+                "Pair min w_max",
+                int(get_user_default("type_min_wmax") or 0),
+                min_val=0, max_val=1_000_000_000, step=1,
+            )
+            ui.label("Scope: full_floor").classes(
+                "text-caption text-blue-8")
+        def _on_type_toggle(_e):
+            self._sync_type_visibility()
+            self.refresh()
+
+        self.type_pruned.on_value_change(_on_type_toggle)
+        self._sync_type_visibility()
         self.refresh()
 
+    def _sync_type_visibility(self) -> None:
+        self._type_row.set_visibility(bool(self.type_pruned.value))
+
+    def payload(self) -> dict:
+        """The constructor keys the typed lane needs (empty when off)."""
+        if not self.type_pruned.value:
+            return {"type_pruned": False}
+        return {
+            "type_pruned": True,
+            "type_prune_basis": _TYPE_PRUNE_BASIS_KEYS[self.type_basis.value],
+            "type_prune_scope": "full_floor",
+            "type_min_ratio_adj": percent_to_fraction(
+                self.type_min_ratio_percent.value),
+            "type_min_synapse": int(self.type_min_synapse.value or 0),
+            "type_min_wmax": int(self.type_min_wmax.value or 0),
+        }
+
     def note_text(self) -> str:
-        return run_mode_note_text(self.control.value,
+        text = run_mode_note_text(self.control.value,
                                   self.depth_getter(), self.extra)
+        if self.type_pruned.value:
+            text += (" Type-pruned COMPLETE lane: every type walk over the "
+                     "pruned graph, bodyId-validated, exact realized "
+                     "min_ratio_adj gate; separate completeness field.")
+        return text
 
     def refresh(self) -> None:
         # Label.set_text (NOT set_value — house rule)

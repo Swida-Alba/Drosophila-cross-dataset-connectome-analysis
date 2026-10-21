@@ -502,6 +502,17 @@ DEFAULTS = {
     "route_top_m_base": 10,
     "route_length_decay": 1.5,
     "route_path_budget_per_pair_length": 100,
+    # Type-pruned COMPLETE lane (plan-drocat-type-pruned-pathfinding):
+    # separate from the Run Mode vocabulary — it runs alongside Complete
+    # and carries its own completeness field.
+    "type_pruned": False,
+    "type_prune_basis": "ratio_adj",
+    "type_prune_scope": "full_floor",
+    "type_min_ratio_adj": 0.01,
+    "type_min_synapse": 0,
+    "type_min_wmax": 0,
+    "type_revisit_policy": "bounded",
+    "type_max_type_visits": 0,
     "network_layout": "distributed",
     "use_cache": True,
     "cache_only": False,
@@ -970,6 +981,17 @@ DEFAULT_SETTING_SPECS = {
                 "'Complete + Fast': always. 'Fast only (standalone)': just "
                 "the corridor lane. Network has no lane: direct connections "
                 "run once.",
+    },
+    "type_pruned": {
+        "label": "Type-pruned complete lane",
+        "group": "pathfinding_output",
+        "kind": "bool",
+        "hint": "After the Complete run, prune the type graph coarsely, "
+                "enumerate EVERY type walk over it, validate each at bodyId "
+                "level and export only paths clearing the exact realized "
+                "min_ratio_adj gate. Separate from Run Mode; carries its own "
+                "completeness field (type_pruned_complete) and writes "
+                "route_scope_paths/type_prune_manifest.json.",
     },
     # --- 3D Skeleton Rendering ---------------------------------------------
     "skeleton_mode": {
