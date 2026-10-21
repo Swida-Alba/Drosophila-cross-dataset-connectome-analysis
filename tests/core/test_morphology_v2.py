@@ -499,6 +499,22 @@ class TestSkeletonVectorCacheV2:
         # No skeletons available: bounds stay None (histogram zeros).
         assert cache.spatial_bounds() is None
 
+    def test_midline_override_persists(self, tmp_path):
+        cache = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False,
+            midline_x=123456.5, reflect_side="right")
+        assert cache.spatial_midline() == 123456.5
+        assert cache.spatial_reflect_side() == "right"
+        meta = cache._load_meta()
+        assert meta["spatial_midline_x"] == 123456.5
+        assert meta["spatial_midline_source"] == "override"
+        assert meta["spatial_reflect_side"] == "right"
+        # A later instance reads the persisted plane, not the sample.
+        again = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False)
+        assert again.spatial_midline() == 123456.5
+        assert again._midline_source == "override"
+
 
 # ---------------------------------------------------------------------------
 # Comparer wiring

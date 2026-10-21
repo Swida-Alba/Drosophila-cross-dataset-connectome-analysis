@@ -3714,7 +3714,9 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
     def __init__(self, dataset: str, project_root: Optional[str] = None,
                  n_workers: int = 8, verbose: bool = True,
                  raw_format: str = "swc.zst", representation: Optional[str] = None,
-                 bundle_sample_target: int = FAFB_BUNDLE_SAMPLE_TARGET):
+                 bundle_sample_target: int = FAFB_BUNDLE_SAMPLE_TARGET,
+                 midline_x: Optional[float] = None,
+                 reflect_side: Optional[str] = None):
         super().__init__(dataset, project_root=project_root,
                          n_workers=n_workers, verbose=verbose,
                          raw_only=str(representation or "").lower() != "mesh",
@@ -3742,6 +3744,13 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         self._midline_source: Optional[str] = None
         self._midline_resolved = False
         self._soma_sides: Optional[Dict[int, str]] = None
+        # A known anatomical plane (e.g. the clock-population gap midline)
+        # wins over the generic side estimate; it is persisted so later
+        # reads and appends share it.
+        self._midline_override = (float(midline_x)
+                                  if midline_x is not None else None)
+        self._midline_reflect_override = (
+            reflect_side if reflect_side in ("left", "right") else None)
 
     # ------------------------------------------------------- schema hooks
     @staticmethod
@@ -4008,6 +4017,22 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         if self._midline_resolved:
             return self._spatial_midline
         self._midline_resolved = True
+        if self._midline_override is not None:
+            self._spatial_midline = float(self._midline_override)
+            self._spatial_reflect_side = self._midline_reflect_override
+            self._midline_source = "override"
+            meta = self._load_meta() or {}
+            meta["spatial_midline_x"] = float(self._spatial_midline)
+            meta["spatial_midline_source"] = "override"
+            if self._spatial_reflect_side is not None:
+                meta["spatial_reflect_side"] = self._spatial_reflect_side
+            try:
+                self.meta_path.parent.mkdir(parents=True, exist_ok=True)
+                self.meta_path.write_text(json.dumps(meta, indent=2),
+                                          encoding="utf-8")
+            except OSError:
+                pass
+            return self._spatial_midline
         meta = self._load_meta() or {}
         stored = meta.get("spatial_midline_x")
         if stored is not None:
@@ -4490,6 +4515,8 @@ def find_similar_dataset_cache_v2(
         project_root: Optional[str] = None,
         n_workers: int = 8,
         verbose: bool = True,
+        midline_x: Optional[float] = None,
+        reflect_side: Optional[str] = None,
         ) -> SkeletonVectorCacheV2:
     """Return the dataset-native V2 (spatial/topological) cache manager.
 
@@ -4500,13 +4527,16 @@ def find_similar_dataset_cache_v2(
     if is_fafb_dataset(dataset):
         return SkeletonVectorCacheV2(dataset, project_root=project_root,
                                      n_workers=n_workers, verbose=verbose,
-                                     representation="skeleton")
+                                     representation="skeleton",
+                                     midline_x=midline_x, reflect_side=reflect_side)
     if is_banc_dataset(dataset):
         return SkeletonVectorCacheV2(dataset, project_root=project_root,
                                      n_workers=n_workers, verbose=verbose,
-                                     representation="skeleton")
+                                     representation="skeleton",
+                                     midline_x=midline_x, reflect_side=reflect_side)
     return SkeletonVectorCacheV2(dataset, project_root=project_root,
-                                 n_workers=n_workers, verbose=verbose)
+                                 n_workers=n_workers, verbose=verbose,
+                                 midline_x=midline_x, reflect_side=reflect_side)
 
 
 def cache_fetched_skeleton_vectors(
