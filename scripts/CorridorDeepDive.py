@@ -13,8 +13,9 @@ Direct mode:
         --neuron-table datasets/flywire_FAFB_v783/flywire_FAFB_v783_allneurons_neuron_df.parquet \
         --sources aMe12 --targets PPL101 --bound 4 --asked 1 --out <dir>
 
-Outputs land in <run_dir>/route_scope_paths/ (run-folder mode) or --out
-(direct mode): route_paths_type.csv (one row per validated walk),
+Outputs land in <run_dir>/route_scope_paths/ (Fast) or
+<run_dir>/route_scope_paths_type_pruned/ (typed) in run-folder mode, or
+--out (both modes): route_paths_type.csv (one row per validated walk),
 route_paths_bodyId.csv, route_connection_type.csv, route_type_incoming_asked.csv,
 route_provenance.json, README.md — plus the lane's OWN second round at
 synapse >= 1 (route_full_paths_type.csv, route_full_carrying_paths_type.csv,
@@ -105,7 +106,8 @@ def main():
                          "enumeration (a cap forbids completeness)")
     ap.add_argument("--type-revisit-policy", choices=["simple", "bounded"],
                     default="bounded",
-                    help="bounded (default) allows up to two visits per type; "
+                    help="bounded (default) is the complete revisit set "
+                         "for the hop bound when --type-max-type-visits=0; "
                          "simple forbids repeated types")
     ap.add_argument("--type-max-type-visits", type=int, default=0,
                     help="bounded-policy visit cap per type; 0 = the hop "
@@ -116,11 +118,15 @@ def main():
     ap.add_argument("--trigger", default="run-folder",
                     help="provenance trigger label (the in-run hook "
                          "passes 'in-run (subprocess)')")
-    ap.add_argument("--out", help="direct-mode output dir")
+    ap.add_argument("--out",
+                    help="output dir (both modes; default: the run folder's "
+                         "route_scope_paths/ or "
+                         "route_scope_paths_type_pruned/)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
-    from route_plan import CorridorRefusal, run_lane
+    from route_plan import (FAST_LANE_DIR, TYPED_LANE_DIR, CorridorRefusal,
+                            run_lane)
 
     common = dict(corridor_mode=("typed" if args.type_pruned else "both"),
                   allow_multi_visit=args.allow_multi_visit,
@@ -143,9 +149,11 @@ def main():
                   type_validate_work_cap=args.type_validate_work_cap)
     try:
         if args.run_dir:
+            out = (Path(args.out) if args.out else
+                   Path(args.run_dir) / (TYPED_LANE_DIR if args.type_pruned
+                                         else FAST_LANE_DIR))
             run_lane(args.run_dir, connections_path=args.connections,
-                     neuron_table=args.neuron_table, **common)
-            out = Path(args.run_dir) / "route_scope_paths"
+                     neuron_table=args.neuron_table, out_dir=out, **common)
         else:
             if not (args.dataset_dir and args.sources and args.targets
                     and args.out):

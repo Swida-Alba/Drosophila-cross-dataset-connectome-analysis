@@ -13381,6 +13381,8 @@ class FindNeuronConnection:
                     2_000_000),
                 'completeness_field': 'type_pruned_complete',
             }
+        if getattr(self, '_refill_status_block', None):
+            public_attrs['type_level_refill'] = dict(self._refill_status_block)
         public_attrs["requested_source_neurons"] = self._requested_query_for_export(
             "source"
         )
@@ -19027,7 +19029,8 @@ class FindNeuronConnection:
     def _maybe_generate_corridor_deep_dive(self):
         """Corridor lane hook (plan-corridor-lane.md §23.2): after a
         materialized run folder carries its final provenance, run the
-        standalone corridor lane into ``route_scope_paths/`` when the mode
+        standalone corridor lane into ``route_scope_paths/`` (Fast) or
+        ``route_scope_paths_type_pruned/`` (typed) when the mode
         resolves on ('on'; or 'auto' with max_interlayer >= 4). Never
         raises: any failure is contained to one user_warning_notes entry
         (refill's "never raises" pattern). Returns True when notes were
@@ -19051,14 +19054,20 @@ class FindNeuronConnection:
         # lane, not a Run Mode value — it runs at the run's own bound (the
         # article's 3-interlayer run must not inherit the Fast lane's
         # >= 4 auto gate, P2-M) and does not require a Fast selection.
+        # ISSUE 2026-10-22 §2.1: Fast and typed are SEPARATE namespaces.
+        # A run that selects both gets two subprocesses (two folders); a
+        # typed-only selection gets the typed folder only. The old single
+        # command put typed tables into the Fast folder and replaced its
+        # witness tables.
+        fast_selected = mode in ('auto', 'both')
         if mode == 'fast':
             # STANDALONE FAST (2026-10-14): the hook may be reached on a
-            # fast-only folder (defensive) -- the lane always runs
-            mode = 'both'
-        if not typed and mode not in ('auto', 'both'):
-            return False
-        if (not typed and mode == 'auto'
+            # fast-only folder (defensive) -- the Fast lane always runs.
+            fast_selected = True
+        if (mode == 'auto'
                 and int(getattr(self, 'max_interlayer', 0) or 0) < 4):
+            fast_selected = False
+        if not fast_selected and not typed:
             return False
         run_dir = getattr(self, 'allpath_folder', None)
         if not run_dir or not os.path.isdir(run_dir):
@@ -19078,80 +19087,100 @@ class FindNeuronConnection:
                     '- [corridor lane] not generated: driver script '
                     f'missing ({cli}).')
                 return True
-            cmd = [
-                _sys.executable, cli, str(run_dir), '--quiet',
-                '--trigger', 'in-run (subprocess)',
-                '--top-m-base',
-                str(int(getattr(self, 'route_top_m_base', 10))),
-                '--length-decay',
-                str(float(getattr(self, 'route_length_decay', 1.5))),
-                '--pair-length-budget',
-                str(int(getattr(
-                    self, 'route_path_budget_per_pair_length', 100))),
-            ]
-            if typed:
-                cmd += [
-                    '--type-pruned',
-                    '--type-prune-basis',
-                    str(getattr(self, 'type_prune_basis', 'ratio_adj')),
-                    '--type-prune-scope',
-                    str(getattr(self, 'type_prune_scope', 'full_floor')),
-                    '--type-min-ratio-adj',
-                    str(float(getattr(self, 'type_min_ratio_adj', 0.01))),
-                    '--type-min-synapse',
-                    str(int(getattr(self, 'type_min_synapse', 0) or 0)),
-                    '--type-min-wmax',
-                    str(int(getattr(self, 'type_min_wmax', 0) or 0)),
-                    '--type-walk-cap',
-                    str(int(getattr(self, 'type_walk_cap',
-                                    2_000_000) or 2_000_000)),
-                    '--type-revisit-policy',
-                    str(getattr(self, 'type_revisit_policy', 'bounded')),
-                    '--type-max-type-visits',
-                    str(int(getattr(self, 'type_max_type_visits', 0) or 0)),
-                    '--type-validate-work-cap',
-                    str(int(getattr(self, 'type_validate_work_cap',
-                                    2_000_000) or 2_000_000)),
+
+            def _run_lane_subprocess(lane_typed, lane_out, trigger_label):
+                cmd = [
+                    _sys.executable, cli, str(run_dir), '--quiet',
+                    '--trigger', trigger_label,
                 ]
-            if getattr(self, 'skip_bodyId', False):
-                cmd.append('--no-bodyid')
-            # CORRIDOR-ON-RATIO: the adaptive ratio cone makes the lane's
-            # drain genuinely bigger (the L8 long-haul ratio cell needs
-            # ~900 s where the synapse lane needs ~270 s) -- double the
-            # in-run budget on the ratio basis so the lane is not killed
-            # at its own completion threshold.
-            budget_s = (3600 if typed else
-                        1800 if str(getattr(
-                            self, 'weight_basis', 'synapse')).startswith(
-                            'connection_ratio') else 900)
-            try:
-                proc = subprocess.run(
-                    cmd, capture_output=True, text=True,
-                    timeout=budget_s, check=False,
-                    cwd=str(self.script_path))
-            except subprocess.TimeoutExpired:
+                if lane_out:
+                    cmd += ['--out', lane_out]
+                cmd += [
+                    '--top-m-base',
+                    str(int(getattr(self, 'route_top_m_base', 10))),
+                    '--length-decay',
+                    str(float(getattr(self, 'route_length_decay', 1.5))),
+                    '--pair-length-budget',
+                    str(int(getattr(
+                        self, 'route_path_budget_per_pair_length', 100))),
+                ]
+                if lane_typed:
+                    cmd += [
+                        '--type-pruned',
+                        '--type-prune-basis',
+                        str(getattr(self, 'type_prune_basis',
+                                    'ratio_adj')),
+                        '--type-prune-scope',
+                        str(getattr(self, 'type_prune_scope',
+                                    'full_floor')),
+                        '--type-min-ratio-adj',
+                        str(float(getattr(self, 'type_min_ratio_adj',
+                                          0.01))),
+                        '--type-min-synapse',
+                        str(int(getattr(self, 'type_min_synapse', 0) or 0)),
+                        '--type-min-wmax',
+                        str(int(getattr(self, 'type_min_wmax', 0) or 0)),
+                        '--type-walk-cap',
+                        str(int(getattr(self, 'type_walk_cap',
+                                        2_000_000) or 2_000_000)),
+                        '--type-revisit-policy',
+                        str(getattr(self, 'type_revisit_policy',
+                                    'bounded')),
+                        '--type-max-type-visits',
+                        str(int(getattr(self, 'type_max_type_visits',
+                                        0) or 0)),
+                        '--type-validate-work-cap',
+                        str(int(getattr(self, 'type_validate_work_cap',
+                                        2_000_000) or 2_000_000)),
+                    ]
+                if getattr(self, 'skip_bodyId', False):
+                    cmd.append('--no-bodyid')
+                # CORRIDOR-ON-RATIO: the adaptive ratio cone makes the
+                # lane's drain genuinely bigger; a typed run gets a
+                # larger envelope too because validation is per walk.
+                budget_s = (3600 if lane_typed else
+                            1800 if str(getattr(
+                                self, 'weight_basis', 'synapse')).startswith(
+                                'connection_ratio') else 900)
+                label = 'type-pruned lane' if lane_typed else 'corridor lane'
+                try:
+                    proc = subprocess.run(
+                        cmd, capture_output=True, text=True,
+                        timeout=budget_s, check=False,
+                        cwd=str(self.script_path))
+                except subprocess.TimeoutExpired:
+                    self._warn_notes.append(
+                        f'- [{label}] not generated: the lane exceeded '
+                        f'its {budget_s}s wall-clock budget and was '
+                        f'stopped (deep bound + memory pressure; rerun '
+                        f'scripts/CorridorDeepDive.py on this folder for '
+                        f'an uncapped pass).')
+                    return True
+                if proc.returncode == 0:
+                    return False
+                if proc.returncode == 2:
+                    reason = (proc.stdout or '').strip().splitlines()
+                    reason = reason[-1] if reason else 'refused'
+                    reason = reason.replace('corridor lane refused: ', '')
+                    self._warn_notes.append(
+                        f'- [{label}] not generated: {reason}')
+                    return True
                 self._warn_notes.append(
-                    f'- [corridor lane] not generated: the lane exceeded '
-                    f'its {budget_s}s wall-clock budget and was stopped '
-                    f'(deep bound + memory pressure; rerun '
-                    f'scripts/CorridorDeepDive.py on this folder for an '
-                    f'uncapped pass).')
+                    f'- [{label}] generation failed (exit '
+                    f'{proc.returncode}): '
+                    f'{(proc.stderr or proc.stdout or "").strip()[-300:]}')
                 return True
-            if proc.returncode == 0:
-                return False  # success: nothing outside the lane namespace
-            if proc.returncode == 2:
-                # CLI exit 2 = CorridorRefusal (deterministic, disclosed)
-                reason = (proc.stdout or '').strip().splitlines()
-                reason = reason[-1] if reason else 'refused'
-                reason = reason.replace('corridor lane refused: ', '')
-                self._warn_notes.append(
-                    f'- [corridor lane] not generated: {reason}')
-                return True
-            self._warn_notes.append(
-                f'- [corridor lane] generation failed (exit '
-                f'{proc.returncode}): '
-                f'{(proc.stderr or proc.stdout or "").strip()[-300:]}')
-            return True
+
+            added = False
+            if fast_selected:
+                added |= _run_lane_subprocess(
+                    False, None, 'in-run (subprocess)')
+            if typed:
+                added |= _run_lane_subprocess(
+                    True,
+                    os.path.join(run_dir, 'route_scope_paths_type_pruned'),
+                    'in-run (subprocess, typed)')
+            return added
         except Exception as exc:  # containment is the contract (§3b tier 3)
             try:
                 self._warn_notes.append(
@@ -19183,6 +19212,42 @@ class FindNeuronConnection:
             self._refill_hook_added_notes = added
         return added
 
+    def _stamp_refill_attributes(self, run_dir, rec):
+        """Issue 2026-10-22 (refill §3): a per-dataset refill status in
+        all_attributes.json — ok / refused / unavailable with the reason.
+        Best effort; refill_provenance.json remains the authoritative copy."""
+        try:
+            attrs = os.path.join(str(run_dir), 'all_attributes.json')
+            if not os.path.exists(attrs):
+                return
+            with open(attrs, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return
+            full = rec.get('full') or {}
+            ff = full.get('full_floor') or {}
+            block = {
+                'status': rec.get('status'),
+                'label_convention': rec.get('label_convention'),
+                'type_map_sha': rec.get('type_map_sha'),
+                'type_map_size': rec.get('type_map_size'),
+                'full_status': full.get('status'),
+                'refill_status': full.get('refill_status'),
+                'cache_guard': full.get('cache_guard'),
+                'error': rec.get('error') or full.get('error'),
+                'full_floor': {k: ff.get(k) for k in (
+                    'status', 'rows', 'asked', 'bound')},
+            }
+            # Persist for any later all_attributes re-write in this run.
+            self._refill_status_block = block
+            data['type_level_refill'] = block
+            tmp = attrs + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, default=str)
+            os.replace(tmp, attrs)
+        except Exception:  # noqa: BLE001 — provenance additive
+            pass
+
     def _run_type_level_refill_round(self):
         """DUAL REFILL hook (plan-type-level-refill + 2026-10-08 dual):
         after a materialized FindAllPath ('all' mode) folder carries its
@@ -19208,6 +19273,7 @@ class FindNeuronConnection:
             from type_level_refill import (
                 TypeLevelRefillError,
                 build_effective_type_map,
+                choose_refill_type_map,
                 compute_type_level_refill,
                 filter_edges_by_hemisphere,
                 read_run_provenance,
@@ -19289,13 +19355,16 @@ class FindNeuronConnection:
                     'database is absent — regenerate via '
                     'scripts/TypeLevelRefill.py with explicit --connections.')
                 return True
-            type_map = build_effective_type_map(
-                neuron_frame,
+            # P0-D: pick the map that reproduces the run's EXPORTED keys
+            # (native + bodyId fallbacks, or settled); the old settled-only
+            # map dropped the male-CNS numeric keys and could not anchor.
+            type_map, label_convention, map_scores = choose_refill_type_map(
+                neuron_frame, run_dir,
                 dataset=str(getattr(self, 'dataset', '') or ''),
                 label_mapper=getattr(self, 'label_mapper', None),
                 separate_hemispheres=bool(
                     getattr(self, 'separate_hemispheres', False)),
-            )
+                label_convention='auto')
             hemi = str(getattr(self, 'hemisphere_filter', 'both') or 'both')
             if (edge_lf is not None
                     and not str(run_dir).replace('\\', '/').split('/')[-1]
@@ -19307,12 +19376,19 @@ class FindNeuronConnection:
                 rec = compute_type_level_refill(
                     run_dir, edges=None, edge_lf=edge_lf, type_map=type_map,
                     out_dir=None, hemi_filter=hemi,
-                    source_note='auto (post-materialization hook, vectorized)')
+                    label_convention=label_convention,
+                    source_note='auto (post-materialization hook, vectorized); '
+                                f'label_convention={label_convention}, '
+                                f'map_scores={map_scores}')
             else:
                 stream = filter_edges_by_hemisphere(stream, type_map, hemi)
                 rec = compute_type_level_refill(
                     run_dir, edges=stream, type_map=type_map, out_dir=None,
-                    source_note='auto (post-materialization hook)')
+                    label_convention=label_convention,
+                    source_note='auto (post-materialization hook); '
+                                f'label_convention={label_convention}, '
+                                f'map_scores={map_scores}')
+            self._stamp_refill_attributes(run_dir, rec)
             _full_rec = rec.get('full') or {}
             if _full_rec.get('refill_status') not in (None, 'ok'):
                 # P0-E: a refused full scope is a per-dataset UNAVAILABLE
@@ -19405,6 +19481,8 @@ class FindNeuronConnection:
             return (rec.get('status') in ('refilled', 'complete_at_asked')
                     or bool(rec.get('full')))
         except TypeLevelRefillError as exc:
+            self._stamp_refill_attributes(
+                run_dir, {'status': 'refused', 'error': str(exc)})
             self._warn_notes.append(
                 f'- [type-level refill] NOT generated: {exc}')
             return True

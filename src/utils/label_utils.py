@@ -276,3 +276,28 @@ def body_id_label_map(dataset, body_ids, project_root=None,
             dataset, canon, type_map, instance_map, side_map,
             label_of=label_of)
     return labels
+
+# Canonical neurotransmitter vocabulary (issue 2026-10-22 §2.4): the run's
+# own pages and the comparison report already normalize these; the lane and
+# refill exports must use the same lowercase strings so FAFB (`ACH`) and
+# male-CNS/BANC (`acetylcholine`) cannot diverge.
+_NT_CANONICAL = {
+    'ACH': 'acetylcholine', 'ACETYLCHOLINE': 'acetylcholine',
+    'GABA': 'gaba',
+    'GLUT': 'glutamate', 'GLUTAMATE': 'glutamate',
+    'DA': 'dopamine', 'DOPAMINE': 'dopamine',
+    'SER': 'serotonin', 'SEROTONIN': 'serotonin',
+    'OCT': 'octopamine', 'OCTOPAMINE': 'octopamine',
+    'HIS': 'histamine', 'HISTAMINE': 'histamine',
+    'UNKNOWN': 'unknown', 'NONE': 'unknown', 'NO_CONS': 'unknown',
+}
+
+
+def canonical_neurotransmitter(value) -> str:
+    """The comparison report's lowercase NT vocabulary for one cell."""
+    if value is None:
+        return ''
+    text = str(value).strip()
+    if not text or text.lower() in ('nan', 'none', '<na>', 'null'):
+        return ''
+    return _NT_CANONICAL.get(text.upper(), text.lower())

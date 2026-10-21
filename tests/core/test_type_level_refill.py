@@ -2516,16 +2516,16 @@ def test_the_refill_mirror_carries_the_transmitter_the_run_itself_shows(
         'nt_type': ['GLUT', None, 'ACH'],
     }))
     pair_nt, type_nt = _pair_nt_lookup(run)
-    assert pair_nt == {('A', 'B'): 'GLUT', ('B', 'C'): '',
-                       ('C', 'D'): 'ACH'}, pair_nt
+    assert pair_nt == {('A', 'B'): 'glutamate', ('B', 'C'): '',
+                       ('C', 'D'): 'acetylcholine'}, pair_nt
     # a pair the run LISTS with no transmitter stays unannotated: the run's own
     # page draws it blank, and the refill page beside it cannot call it 'GLUT'
     assert pair_nt[('B', 'C')] == '', pair_nt
     # the per-type vocabulary is only for pairs NO source mentions at all
-    assert type_nt == {'A': 'GLUT', 'C': 'ACH'}, type_nt
+    assert type_nt == {'A': 'glutamate', 'C': 'acetylcholine'}, type_nt
     # e.g. a pair the refill re-valued from a bodyId edge the type table lacks
     assert pair_nt.get(('D', 'E')) is None
-    assert ('D' not in pair_nt) and type_nt.get('A') == 'GLUT'
+    assert ('D' not in pair_nt) and type_nt.get('A') == 'glutamate'
 
 
 def test_the_nt_matrix_still_wins_where_both_sources_speak(tmp_path):
@@ -2542,9 +2542,10 @@ def test_the_nt_matrix_still_wins_where_both_sources_speak(tmp_path):
                  'weight': [1, 2, 3],
                  'nt_type': ['ACH', 'ACH', 'SER']}))
     pair_nt, _type_nt = _pair_nt_lookup(tmp_path)
-    assert pair_nt[('A', 'B')] == 'GLUT', 'the matrix must win on its own cells'
-    assert pair_nt[('A', 'C')] == 'SER', pair_nt
-    assert pair_nt[('B', 'D')] == 'SER', (
+    assert pair_nt[('A', 'B')] == 'glutamate', (
+        'the matrix must win on its own cells')
+    assert pair_nt[('A', 'C')] == 'serotonin', pair_nt
+    assert pair_nt[('B', 'D')] == 'serotonin', (
         f'the edge table must still fill a pair the matrix never listed: {pair_nt}')
 
 
@@ -2588,8 +2589,95 @@ def test_full_floor_type_pairs_export(tmp_path):
     pcols = pd.read_csv(path_csv, nrows=0).columns
     assert {'ratios_adj', 'min_ratio_adj',
             'ratio_adj_complete'} <= set(pcols)
+    # the ASKED-floor chain table (issue 2026-10-22 refill §3)
+    floor_paths = out / 'refill_full_floor_paths_type.csv'
+    assert floor_paths.exists()
+    fp = pd.read_csv(floor_paths)
+    assert len(fp) > 0
+    assert {'ratios_adj', 'min_ratio_adj',
+            'ratio_adj_complete'} <= set(fp.columns)
+    assert full['full_floor']['paths'] == len(fp)
+    assert full['full_floor']['paths_scope'] == (
+        'emitted chains re-valued at the asked floor')
     assert rec['full']['refill_status'] in (
         'ok', 'unavailable_guard_not_checked')
     # P0-E: the primary guard is bodyId-level (label-agnostic), so the
     # settled-vs-native label mismatch cannot fail a complete cache.
     assert rec['full']['cache_guard'] in ('ok', 'ok_bodyid')
+
+
+def test_refill_native_label_convention_keeps_native_and_bodyid_keys(tmp_path):
+    """Issue 2026-10-22 (refill): the `80` male-CNS export uses native
+    `R8p`-style keys and bodyId fallbacks. The auto chooser must pick that
+    convention over the mapped/dropped map."""
+    from type_level_refill import (
+        _involved_bodyid_fallbacks, choose_refill_type_map)
+
+    frame = pd.DataFrame({
+        'bodyId': ['a1', '212074', 'c1'],
+        'type': ['R8p', None, 'APDN3'],
+    })
+    run = tmp_path / 'run'
+    (run / 'data_details').mkdir(parents=True)
+    pd.DataFrame({
+        'type_pre': ['R8p', '212074'],
+        'type_post': ['212074', 'APDN3'],
+    }).to_csv(run / 'data_details' / 'connection_type.csv', index=False)
+    mapping = tmp_path / 'map.json'
+    mapping.write_text(json.dumps({
+        'format': 'drocat_custom_groups/v1',
+        'source_mapping': {'custom_label': [], 'male-cns:v1.0': []},
+        'target_mapping': {'custom_label': [], 'male-cns:v1.0': []},
+    }), encoding='utf-8')
+    type_map, convention, scores = choose_refill_type_map(
+        frame, run, dataset='male-cns:v1.0', mapping_file=mapping)
+    assert convention == 'native'
+    assert type_map['a1'] == 'R8p'
+    assert type_map['212074'] == '212074'
+    assert type_map['c1'] == 'APDN3'
+    assert scores['native'] >= scores['settled']
+
+    # an exported body absent from the neuron table is added as itself
+    augmented = _involved_bodyid_fallbacks(
+        {'a1': 'R8p'}, {'R8p', '999999'},
+        edges=[('999999', 'a1', 10)])
+    assert augmented['999999'] == '999999'
+
+
+def test_banc_style_type_guard_passes_without_bodyid_detail(tmp_path):
+    """Issue 2026-10-22 (refill): the type-level fallback guard passes on a
+    complete stream once the native/bodyId-fallback map is used."""
+    _fc, run_dir = make_run(tmp_path, 'banc_style_ok')
+    ci = run_dir / 'data_details' / 'connection_info_bodyId.csv'
+    ci.unlink()
+    out = tmp_path / 'recs'
+    rec = compute_type_level_refill(
+        run_dir, edges=EDGES, type_map=TYPE_MAP, out_dir=out, write=True)
+    full = rec['full']
+    assert full['cache_guard'] == 'ok'
+    assert full['refill_status'] == 'ok'
+    assert full['full_floor']['status'] == 'ok'
+    assert (out / 'refill_full_floor_type_pairs.csv').exists()
+
+
+def test_banc_style_guard_failure_is_unavailable_not_silent(tmp_path):
+    """Issue 2026-10-22 (refill §2.2/§3): an undercounted stream is a
+    per-dataset `unavailable`, never a silent `not_checked` and never a
+    written full-scope table."""
+    _fc, run_dir = make_run(tmp_path, 'banc_style_fail')
+    (run_dir / 'data_details' / 'connection_info_bodyId.csv').unlink()
+    inc = run_dir / 'data_details' / 'type_incoming_emitted.csv'
+    frame = pd.read_csv(inc)
+    frame = pd.concat([frame, pd.DataFrame([
+        {'type': 'ZZZ_FAKE', 'incoming': 10_000_000}])],
+        ignore_index=True)
+    frame.to_csv(inc, index=False)
+    out = tmp_path / 'recs'
+    rec = compute_type_level_refill(
+        run_dir, edges=EDGES, type_map=TYPE_MAP, out_dir=out, write=True)
+    full = rec['full']
+    assert full['status'] == 'unavailable'
+    assert full['cache_guard'] == 'FAILED'
+    assert full['refill_status'] == 'unavailable'
+    assert 'ZZZ_FAKE' in full['error']
+    assert not (out / 'refill_full_type_pairs.csv').exists()

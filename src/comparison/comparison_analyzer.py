@@ -820,9 +820,13 @@ class ComparisonAnalyzer:
         try:
             _base = Path(parameters.get_dataset_output_path(
                 dataset_name, threshold))
-            _tp = _base / 'route_scope_paths' / 'type_prune_manifest.json'
-            if _tp.exists():
-                type_block = json.loads(_tp.read_text(encoding='utf-8'))
+            for _lane in ('route_scope_paths_type_pruned',
+                          'route_scope_paths'):
+                _tp = _base / _lane / 'type_prune_manifest.json'
+                if _tp.exists():
+                    type_block = json.loads(
+                        _tp.read_text(encoding='utf-8'))
+                    break
         except Exception:
             type_block = {}
         return {
@@ -2184,6 +2188,13 @@ class ComparisonAnalyzer:
                 self.parameters, 'type_min_wmax', 0) or 0),
             type_max_type_visits=int(getattr(
                 self.parameters, 'type_max_type_visits', 0) or 0),
+            type_revisit_policy=str(getattr(
+                self.parameters, 'type_revisit_policy', 'bounded')),
+            type_walk_cap=int(getattr(
+                self.parameters, 'type_walk_cap', 2_000_000) or 2_000_000),
+            type_validate_work_cap=int(getattr(
+                self.parameters, 'type_validate_work_cap', 2_000_000)
+                or 2_000_000),
             max_paths_bodyid=self.parameters.max_paths_bodyid,  # StrongestFirst path budget (None = per-mode default)
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),
@@ -5302,6 +5313,13 @@ class ComparisonAnalyzer:
                 self.parameters, 'type_min_wmax', 0) or 0),
             type_max_type_visits=int(getattr(
                 self.parameters, 'type_max_type_visits', 0) or 0),
+            type_revisit_policy=str(getattr(
+                self.parameters, 'type_revisit_policy', 'bounded')),
+            type_walk_cap=int(getattr(
+                self.parameters, 'type_walk_cap', 2_000_000) or 2_000_000),
+            type_validate_work_cap=int(getattr(
+                self.parameters, 'type_validate_work_cap', 2_000_000)
+                or 2_000_000),
             max_paths_bodyid=self.parameters.max_paths_bodyid,
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),

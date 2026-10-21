@@ -303,6 +303,19 @@ COLUMN_GLOSSARY = {
                   "(1 = strongest by UB).", "integer"),
     "realized_paths": ("bodyId paths emitted on this walk (<= the class "
                        "path budget; ties may exceed it).", "integer"),
+    "pair_weights": ("Per-hop universe mass of the PRUNED type pair (the "
+                     "candidate graph's w_sum), beside the realized hop "
+                     "mass in `weights` — the two are different quantities.",
+                     "custom"),
+    "ratio_adj_complete": ("True when every hop of the row had a "
+                           "conditioned denominator, so ratios_adj is a "
+                           "complete adjusted readout (missing denominators "
+                           "are per-hop None, never a fabricated 0).",
+                           "boolean"),
+    "type_pruned": ("True on rows produced by the type-pruned complete "
+                    "lane; the lane's own completeness field is "
+                    "type_pruned_complete in its manifest/provenance.",
+                    "boolean"),
     "ratios_adj": ("Adjusted per-hop shares: realized mass over the "
                    "post type's >= THRESHOLD incoming (== ratios when "
                    "the asked threshold is 1).", "custom"),
@@ -1209,6 +1222,19 @@ _FIND_NETWORK = {
                         "recovered weight and refilled_total at the FULL "
                         "scope — the map the run's own network page reads for "
                         "its Refilled metric."},
+        {"pattern": "data_details/type_level_refill/refill_full_floor_type_pairs.csv",
+         "description": "The ALL-PAIRS type universe at the run's ASKED "
+                        "floor (not emitted-chain-only): type_pre/type_post, "
+                        "w_sum/w_max/n, connection_ratio and "
+                        "connection_ratio_adj, nt_type, non_emitted_mass, "
+                        "in_emitted_cone and endpoint flags. This is the "
+                        "floor-specific source a type-pruned lane can audit "
+                        "without reusing an emitted path store."},
+        {"pattern": "data_details/type_level_refill/refill_full_floor_paths_type.csv",
+         "description": "The emitted chains re-valued at the ASKED floor "
+                        "(not synapse >= 1) with the path-table column "
+                        "family and ratios_adj / min_ratio_adj / "
+                        "ratio_adj_complete."},
         {"pattern": "data_details/type_level_refill/refill_type_pairs.csv",
          "description": "(ratio-basis runs) the same census at the ASKED "
                         "scope."},
@@ -1351,6 +1377,34 @@ _PATHFINDING_FILES = [
     {"pattern": "route_scope_paths/route_type_network.html",
      "description": "Corridor mirror network of the validated scope "
                     "(hover shows weight + both ratio flavors)."},
+    # Type-pruned COMPLETE lane (issue 2026-10-22): its own namespace, so
+    # the Fast tables above are never overwritten.
+    {"pattern": "route_scope_paths_type_pruned/route_paths_type.csv",
+     "description": "Type-pruned complete lane: one row per validated type "
+                    "walk over the pruned lossless cone. Carries the "
+                    "realized weights/ratios, ratios_adj/min_ratio_adj, "
+                    "pair_weights (the pruned pair's universe mass), "
+                    "chain_revisit and type_pruned=true. Every row clears "
+                    "the exact realized min_ratio_adj gate.",
+     "preview": True,
+     "preview_title": "Type-pruned walks",
+     "columns": ["pair_weights", "ratio_adj_complete", "type_pruned"]},
+    {"pattern": "route_scope_paths_type_pruned/type_prune_manifest.json",
+     "description": "Type-pruned lane contract: prune basis/scope/floors, "
+                    "pairs and mass before/after (mass_source=lossless_cone), "
+                    "candidate/validated/phantom/unverified/weak-filtered "
+                    "counts, type_pruned_complete + filter_complete + "
+                    "completeness_reason, revisit policy, label-map hash, "
+                    "and the requested vs Complete tau."},
+    {"pattern": "route_scope_paths_type_pruned/route_type_pairs_pruned.csv",
+     "description": "The kept type graph the lane enumerated: type_pre/"
+                    "type_post, w_sum/w_max/n and both pair-level ratios, "
+                    "so every candidate walk can be checked against its "
+                    "coarse prune basis."},
+    {"pattern": "route_scope_paths_type_pruned/route_provenance.json",
+     "description": "Type-pruned lane provenance: the same schema as the "
+                    "Fast lane plus the type_prune block, label/enrollment "
+                    "witnesses and the separate completeness field."},
     # The lane's SECOND ROUND (Q2): the same validated chains re-valued at
     # synapse >= 1, so a Fast run answers the scope pair the Complete mode
     # does. One namespace (route_scope_paths/), the complete mode's names.

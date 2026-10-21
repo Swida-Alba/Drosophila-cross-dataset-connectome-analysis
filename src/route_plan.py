@@ -49,6 +49,11 @@ UNSET = 0
 
 _HEMI_SUFFIXES = ("_L", "_R", "_U")
 
+# Namespaces (issue 2026-10-22 §2.1): the Fast lane owns route_scope_paths/;
+# the type-pruned lane owns its own folder so neither can overwrite the other.
+FAST_LANE_DIR = "route_scope_paths"
+TYPED_LANE_DIR = "route_scope_paths_type_pruned"
+
 
 class CorridorRefusal(Exception):
     """Deterministic lane refusal (disclosed, never a run failure): the
@@ -867,7 +872,7 @@ def _match_type_labels(labels, tokens, body2type=None, prefix=False):
 # ---------------------------------------------- Phase B: type-pruned lane
 def _prune_type_pairs(pairs, type_incoming, type_incoming_adj, *,
                       basis="ratio_adj", min_ratio_adj=0.01,
-                      min_synapse=0, min_wmax=0):
+                      min_synapse=0, min_wmax=0, default_floor=None):
     """Coarse TYPE-LEVEL candidate filter (P0-B/P0-C).
 
     `pairs` is the full-floor pair table (w_sum/w_max/n), NOT a top-M or
@@ -882,10 +887,14 @@ def _prune_type_pairs(pairs, type_incoming, type_incoming_adj, *,
     so the manifest and the connection table can state which quantity was
     pruned on."""
     import polars as pl
+    _applied_mass_floor = (int(min_synapse) if int(min_synapse) > 0
+                           else int(default_floor or 1))
     if pairs.height == 0:
         return pairs, {
             "basis": basis, "min_ratio_adj": float(min_ratio_adj),
-            "min_synapse": int(min_synapse), "min_wmax": int(min_wmax),
+            "min_synapse": (int(min_synapse) if basis != "synapse"
+                            else _applied_mass_floor),
+            "min_wmax": int(min_wmax),
             "pairs_before": 0, "pairs_after": 0, "pairs_removed": 0,
             "mass_before": 0.0, "mass_after": 0.0, "mass_removed": 0.0}
     den = pl.DataFrame(
@@ -921,7 +930,7 @@ def _prune_type_pairs(pairs, type_incoming, type_incoming_adj, *,
         # otherwise the requested ratio knob is not a synapse count, so the
         # caller's min_synapse is authoritative (default 1 keeps the table
         # non-empty rather than silently pruning everything at 0).
-        floor = int(min_synapse) if int(min_synapse) > 0 else 1
+        floor = _applied_mass_floor
         keep = pl.col("w_sum") >= floor
     else:  # guarded by run_lane's refusal; keep the function total
         raise ValueError(f"unknown type-prune basis {basis!r}")
@@ -935,13 +944,16 @@ def _prune_type_pairs(pairs, type_incoming, type_incoming_adj, *,
     return kept, {
         "basis": basis,
         "min_ratio_adj": float(min_ratio_adj),
-        "min_synapse": (int(min_synapse)
-                        if basis != "synapse" or int(min_synapse) > 0
-                        else floor),
+        "min_synapse": (int(min_synapse) if basis != "synapse"
+                        else _applied_mass_floor),
         "min_wmax": int(min_wmax),
         "pairs_before": int(pairs.height),
         "pairs_after": int(kept.height),
         "pairs_removed": int(pairs.height - kept.height),
+        "mass_source": "lossless_cone",
+        "mass_before_source": "lossless_discovery_cone_pair_mass",
+        "denominator_source": "conditioned type incoming (all pres, "
+                              "edges >= asked)",
         "mass_before": mass_before,
         "mass_after": mass_after,
         "mass_removed": mass_before - mass_after,
@@ -1038,6 +1050,30 @@ def _enumerate_type_walks(pairs, sources, targets, bound, *,
                             if revisit_policy == "bounded" else 1),
     }
     return walks, stats
+
+
+def _type_prune_completeness(*, enum_capped, time_capped, unverified,
+                              realization_missing, validation_truncated,
+                              ratio_unresolved):
+    """The typed lane's completeness contract (issue 2026-10-22 §2.2).
+
+    Complete means the pruned graph was exhausted and every candidate got
+    a definitive bodyId verdict, including a computable realized adjusted
+    ratio for the exact filter. `filtered_weak` is the deliberate exact
+    gate and does not break completeness; an unresolved ratio does.
+    Returns (complete, filter_complete, reason)."""
+    filter_complete = ratio_unresolved == 0
+    if enum_capped:
+        return False, filter_complete, "type_walk_cap"
+    if time_capped:
+        return False, filter_complete, "time_budget"
+    if unverified:
+        return False, filter_complete, "validation_work_cap"
+    if realization_missing:
+        return False, filter_complete, "realization_missing"
+    if not filter_complete:
+        return False, filter_complete, "ratio_unresolved"
+    return True, True, "exhausted"
 
 
 def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
@@ -1326,16 +1362,23 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
         "time_capped": bool(time_capped),
         "elapsed_s": round(time.monotonic() - started, 2),
     })
-    complete = (not enum["capped"] and not time_capped
-                and unverified == 0 and realization_missing == 0
-                and validation_truncated == 0)
+    # Issue 2026-10-22 §2.2: a validated walk whose realized adjusted
+    # ratio is unresolved is a path the exact filter could not adjudicate.
+    # The lane is not complete if that happened. `filter_complete` names the
+    # same fact separately; `filtered_weak` is the DELIBERATE exact gate and
+    # does not break completeness.
+    complete, filter_complete, completeness_reason = \
+        _type_prune_completeness(
+            enum_capped=enum["capped"], time_capped=time_capped,
+            unverified=unverified, realization_missing=realization_missing,
+            validation_truncated=validation_truncated,
+            ratio_unresolved=ratio_unresolved)
     block["type_pruned_complete"] = bool(complete)
-    block["completeness_reason"] = (
-        "exhausted" if complete else
-        "type_walk_cap" if enum["capped"] else
-        "time_budget" if time_capped else
-        "validation_work_cap" if unverified else
-        "realization_missing")
+    block["filter_complete"] = bool(filter_complete)
+    block["completeness_scope"] = (
+        "pruned type graph enumerated + every validated walk bodyId-checked; "
+        "the exact realized min_ratio_adj gate applied to the validated set")
+    block["completeness_reason"] = completeness_reason
     say(f"  · type-pruned complete: {validated} validated / "
         f"{phantoms} phantoms / {unverified} unverified / "
         f"{filtered_weak} weak-filtered -> {accepted} paths "
@@ -1464,7 +1507,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     elif kv.get("run mode"):
         run_mode = str(kv["run mode"]).strip().lower() or run_mode
     out = Path(out_dir) if out_dir else (
-        Path(run_dir) / "route_scope_paths" if run_dir else None)
+        Path(run_dir) / (TYPED_LANE_DIR if type_pruned else FAST_LANE_DIR)
+        if run_dir else None)
     if out is None:
         raise CorridorRefusal("no output directory (run_dir or out_dir)")
 
@@ -1726,6 +1770,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         keep_code = hemi_filter[0].upper()
         frame = frame[codes.isin([keep_code, "U"])]
     label_mapper = getattr(fnc, "label_mapper", None) if fnc else None
+    mapping_file_path = None
     if label_mapper is None:
         # subprocess mode: the run's recorded mapping file expands
         # custom-label query tokens (e.g. '5th-LNv') into the type map.
@@ -1735,6 +1780,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         # exported label of the lane.
         _mf = (kv.get("custom mapping file")
                or "").strip()
+        mapping_file_path = _mf or None
         if _mf and not Path(_mf).exists():
             _refuse(f"recorded mapping file {_mf!r} does not exist — "
                     "refusing rather than silently falling back to "
@@ -1763,15 +1809,34 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     for _b, _t in sorted(type_map.items()):
         _tmh.update(f'{_b}\x1f{_t}\x1e'.encode('utf-8', 'replace'))
     type_map_sha = _tmh.hexdigest()[:12]
+    # Issue 2026-10-22 §2.3: publish a REAL mapping witness. The recorded
+    # file's bytes are the identity when there is one; a live mapper is
+    # hashed only when it actually carries a map. An empty map is recorded
+    # as `None` (the effective `type_map_sha` remains the reliable witness),
+    # never as the MD5 of `{}`.
     label_mapper_sha = None
-    if label_mapper is not None:
+    label_mapper_source = 'none'
+    if mapping_file_path:
         try:
-            _lmh = _hashlib.md5(json.dumps(
-                getattr(label_mapper, 'overall_mapping', None) or {},
-                sort_keys=True, default=str).encode()).hexdigest()[:12]
-            label_mapper_sha = _lmh
-        except Exception:
-            label_mapper_sha = 'unhashable'
+            label_mapper_sha = _hashlib.md5(
+                Path(mapping_file_path).read_bytes()).hexdigest()[:12]
+            label_mapper_source = f'file:{mapping_file_path}'
+        except OSError:
+            label_mapper_sha = 'unreadable'
+            label_mapper_source = f'file-unreadable:{mapping_file_path}'
+    elif label_mapper is not None:
+        _overall = getattr(label_mapper, 'overall_mapping', None) or {}
+        if _overall:
+            try:
+                label_mapper_sha = _hashlib.md5(json.dumps(
+                    _overall, sort_keys=True, default=str).encode()
+                ).hexdigest()[:12]
+                label_mapper_source = 'live'
+            except Exception:
+                label_mapper_sha = 'unhashable'
+                label_mapper_source = 'live-unhashable'
+        else:
+            label_mapper_source = 'live-empty'
 
     src_labels, src_bodies_q = _match_type_labels(
         tmap["t"].to_list(), src_tokens, body2type,
@@ -2113,7 +2178,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             basis=str(type_prune_basis).lower(),
             min_ratio_adj=float(type_min_ratio_adj),
             min_synapse=int(type_min_synapse),
-            min_wmax=int(type_min_wmax))
+            min_wmax=int(type_min_wmax), default_floor=int(asked))
         _phase(f"type-pruned ({pairs.height:,} pairs, "
                f"{prune_block['mass_removed']:g} mass removed)")
         if pairs.height == 0:
@@ -2385,13 +2450,19 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             'materialized path store and not the refill emitted chains)')
         type_block['full_floor_rows'] = int(loss.height)
         type_block['requested_floor'] = int(asked)
-        type_block['run_applied_floor'] = (
+        # Issue 2026-10-22 §2.4: name the two floors for what they are.
+        # `run_applied_floor` / `typed_lane_floor` stay as compatibility
+        # aliases; `complete_tau` is the Complete lane's applied cut and
+        # `type_pruned_floor` is this lane's floor.
+        type_block['complete_tau'] = (
             int(_run_applied_floor)
             if _run_applied_floor is not None else None)
+        type_block['type_pruned_floor'] = int(asked)
+        type_block['run_applied_floor'] = type_block['complete_tau']
+        type_block['typed_lane_floor'] = type_block['type_pruned_floor']
         type_block['floor_raised_in_run'] = (
             _run_applied_floor is not None
             and int(_run_applied_floor) > int(asked))
-        type_block['typed_lane_floor'] = int(asked)
         # P1-K: the filter/label/enrollment parity object, recorded beside
         # the walk set so a reader can reproduce the universe.
         type_block['scope'] = str(type_prune_scope).lower()
@@ -2415,6 +2486,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         type_block['type_map_sha'] = type_map_sha
         type_block['type_map_size'] = len(type_map)
         type_block['label_mapper_sha'] = label_mapper_sha
+        type_block['label_mapper_source'] = label_mapper_source
         type_block['enrollment'] = {
             'sources': src_enrollment, 'targets': tgt_enrollment,
             'source_bodies': len(src_keep) or None,
@@ -3095,8 +3167,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     ).hexdigest()[:12]
     plan["plan_hash"] = plan_hash
     try:
-        plan_dir = (out if (explicit_out or not run_dir)
-                    else Path(run_dir)) / "data_details" / "route_plan"
+        if type_pruned and not explicit_out:
+            # The typed lane owns its own plan.json; the Fast lane's
+            # data_details/route_plan must stay untouched.
+            plan_dir = out / "data_details" / "route_plan"
+        else:
+            plan_dir = (out if (explicit_out or not run_dir)
+                        else Path(run_dir)) / "data_details" / "route_plan"
         plan_dir.mkdir(parents=True, exist_ok=True)
         (plan_dir / "plan.json").write_text(
             json.dumps(plan, indent=2, default=str), encoding="utf-8")
@@ -3155,6 +3232,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "exclude_autapses": exclude_autapses,
         "label_mapper": label_mapper is not None,
         "label_mapper_sha": label_mapper_sha,
+        "label_mapper_source": label_mapper_source,
         "type_map_sha": type_map_sha,
         "type_map_size": len(type_map),
         # F-PF-005: how the endpoint bodies were enrolled — 'types' /
@@ -3308,9 +3386,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                if full_block.get('time_capped') else
                "complete within the lane's wall clock.") + ")\n\n")
     (out / "README.md").write_text(
-        "# Corridor lane (route_scope_paths)\n\n"
+        ("# Type-pruned complete lane" if type_block is not None
+         else "# Corridor lane") + f" ({out.name})\n\n"
         "Standalone route-scoped pass at the ASKED threshold; never merged "
-        "into allpaths (plan-corridor-lane.md §23.5).\n\n"
+        "into allpaths (plan-corridor-lane.md §23.5)."
+        + (" The type-pruned lane owns this namespace; the Fast lane's "
+           "route_scope_paths/ is never written here." if type_block is not None
+           else "") + "\n\n"
         f"- trigger: {trigger} (run mode `{run_mode}`, lane call "
         f"`{corridor_mode}`, asked {asked}, "
         f"bound {bound})\n"
@@ -3942,6 +4024,7 @@ def _type_nt_map(frame):
     (coana enrichment: nt_type > consensusNt > predictedNt >
     celltypePredictedNt), most common non-null label per type."""
     import collections
+    from utils.label_utils import canonical_neurotransmitter
     nt_col = next((c for c in ("nt_type", "consensusNt", "predictedNt",
                                "celltypePredictedNt")
                    if c in getattr(frame, "columns", [])), None)
@@ -3952,8 +4035,9 @@ def _type_nt_map(frame):
             nts = frame[nt_col].astype(str).where(
                 frame[nt_col].notna(), "")
             for t, nt in zip(types, nts):
-                if nt and str(nt).lower() not in ("nan", "none", ""):
-                    counts[t][nt] += 1
+                canon = canonical_neurotransmitter(nt)
+                if canon:
+                    counts[t][canon] += 1
         except Exception:
             pass
     return {t: c.most_common(1)[0][0] for t, c in counts.items()}

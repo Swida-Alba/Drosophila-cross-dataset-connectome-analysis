@@ -311,11 +311,36 @@ class RunModeControl:
                 "Pair min synapses",
                 int(get_user_default("type_min_synapse") or 0),
                 min_val=0, max_val=1_000_000_000, step=1,
+                hint="0 = the run's asked synapse floor for the synapse "
+                     "basis.",
             )
             self.type_min_wmax = number_input(
                 "Pair min w_max",
                 int(get_user_default("type_min_wmax") or 0),
                 min_val=0, max_val=1_000_000_000, step=1,
+            )
+            self.type_revisit_policy = select_input(
+                "Type revisits", ["bounded", "simple"],
+                str(get_user_default("type_revisit_policy") or "bounded"),
+                hint="bounded: the complete revisit set for the hop bound; "
+                     "simple: no repeated types.",
+                inline=True,
+            )
+            self.type_max_visits = number_input(
+                "Max visits/type", int(
+                    get_user_default("type_max_type_visits") or 0),
+                min_val=0, max_val=1000, step=1,
+                hint="0 = the hop bound (complete for walks up to it).",
+            )
+            self.type_walk_cap = number_input(
+                "Type walk cap", int(
+                    get_user_default("type_walk_cap") or 2_000_000),
+                min_val=1, max_val=100_000_000, step=1,
+            )
+            self.type_validate_work_cap = number_input(
+                "Validation work cap", int(
+                    get_user_default("type_validate_work_cap") or 2_000_000),
+                min_val=1, max_val=1_000_000_000, step=1,
             )
             ui.label("Scope: full_floor").classes(
                 "text-caption text-blue-8")
@@ -342,6 +367,11 @@ class RunModeControl:
                 self.type_min_ratio_percent.value),
             "type_min_synapse": int(self.type_min_synapse.value or 0),
             "type_min_wmax": int(self.type_min_wmax.value or 0),
+            "type_revisit_policy": self.type_revisit_policy.value,
+            "type_max_type_visits": int(self.type_max_visits.value or 0),
+            "type_walk_cap": int(self.type_walk_cap.value or 2_000_000),
+            "type_validate_work_cap": int(
+                self.type_validate_work_cap.value or 2_000_000),
         }
 
     def note_text(self) -> str:

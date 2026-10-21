@@ -513,6 +513,8 @@ DEFAULTS = {
     "type_min_wmax": 0,
     "type_revisit_policy": "bounded",
     "type_max_type_visits": 0,
+    "type_walk_cap": 2000000,
+    "type_validate_work_cap": 2000000,
     "network_layout": "distributed",
     "use_cache": True,
     "cache_only": False,

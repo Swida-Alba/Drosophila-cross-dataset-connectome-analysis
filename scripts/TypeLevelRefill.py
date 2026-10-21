@@ -30,6 +30,7 @@ try:
         DEFAULT_REFILL_PATH_BUDGET,
         TypeLevelRefillError,
         build_effective_type_map,
+        choose_refill_type_map,
         compute_type_level_refill,
         filter_edges_by_hemisphere,
     )
@@ -39,6 +40,7 @@ except ImportError:  # pragma: no cover - direct src/ execution
         DEFAULT_REFILL_PATH_BUDGET,
         TypeLevelRefillError,
         build_effective_type_map,
+        choose_refill_type_map,
         compute_type_level_refill,
         filter_edges_by_hemisphere,
     )
@@ -108,10 +110,13 @@ def read_run_flags(run_dir: Path):
 
 
 def build_type_map(neuron_table: Path, separate_hemispheres: bool,
-                   mapping_file=None, dataset=None):
-    """bodyId -> EFFECTIVE label via the shared module builder (label
-    mapping with the same semantics as the run's type-level aggregation,
-    hemisphere suffixes, untyped drop)."""
+                   mapping_file=None, dataset=None, run_dir=None):
+    """bodyId -> label in the RUN'S EXPORTED convention.
+
+    `auto` scores the native (bodyId-fallback) and settled maps against the
+    run's own `connection_type.csv` keys; the winner is returned with its
+    convention tag. Without `run_dir`, falls back to the settled map.
+    """
     if str(neuron_table).lower().endswith('.parquet'):
         frame = pd.read_parquet(neuron_table)
     else:
@@ -122,10 +127,16 @@ def build_type_map(neuron_table: Path, separate_hemispheres: bool,
             f'columns (found {list(frame.columns)[:8]}...).')
     if mapping_file and mapping_file.lower() in ('none', 'n/a', ''):
         mapping_file = None
+    if run_dir is not None:
+        return choose_refill_type_map(
+            frame, run_dir, dataset=dataset or 'unknown',
+            mapping_file=(Path(mapping_file) if mapping_file else None),
+            separate_hemispheres=separate_hemispheres,
+            label_convention='auto')
     return build_effective_type_map(
         frame, dataset=dataset or 'unknown',
         mapping_file=(Path(mapping_file) if mapping_file else None),
-        separate_hemispheres=separate_hemispheres)
+        separate_hemispheres=separate_hemispheres), 'settled', {}
 
 
 
@@ -209,11 +220,13 @@ def main(argv=None) -> int:
                     f'{run_dir.name}: custom mapping file {_mapping!r} does '
                     f'not exist — the refill cannot reproduce the run\'s '
                     f'labels without it.')
-            type_map = build_type_map(neuron_table, separate,
-                                      mapping_file=_mapping or None,
-                                      dataset=dataset)
+            type_map, label_convention, map_scores = build_type_map(
+                neuron_table, separate, mapping_file=_mapping or None,
+                dataset=dataset, run_dir=run_dir)
             _map_note = (f', mapping={Path(_mapping).name}'
                          if _mapping else ', mapping=native')
+            _map_note += (f', label_convention={label_convention}'
+                          f', map_scores={map_scores}')
             if (connections_path.suffix.lower() == '.parquet'
                     and hemi_filter not in ('left', 'right')):
                 # PERF (2026-10-08): vectorized fast path — the lazy frame
@@ -222,6 +235,7 @@ def main(argv=None) -> int:
                 rec = compute_type_level_refill(
                     run_dir, edge_lf=pl.scan_parquet(connections_path),
                     type_map=type_map, hemi_filter=hemi_filter,
+                    label_convention=label_convention,
                     detail_cap=args.detail_cap,
                     path_budget=args.path_budget,
                     out_dir=(None if args.in_run
@@ -235,6 +249,7 @@ def main(argv=None) -> int:
                     hemi_filter)
                 rec = compute_type_level_refill(
                     run_dir, edges=edges, type_map=type_map,
+                    label_convention=label_convention,
                     detail_cap=args.detail_cap, path_budget=args.path_budget,
                     out_dir=(None if args.in_run
                              else out_root / run_dir.name),

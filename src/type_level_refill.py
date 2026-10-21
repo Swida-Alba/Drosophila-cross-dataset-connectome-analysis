@@ -350,11 +350,14 @@ def _polars_stream_passes(edge_lf, type_map, emitted, node_set, *,
           .join(tm.rename({'bid': 'v', 'typ': 'typ_post'}), on='v',
                 how='left')
           .with_columns([
+              # P0-D: a body absent from the neuron table is typed as
+              # ITSELF (the run's own bodyId fallback), not a synthetic
+              # `~bodyId` key that can never match the exported table.
               pl.when(pl.col('typ_pre').is_null())
-                .then(pl.concat_str(pl.lit('~'), pl.col('u')))
+                .then(pl.col('u'))
                 .otherwise(pl.col('typ_pre')).alias('typ_pre'),
               pl.when(pl.col('typ_post').is_null())
-                .then(pl.concat_str(pl.lit('~'), pl.col('v')))
+                .then(pl.col('v'))
                 .otherwise(pl.col('typ_post')).alias('typ_post'),
           ]))
 
@@ -988,6 +991,161 @@ def build_effective_type_map(neuron_frame, *, dataset,
     return dict(zip(body_ids[keep], effective[keep]))
 
 
+def build_refill_type_map(neuron_frame, *, dataset,
+                          mapping_file=None, label_mapper=None,
+                          separate_hemispheres=False) -> dict:
+    """bodyId -> label in the RUN'S EXPORTED CONVENTION (P0-D).
+
+    Unlike :func:`build_effective_type_map`, this map does NOT drop
+    untyped labels and uses the run's bodyId fallback when a neuron has no
+    type. The article's `80` runs export native (`R8p`, `R8_unclear`) and
+    bodyId-shaped keys for neurons with no resolved type; a refill that
+    drops those bodies can never reproduce `connection_type.csv`.
+    Mapped members still go through the residual registry, so settled
+    clock labels are preserved.
+    """
+    import numpy as np
+
+    if hasattr(neuron_frame, 'to_pandas'):
+        frame = neuron_frame.to_pandas()
+    else:
+        frame = neuron_frame
+    if 'bodyId' not in frame.columns:
+        raise TypeLevelRefillError('neuron table lacks a bodyId column.')
+    if mapping_file is not None and label_mapper is None:
+        try:
+            from comparison.label_mapper import LabelMapper
+            label_mapper = LabelMapper(overall_mapping_json=str(mapping_file))
+        except Exception as exc:
+            raise TypeLevelRefillError(
+                f'cannot load the recorded mapping file {mapping_file!r} '
+                f'({exc}) — the refill cannot reproduce the run\'s labels '
+                f'without it.') from exc
+
+    body_ids = frame['bodyId'].astype(str)
+    if 'type' in frame.columns:
+        raw = frame['type']
+    else:
+        raw = pd.Series([None] * len(frame), index=frame.index)
+    labels = []
+    for body, value in zip(body_ids, raw):
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            labels.append(str(body))
+            continue
+        text = str(value).strip()
+        labels.append(str(body) if not text or text.lower() in (
+            'nan', 'none', 'null', '<na>') else text)
+    effective = pd.Series(labels, index=frame.index, dtype=object)
+
+    if label_mapper is not None:
+        try:
+            from comparison.type_resolver import get_residual_registry
+        except ImportError:  # pragma: no cover
+            from type_resolver import get_residual_registry
+        registry = get_residual_registry(label_mapper, dataset, frame)
+        effective = pd.Series(
+            [registry.key_for(b, t) or t
+             for b, t in zip(body_ids, effective)],
+            index=frame.index, dtype=object)
+
+    if separate_hemispheres:
+        codes = _hemisphere_codes(frame)
+        has_suffix = effective.str.endswith(('_L', '_R', '_U'))
+        effective = effective.where(has_suffix, effective + '_' + codes)
+    return dict(zip(body_ids, effective))
+
+
+def choose_refill_type_map(neuron_frame, run_dir, *, dataset,
+                           mapping_file=None, label_mapper=None,
+                           separate_hemispheres=False,
+                           label_convention='auto'):
+    """Pick the bodyId->label map that reproduces the run's exported keys.
+
+    `'native'` keeps the run's exported convention (native labels,
+    bodyId fallbacks, `Unknown`); `'settled'` is the mapping-applied,
+    untyped-dropped map the old refill used. `'auto'` scores both maps
+    against the keys actually present in `<run>/data_details/connection_type.csv`
+    and picks the higher coverage (ties keep the run's convention).
+    Returns `(type_map, convention, scores)`.
+    """
+    native = build_refill_type_map(
+        neuron_frame, dataset=dataset, mapping_file=mapping_file,
+        label_mapper=label_mapper,
+        separate_hemispheres=separate_hemispheres)
+    settled = build_effective_type_map(
+        neuron_frame, dataset=dataset, mapping_file=mapping_file,
+        label_mapper=label_mapper,
+        separate_hemispheres=separate_hemispheres)
+    mode = str(label_convention or 'auto').strip().lower()
+    exported = set()
+    try:
+        ct = pd.read_csv(
+            Path(run_dir) / 'data_details' / 'connection_type.csv',
+            dtype={'type_pre': str, 'type_post': str})
+        if {'type_pre', 'type_post'} <= set(ct.columns):
+            exported = set(ct['type_pre'].dropna().astype(str)) | set(
+                ct['type_post'].dropna().astype(str))
+    except (OSError, ValueError):
+        exported = set()
+
+    def _score(mapping):
+        if not exported:
+            return None
+        labels = set(mapping.values())
+        return len(exported & labels) / len(exported)
+
+    scores = {'native': _score(native), 'settled': _score(settled),
+              'exported_keys': len(exported)}
+    if mode == 'native':
+        return native, 'native', scores
+    if mode == 'settled':
+        return settled, 'settled', scores
+    if not exported:
+        return native, 'native', scores
+    if (scores['native'] or 0.0) >= (scores['settled'] or 0.0):
+        return native, 'native', scores
+    return settled, 'settled', scores
+
+
+def _involved_bodyid_fallbacks(type_map, involved, *, edges=None,
+                               edge_lf=None):
+    """Add `bodyId -> bodyId` for exported keys that are absent from the
+    neuron table. The run's own fallback types an unmatched body as
+    itself; without this, those bodies are excluded from `node_set` and
+    every `bodyId->label` pair they support re-derives as 0."""
+    labels = set(type_map.values())
+    missing = {str(t) for t in involved if str(t) not in labels}
+    if not missing:
+        return type_map
+    found = set()
+    if edge_lf is not None:
+        import polars as pl
+        lf = edge_lf.select(
+            pl.col('bodyId_pre').cast(pl.Utf8).alias('u'),
+            pl.col('bodyId_post').cast(pl.Utf8).alias('v'))
+        wanted = sorted(missing)
+        hit = lf.filter(
+            pl.col('u').is_in(wanted) | pl.col('v').is_in(wanted)
+        ).collect()
+        for u, v in hit.iter_rows():
+            if u in missing:
+                found.add(u)
+            if v in missing:
+                found.add(v)
+    elif edges is not None:
+        for u, v, _w in edges:
+            u, v = str(u), str(v)
+            if u in missing:
+                found.add(u)
+            if v in missing:
+                found.add(v)
+    if found:
+        out = dict(type_map)
+        out.update({b: b for b in found})
+        return out
+    return type_map
+
+
 def _hemisphere_codes(frame):
     """Hemisphere codes per the coana rules (vectorized mirror of
     ``_normalize_hemisphere_series`` + the instance-suffix fallback)."""
@@ -1152,9 +1310,11 @@ def _clean_nt(value):
     if isinstance(value, float) and value != value:   # NaN
         return None
     text = str(value).strip()
-    if not text or text.lower() in ('nan', 'none'):
+    if not text or text.lower() in ('nan', 'none', '<na>', 'null'):
         return None
-    return text
+    from utils.label_utils import canonical_neurotransmitter
+    canon = canonical_neurotransmitter(text)
+    return canon or None
 
 
 def _pair_nt_lookup(run_dir):
@@ -1248,6 +1408,7 @@ def compute_type_level_refill(
     path_mode: Optional[str] = None,
     edge_lf=None,
     hemi_filter: str = 'both',
+    label_convention: str = 'given',
 ) -> dict:
     """Compute (and by default write) the type-level refill records for
     one FindAllPath ('all' mode) run folder — BOTH refill kinds (DUAL
@@ -1428,6 +1589,15 @@ def compute_type_level_refill(
         if write:
             _write_records(run_dir, out_dir, rec, None, None, detail_cap)
         return rec
+    # P0-D: the run's exported convention includes bodyId fallbacks for
+    # bodies the neuron table does not know. Add those identities before
+    # node_set is built; otherwise their pairs re-derive as 0.
+    _involved_for_fallback = {p for pair in emitted for p in pair}
+    type_map = _involved_bodyid_fallbacks(
+        type_map, _involved_for_fallback, edges=edges, edge_lf=edge_lf)
+    rec['label_convention'] = label_convention
+    rec['type_map_size'] = len(type_map or {})
+    rec['type_map_sha'] = _mapping_digest(type_map)
     # Non-bitten ratio runs (applied == asked): the second round runs at
     # the asked tier and recovers mass 0 — the status says
     # 'complete_at_asked' so consumers know the complete table is the
@@ -1501,9 +1671,9 @@ def compute_type_level_refill(
             u_s, v_s = str(u), str(v)
             wf = float(w)
             body_in[u_s] += wf
-            type_in[type_map.get(v_s, f'~{v}')] += wf
+            type_in[type_map.get(v_s, v_s)] += wf
             if _min_syn_active and wf >= _min_syn:
-                type_in_adj[type_map.get(v_s, f'~{v}')] += wf
+                type_in_adj[type_map.get(v_s, v_s)] += wf
             if ratio_mode:
                 if wf >= 1:
                     # RATIO-MODE FLOOR (2026-10-07): the run itself forces
@@ -1561,7 +1731,7 @@ def compute_type_level_refill(
             # and (v, w) sorts on v first, so anchoring cannot reorder
             # the canonical iteration.
             pair_edges_full.setdefault(
-                (type_map.get(u, '~' + u), type_map.get(v, '~' + v)),
+                (type_map.get(u, u), type_map.get(v, v)),
                 {}).setdefault(u, []).append((v, anchor_full((u, v))))
         if chain_keys is None:
             # no-asked-refill branch: the emitted paths ARE the chains
@@ -1764,6 +1934,10 @@ def compute_type_level_refill(
                             .filter(pl.col('_thr') >= float(and_ratio_tier)))
             if exclude_autapses:
                 base = base.filter(pl.col('u') != pl.col('v'))
+            # edge_lf is lazy; the builder's subsequent joins/height checks
+            # are eager, and the full-floor table is not on the hot path.
+            if isinstance(base, pl.LazyFrame):
+                base = base.collect()
             if base.height == 0:
                 return [], {'status': 'empty',
                             'scope': 'full_floor_type_reachable',
@@ -1869,6 +2043,38 @@ def compute_type_level_refill(
             full_floor_block = {'status': 'failed',
                                 'error': repr(exc),
                                 'traceback': traceback.format_exc()[-2000:]}
+        # FLOOR-SPECIFIC CHAIN TABLE (issue 2026-10-22 refill §3): the
+        # chain-scoped full table above is at synapse >= 1; a reader needs
+        # the same chains re-valued at the ASKED floor with adjusted ratios.
+        full_floor_paths = []
+        try:
+            pair_edges_asked = {}
+            for u, v, _w in e_u:
+                a, b = type_map.get(u), type_map.get(v)
+                if a is None or b is None:
+                    continue
+                pair_edges_asked.setdefault((a, b), {}).setdefault(
+                    u, []).append((v, anchor_full((u, v))))
+            _seq_cls_asked = {}
+            _seq_nodes_asked = {}
+            for chain in sorted(seq_cls_full):
+                dp = _layered_chain_structures(
+                    chain, pair_edges_asked, sources, targets, type_map,
+                    set())
+                if dp is None:
+                    continue
+                _seq_cls_asked[chain] = dp['edges_cls_at']
+                _seq_nodes_asked[chain] = dp['nodes_at']
+            if _seq_cls_asked:
+                full_floor_paths, _ = _complete_rows_from_structures(
+                    _seq_cls_asked, _seq_nodes_asked, type_n_full, type_in,
+                    type_in_adj=type_in_adj_eff)
+            full_floor_block['paths'] = len(full_floor_paths)
+            full_floor_block['paths_scope'] = (
+                'emitted chains re-valued at the asked floor')
+        except Exception as exc:  # noqa: BLE001 - additive export
+            full_floor_block['paths'] = 0
+            full_floor_block['paths_error'] = repr(exc)
         block = {
             'status': 'ok',   # layered per-position filter (chain-scoped)
             'refill_star': True,
@@ -2012,6 +2218,12 @@ def compute_type_level_refill(
                     columns=list(_FULL_FLOOR_TYPE_COLUMNS)).to_csv(
                     full_dir / 'refill_full_floor_type_pairs.csv',
                     index=False)
+            if full_floor_paths:
+                pd.DataFrame(
+                    full_floor_paths,
+                    columns=list(_FULL_COMPLETE_PATHS_COLUMNS)).to_csv(
+                    full_dir / 'refill_full_floor_paths_type.csv',
+                    index=False)
             # The >=threshold incoming per type (the Adj. ratios'
             # conditioned denominator at the asked tier) — exported so the
             # report computes CHAIN-derived adjusted ratios (realized hop
@@ -2048,6 +2260,12 @@ def compute_type_level_refill(
                         full_floor_rows,
                         columns=list(_FULL_FLOOR_TYPE_COLUMNS)).to_csv(
                         mirror / 'refill_full_floor_type_pairs.csv',
+                        index=False)
+                if full_floor_paths:
+                    pd.DataFrame(
+                        full_floor_paths,
+                        columns=list(_FULL_COMPLETE_PATHS_COLUMNS)).to_csv(
+                        mirror / 'refill_full_floor_paths_type.csv',
                         index=False)
         # P0-E: a full-scope export without its guard reference is
         # USABLE-BUT-UNVERIFIED, not silently "ok". The typed lane reads

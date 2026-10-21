@@ -2013,6 +2013,11 @@ def test_type_pruned_manifest_records_filter_and_label_parity(tmp_path):
     assert manifest["enrollment"]["sources"] == "types"
     assert manifest["requested_floor"] == 1
     assert manifest["typed_lane_floor"] == 1
+    assert manifest["type_pruned_floor"] == 1
+    assert manifest["complete_tau"] is None  # direct mode has no run tau
+    assert manifest["mass_source"] == "lossless_cone"
+    assert manifest["mass_before_source"] == (
+        "lossless_discovery_cone_pair_mass")
     prov = json.loads((tmp_path / "out" / "route_provenance.json").read_text())
     assert prov["type_map_sha"] == manifest["type_map_sha"]
     assert prov["type_map_size"] == 3
@@ -2090,7 +2095,7 @@ def test_typed_knobs_round_trip_from_parameters_txt(tmp_path):
         encoding="utf-8")
     assert run_lane(run, connections_path=root / "connections.parquet",
                     neuron_table=root / "neurons.parquet")
-    lane = run / "route_scope_paths"
+    lane = run / "route_scope_paths_type_pruned"
     rows = pl.read_csv(lane / "route_paths_type.csv")
     manifest = json.loads((lane / "type_prune_manifest.json").read_text())
     assert set(rows["path"]) == {"A->B->C"}
@@ -2129,7 +2134,7 @@ def test_typed_lane_honors_exclude_autapses(tmp_path):
                         type_pruned=True, type_prune_basis="synapse",
                         type_min_synapse=1, type_min_ratio_adj=0.0,
                         type_revisit_policy="bounded")
-        lane = run / "route_scope_paths"
+        lane = run / "route_scope_paths_type_pruned"
         pairs = pl.read_csv(lane / "route_type_pairs_pruned.csv")
         aa = pairs.filter((pl.col("type_pre") == "A")
                           & (pl.col("type_post") == "A"))
@@ -2149,3 +2154,118 @@ def test_typed_lane_honors_exclude_autapses(tmp_path):
     assert both == 2
     assert "A->A->B->C" in paths2
     assert manifest2["exclude_autapses"] is False
+
+
+def test_type_prune_completeness_includes_unresolved_ratios():
+    """Issue 2026-10-22 §2.2: a run with an unresolved conditioned
+    denominator cannot be labelled complete, even when every walk was
+    validated. `filtered_weak` is deliberate and stays complete."""
+    from route_plan import _type_prune_completeness
+
+    ok = _type_prune_completeness(
+        enum_capped=False, time_capped=False, unverified=0,
+        realization_missing=0, validation_truncated=0,
+        ratio_unresolved=0)
+    assert ok == (True, True, "exhausted")
+    bad = _type_prune_completeness(
+        enum_capped=False, time_capped=False, unverified=0,
+        realization_missing=0, validation_truncated=0,
+        ratio_unresolved=3)
+    assert bad == (False, False, "ratio_unresolved")
+    capped = _type_prune_completeness(
+        enum_capped=True, time_capped=False, unverified=0,
+        realization_missing=0, validation_truncated=0,
+        ratio_unresolved=0)
+    assert capped[0] is False and capped[1] is True
+
+
+def test_type_pruned_label_mapper_witness_is_real(tmp_path):
+    """Issue 2026-10-22 §2.3: the recorded mapping file is hashed, never
+    the empty-map MD5 (`99914b932bd3`)."""
+    import hashlib
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    map_path = tmp_path / "map.json"
+    base_map = {
+        "format": "drocat_custom_groups/v1",
+        "source_mapping": {"custom_label": [], "synth": []},
+        "target_mapping": {"custom_label": [], "synth": []},
+    }
+    map_path.write_text(json.dumps(base_map), encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "dataset:                    synth\n"
+        f"custom mapping file:        {map_path}\n",
+        encoding="utf-8")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    type_pruned=True, type_prune_basis="synapse",
+                    type_min_synapse=1, type_min_ratio_adj=0.0)
+    prov = json.loads((run / "route_scope_paths_type_pruned"
+                       / "route_provenance.json").read_text())
+    assert prov["label_mapper_source"] == f"file:{map_path}"
+    assert prov["label_mapper_sha"] == hashlib.md5(
+        map_path.read_bytes()).hexdigest()[:12]
+    assert prov["label_mapper_sha"] != "99914b932bd3"
+
+    # a changed mapping file changes the witness
+    base_map["groups_meta"] = {"rev": 2}
+    map_path.write_text(json.dumps(base_map), encoding="utf-8")
+    run2 = tmp_path / "run2"
+    run2.mkdir()
+    (run2 / "parameters.txt").write_text(
+        (run / "parameters.txt").read_text(), encoding="utf-8")
+    assert run_lane(run2, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    type_pruned=True, type_prune_basis="synapse",
+                    type_min_synapse=1, type_min_ratio_adj=0.0)
+    prov2 = json.loads((run2 / "route_scope_paths_type_pruned"
+                        / "route_provenance.json").read_text())
+    assert prov2["label_mapper_sha"] != prov["label_mapper_sha"]
+
+
+def test_type_pruned_nt_is_canonical_lowercase(tmp_path):
+    """Issue 2026-10-22 §2.4: FAFB `ACH` exports as `acetylcholine`."""
+    import pandas as pd
+    root = tmp_path / "nt_ds"
+    root.mkdir()
+    pl.DataFrame({"bodyId_pre": ["a1", "b1"],
+                  "bodyId_post": ["b1", "c1"],
+                  "weight": [100, 80]}).write_parquet(
+        root / "connections.parquet")
+    pd.DataFrame({
+        "bodyId": ["a1", "b1", "c1"],
+        "type": ["A", "B", "C"],
+        "nt_type": ["ACH", "GLUT", "GABA"],
+    }).to_parquet(root / "neurons.parquet", index=False)
+    out = tmp_path / "out"
+    assert run_lane(None, asked=1, max_interlayer=2,
+                    source_types=["A"], target_types=["C"],
+                    connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet", out_dir=out,
+                    type_pruned=True, type_prune_basis="synapse",
+                    type_min_synapse=1, type_min_ratio_adj=0.0)
+    row = pl.read_csv(out / "route_paths_type.csv").row(0, named=True)
+    assert json.loads(row["nt_types"]) == ["acetylcholine", "glutamate"]
+    from utils.label_utils import canonical_neurotransmitter
+    assert canonical_neurotransmitter("ACH") == "acetylcholine"
+    assert canonical_neurotransmitter("GABA") == "gaba"
+
+
+def test_type_pruned_synapse_basis_defaults_to_the_asked_floor(tmp_path):
+    """Issue 2026-10-22 §2.4: an unset pair mass floor on the synapse basis
+    is the run's asked floor (3), never the old hard-coded 1."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(
+        root, tmp_path / "out", asked=3, type_min_synapse=0,
+        type_min_ratio_adj=0.0)
+    assert manifest["min_synapse"] == 3
+    assert rows.height == 1

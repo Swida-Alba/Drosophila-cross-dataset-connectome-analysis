@@ -322,6 +322,15 @@ class ComparisonParameters:
     type_max_type_visits: int = 0
     """Bounded-revisit cap per type; 0 = the hop bound (complete)."""
 
+    type_revisit_policy: str = "bounded"
+    """bounded (complete revisit set for the hop bound) | simple."""
+
+    type_walk_cap: int = 2_000_000
+    """Disclosed cap on the complete type-walk enumeration."""
+
+    type_validate_work_cap: int = 2_000_000
+    """Per-walk bodyId validation work cap."""
+
     max_paths_bodyid: Optional[int] = None
     """Path budget for the StrongestFirst enumerator (the default
     pathfinding): enumeration emits intact paths strongest-first and stops
@@ -2132,6 +2141,9 @@ class ComparisonParameters:
             'type_min_synapse': self.type_min_synapse,
             'type_min_wmax': self.type_min_wmax,
             'type_max_type_visits': self.type_max_type_visits,
+            'type_revisit_policy': self.type_revisit_policy,
+            'type_walk_cap': self.type_walk_cap,
+            'type_validate_work_cap': self.type_validate_work_cap,
             'replay_paths': self.replay_paths,
             # F7: auto-extend collapsed thresholds (k x tau_ref, capped at
             # 2x the max asked threshold) after the run reveals a collapse.
@@ -2419,6 +2431,9 @@ class ComparisonParameters:
             type_min_synapse=data.get('type_min_synapse', 0),
             type_min_wmax=data.get('type_min_wmax', 0),
             type_max_type_visits=data.get('type_max_type_visits', 0),
+            type_revisit_policy=data.get('type_revisit_policy', 'bounded'),
+            type_walk_cap=data.get('type_walk_cap', 2_000_000),
+            type_validate_work_cap=data.get('type_validate_work_cap', 2_000_000),
             replay_paths=data.get('replay_paths', True),
             auto_extend_thresholds=data.get('auto_extend_thresholds', False),
             capture_density=data.get('capture_density', False),

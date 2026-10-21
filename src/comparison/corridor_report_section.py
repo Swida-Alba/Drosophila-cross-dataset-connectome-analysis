@@ -32,14 +32,18 @@ def _load_lane(analyzer, dataset_name: str, threshold):
             dataset_name, threshold))
     except Exception:
         return None
-    prov_file = base / "route_scope_paths" / "route_provenance.json"
-    if not prov_file.exists():
-        return None
-    try:
-        prov = json.loads(prov_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return {"prov": prov, "base": base}
+    # Issue 2026-10-22 §2.1: the typed lane owns its own namespace. Prefer
+    # it when present, then fall back to the Fast lane; a run can have both.
+    for lane_dir in ("route_scope_paths_type_pruned", "route_scope_paths"):
+        prov_file = base / lane_dir / "route_provenance.json"
+        if not prov_file.exists():
+            continue
+        try:
+            prov = json.loads(prov_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        return {"prov": prov, "base": base, "lane_dir": lane_dir}
+    return None
 
 
 def _walk_key(analyzer, dataset_name: str, path_str: str):
@@ -97,7 +101,8 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
         '<p>The type graph is pruned coarsely, EVERY type walk over the '
         'pruned graph is enumerated, each is validated at bodyId level, '
         'and only realized paths clearing the exact <code>min_ratio_adj</code> '
-        'gate are exported (<code>route_scope_paths/</code> per run folder; '
+        'gate are exported (<code>route_scope_paths_type_pruned/</code> '
+        'per run folder; '
         'never merged into the compared paths). The lane is single-floor and '
         'its <code>type_pruned_complete</code> is separate from the Complete '
         'lane\'s <code>paths_complete</code>. Datasets without lane '
@@ -167,7 +172,8 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
                      '<th>Candidate walks</th><th>Validated</th>'
                      '<th>Phantoms</th><th>Unverified</th>'
                      '<th>Weak-filtered</th><th>Exported</th>'
-                     '<th>type_pruned_complete</th><th>Stop</th>'
+                     '<th>type_pruned_complete</th>'
+                     '<th>filter_complete</th><th>Stop</th>'
                      '</tr></thead><tbody>')
         for nick, t, block, complete in typed_rows:
             pair_txt = (f"{block.get('pairs_before', '—')} → "
@@ -185,6 +191,7 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
                 f'<td>{block.get("filtered_weak", "—")}</td>'
                 f'<td>{block.get("accepted_paths", "—")}</td>'
                 f'<td>{complete}</td>'
+                f'<td>{block.get("filter_complete", "—")}</td>'
                 f'<td>{html.escape(str(block.get("completeness_reason", "—")))}'
                 f'</td></tr>')
         parts.append('</tbody></table></div>')
@@ -195,7 +202,7 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
     per_ds_walks = {}
     tau_by_key = {}
     for ds, (_t, lane) in lanes.items():
-        csv = lane["base"] / "route_scope_paths" / "route_paths_type.csv"
+        csv = lane["base"] / lane["lane_dir"] / "route_paths_type.csv"
         keys = set()
         try:
             import polars as pl

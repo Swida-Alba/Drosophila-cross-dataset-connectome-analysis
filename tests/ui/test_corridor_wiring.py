@@ -169,14 +169,17 @@ def test_hook_isolation_in_coana_source():
     # work (§3b tier 1); the lane runs in a subprocess with a hard budget
     # (in-process GC pressure made the bound-5 lane pathological)
     hook = src[src.index("def _maybe_generate_corridor_deep_dive"):]
-    body = hook[:hook.index("def ", 10)]
+    # stop at the next TOP-LEVEL method (a nested helper is indented deeper)
+    body = hook[:hook.index("\n    def ", 10)]
     # the mode gate (resolved through _resolved_run_mode since the
     # run_mode stamping landed) still precedes any import/subprocess work
     assert body.index("_resolved_run_mode()") < body.index("import subprocess")
     # The typed lane is a separate gate: it runs alongside Complete at the
-    # run's own bound, so the mode test is conditional on `not typed`.
-    assert "mode not in ('auto', 'both'):" in body
-    assert "not typed" in body and "type_pruned" in body
+    # run's own bound, and both lanes get distinct subprocess namespaces.
+    assert "fast_selected = mode in ('auto', 'both')" in body
+    assert "if not fast_selected and not typed:" in body
+    assert "route_scope_paths_type_pruned" in body
+    assert "type_pruned" in body
     assert "_run_folder_is_replay_slice" in body  # §6 step 8 replay gate
     assert "except Exception as exc" in body  # contained failure (§3b tier 3)
     assert "TimeoutExpired" in body  # hard wall-clock budget
@@ -1066,3 +1069,183 @@ def test_corridor_section_names_the_typed_lane(tmp_path):
     assert "phantoms" in html.lower()
     # the separate completeness claim is printed, not conflated
     assert "paths_complete" in html
+
+
+def test_fast_and_typed_lanes_get_separate_folders(tmp_path, monkeypatch):
+    """Issue 2026-10-22 §2.1: selecting both lanes runs two subprocesses
+    into two distinct namespaces; neither can overwrite the other."""
+    import subprocess
+    inst = _make_cache_only_fnc()
+    inst.corridor_mode = "both"
+    inst.type_pruned = True
+    inst.max_interlayer = 3
+    inst.allpath_folder = str(tmp_path)
+    (tmp_path / "parameters.txt").write_text("max interlayer: 3\n")
+    calls = []
+
+    def _spy(cmd, **kw):
+        calls.append(cmd)
+        return type("_P", (), {"returncode": 0, "stdout": "",
+                               "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+    assert inst._maybe_generate_corridor_deep_dive() is False
+    assert len(calls) == 2, calls
+    fast = next(c for c in calls if "--type-pruned" not in c)
+    typed = next(c for c in calls if "--type-pruned" in c)
+    # Fast keeps its default namespace; typed gets an explicit distinct one
+    assert "--out" not in fast
+    assert typed[typed.index("--out") + 1] == str(
+        tmp_path / "route_scope_paths_type_pruned")
+
+
+def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
+    lane = run / name
+    lane.mkdir(parents=True, exist_ok=True)
+    src_prov = run / 'route_scope_paths' / 'route_provenance.json'
+    prov = (json.loads(src_prov.read_text())
+            if src_prov.exists() else {
+                'status': 'complete', 'asked': 1, 'validated_walks': 7,
+                'scope_pairs': 2, 'bodyId_paths': 56, 'runtime_s': 1.0,
+                'time_capped': False, 'weight_basis': 'synapse',
+                'run_mode': 'fast'})
+    prov['type_prune'] = {
+        'mode': 'type_pruned_complete', 'basis': 'ratio_adj',
+        'min_ratio_adj': 0.01, 'pairs_before': 20, 'pairs_after': 8,
+        'candidate_walks': 12, 'validated_walks': 10, 'phantoms': 2,
+        'unverified': 0, 'filtered_weak': 3, 'accepted_paths': 7,
+        'type_pruned_complete': True, 'filter_complete': True,
+        'completeness_reason': 'exhausted', 'mass_source': 'lossless_cone',
+        'revisit_policy': 'bounded', 'max_type_visits': 4,
+        'type_pruned_floor': 3, 'complete_tau': 8}
+    prov['type_pruned_complete'] = True
+    (lane / 'route_provenance.json').write_text(
+        json.dumps(prov), encoding='utf-8')
+    (lane / 'type_prune_manifest.json').write_text(
+        json.dumps(prov['type_prune']), encoding='utf-8')
+    src = run / 'route_scope_paths' / 'route_paths_type.csv'
+    if src.exists():
+        (lane / 'route_paths_type.csv').write_text(
+            src.read_text(encoding='utf-8'), encoding='utf-8')
+    else:
+        (lane / 'route_paths_type.csv').write_text(
+            'path,weights,ratios,ratios_adj,min_weight,min_ratio,'
+            'min_ratio_adj,length,nt_types,coverage\n'
+            'A->B,"[10]","[0.5]","[0.5]",10,0.5,0.5,1,"[]",'
+            '"[1/1, 1/1]"\n', encoding='utf-8')
+    return lane
+
+
+def test_pair_report_reads_the_typed_namespace(tmp_path):
+    """Issue 2026-10-22 §2.1: a typed folder is read explicitly; a run with
+    both lanes keeps the Fast tables untouched and shows both cards."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / 'src'))
+    import paths_pair_report as ppr
+
+    run = _lane_only_run(tmp_path)
+    fast_csv = run / 'route_scope_paths' / 'route_paths_type.csv'
+    before = fast_csv.read_bytes()
+    _write_typed_lane(run)
+    report = ppr.generate_paths_pair_report(run, log=None)
+    text = Path(report).read_text(encoding='utf-8')
+    assert 'Type-pruned complete lane' in text
+    assert 'Fast mode (corridor)' in text
+    assert 'type_pruned_complete' in text
+    assert 'filter_complete' in text
+    assert fast_csv.read_bytes() == before
+
+    # typed-only: the lane unit falls through to the typed namespace
+    typed_only = tmp_path / 'typed_only'
+    typed_only.mkdir()
+    (typed_only / 'parameters.txt').write_text(
+        "dataset: male-cns:v1.0\nMin Synapse Count: 1\n"
+        "run mode: fast\npath_mode: all\n", encoding='utf-8')
+    _write_typed_lane(typed_only)
+    report2 = ppr.generate_paths_pair_report(typed_only, log=None)
+    text2 = Path(report2).read_text(encoding='utf-8')
+    assert 'Type-pruned complete lane' in text2
+
+
+def test_comparison_corridor_section_reads_typed_namespace(tmp_path):
+    """Issue 2026-10-22 §2.1: the comparison report reads the typed folder,
+    not the Fast one, when both exist."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from comparison.corridor_report_section import generate_corridor_section
+
+    run = _lane_only_run(tmp_path)
+    _write_typed_lane(run)
+
+    class _Params:
+        def get_dataset_output_path(self, ds, t):
+            return str(run)
+
+    class _Analyzer:
+        def __init__(self):
+            self.parameters = _Params()
+
+        def _get_canonical_type(self, t, ds):
+            return t
+
+    html = generate_corridor_section(_Analyzer(), ["ds_a"], [1], {})
+    assert "Type-pruned complete lane" in html
+    assert "type_pruned_complete" in html
+    # the typed manifest's pair counts, not the Fast provenance's
+    assert "20" in html and "8" in html
+
+
+def test_refill_status_is_stamped_in_all_attributes(tmp_path):
+    """Issue 2026-10-22 (refill §3): ok/refused/unavailable is visible in
+    the run manifest, not only in the refill sidecar."""
+    inst = _make_cache_only_fnc()
+    (tmp_path / 'all_attributes.json').write_text(
+        json.dumps({'dataset': 'ds'}), encoding='utf-8')
+    inst._stamp_refill_attributes(str(tmp_path), {
+        'status': 'refilled',
+        'label_convention': 'native',
+        'type_map_sha': 'abc123',
+        'type_map_size': 10,
+        'full': {'status': 'ok', 'refill_status': 'ok',
+                 'cache_guard': 'ok_bodyid',
+                 'full_floor': {'status': 'ok', 'rows': 7,
+                                'asked': 3, 'bound': 4}}})
+    attrs = json.loads((tmp_path / 'all_attributes.json').read_text())
+    block = attrs['type_level_refill']
+    assert block['status'] == 'refilled'
+    assert block['label_convention'] == 'native'
+    assert block['refill_status'] == 'ok'
+    assert block['cache_guard'] == 'ok_bodyid'
+    assert block['full_floor']['rows'] == 7
+
+
+def test_comparison_parameters_accepts_the_typed_payload():
+    """The Cross-dataset tab splats ``run_mode.payload()`` into
+    ComparisonParameters; every typed key must be a real field and round-trip."""
+    from comparison.comparison_parameters import ComparisonParameters
+    p = ComparisonParameters(
+        datasets=['hemibrain:v1.2.1'],
+        type_pruned=True,
+        type_prune_basis='ratio_adj',
+        type_prune_scope='full_floor',
+        type_min_ratio_adj=0.02,
+        type_min_synapse=3,
+        type_min_wmax=1,
+        type_max_type_visits=0,
+        type_revisit_policy='bounded',
+        type_walk_cap=1234,
+        type_validate_work_cap=5678,
+    )
+    d = p.to_dict()
+    for key, value in (
+            ('type_pruned', True),
+            ('type_prune_scope', 'full_floor'),
+            ('type_revisit_policy', 'bounded'),
+            ('type_walk_cap', 1234),
+            ('type_validate_work_cap', 5678)):
+        assert d[key] == value, key
+    restored = ComparisonParameters.from_dict(d)
+    assert restored.type_pruned is True
+    assert restored.type_walk_cap == 1234
+    assert restored.type_validate_work_cap == 5678
+    assert restored.type_revisit_policy == 'bounded'
