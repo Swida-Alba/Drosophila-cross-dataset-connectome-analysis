@@ -509,11 +509,98 @@ class TestSkeletonVectorCacheV2:
         assert meta["spatial_midline_x"] == 123456.5
         assert meta["spatial_midline_source"] == "override"
         assert meta["spatial_reflect_side"] == "right"
+        # The override meta is schema-current, so a later instance can load
+        # it without a spurious rebuild.
+        assert meta["version"] == cache._cache_version()
+        assert meta["lateral_normalize"] is True
+        assert cache._is_stale() is False
+        same = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False,
+            midline_x=123456.5, reflect_side="right")
+        assert same._is_stale() is False
+        changed = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False,
+            midline_x=123456.6, reflect_side="right")
+        assert changed._is_stale() is True
         # A later instance reads the persisted plane, not the sample.
         again = morph.SkeletonVectorCacheV2(
             "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False)
         assert again.spatial_midline() == 123456.5
         assert again._midline_source == "override"
+
+    def test_midline_override_wins_over_persisted_sample(self, tmp_path):
+        cache = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False)
+        cache.meta_path.parent.mkdir(parents=True, exist_ok=True)
+        cache.meta_path.write_text(json.dumps({
+            "version": cache._cache_version(),
+            "lateral_normalize": True,
+            "spatial_midline_x": 100.0,
+            "spatial_midline_source": "side",
+            "spatial_reflect_side": "left",
+            "spatial_midline_left": 50.0,
+            "spatial_midline_right": 150.0,
+            "spatial_midline_n_left": 10,
+            "spatial_midline_n_right": 10,
+        }))
+        over = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False,
+            midline_x=123.0, reflect_side="right")
+        assert over.spatial_midline() == 123.0
+        assert over.spatial_reflect_side() == "right"
+        meta = over._load_meta()
+        assert meta["spatial_midline_source"] == "override"
+        # Sample diagnostics describe the old plane; drop them.
+        assert "spatial_midline_left" not in meta
+        assert over._is_stale() is False
+
+    def test_override_change_invalidates_persisted_rows(self, tmp_path):
+        cache = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False)
+        cache.meta_path.parent.mkdir(parents=True, exist_ok=True)
+        cache.meta_path.write_text(json.dumps({
+            "version": cache._cache_version(),
+            "lateral_normalize": True,
+            "spatial_midline_x": 100.0,
+            "spatial_midline_source": "override",
+            "spatial_reflect_side": "right",
+        }))
+        cache.parquet_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"bodyId": [1]}).to_parquet(cache.parquet_path)
+        changed = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False,
+            midline_x=200.0, reflect_side="right")
+        assert changed._is_stale() is True
+        assert changed.load() is None
+
+    def test_reflect_side_requires_a_midline(self, tmp_path):
+        with pytest.raises(ValueError, match="requires an explicit midline"):
+            morph.SkeletonVectorCacheV2(
+                "hemibrain:v1.2.1", project_root=str(tmp_path),
+                verbose=False, reflect_side="right")
+        with pytest.raises(ValueError, match="'left' or 'right'"):
+            morph.SkeletonVectorCacheV2(
+                "hemibrain:v1.2.1", project_root=str(tmp_path),
+                verbose=False, midline_x=100.0, reflect_side="middle")
+
+    def test_on_demand_vector_uses_the_explicit_reflect_side(
+        self, tmp_path, monkeypatch
+    ):
+        cache = morph.SkeletonVectorCacheV2(
+            "hemibrain:v1.2.1", project_root=str(tmp_path), verbose=False,
+            midline_x=100.0, reflect_side="right")
+        captured = {}
+
+        def fake_vectorize(neuron, bounds, **kwargs):
+            captured.update(kwargs)
+            return {}, np.zeros(morph.VECTOR_DIM)
+
+        monkeypatch.setattr(morph, "vectorize_neuron_v2", fake_vectorize)
+        monkeypatch.setattr(cache, "_reflect_flag", lambda bid: bid == 7)
+        cache._vectorize_neuron(object(), body_id=7)
+        assert captured["reflect"] is True
+        cache._vectorize_neuron(object(), body_id=8)
+        assert captured["reflect"] is False
 
 
 # ---------------------------------------------------------------------------

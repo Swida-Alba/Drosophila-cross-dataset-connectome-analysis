@@ -3261,7 +3261,7 @@ class SkeletonVectorCache:
         """Width of this cache's vectors (schema hook for the V2 cache)."""
         return VECTOR_DIM
 
-    def _vectorize_neuron(self, neuron):
+    def _vectorize_neuron(self, neuron, body_id=None):
         """Vector-schema hook: (feature dict, flat vector) for one neuron."""
         return vectorize_neuron(neuron)
 
@@ -3610,7 +3610,8 @@ class SkeletonVectorCache:
                             continue
                         if dataset_rep and row_rep != dataset_rep:
                             continue  # different representation: never mix
-                        _, vec = self._vectorize_neuron(neuron)
+                        _, vec = self._vectorize_neuron(neuron,
+                                                        body_id=bid)
                         # Persist the RAW row (that is what the parquet holds);
                         # hand back the row in the space this call promised.
                         computed.append((bid, vec, row_rep))
@@ -3747,10 +3748,24 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         # A known anatomical plane (e.g. the clock-population gap midline)
         # wins over the generic side estimate; it is persisted so later
         # reads and appends share it.
-        self._midline_override = (float(midline_x)
-                                  if midline_x is not None else None)
-        self._midline_reflect_override = (
-            reflect_side if reflect_side in ("left", "right") else None)
+        if reflect_side is not None and midline_x is None:
+            raise ValueError(
+                "reflect_side requires an explicit midline_x")
+        if midline_x is not None:
+            midline_value = float(midline_x)
+            if not np.isfinite(midline_value):
+                raise ValueError("midline_x must be finite")
+            self._midline_override = midline_value
+        else:
+            self._midline_override = None
+        if reflect_side is not None:
+            normalized_side = str(reflect_side).strip().lower()
+            if normalized_side not in ("left", "right"):
+                raise ValueError(
+                    "reflect_side must be 'left' or 'right'")
+            self._midline_reflect_override = normalized_side
+        else:
+            self._midline_reflect_override = None
 
     # ------------------------------------------------------- schema hooks
     @staticmethod
@@ -3788,12 +3803,16 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
     def _cache_version(self) -> int:
         return VECTOR_CACHE_V2_VERSION
 
-    def _vectorize_neuron(self, neuron):
+    def _vectorize_neuron(self, neuron, body_id=None):
         # Raw basis: vectorize the stored skeleton as-is (the caller's
-        # _file_level_ok gate keeps simplified files out).
+        # _file_level_ok gate keeps simplified files out). The explicit
+        # bodyId is required for the override reflect rule; without it the
+        # on-demand row would disagree with the build row for the same body.
+        reflect = (self._reflect_flag(body_id)
+                   if body_id is not None else None)
         return vectorize_neuron_v2(
             neuron, self.spatial_bounds(), lateral_normalize=True,
-            midline_x=self.spatial_midline())
+            midline_x=self.spatial_midline(), reflect=reflect)
 
     def _in_memory_vector_row(self, body_id, neuron):
         """V2 cache row for an in-memory (loader-resolved) tree.
@@ -3825,12 +3844,28 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
 
         True when rows exist whose meta lacks the current schema version or
         the lateral-normalization marker: such rows must be re-vectorized,
-        never mixed with newer ones."""
+        never mixed with newer ones. An explicit midline/reflect override
+        that differs from the persisted plane is stale too: the mirror
+        operation changes every lateral feature.
+        """
         meta = self._load_meta()
         if meta is None:
             return False   # nothing persisted: nothing to invalidate
-        return (int(meta.get("version") or 0) != self._cache_version()
-                or meta.get("lateral_normalize") is not True)
+        if (int(meta.get("version") or 0) != self._cache_version()
+                or meta.get("lateral_normalize") is not True):
+            return True
+        if self._midline_override is not None:
+            try:
+                stored = float(meta.get("spatial_midline_x"))
+            except (TypeError, ValueError):
+                return True
+            if abs(stored - float(self._midline_override)) > 1e-9:
+                return True
+            if self._midline_reflect_override is not None:
+                stored_side = meta.get("spatial_reflect_side") or None
+                if self._midline_reflect_override != stored_side:
+                    return True
+        return False
 
     # ------------------------------------------------------ spatial bounds
     def _fafb_bundle_bounds(self, sample: int = 60
@@ -4019,13 +4054,31 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
         self._midline_resolved = True
         if self._midline_override is not None:
             self._spatial_midline = float(self._midline_override)
-            self._spatial_reflect_side = self._midline_reflect_override
-            self._midline_source = "override"
             meta = self._load_meta() or {}
+            # Keep the persisted side when the caller pins only the plane;
+            # an explicit side wins and is persisted with the plane.
+            if self._midline_reflect_override is not None:
+                self._spatial_reflect_side = self._midline_reflect_override
+            else:
+                self._spatial_reflect_side = (
+                    meta.get("spatial_reflect_side") or None)
+            self._midline_source = "override"
             meta["spatial_midline_x"] = float(self._spatial_midline)
             meta["spatial_midline_source"] = "override"
             if self._spatial_reflect_side is not None:
                 meta["spatial_reflect_side"] = self._spatial_reflect_side
+            else:
+                meta.pop("spatial_reflect_side", None)
+            # The old sample diagnostics describe a different plane.
+            for key in ("spatial_midline_left", "spatial_midline_right",
+                        "spatial_midline_n_left", "spatial_midline_n_right"):
+                meta.pop(key, None)
+            # Keep the override meta schema-current: an override written
+            # before the first build must not be treated as stale (and
+            # deleted by ensure()).
+            meta.setdefault("version", self._cache_version())
+            meta.setdefault("lateral_normalize", True)
+            meta.setdefault("dataset", self.dataset)
             try:
                 self.meta_path.parent.mkdir(parents=True, exist_ok=True)
                 self.meta_path.write_text(json.dumps(meta, indent=2),
@@ -6501,7 +6554,8 @@ class MorphologyComparer:
                     try:
                         if _neuron_rep(neuron) != "skeleton":
                             continue
-                        _, vec = cache._vectorize_neuron(neuron)
+                        _, vec = cache._vectorize_neuron(
+                            neuron, body_id=self._body_id(bid))
                         rows.append((self._body_id(bid), vec, "skeleton"))
                     except Exception:
                         continue
@@ -6983,7 +7037,8 @@ class MorphologyComparer:
             try:
                 # The cache's schema hook: V1's vectorize_neuron, or V2 with
                 # the population spatial bounds.
-                _, vec = cache._vectorize_neuron(neuron)
+                _, vec = cache._vectorize_neuron(
+                    neuron, body_id=self._body_id(bid))
                 rep = _neuron_rep(neuron)
                 if not q_rep or rep == q_rep:
                     fetched_vectors.append((self._body_id(bid), vec, rep))
@@ -7659,7 +7714,7 @@ class MorphologyComparer:
             if q_rep and rep != q_rep:
                 continue   # one representation per comparison
             try:
-                _, vec = cache._vectorize_neuron(neuron)
+                _, vec = cache._vectorize_neuron(neuron, body_id=bid)
             except Exception:
                 continue
             if not np.isfinite(vec).all():
