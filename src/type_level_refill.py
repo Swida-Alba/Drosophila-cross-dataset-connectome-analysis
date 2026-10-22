@@ -120,6 +120,21 @@ def _parse_int(raw: Optional[str]) -> Optional[int]:
         return None
 
 
+def _refill_status_label(cache_guard, full_floor_status) -> str:
+    """One label for the full-scope refill's guard + second-round result.
+
+    ``ok_bodyid`` is a CHECKED bodyId-first guard, so a failed full floor
+    must read ``unavailable_full_floor`` — never the misleading
+    ``unavailable_guard_not_checked``.
+    """
+    guard_ok = cache_guard in ('ok', 'ok_bodyid')
+    if not guard_ok:
+        return 'unavailable_guard_not_checked'
+    if full_floor_status != 'ok':
+        return 'unavailable_full_floor'
+    return 'ok'
+
+
 def read_run_provenance(run_dir) -> dict:
     """Parse the applied-threshold provenance from ``parameters.txt``.
 
@@ -2270,12 +2285,8 @@ def compute_type_level_refill(
         # P0-E: a full-scope export without its guard reference is
         # USABLE-BUT-UNVERIFIED, not silently "ok". The typed lane reads
         # this field and refuses a universe whose guard is absent.
-        block['refill_status'] = (
-            'ok' if block.get('cache_guard') in ('ok', 'ok_bodyid')
-            and full_floor_block.get('status') == 'ok'
-            else 'unavailable_guard_not_checked'
-            if block.get('cache_guard') != 'ok'
-            else 'unavailable_full_floor')
+        block['refill_status'] = _refill_status_label(
+            block.get('cache_guard'), full_floor_block.get('status'))
         return block
 
     if is_shortest:

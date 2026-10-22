@@ -2684,3 +2684,17 @@ def test_banc_style_guard_failure_is_unavailable_not_silent(tmp_path):
     assert full['refill_status'] == 'unavailable'
     assert 'ZZZ_FAKE' in full['error']
     assert not (out / 'refill_full_type_pairs.csv').exists()
+
+
+def test_refill_status_labels_a_checked_guard():
+    """ok_bodyid is a CHECKED guard: a failed full floor is not 'not checked'."""
+    from type_level_refill import _refill_status_label
+
+    assert _refill_status_label('ok', 'ok') == 'ok'
+    assert _refill_status_label('ok_bodyid', 'ok') == 'ok'
+    assert (_refill_status_label('ok_bodyid', 'unavailable')
+            == 'unavailable_full_floor')
+    assert (_refill_status_label('FAILED', 'ok')
+            == 'unavailable_guard_not_checked')
+    assert (_refill_status_label(None, 'ok')
+            == 'unavailable_guard_not_checked')
