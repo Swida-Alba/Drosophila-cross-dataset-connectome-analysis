@@ -1758,7 +1758,7 @@ def _enumerate_type_walks(pairs, sources, targets, bound, *,
 
 def _type_prune_completeness(*, enum_capped, time_capped, unverified,
                               realization_missing, validation_truncated,
-                              ratio_unresolved):
+                              ratio_unresolved, realization_truncated=0):
     """The typed lane's completeness contract (issue 2026-10-22 §2.2).
 
     Complete means the pruned graph was exhausted and every candidate got
@@ -1766,7 +1766,8 @@ def _type_prune_completeness(*, enum_capped, time_capped, unverified,
     ratio for the exact filter. `filtered_weak` is the deliberate exact
     gate and does not break completeness; an unresolved ratio does.
     Returns (complete, filter_complete, reason)."""
-    filter_complete = ratio_unresolved == 0
+    filter_complete = (ratio_unresolved == 0
+                       and realization_truncated == 0)
     if enum_capped:
         return False, filter_complete, "type_walk_cap"
     if time_capped:
@@ -1779,6 +1780,10 @@ def _type_prune_completeness(*, enum_capped, time_capped, unverified,
         return False, filter_complete, "validation_work_cap"
     if realization_missing:
         return False, filter_complete, "realization_missing"
+    if realization_truncated:
+        # A label-revisiting walk's body-simple sample hit its envelope; a
+        # path outside the sample could still clear the exact gate.
+        return False, filter_complete, "realization_envelope"
     if not filter_complete:
         return False, filter_complete, "ratio_unresolved"
     return True, True, "exhausted"
@@ -1897,6 +1902,37 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
                 break
         if not paths:
             return None
+        # Body-simple gate for label-revisiting walks. The layered chain
+        # reference below is a superset: a body may occupy two positions,
+        # so its union mass can clear the gate while no single body-simple
+        # path clears it. Use the best sampled body-simple realization for
+        # the gate; the row keeps the chain-level masses as its disclosed
+        # support readout.
+        hop_edge_mass = [dict() for _ in range(h)]
+        for i in range(h):
+            for u, v, w in pair_rows[i]:
+                hop_edge_mass[i][(u, v)] = _edge_mass(u, v, w)
+        body_simple_gate = None
+        if multi_visit:
+            _candidates = []
+            for p in paths:
+                raw = [n.split("\x1f")[0] for n in p]
+                masses = [hop_edge_mass[i].get((raw[i], raw[i + 1]))
+                          for i in range(h)]
+                if any(m is None for m in masses):
+                    continue
+                _ratios = []
+                for i, m in enumerate(masses):
+                    denom = type_incoming_adj.get(walk[i + 1], 0.0)
+                    if denom <= 0:
+                        _ratios = []
+                        break
+                    _ratios.append(m / denom)
+                if _ratios:
+                    _candidates.append(min(_ratios))
+            if _candidates:
+                body_simple_gate = max(_candidates)
+        realization_truncated = bool(multi_visit and len(paths) >= envelope)
         hop_edges = [dict() for _ in range(h)]
         node_seen = [set() for _ in range(h + 1)]
         body_rows_walk = []
@@ -1959,6 +1995,8 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
         nts = [type_nt.get(walk[i], "unknown") for i in range(h)]
         pair_weights = [pair_lookup.get((walk[i], walk[i + 1]), (None,))[0]
                         for i in range(h)]
+        gate_value = (body_simple_gate if multi_visit else
+                      (min(finite_adj) if finite_adj else None))
         row = {
             "path": "->".join(walk),
             "weights": "[" + ", ".join(_fmt_mass(m) for m in hop_mass) + "]",
@@ -1969,6 +2007,10 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
             "min_weight": (int(min(hop_mass)) if hop_mass else None),
             "min_ratio": min(ratios) if ratios else None,
             "min_ratio_adj": (min(finite_adj) if finite_adj else None),
+            "gate_min_ratio_adj": gate_value,
+            "exact_gate_basis": ("body_simple_sample" if multi_visit
+                                 else "layered_chain"),
+            "realization_sample_truncated": realization_truncated,
             "length": h,
             "nt_types": "[" + ", ".join(f'"{x}"' for x in nts) + "]",
             "coverage": "[" + ", ".join(cov) + "]",
@@ -1992,7 +2034,9 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
                 'None' if w is None else _fmt_mass(w)
                 for w in pair_weights) + "]",
             "ratio_adj_complete": (len(finite_adj) == len(ratios_adj)
-                                   and bool(ratios_adj)),
+                                   and bool(ratios_adj)
+                                   and (not multi_visit
+                                        or gate_value is not None)),
             "type_pruned": True,
         }
         return row, body_rows_walk, hop_edges
@@ -2001,6 +2045,7 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
     validated = phantoms = unverified = 0
     filtered_weak = ratio_unresolved = 0
     validation_truncated = realization_missing = 0
+    realization_truncated = 0
     accepted = bodyid_paths = chains_revisit = 0
     for walk in walks:
         if deadline is not None and time.monotonic() > deadline:
@@ -2045,19 +2090,24 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
                 _stat["realization_missing"] += 1
             continue
         row, walk_body_rows, hop_edges = got
-        if row["min_ratio_adj"] is None:
+        gate_value = row.get("gate_min_ratio_adj")
+        if gate_value is None:
             # The adjusted readout is incomplete whether or not an exact
             # gate is active. With a gate the row is dropped; without one
             # it is exported with ratio_adj_complete=false, and the run
             # cannot claim filter_complete.
             ratio_unresolved += 1
+            if row.get("realization_sample_truncated"):
+                realization_truncated += 1
             if _stat is not None:
                 _stat["ratio_unresolved"] += 1
             if min_ratio_adj > 0:
                 continue
         elif min_ratio_adj > 0 and float(
-                row["min_ratio_adj"]) <= float(min_ratio_adj):
+                gate_value) <= float(min_ratio_adj):
             filtered_weak += 1
+            if row.get("realization_sample_truncated"):
+                realization_truncated += 1
             if _stat is not None:
                 _stat["filtered_weak"] += 1
             continue
@@ -2091,6 +2141,8 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
         "type_self_edges": int((pairs["type_pre"]
                                 == pairs["type_post"]).sum()),
         "chains_revisit": chains_revisit,
+        "exact_gate_basis": ("body_simple_sample_for_revisits"
+                             if chains_revisit else "layered_chain"),
         "first_target_rule": ("exactly one target token, at the final "
                               "node; targets are not expanded"),
         "validated_walks": validated,
@@ -2098,6 +2150,7 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
         "unverified": unverified,
         "validation_truncated": validation_truncated,
         "realization_missing": realization_missing,
+        "realization_truncated": realization_truncated,
         "filtered_weak": filtered_weak,
         "ratio_unresolved": ratio_unresolved,
         "accepted_paths": accepted,
@@ -2121,7 +2174,8 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
             enum_capped=enum["capped"], time_capped=time_capped,
             unverified=unverified, realization_missing=realization_missing,
             validation_truncated=validation_truncated,
-            ratio_unresolved=ratio_unresolved)
+            ratio_unresolved=ratio_unresolved,
+            realization_truncated=realization_truncated)
     scope_complete = None
     scope_complete_by_pair = None
     scope_capped_pairs = []
@@ -4119,10 +4173,17 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     # the additive lane columns (per-path detail lives in the bodyId csv)
     walk_rows.sort(key=lambda r: (r["path"], r["route_h"],
                                   r["plan_rank"]))
+    for _row in walk_rows:
+        _row.setdefault("gate_min_ratio_adj", _row.get("min_ratio_adj"))
+        _row.setdefault("exact_gate_basis", "layered_chain")
+        _row.setdefault("realization_sample_truncated", False)
     type_schema = {"path": pl.Utf8, "weights": pl.Utf8, "ratios": pl.Utf8,
                    "ratios_adj": pl.Utf8,
                    "min_weight": pl.Int64, "min_ratio": pl.Float64,
                    "min_ratio_adj": pl.Float64,
+                   "gate_min_ratio_adj": pl.Float64,
+                   "exact_gate_basis": pl.Utf8,
+                   "realization_sample_truncated": pl.Boolean,
                    "length": pl.Int64, "nt_types": pl.Utf8,
                    "coverage": pl.Utf8, "applied_tau": pl.Float64,
                    "route_h": pl.Int64, "route_ub": pl.Float64,

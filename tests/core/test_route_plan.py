@@ -2033,6 +2033,35 @@ def test_type_pruned_bounded_revisit_is_enumerated(tmp_path):
     assert manifest_s["revisit_policy"] == "simple"
 
 
+def test_type_pruned_revisit_gate_is_body_simple(tmp_path):
+    """A label-revisiting walk must clear the exact gate through ONE
+    body-simple path, not through the layered union mass."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "a2", 100), ("a2", "c1", 1),
+        # The a1-returning route makes the layered A->C hop mass 101 and the
+        # layered gate 101/101; it is not body-simple and must not gate the walk.
+        ("b1", "a1", 100), ("a1", "c1", 100),
+    ]
+    types = {"a1": "A", "a2": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(
+        root, tmp_path / "out_gate", max_interlayer=3,
+        type_min_ratio_adj=0.01)
+    assert "A->B->A->C" not in set(rows["path"])
+    assert manifest["filtered_weak"] >= 1
+
+    rows0, _ = _run_typed(
+        root, tmp_path / "out_gate_zero", max_interlayer=3,
+        type_min_ratio_adj=0.0)
+    row = rows0.filter(pl.col("path") == "A->B->A->C").row(0, named=True)
+    # Chain masses carry the layered superset; the gate is the sampled
+    # body-simple a1->b1->a2->c1 (its C share is 1/101).
+    assert row["exact_gate_basis"] == "body_simple_sample"
+    assert row["realization_sample_truncated"] is False
+    assert abs(float(row["min_ratio_adj"]) - 1.0) < 1e-9
+    assert abs(float(row["gate_min_ratio_adj"]) - 1.0 / 101.0) < 1e-9
+
+
 def test_type_pruned_manifest_records_filter_and_label_parity(tmp_path):
     """P1-K/P2-S: the manifest carries the universe's scope, filters, label
     map digest and enrollment, so the walk set can be reproduced."""
