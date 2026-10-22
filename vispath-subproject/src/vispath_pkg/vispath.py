@@ -1369,6 +1369,251 @@ def mode_ignoring_blank(series):
     return valid.mode().iloc[0]
 
 
+EDGE_LEGEND_POSITIONS = ('bottom-left', 'bottom-right', 'top-left', 'top-right')
+
+
+def normalize_edge_legend(spec):
+    """Validate a caller-supplied edge-legend spec.
+
+    One group is ``{"title": str, "items": [{"label": str, "color": str,
+    "opacity": float, "line_style": "solid"|"dashed"|"dotted"}]}``.
+    Entries without a label and groups that end up empty are dropped,
+    opacity is clamped to 0–1 and an unknown line style falls back to
+    solid, so the page and the exported SVG always receive the same
+    structure.
+    """
+    groups = []
+    for group in (spec or []):
+        if not isinstance(group, dict):
+            continue
+        title = str(group.get('title') or '').strip()
+        items = []
+        for item in (group.get('items') or []):
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get('label') or '').strip()
+            if not label:
+                continue
+            try:
+                opacity = float(item.get('opacity', 1.0))
+            except (TypeError, ValueError):
+                opacity = 1.0
+            opacity = max(0.0, min(1.0, opacity))
+            line_style = str(item.get('line_style') or 'solid').lower()
+            if line_style not in ('solid', 'dashed', 'dotted'):
+                line_style = 'solid'
+            items.append({
+                'label': label,
+                'color': str(item.get('color') or '#333333'),
+                'opacity': opacity,
+                'line_style': line_style,
+            })
+        if items:
+            groups.append({'title': title, 'items': items})
+    return groups
+
+
+def normalize_edge_legend_position(position, default='bottom-left'):
+    """Clamp a legend anchor to one of the four canvas corners."""
+    position = str(position or default).strip().lower()
+    return position if position in EDGE_LEGEND_POSITIONS else default
+
+
+# Network-only legend builder.  Plain string on purpose: it is injected
+# into the network template only when a caller supplies a legend, so pages
+# without one keep their exact previous bytes (and the heatmap/Sankey
+# templates never carry this code).  The two placeholders are replaced
+# with JSON-safe literals.
+_NETWORK_EDGE_LEGEND_JS = r"""
+/* ===== Caller-supplied edge legend (network only) =====
+   Arrow samples drawn as plain SVG: a white card, one <line> + <polygon>
+   + <text> per item.  Every <text> carries font-family="Arial"
+   explicitly and opacity is written as stroke-/fill-opacity, so the
+   exported figure survives PowerPoint's Convert to Shape.  The same
+   builder feeds the on-page overlay, the network+legend SVG export and
+   the standalone legend download. */
+const edgeLegendSpec = __EDGE_LEGEND_SPEC__;
+const edgeLegendPosition = __EDGE_LEGEND_POSITION__;
+
+function edgeLegendEscape(text) {
+    return String(text == null ? '' : text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function normalizeEdgeLegend(spec) {
+    return (Array.isArray(spec) ? spec : []).map(function (group) {
+        const source = (group && Array.isArray(group.items)) ? group.items : [];
+        const items = source.map(function (item) {
+            const rawOpacity = (item && item.opacity != null) ? Number(item.opacity) : 1;
+            const style = String((item && item.line_style) || 'solid').toLowerCase();
+            return {
+                label: String((item && item.label != null) ? item.label : ''),
+                color: String((item && item.color) || '#333333'),
+                opacity: isFinite(rawOpacity) ? Math.max(0, Math.min(1, rawOpacity)) : 1,
+                lineStyle: (style === 'dashed' || style === 'dotted') ? style : 'solid'
+            };
+        }).filter(function (item) { return item.label !== ''; });
+        return {title: String((group && group.title) || ''), items: items};
+    }).filter(function (group) { return group.items.length > 0; });
+}
+
+let edgeLegendMeasureCtx = null;
+function edgeLegendTextWidth(text, size, weight) {
+    try {
+        if (!edgeLegendMeasureCtx) {
+            edgeLegendMeasureCtx = document.createElement('canvas').getContext('2d');
+        }
+        edgeLegendMeasureCtx.font = weight + ' ' + size + 'px Arial';
+        const width = edgeLegendMeasureCtx.measureText(String(text)).width;
+        if (isFinite(width) && width > 0) { return width; }
+    } catch (err) { /* no canvas context: use the character estimate below */ }
+    return String(text).length * size * 0.58;
+}
+
+function edgeLegendLayout(spec) {
+    const groups = normalizeEdgeLegend(spec);
+    const pad = 10, rowH = 20, titleH = 20, arrowW = 34, labelGap = 13;
+    const titleSize = 11, labelSize = 12;
+    let widest = 0, height = pad * 2;
+    groups.forEach(function (group) {
+        height += (group.title ? titleH : 0) + group.items.length * rowH;
+        if (group.title) {
+            widest = Math.max(widest,
+                edgeLegendTextWidth(group.title, titleSize, 'bold'));
+        }
+        group.items.forEach(function (item) {
+            widest = Math.max(widest,
+                edgeLegendTextWidth(item.label, labelSize, 'normal'));
+        });
+    });
+    const width = Math.ceil(Math.max(170, pad + arrowW + labelGap + widest + pad));
+    return {groups: groups, width: width, height: height, pad: pad, rowH: rowH,
+            titleH: titleH, arrowW: arrowW, labelGap: labelGap,
+            titleSize: titleSize, labelSize: labelSize};
+}
+
+function edgeLegendBody(spec) {
+    const L = edgeLegendLayout(spec);
+    const parts = [];
+    const x0 = L.pad;
+    parts.push('<g class="vp-edge-legend" data-vp-edge-legend="1" '
+        + 'font-family="Arial, Helvetica, sans-serif">');
+    parts.push('<rect x="0" y="0" width="' + L.width + '" height="' + L.height
+        + '" fill="#ffffff" fill-opacity="0.94" stroke="#cbd5e1" '
+        + 'stroke-width="1" rx="4"/>');
+    let y = L.pad;
+    L.groups.forEach(function (group) {
+        if (group.title) {
+            parts.push('<text x="' + x0 + '" y="' + (y + 13)
+                + '" font-family="Arial" font-size="' + L.titleSize
+                + '" font-weight="bold" fill="#334155">'
+                + edgeLegendEscape(group.title) + '</text>');
+            y += L.titleH;
+        }
+        group.items.forEach(function (item) {
+            const cy0 = y + L.rowH / 2;
+            const x1 = x0 + L.arrowW;
+            const dash = item.lineStyle === 'dashed'
+                ? ' stroke-dasharray="5 3"'
+                : (item.lineStyle === 'dotted' ? ' stroke-dasharray="1 3"' : '');
+            const color = edgeLegendEscape(item.color);
+            parts.push('<line x1="' + x0 + '" y1="' + cy0 + '" x2="' + x1
+                + '" y2="' + cy0 + '" stroke="' + color
+                + '" stroke-width="2.5" stroke-opacity="' + item.opacity + '"'
+                + dash + '/>');
+            parts.push('<polygon points="' + x1 + ',' + (cy0 - 4.5) + ' '
+                + (x1 + 9) + ',' + cy0 + ' ' + x1 + ',' + (cy0 + 4.5)
+                + '" fill="' + color + '" fill-opacity="' + item.opacity
+                + '"/>');
+            parts.push('<text x="' + (x1 + L.labelGap) + '" y="' + (cy0 + 4)
+                + '" font-family="Arial" font-size="' + L.labelSize
+                + '" fill="#111827">' + edgeLegendEscape(item.label)
+                + '</text>');
+            y += L.rowH;
+        });
+    });
+    parts.push('</g>');
+    return {svg: parts.join(''), width: L.width, height: L.height};
+}
+
+function standaloneEdgeLegendSvg(spec) {
+    const body = edgeLegendBody(spec);
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + body.width
+        + '" height="' + body.height + '" viewBox="0 0 ' + body.width + ' '
+        + body.height + '">' + body.svg + '</svg>';
+}
+
+function appendEdgeLegendToSvg(svgText, spec, position) {
+    const body = edgeLegendBody(spec);
+    const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+    const root = doc.documentElement;
+    if (!root || root.nodeName === 'parsererror') { return svgText; }
+    const vb = (root.getAttribute('viewBox') || '').trim()
+        .split(/[\s,]+/).map(Number);
+    const hasVb = vb.length === 4 && vb.every(isFinite);
+    const w = hasVb ? vb[2] : parseFloat(root.getAttribute('width') || '0');
+    const h = hasVb ? vb[3] : parseFloat(root.getAttribute('height') || '0');
+    const vx = hasVb ? vb[0] : 0;
+    const vy = hasVb ? vb[1] : 0;
+    if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) { return svgText; }
+    const pos = ['bottom-left', 'bottom-right', 'top-left', 'top-right']
+        .indexOf(position) >= 0 ? position : 'bottom-left';
+    const margin = 16;
+    let x = vx + margin;
+    let y = vy + margin;
+    if (pos.indexOf('right') >= 0) { x = vx + w - body.width - margin; }
+    if (pos.indexOf('bottom') >= 0) { y = vy + h - body.height - margin; }
+    if (x < vx + margin) { x = vx + margin; }
+    if (y < vy + margin) { y = vy + margin; }
+    const round = function (v) { return Math.round(v * 1000) / 1000; };
+    const g = doc.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', 'translate(' + round(x) + ',' + round(y) + ')');
+    const frag = new DOMParser().parseFromString(
+        '<svg xmlns="http://www.w3.org/2000/svg">' + body.svg + '</svg>',
+        'image/svg+xml');
+    Array.prototype.slice.call(frag.documentElement.childNodes)
+        .forEach(function (node) { g.appendChild(doc.importNode(node, true)); });
+    root.appendChild(g);
+    return new XMLSerializer().serializeToString(root);
+}
+
+function renderEdgeLegendOverlay(spec, position, hostId) {
+    const host = document.getElementById(hostId || 'vpEdgeLegendHost');
+    if (!host) { return; }
+    const body = edgeLegendBody(spec);
+    host.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="'
+        + body.width + '" height="' + body.height + '" viewBox="0 0 '
+        + body.width + ' ' + body.height + '" aria-hidden="true">'
+        + body.svg + '</svg>';
+}
+
+function exportSVGWithLegend() {
+    try {
+        const svg = appendEdgeLegendToSvg(
+            cy.svg({full: true, bg: bgCtrl.getColor()}),
+            edgeLegendSpec, edgeLegendPosition);
+        downloadBlob(new Blob([sanitizeSvgForOffice(svg)],
+                              {type: 'image/svg+xml'}),
+                     'network_selected_paths.svg');
+    } catch (err) {
+        console.error('SVG export failed:', err);
+        alert('SVG export failed. See console for details.');
+    }
+}
+
+function exportEdgeLegendSvg() {
+    downloadBlob(new Blob([standaloneEdgeLegendSvg(edgeLegendSpec)],
+                          {type: 'image/svg+xml'}),
+                 'edge_legend.svg');
+}
+
+renderEdgeLegendOverlay(edgeLegendSpec, edgeLegendPosition, 'vpEdgeLegendHost');
+"""
+
+
 class VisualizePath:
     """
     A class for visualizing neural pathways from CSV/Excel files.
@@ -1463,6 +1708,9 @@ class VisualizePath:
         network_node_labels=None,    # NEW: {node: display label} overrides (IDs keep their suffixes)
         edge_group_legend=None,      # NEW: [{label, color}] edge-direction chips in the footer
         network_role_legend=True,    # NEW: False hides the source/intermediate/target chips
+        network_edge_legend=None,    # NEW: [{title, items}] arrow-sample legend (page overlay + SVG exports)
+        edge_legend_position='bottom-left',  # NEW: export anchor (bottom-left|bottom-right|top-left|top-right)
+        edge_legend_page_position='top-left',  # NEW: page overlay anchor (the canvas bottom sits below a 900 px viewport)
     ):
         """
         Initialize VisualizePath with pathway data and visualization settings.
@@ -1796,6 +2044,11 @@ class VisualizePath:
             str(k): str(v) for k, v in (network_node_labels or {}).items()}
         self.edge_group_legend = list(edge_group_legend or [])
         self.network_role_legend = bool(network_role_legend)
+        self.network_edge_legend = normalize_edge_legend(network_edge_legend)
+        self.edge_legend_position = normalize_edge_legend_position(
+            edge_legend_position)
+        self.edge_legend_page_position = normalize_edge_legend_position(
+            edge_legend_page_position, default='top-left')
         self.hemisphere_desaturate_side = (hemisphere_desaturate_side or 'R').upper()
         self.hemisphere_desaturate_factor = max(0.0, min(1.0, hemisphere_desaturate_factor))
         # Mirror layout auto-enables when Separate Hemispheres (L/R) is checked,
@@ -6653,6 +6906,54 @@ class VisualizePath:
                 f'<span>{html_escape(str(item.get("label", "")))}</span></div>'
                 for item in self.edge_group_legend)
 
+        # Caller-supplied edge-arrow legend.  Every fragment below is an
+        # empty string unless a spec is present, so a page without the
+        # feature keeps its exact previous bytes and its SVG export path.
+        edge_legend_css = ""
+        edge_legend_host_html = ""
+        edge_legend_button_html = ""
+        edge_legend_svg_onclick = "exportSVG()"
+        edge_legend_js = ""
+        if self.network_edge_legend:
+            _legend_pos = self.edge_legend_position
+            edge_legend_css = (
+                "\n        /* Caller-supplied edge-arrow legend: an SVG "
+                "overlay inside #cy (never a cytoscape node).\n"
+                "           pointer-events:none keeps canvas gestures on "
+                "the canvas underneath. */\n"
+                "        .vp-edge-legend-host {\n"
+                "            position: absolute;\n"
+                "            z-index: 45;\n"
+                "            pointer-events: none;\n"
+                "        }\n"
+                "        .vp-edge-legend-host svg { display: block; }\n"
+                "        .vp-edge-legend-host.vp-edge-legend-bottom-left "
+                "{ left: 12px; bottom: 12px; }\n"
+                "        .vp-edge-legend-host.vp-edge-legend-bottom-right "
+                "{ right: 12px; bottom: 12px; }\n"
+                "        .vp-edge-legend-host.vp-edge-legend-top-left "
+                "{ left: 12px; top: 12px; }\n"
+                "        .vp-edge-legend-host.vp-edge-legend-top-right "
+                "{ right: 12px; top: 12px; }\n"
+            )
+            edge_legend_host_html = (
+                '<div id="vpEdgeLegendHost" class="vp-edge-legend-host '
+                f'vp-edge-legend-{self.edge_legend_page_position}" '
+                'aria-hidden="true"></div>')
+            edge_legend_button_html = (
+                '<button class="btn" onclick="exportEdgeLegendSvg()" '
+                'style="flex: 1; padding: 6px; font-size: 12px;" '
+                'title="Download the edge legend alone as a vector SVG">'
+                'Legend SVG</button>')
+            edge_legend_svg_onclick = 'exportSVGWithLegend()'
+            edge_legend_js = (
+                _NETWORK_EDGE_LEGEND_JS
+                .replace("__EDGE_LEGEND_SPEC__",
+                         json_safe(self.network_edge_legend))
+                .replace("__EDGE_LEGEND_POSITION__",
+                         json_safe(_legend_pos))
+            )
+
         # Footer legends: with declared groups the structural role
         # swatches (source/intermediate/target) are REPLACED by the group
         # legend — one color chip per declared group (datasets in the
@@ -7627,7 +7928,7 @@ class VisualizePath:
         body.controls-collapsed #cy {{
             height: calc(100vh - 76px);
         }}
-    </style>
+{edge_legend_css}    </style>
 </head>
 <body>
     <!-- Panel bar / command strip: panel toggles + ribbon tabs + search + help -->
@@ -7873,7 +8174,7 @@ class VisualizePath:
                 <label for="exportScale" style="font-weight: bold; font-size: 13px; white-space: nowrap;" title="Image export magnification">Scale:</label>
                 <input type="number" id="exportScale" min="1" max="10" value="2" step="0.5" style="width: 56px; padding: 5px; box-sizing: border-box;" title="Image export magnification (1–10; very large values may fail)">
                 <button class="btn" onclick="exportPNG()" style="flex: 1; padding: 6px; font-size: 12px;" title="Export the current view as a PNG image at the chosen scale">PNG</button>
-                <button class="btn" onclick="exportSVG()" style="flex: 1; padding: 6px; font-size: 12px;" title="Export the current view as a vector SVG image">SVG</button>
+                <button class="btn" onclick="{edge_legend_svg_onclick}" style="flex: 1; padding: 6px; font-size: 12px;" title="Export the current view as a vector SVG image">SVG</button>{edge_legend_button_html}
             </div>
             </div>
             <div class="vp-ribbon-group">
@@ -7925,7 +8226,7 @@ class VisualizePath:
     
     <!-- Color Palette Panel -->
     <div class="main">
-        <div id="cy"><div id="editBadge">✏️ EDIT MODE</div><div id="boxOverlay"></div><div id="cyHints"><button type="button" id="panModeBtn" class="vp-cy-hint active" aria-pressed="true" onclick="setCanvasDragMode('pan')" title="Pan mode (default): drag the blank canvas to pan — Shift+drag still box-selects">✋ Pan</button><button type="button" id="selectModeBtn" class="vp-cy-hint" aria-pressed="false" onclick="setCanvasDragMode('select')" title="Select mode: drag the blank canvas to box-select without Shift — left-to-right frame = full selection, right-to-left dashed frame = touch; dragging over already-selected objects deselects them (⇧+drag toggles)">□ Select</button></div></div>
+        <div id="cy">{edge_legend_host_html}<div id="editBadge">✏️ EDIT MODE</div><div id="boxOverlay"></div><div id="cyHints"><button type="button" id="panModeBtn" class="vp-cy-hint active" aria-pressed="true" onclick="setCanvasDragMode('pan')" title="Pan mode (default): drag the blank canvas to pan — Shift+drag still box-selects">✋ Pan</button><button type="button" id="selectModeBtn" class="vp-cy-hint" aria-pressed="false" onclick="setCanvasDragMode('select')" title="Select mode: drag the blank canvas to box-select without Shift — left-to-right frame = full selection, right-to-left dashed frame = touch; dragging over already-selected objects deselects them (⇧+drag toggles)">□ Select</button></div></div>
         <div class="color-palette" id="colorPalette">
             <div class="palette-content">
                 <!-- Edit accordion (collapsed by default) -->
@@ -12293,7 +12594,7 @@ class VisualizePath:
             bgCtrl.applyCustom();
         }}
         
-{SHARED_JS}
+{SHARED_JS}{edge_legend_js}
 
         function updateFontSize(size) {{
             const value = parseFloat(size);
