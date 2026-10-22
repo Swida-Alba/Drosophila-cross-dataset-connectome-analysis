@@ -7,6 +7,9 @@ Pins the feature requester's contract from
   samples (never colour swatches) in a page overlay, in the network's own
   SVG export (legend appended BEFORE ``sanitizeSvgForOffice``) and in a
   standalone SVG download;
+* the exported legend stays one standalone ``edgeLegend`` group with
+  separate ``edgeLegendShapes`` / ``edgeLegendTexts`` subgroups, kept out
+  of the network's global ``#shapes`` / ``#texts`` groups;
 * every legend ``<text>`` carries ``font-family="Arial"`` explicitly and
   opacity is written as ``stroke-opacity`` / ``fill-opacity`` — the
   PPT-safe contract;
@@ -227,9 +230,21 @@ def test_live_standalone_legend_matches_the_ppt_contract(legend_page):
         svg = browser.js("return standaloneEdgeLegendSvg(edgeLegendSpec);")
         root = ET.fromstring(svg)
 
-        texts = root.findall(".//" + NS + "text")
-        lines = root.findall(".//" + NS + "line")
-        polygons = root.findall(".//" + NS + "polygon")
+        outer = root.find(NS + "g")
+        assert outer.get("class") == "vp-edge-legend"
+        assert [g.get("id") for g in outer.findall(NS + "g")] == [
+            "edgeLegendShapes", "edgeLegendTexts"]
+        shape_g = outer.find(NS + "g[@id='edgeLegendShapes']")
+        text_g = outer.find(NS + "g[@id='edgeLegendTexts']")
+        assert len(shape_g.findall(".//" + NS + "line")) == 7
+        assert len(shape_g.findall(".//" + NS + "polygon")) == 7
+        assert len(shape_g.findall(".//" + NS + "rect")) == 1
+        assert not shape_g.findall(".//" + NS + "text")
+        assert not text_g.findall(".//" + NS + "line")
+
+        texts = text_g.findall(".//" + NS + "text")
+        lines = shape_g.findall(".//" + NS + "line")
+        polygons = shape_g.findall(".//" + NS + "polygon")
         assert [t.text for t in texts] == LEGEND_LABELS
         assert len(lines) == 7
         assert len(polygons) == 7
@@ -331,13 +346,35 @@ def test_live_network_export_carries_legend_after_sanitize(legend_page):
         assert not root.findall(".//" + NS + "image")
         assert not root.findall(".//" + NS + "foreignObject")
         assert [g.get("id") for g in root.findall(NS + "g")
-                if g.get("id")] == ["shapes", "texts"]
+                if g.get("id")] == ["shapes", "texts", "edgeLegend"]
+
+        # The legend is one standalone group with its own shapes/texts
+        # subgroups, kept out of the network's global groups.
+        legend = root.find(NS + "g[@id='edgeLegend']")
+        assert legend.get("data-vp-edge-legend") == "1"
+        shape_g = legend.find(NS + "g[@id='edgeLegendShapes']")
+        text_g = legend.find(NS + "g[@id='edgeLegendTexts']")
+        assert shape_g is not None and text_g is not None
+        assert len(shape_g.findall(".//" + NS + "line")) == 7
+        assert len(shape_g.findall(".//" + NS + "polygon")) == 7
+        assert len(shape_g.findall(".//" + NS + "rect")) == 1
+        assert not shape_g.findall(".//" + NS + "text")
+        assert len(text_g.findall(".//" + NS + "text")) == 9
+        assert not text_g.findall(".//" + NS + "line")
+        assert root[-1].get("id") == "edgeLegend"  # paints above the network
+        for global_group in ("shapes", "texts"):
+            g = root.find(NS + f"g[@id='{global_group}']")
+            assert not g.findall(".//*[@data-vp-edge-legend]"), global_group
 
         height = float(root.get("height"))
         ach = next(t for t in texts if t.text == "ACh")
         x, y = _ancestor_translate(root, ach)
         assert x == 16
         assert abs(y - (height - 200 - 16)) < 0.5
+        # The common translate is lifted onto the legend group itself.
+        assert legend.get("transform") == f"matrix(1 0 0 1 16 {y:g})"
+        assert shape_g.get("transform") is None
+        assert text_g.get("transform") is None
         assert browser.errors() == [], browser.errors()
 
 

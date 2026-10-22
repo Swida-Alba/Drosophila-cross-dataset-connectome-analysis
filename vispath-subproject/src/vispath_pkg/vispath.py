@@ -1501,13 +1501,15 @@ function edgeLegendBody(spec) {
     const x0 = L.pad;
     parts.push('<g class="vp-edge-legend" data-vp-edge-legend="1" '
         + 'font-family="Arial, Helvetica, sans-serif">');
-    parts.push('<rect x="0" y="0" width="' + L.width + '" height="' + L.height
+    parts.push('<rect data-vp-edge-legend="1" x="0" y="0" width="' + L.width
+        + '" height="' + L.height
         + '" fill="#ffffff" fill-opacity="0.94" stroke="#cbd5e1" '
         + 'stroke-width="1" rx="4"/>');
     let y = L.pad;
     L.groups.forEach(function (group) {
         if (group.title) {
-            parts.push('<text x="' + x0 + '" y="' + (y + 13)
+            parts.push('<text data-vp-edge-legend="1" x="' + x0
+                + '" y="' + (y + 13)
                 + '" font-family="Arial" font-size="' + L.titleSize
                 + '" font-weight="bold" fill="#334155">'
                 + edgeLegendEscape(group.title) + '</text>');
@@ -1520,15 +1522,18 @@ function edgeLegendBody(spec) {
                 ? ' stroke-dasharray="5 3"'
                 : (item.lineStyle === 'dotted' ? ' stroke-dasharray="1 3"' : '');
             const color = edgeLegendEscape(item.color);
-            parts.push('<line x1="' + x0 + '" y1="' + cy0 + '" x2="' + x1
+            parts.push('<line data-vp-edge-legend="1" x1="' + x0
+                + '" y1="' + cy0 + '" x2="' + x1
                 + '" y2="' + cy0 + '" stroke="' + color
                 + '" stroke-width="2.5" stroke-opacity="' + item.opacity + '"'
                 + dash + '/>');
-            parts.push('<polygon points="' + x1 + ',' + (cy0 - 4.5) + ' '
+            parts.push('<polygon data-vp-edge-legend="1" points="'
+                + x1 + ',' + (cy0 - 4.5) + ' '
                 + (x1 + 9) + ',' + cy0 + ' ' + x1 + ',' + (cy0 + 4.5)
                 + '" fill="' + color + '" fill-opacity="' + item.opacity
                 + '"/>');
-            parts.push('<text x="' + (x1 + L.labelGap) + '" y="' + (cy0 + 4)
+            parts.push('<text data-vp-edge-legend="1" x="'
+                + (x1 + L.labelGap) + '" y="' + (cy0 + 4)
                 + '" font-family="Arial" font-size="' + L.labelSize
                 + '" fill="#111827">' + edgeLegendEscape(item.label)
                 + '</text>');
@@ -1539,11 +1544,134 @@ function edgeLegendBody(spec) {
     return {svg: parts.join(''), width: L.width, height: L.height};
 }
 
+/* Split the legend's interleaved body into its own shapes/texts subgroups.
+   Interleaving is what keeps the Office sanitizer from re-merging adjacent
+   item labels into one multi-line <text>; the split happens afterwards. */
+function restructureEdgeLegendBody(bodySvg) {
+    const frag = new DOMParser().parseFromString(
+        '<svg xmlns="http://www.w3.org/2000/svg">' + bodySvg + '</svg>',
+        'image/svg+xml');
+    const root = frag.documentElement;
+    if (!root || root.nodeName === 'parsererror') { return bodySvg; }
+    const group = root.firstElementChild;
+    if (!group) { return bodySvg; }
+    const shapes = [], texts = [];
+    Array.prototype.slice.call(group.children).forEach(function (el) {
+        (el.tagName === 'text' ? texts : shapes).push(el);
+    });
+    const SVGNS = 'http://www.w3.org/2000/svg';
+    const shapeG = frag.createElementNS(SVGNS, 'g');
+    shapeG.setAttribute('id', 'edgeLegendShapes');
+    const textG = frag.createElementNS(SVGNS, 'g');
+    textG.setAttribute('id', 'edgeLegendTexts');
+    shapes.forEach(function (el) { shapeG.appendChild(el); });
+    texts.forEach(function (el) { textG.appendChild(el); });
+    group.appendChild(shapeG);
+    group.appendChild(textG);
+    // The serializer re-declares the namespace on the lifted group; the
+    // enclosing <svg> already carries it.
+    return new XMLSerializer().serializeToString(group)
+        .replace(' xmlns="http://www.w3.org/2000/svg"', '');
+}
+
 function standaloneEdgeLegendSvg(spec) {
     const body = edgeLegendBody(spec);
     return '<svg xmlns="http://www.w3.org/2000/svg" width="' + body.width
         + '" height="' + body.height + '" viewBox="0 0 ' + body.width + ' '
-        + body.height + '">' + body.svg + '</svg>';
+        + body.height + '">' + restructureEdgeLegendBody(body.svg)
+        + '</svg>';
+}
+
+/* Rebuild the sanitized legend as ONE standalone root group holding a
+   shapes subgroup and a texts subgroup, instead of leaving its elements
+   scattered through the network's global #shapes/#texts groups. */
+function groupExportedEdgeLegend(svgText) {
+    const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+    const root = doc.documentElement;
+    if (!root || root.nodeName === 'parsererror') { return svgText; }
+    if (root.querySelector('#edgeLegend')) { return svgText; }
+    const SVGNS = 'http://www.w3.org/2000/svg';
+    const marked = Array.prototype.slice.call(
+        root.querySelectorAll('[data-vp-edge-legend]'));
+    if (!marked.length) { return svgText; }
+
+    function nearestTransform(el) {
+        let node = el.parentNode;
+        while (node && node !== root) {
+            const tf = node.getAttribute && node.getAttribute('transform');
+            if (tf) { return tf; }
+            node = node.parentNode;
+        }
+        return '';
+    }
+
+    const shapes = [], texts = [];
+    marked.forEach(function (el) {
+        if (el.tagName === 'g') { return; }   // the marker group itself
+        if (el.tagName === 'text') {
+            texts.push({el: el, tf: nearestTransform(el)});
+        } else {
+            shapes.push({el: el, tf: nearestTransform(el)});
+        }
+    });
+    shapes.forEach(function (item) { item.el.parentNode.removeChild(item.el); });
+    texts.forEach(function (item) { item.el.parentNode.removeChild(item.el); });
+
+    // The sanitizer's per-transform buckets may now be empty.
+    Array.prototype.slice.call(root.querySelectorAll('g')).forEach(function (g) {
+        const id = g.getAttribute('id');
+        if (id === 'shapes' || id === 'texts' || id === 'edgeLegend'
+                || id === 'edgeLegendShapes' || id === 'edgeLegendTexts') {
+            return;
+        }
+        if (!g.firstElementChild) { g.parentNode.removeChild(g); }
+    });
+
+    const outer = doc.createElementNS(SVGNS, 'g');
+    outer.setAttribute('id', 'edgeLegend');
+    outer.setAttribute('data-vp-edge-legend', '1');
+    const shapeG = doc.createElementNS(SVGNS, 'g');
+    shapeG.setAttribute('id', 'edgeLegendShapes');
+    const textG = doc.createElementNS(SVGNS, 'g');
+    textG.setAttribute('id', 'edgeLegendTexts');
+
+    function distinctTransforms(items) {
+        return items.map(function (item) { return item.tf; })
+            .filter(function (tf, i, all) { return all.indexOf(tf) === i; });
+    }
+    const shapeTfs = distinctTransforms(shapes);
+    const textTfs = distinctTransforms(texts);
+    const commonTf = (shapeTfs.length <= 1 && textTfs.length <= 1
+        && (shapeTfs[0] || '') === (textTfs[0] || ''))
+        ? (shapeTfs[0] || '') : '';
+    if (commonTf) { outer.setAttribute('transform', commonTf); }
+
+    function fill(parent, items, prefix) {
+        if (commonTf) {
+            items.forEach(function (item) { parent.appendChild(item.el); });
+            return;
+        }
+        const seen = {};
+        let n = 0;
+        items.forEach(function (item) {
+            const key = item.tf || '';
+            if (!Object.prototype.hasOwnProperty.call(seen, key)) {
+                const g = doc.createElementNS(SVGNS, 'g');
+                g.setAttribute('id', prefix + '-' + n);
+                n += 1;
+                if (key) { g.setAttribute('transform', key); }
+                seen[key] = g;
+                parent.appendChild(g);
+            }
+            seen[key].appendChild(item.el);
+        });
+    }
+    fill(shapeG, shapes, 'edgeLegendShapes');
+    fill(textG, texts, 'edgeLegendTexts');
+    outer.appendChild(shapeG);
+    outer.appendChild(textG);
+    root.appendChild(outer);
+    return new XMLSerializer().serializeToString(root);
 }
 
 function appendEdgeLegendToSvg(svgText, spec, position) {
@@ -1587,16 +1715,17 @@ function renderEdgeLegendOverlay(spec, position, hostId) {
     host.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="'
         + body.width + '" height="' + body.height + '" viewBox="0 0 '
         + body.width + ' ' + body.height + '" aria-hidden="true">'
-        + body.svg + '</svg>';
+        + restructureEdgeLegendBody(body.svg) + '</svg>';
 }
 
 function exportSVGWithLegend() {
     try {
-        const svg = appendEdgeLegendToSvg(
+        let svg = appendEdgeLegendToSvg(
             cy.svg({full: true, bg: bgCtrl.getColor()}),
             edgeLegendSpec, edgeLegendPosition);
-        downloadBlob(new Blob([sanitizeSvgForOffice(svg)],
-                              {type: 'image/svg+xml'}),
+        svg = sanitizeSvgForOffice(svg);
+        svg = groupExportedEdgeLegend(svg);
+        downloadBlob(new Blob([svg], {type: 'image/svg+xml'}),
                      'network_selected_paths.svg');
     } catch (err) {
         console.error('SVG export failed:', err);

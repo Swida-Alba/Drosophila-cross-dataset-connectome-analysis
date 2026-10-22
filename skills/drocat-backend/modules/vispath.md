@@ -298,6 +298,49 @@ colour rather than a page that claims everything is unknown), and it is not
 emitted at all when `color_edges_by_nt` is off (the payload then keeps the raw
 column, blank included).
 
+### Edge-arrow legend (2026-10-22)
+
+`VisualizePath(network_edge_legend=[…])` draws a caller-supplied legend as
+**arrow samples** (a `<line>` + triangular `<polygon>` per item, never colour
+swatches) on the network page, in the network's own SVG export and as a
+standalone `edge_legend.svg` download:
+
+```python
+network_edge_legend=[
+    {"title": "Neurotransmitter", "items": [
+        {"label": "ACh", "color": "#FFA500"},
+        {"label": "Glut", "color": "#008000"},
+        {"label": "mixed", "color": "#95A5A6"}]},
+    {"title": "Synapse strength", "items": [
+        {"label": "1–20 (20%)", "color": "#6b7280", "opacity": 0.2},
+        # … 21–50 / 51–100 / >100
+    ]},
+]
+```
+
+- `label` is required; `color` defaults `#333333`; `opacity` clamps to 0–1
+  (written as `stroke-opacity` / `fill-opacity`); `line_style` is `solid`
+  (default), `dashed` or `dotted`.
+- `edge_legend_position` chooses the exported SVG's corner (`bottom-left`
+  default; the other three corners are accepted). `edge_legend_page_position`
+  (default `top-left`) chooses the on-page card — the canvas bottom sits below
+  a 900 px viewport, so the page follows the pilot's top-left placement while
+  the export keeps the requested bottom-left.
+- The legend is appended **before** `sanitizeSvgForOffice`, so the Office
+  rewrite applies to it; every `<text>` carries `font-family="Arial"`
+  explicitly and there is no `<image>` / `<foreignObject>`.
+- The sanitized export then keeps the legend as ONE standalone root group
+  (`edgeLegend`) holding `edgeLegendShapes` and `edgeLegendTexts` subgroups,
+  rather than dissolving it into the network's global `#shapes` / `#texts`
+  groups. The standalone `edge_legend.svg` uses the same shapes/texts split.
+  Item labels stay individual `<text>` boxes (the pre-sanitize interleaving is
+  what stops the Office multiline-label merge).
+- A page without `network_edge_legend` emits none of the overlay, spec,
+  buttons or builder JS and its SVG export is unchanged.
+- Pinned by `tests/vispath/test_network_edge_legend.py`: live Chrome checks
+  the standalone counts, the sanitized export, all four anchor positions and
+  the overlay geometry.
+
 ### `metric_note`: a page's own word about a metric it cannot carry
 
 `VisualizePath(metric_note='…')` renders one muted line under the Connection
