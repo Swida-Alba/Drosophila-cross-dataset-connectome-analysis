@@ -21,8 +21,14 @@ route_provenance.json, README.md — plus the lane's OWN second round at
 synapse >= 1 (route_full_paths_type.csv, route_full_carrying_paths_type.csv,
 route_full_type_pairs.csv, route_type_incoming.csv and the
 route_full_type_{network,heatmap}.html mirrors) — plus plan.json under
-data_details/route_plan/ beside the output root. Exit codes: 0 complete,
-2 refused (deterministic reason).
+data_details/route_plan/ beside the output root.
+
+Per-pair shortest scope (typed lane only, issue 2026-10-22):
+--per-pair-scope replaces the global bound with min(Lt + --scope-pad,
+--scope-hard-cap) per (source,target) pair. --scope-lt-mode discover
+computes Lt locally and writes scope_table.csv; external reads
+--scope-table. route_scope_pairs.csv carries the per-pair statuses.
+Exit codes: 0 complete, 2 refused (deterministic reason).
 """
 import argparse
 import sys
@@ -47,7 +53,9 @@ def main():
     ap.add_argument("--sources", help="comma-separated source types")
     ap.add_argument("--targets", help="comma-separated target types")
     ap.add_argument("--bound", type=int, default=4,
-                    help="hop bound = max_interlayer + 1 (default 4)")
+                    help="hop bound = max_interlayer + 1 (default 4); "
+                         "ignored when --per-pair-scope is on (each pair "
+                         "uses min(Lt + pad, hard cap))")
     ap.add_argument("--asked", type=int, default=1)
     ap.add_argument("--top-m-base", type=int, default=10,
                     help="route share base: each (pair, hop-length) class "
@@ -115,6 +123,28 @@ def main():
     ap.add_argument("--type-validate-work-cap", type=int, default=2_000_000,
                     help="per-walk bodyId validation work cap (a cap hit "
                          "marks the walk unverified, never phantom)")
+    ap.add_argument("--per-pair-scope", action="store_true",
+                    help="replace the global max_interlayer+1 bound with a "
+                         "per-(source,target) scope derived from validated "
+                         "shortest paths: bound = min(Lt + pad, hard cap). "
+                         "Requires --type-pruned.")
+    ap.add_argument("--scope-lt-mode", choices=["external", "discover"],
+                    default=None,
+                    help="external: read --scope-table; discover: compute "
+                         "Lt_i locally and write scope_table.csv (default: "
+                         "external when --scope-table is given, else discover)")
+    ap.add_argument("--scope-table",
+                    help="CSV with source_type,target_type and max_hops "
+                         "(or scope_bound/bound); optional Lt_i/Lt metadata")
+    ap.add_argument("--scope-pad", type=int, default=2,
+                    help="hops added to the validated shortest length "
+                         "(default 2)")
+    ap.add_argument("--scope-hard-cap", type=int, default=6,
+                    help="absolute hop cap on every per-pair bound; 0 = no "
+                         "cap (default 6)")
+    ap.add_argument("--scope-discovery-cap", type=int, default=6,
+                    help="deepest hop count Pass A may search when "
+                         "discovering Lt_i (default 6)")
     ap.add_argument("--trigger", default="run-folder",
                     help="provenance trigger label (the in-run hook "
                          "passes 'in-run (subprocess)')")
@@ -123,7 +153,15 @@ def main():
                          "route_scope_paths/ or "
                          "route_scope_paths_type_pruned/)")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--no-infer-type-pruned", action="store_true",
+                    help="do not adopt type_pruned from the run folder's "
+                         "parameters.txt (the in-run Fast subprocess uses "
+                         "this so the typed lane keeps its own namespace)")
     args = ap.parse_args()
+    if args.scope_table and not args.per_pair_scope:
+        ap.error("--scope-table requires --per-pair-scope")
+    if args.scope_lt_mode and not args.per_pair_scope:
+        ap.error("--scope-lt-mode requires --per-pair-scope")
 
     from route_plan import (FAST_LANE_DIR, TYPED_LANE_DIR, CorridorRefusal,
                             run_lane)
@@ -146,7 +184,14 @@ def main():
                   type_walk_cap=args.type_walk_cap,
                   type_revisit_policy=args.type_revisit_policy,
                   type_max_type_visits=args.type_max_type_visits,
-                  type_validate_work_cap=args.type_validate_work_cap)
+                  type_validate_work_cap=args.type_validate_work_cap,
+                  per_pair_scope=args.per_pair_scope,
+                  scope_lt_mode=args.scope_lt_mode,
+                  scope_table=args.scope_table,
+                  scope_pad=args.scope_pad,
+                  scope_hard_cap=args.scope_hard_cap,
+                  scope_discovery_cap=args.scope_discovery_cap,
+                  infer_type_pruned=not args.no_infer_type_pruned)
     try:
         if args.run_dir:
             out = (Path(args.out) if args.out else

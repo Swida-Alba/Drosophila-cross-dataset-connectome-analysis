@@ -515,6 +515,14 @@ DEFAULTS = {
     "type_max_type_visits": 0,
     "type_walk_cap": 2000000,
     "type_validate_work_cap": 2000000,
+    # Per-pair shortest scope (issue 2026-10-22): optional; replaces the
+    # typed lane's global max_interlayer bound.
+    "per_pair_scope": False,
+    "scope_lt_mode": "discover",
+    "scope_table": "",
+    "scope_pad": 2,
+    "scope_hard_cap": 6,
+    "scope_discovery_cap": 6,
     "network_layout": "distributed",
     "use_cache": True,
     "cache_only": False,
@@ -992,8 +1000,58 @@ DEFAULT_SETTING_SPECS = {
                 "enumerate EVERY type walk over it, validate each at bodyId "
                 "level and export only paths clearing the exact realized "
                 "min_ratio_adj gate. Separate from Run Mode; carries its own "
-                "completeness field (type_pruned_complete) and writes "
-                "route_scope_paths/type_prune_manifest.json.",
+                "completeness field (type_pruned_complete; scoped to the "
+                "per-pair bound when Per-pair shortest scope is on) and "
+                "writes route_scope_paths/type_prune_manifest.json.",
+    },
+    "per_pair_scope": {
+        "label": "Per-pair shortest scope",
+        "group": "pathfinding_output",
+        "kind": "bool",
+        "hint": "Typed lane only: replace the global max_interlayer bound "
+                "with bound = min(Lt + pad, hard cap) per (source, target) "
+                "pair, where Lt is the shortest bodyId-validated accepted "
+                "path. Pairs with no validated path are reported unreached, "
+                "never assigned a global bound.",
+    },
+    "scope_lt_mode": {
+        "label": "Scope Lt mode",
+        "group": "pathfinding_output",
+        "kind": "select",
+        "options": ["discover", "external"],
+        "hint": "'discover' computes the local validated Lt and writes "
+                "scope_table.csv; 'external' reads the supplied scope "
+                "table (e.g. a cross-dataset max_i Lt_i + pad table).",
+    },
+    "scope_pad": {
+        "label": "Scope pad (hops)",
+        "group": "pathfinding_output",
+        "kind": "int",
+        "min": 0,
+        "max": 10,
+        "step": 1,
+        "hint": "Hops added to each pair's validated shortest length "
+                "(default 2).",
+    },
+    "scope_hard_cap": {
+        "label": "Scope hard cap (hops)",
+        "group": "pathfinding_output",
+        "kind": "int",
+        "min": 0,
+        "max": 10,
+        "step": 1,
+        "hint": "Absolute hop cap on every per-pair bound; 0 = no cap. A "
+                "pair cut by the cap is reported capped, never complete.",
+    },
+    "scope_discovery_cap": {
+        "label": "Scope discovery cap (hops)",
+        "group": "pathfinding_output",
+        "kind": "int",
+        "min": 1,
+        "max": 10,
+        "step": 1,
+        "hint": "Deepest hop count discovery may search for a validated "
+                "Lt before reporting the pair capped/no_path.",
     },
     # --- 3D Skeleton Rendering ---------------------------------------------
     "skeleton_mode": {

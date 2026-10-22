@@ -173,9 +173,13 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
             'clearing the exact realized <code>min_ratio_adj</code> gate are '
             'exported. <code>type_pruned_complete</code> is a different '
             'claim from the Complete lane\'s <code>paths_complete</code>; a '
-            'cap or an unverified walk forbids it.</p>')
+            'cap or an unverified walk forbids it. When a '
+            '<code>scope_mode</code> is present, the claim is complete '
+            'WITHIN the per-pair scope only: each pair is bounded at '
+            '<code>min(Lt + pad, hard cap)</code>, and unreached pairs are '
+            'listed, never given a global bound.</p>')
         parts.append('<table><thead><tr><th>Dataset</th><th>Threshold</th>'
-                     '<th>Basis / floor</th><th>Pairs</th>'
+                     '<th>Basis / floor</th><th>Scope</th><th>Pairs</th>'
                      '<th>Candidate walks</th><th>Validated</th>'
                      '<th>Phantoms</th><th>Unverified</th>'
                      '<th>Weak-filtered</th><th>Exported</th>'
@@ -187,9 +191,15 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
                         f"{block.get('pairs_after', '—')}")
             basis_txt = (f"{block.get('basis', '—')} @ "
                          f"{block.get('min_ratio_adj', '—')}")
+            scope_txt = ('—' if not block.get('scope_mode') else
+                         f"{block.get('scope_mode')} (Lt "
+                         f"{block.get('scope_lt', '—')}, pad "
+                         f"{block.get('scope_pad', '—')}, "
+                         f"scope_complete={block.get('scope_complete')})")
             parts.append(
                 f'<tr><td>{html.escape(str(nick))}</td><td>{t}</td>'
                 f'<td>{html.escape(basis_txt)}</td>'
+                f'<td>{html.escape(scope_txt)}</td>'
                 f'<td>{pair_txt}</td>'
                 f'<td>{block.get("candidate_walks", "—")}</td>'
                 f'<td>{block.get("validated_walks", "—")}</td>'

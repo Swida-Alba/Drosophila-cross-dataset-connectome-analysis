@@ -107,7 +107,8 @@ DEFAULT_GLOBAL_PAIRS = 50
 # whose files the tab must link, and the names it must not repeat.
 DATA_TAB_CENSUS_DIRS = (
     '', 'data_details', 'data_details/type_level_refill',
-    'data_details/route_plan', 'route_scope_paths', 'comparison_results')
+    'data_details/route_plan', 'route_scope_paths',
+    'route_scope_paths_type_pruned', 'comparison_results')
 DATA_TAB_CENSUS_SKIP_NAMES = {REPORT_NAME, 'user_warning_notes.txt'}
 DATA_TAB_CENSUS_CAP = 80
 
@@ -3043,8 +3044,16 @@ def _render_corridor_section(folder: Path, label: str,
         + ' phantoms; <b>type_pruned_complete</b>='
         + _esc(str(prov.get('type_pruned_complete'))) + ', '
         + '<b>filter_complete</b>='
-        + _esc(str(_tp.get('filter_complete'))) + '. This is separate from '
-        + 'the Complete lane&#8217;s <code>paths_complete</code>.</p>'
+        + _esc(str(_tp.get('filter_complete'))) + '. '
+        + (('Scope: <b>per-pair validated shortest</b> ('
+            + _esc(str(_tp.get('scope_mode'))) + ', Lt '
+            + _esc(str(_tp.get('scope_lt'))) + ', pad '
+            + _esc(str(_tp.get('scope_pad'))) + ', hard cap '
+            + _esc(str(_tp.get('scope_hard_cap'))) + '); '
+            + 'type_pruned_complete is complete WITHIN that scope only. ')
+           if _tp.get('scope_mode') else '')
+        + 'This is separate from the Complete lane&#8217;s '
+        + '<code>paths_complete</code>.</p>'
         if _is_typed else '')
     return ('<div class="card"><h3>' + _esc(label)
             + (' &mdash; Type-pruned complete lane' if _is_typed else '')
@@ -3102,6 +3111,8 @@ def _render_type_pruned_section(folder: Path, label: str,
             ("route_paths_bodyId.csv", "bodyId paths"),
             ("route_connection_type.csv", "connection table"),
             ("route_type_pairs_pruned.csv", "pruned type graph"),
+            ("route_scope_pairs.csv", "per-pair scope table"),
+            ("scope_table.csv", "reusable scope table"),
             ("route_full_paths_type.csv", "full-scope (synapse &ge; 1) chains"),
             ("route_full_type_pairs.csv", "full-scope pair table"),
             ("type_prune_manifest.json", "type-prune manifest"),
@@ -3112,6 +3123,24 @@ def _render_type_pruned_section(folder: Path, label: str,
                          + fname + '">' + lab + '</a>')
     complete = manifest.get("type_pruned_complete")
     filter_complete = manifest.get("filter_complete")
+    scope_mode = manifest.get("scope_mode")
+    scope_txt = ""
+    if scope_mode:
+        scope_txt = (
+            '<p><b>Per-pair shortest scope</b>: '
+            + _esc(str(scope_mode)) + '; Lt source '
+            + _esc(str(manifest.get("scope_lt") or "&mdash;"))
+            + ', pad ' + _v("scope_pad") + ', hard cap '
+            + (_v("scope_hard_cap") if manifest.get("scope_hard_cap")
+               else "none") + '. '
+            + _v("scope_pairs_exhausted") + ' of '
+            + _v("scope_pairs_total") + ' pairs exhausted; '
+            + '<b>scope_complete</b>='
+            + _esc(str(manifest.get("scope_complete"))) + '. Pairs with no '
+            'validated path are reported unreached in '
+            '<code>route_scope_pairs.csv</code>; the claim below is '
+            'WITHIN this scope only (never "complete up to '
+            'max_interlayer").</p>')
     html = (
         '<div class="card"><h3>' + _esc(label)
         + ' &mdash; Type-pruned complete lane</h3>'
@@ -3119,12 +3148,14 @@ def _render_type_pruned_section(folder: Path, label: str,
         + _esc(str(manifest.get("basis") or "&mdash;")) + ' at '
         + _esc(str(manifest.get("min_ratio_adj") or "&mdash;"))
         + '; enumerated ' + _v("candidate_walks")
-        + ' complete type walks (' + _v("revisit_policy")
-        + ', max ' + _v("max_type_visits") + ' visits/type), validated '
-        + _v("validated_walks") + ' at bodyId level, rejected '
-        + _v("phantoms") + ' phantoms, applied the exact realized '
-        + '<code>min_ratio_adj</code> gate to ' + _v("filtered_weak")
-        + ' weak and exported ' + _v("accepted_paths") + ' paths.</p>'
+        + ((' scoped type walks (' if scope_mode else ' complete type walks (')
+           + _v("revisit_policy")
+           + ', max ' + _v("max_type_visits") + ' visits/type), validated '
+           + _v("validated_walks") + ' at bodyId level, rejected '
+           + _v("phantoms") + ' phantoms, applied the exact realized '
+           + '<code>min_ratio_adj</code> gate to ' + _v("filtered_weak")
+           + ' weak and exported ' + _v("accepted_paths") + ' paths.</p>')
+        + scope_txt
         + '<p>Pairs ' + pair_txt + '; mass source '
         + _esc(str(manifest.get("mass_source") or "&mdash;"))
         + '; floor ' + _v("type_pruned_floor")
@@ -3132,6 +3163,8 @@ def _render_type_pruned_section(folder: Path, label: str,
         + '<b>type_pruned_complete</b>=' + _esc(str(complete))
         + ', <b>filter_complete</b>=' + _esc(str(filter_complete))
         + ' (' + _v("completeness_reason") + '). '
+        + ('When a per-pair scope is active this means complete within '
+           'that scope. ' if scope_mode else '')
         + 'This is separate from the Complete lane\'s '
         + '<code>paths_complete</code>.</p>'
         + ('<p>' + ' &middot; '.join(links) + '</p>' if links else '')
@@ -3223,6 +3256,8 @@ def _render_corridor_explorer_tab(payload: dict, run_dir: Path) -> str:
     ratio_lane = any(b.startswith('connection_ratio') for b in _bases)
     _typed_lane = any(bool(u.get('type_pruned'))
                       for u in (lane.get('units') or []))
+    _scoped_lane = any(bool(u.get('scope_mode'))
+                       for u in (lane.get('units') or []))
     parts = ['<div class="card"><h3>'
              + ('Type-pruned complete lane &mdash; validated chains'
                 if _typed_lane else
@@ -3244,6 +3279,11 @@ def _render_corridor_explorer_tab(payload: dict, run_dir: Path) -> str:
                 'denominator is the all-inputs one and Adj. ratios would '
                 'duplicate Ratios &mdash; the column is omitted here and '
                 'kept in route_paths_type.csv.' if ratio_lane else '')
+             + (' <b>Per-pair validated-shortest scope</b> is active: each '
+                'source &times; target is bounded at min(Lt + pad, hard '
+                'cap), so the lane is complete within that scope only '
+                '&mdash; see the scope card above.'
+                if _scoped_lane else '')
              + '</p></div>']
     parts.append(_render_corridor_tab(payload, run_dir))
     if corridor and corridor.get('pairs'):
@@ -6134,6 +6174,9 @@ def generate_paths_pair_report(
                 'lane_dir': unit.lane_dir,
                 'type_pruned': bool(prov.get('type_prune')),
                 'type_pruned_complete': prov.get('type_pruned_complete'),
+                'scope_mode': prov.get('scope_mode'),
+                'scope_lt': prov.get('scope_lt'),
+                'scope_complete': prov.get('scope_complete'),
                 'full': prov.get('full') or {}})
             continue
         # A lane that ATTEMPTED and refused still has a fact to report.

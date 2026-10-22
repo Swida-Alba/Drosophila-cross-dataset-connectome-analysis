@@ -877,8 +877,11 @@ class ComparisonAnalyzer:
             'untyped_dropped_neurons': stats.get('neurons'),
             'untyped_dropped_fraction': stats.get('fraction'),
             # P2-N/P2-S: the typed lane's identity and completeness are
-            # SEPARATE columns from `paths_complete`.
-            'type_pruned': bool(getattr(parameters, 'type_pruned', False)),
+            # SEPARATE columns from `paths_complete`. The lane is single-floor,
+            # so a sweep's higher tiers never ran it; report presence, not the
+            # global parameter.
+            'type_pruned': _type_pruned_for_threshold(
+                dataset_name, threshold, parameters),
             'type_pruned_complete': type_block.get(
                 'type_pruned_complete'),
             'type_prune_basis': type_block.get(
@@ -904,6 +907,15 @@ class ComparisonAnalyzer:
             'type_prune_accepted': type_block.get('accepted_paths'),
             'type_prune_completeness_reason': type_block.get(
                 'completeness_reason'),
+            # Per-pair shortest scope (issue 2026-10-22): the typed lane's
+            # completeness claim is scoped when scope_mode is present.
+            'type_prune_scope_mode': type_block.get('scope_mode'),
+            'type_prune_scope_complete': type_block.get('scope_complete'),
+            'type_prune_scope_lt': type_block.get('scope_lt'),
+            'type_prune_scope_pad': type_block.get('scope_pad'),
+            'type_prune_scope_hard_cap': type_block.get('scope_hard_cap'),
+            'type_prune_scope_capped_pairs': type_block.get(
+                'scope_capped_pairs'),
         }
 
     @staticmethod
@@ -2195,6 +2207,18 @@ class ComparisonAnalyzer:
             type_validate_work_cap=int(getattr(
                 self.parameters, 'type_validate_work_cap', 2_000_000)
                 or 2_000_000),
+            per_pair_scope=bool(getattr(
+                self.parameters, 'per_pair_scope', False)),
+            scope_lt_mode=str(getattr(
+                self.parameters, 'scope_lt_mode', 'discover')),
+            scope_table=str(getattr(
+                self.parameters, 'scope_table', '') or ''),
+            scope_pad=int(getattr(
+                self.parameters, 'scope_pad', 2) or 0),
+            scope_hard_cap=int(getattr(
+                self.parameters, 'scope_hard_cap', 6) or 0),
+            scope_discovery_cap=int(getattr(
+                self.parameters, 'scope_discovery_cap', 6) or 6),
             max_paths_bodyid=self.parameters.max_paths_bodyid,  # StrongestFirst path budget (None = per-mode default)
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),
@@ -5320,6 +5344,18 @@ class ComparisonAnalyzer:
             type_validate_work_cap=int(getattr(
                 self.parameters, 'type_validate_work_cap', 2_000_000)
                 or 2_000_000),
+            per_pair_scope=bool(getattr(
+                self.parameters, 'per_pair_scope', False)),
+            scope_lt_mode=str(getattr(
+                self.parameters, 'scope_lt_mode', 'discover')),
+            scope_table=str(getattr(
+                self.parameters, 'scope_table', '') or ''),
+            scope_pad=int(getattr(
+                self.parameters, 'scope_pad', 2) or 0),
+            scope_hard_cap=int(getattr(
+                self.parameters, 'scope_hard_cap', 6) or 0),
+            scope_discovery_cap=int(getattr(
+                self.parameters, 'scope_discovery_cap', 6) or 6),
             max_paths_bodyid=self.parameters.max_paths_bodyid,
             shortest_source_coverage=getattr(
                 self.parameters, 'shortest_source_coverage', None),

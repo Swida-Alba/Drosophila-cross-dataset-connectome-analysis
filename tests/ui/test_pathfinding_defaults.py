@@ -163,3 +163,24 @@ def _w(value):
         def __init__(self, value):
             self.value = value
     return _Widget(value)
+
+
+# --- per-pair shortest scope (issue 2026-10-22) ----------------------------
+
+@pytest.mark.parametrize("key", (
+        "per_pair_scope", "scope_lt_mode", "scope_pad",
+        "scope_hard_cap", "scope_discovery_cap"))
+def test_scope_defaults_are_registered(key):
+    spec = cfg.DEFAULT_SETTING_SPECS.get(key)
+    assert spec is not None, f"{key} has a default but no Settings spec"
+    assert spec["group"] == "pathfinding_output"
+    assert cfg._coerce_user_default(key, cfg.DEFAULTS[key]) == cfg.DEFAULTS[key]
+
+
+def test_scope_settings_round_trip(cfg_file):
+    assert cfg.set_user_default("scope_lt_mode", "external")
+    assert cfg.set_user_default("scope_pad", 1)
+    assert cfg.set_user_default("scope_hard_cap", 5)
+    assert cfg.get_user_default("scope_lt_mode") == "external"
+    assert cfg.get_user_default("scope_pad") == 1
+    assert cfg.get_user_default("scope_hard_cap") == 5

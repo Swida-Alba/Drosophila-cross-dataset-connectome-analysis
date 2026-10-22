@@ -1911,11 +1911,14 @@ def test_type_pruned_exact_realized_filter(tmp_path):
     ]
     types = {"a1": "A", "e1": "E", "g1": "G", "c1": "C"}
     root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out"
     rows, manifest = _run_typed(
-        root, tmp_path / "out", type_min_ratio_adj=0.5)
+        root, out, type_min_ratio_adj=0.5)
     assert set(rows["path"]) == {"A->E->C"}
     assert manifest["validated_walks"] == 2
     assert manifest["filtered_weak"] == 1
+    prov = json.loads((out / "route_provenance.json").read_text())
+    assert prov["validated_walks"] == manifest["validated_walks"]
     assert all(float(v) > 0.5 for v in rows["min_ratio_adj"])
     # the exact gate is strictly greater; the weak path is absent
     assert "A->G->C" not in set(rows["path"])
@@ -2091,7 +2094,12 @@ def test_typed_knobs_round_trip_from_parameters_txt(tmp_path):
         "type walk cap:              1000\n"
         "type revisit policy:        bounded\n"
         "type max type visits:       0\n"
-        "type validate work cap:     2000000\n",
+        "type validate work cap:     2000000\n"
+        "per pair scope:             True\n"
+        "scope lt mode:              discover\n"
+        "scope pad:                  2\n"
+        "scope hard cap:             6\n"
+        "scope discovery cap:        6\n",
         encoding="utf-8")
     assert run_lane(run, connections_path=root / "connections.parquet",
                     neuron_table=root / "neurons.parquet")
@@ -2102,8 +2110,51 @@ def test_typed_knobs_round_trip_from_parameters_txt(tmp_path):
     assert manifest["basis"] == "synapse"
     assert manifest["type_walk_cap"] == 1000
     assert manifest["type_pruned_complete"] is True
+    assert manifest["scope_mode"] == "per_pair_shortest_plus_2"
+    assert manifest["scope_lt"] == "max_local_validated"
+    assert manifest["scope_complete"] is True
+    assert manifest["scope_complete_by_pair"] == {"A->C": "exhausted"}
+    assert (lane / "route_scope_pairs.csv").exists()
+    assert (lane / "scope_table.csv").exists()
     prov = json.loads((lane / "route_provenance.json").read_text())
     assert prov["type_pruned"] is True
+    assert prov["bound_source"] == "per_pair_scope"
+    assert prov["scope_mode"] == "per_pair_shortest_plus_2"
+    assert prov["scope_complete"] is True
+    assert prov["scope_complete_by_pair"] == {"A->C": "exhausted"}
+
+
+def test_fast_lane_does_not_adopt_a_typed_stamp(tmp_path):
+    """The in-run Fast subprocess must keep route_scope_paths/ Fast.
+
+    It runs on a typed-stamped folder without --type-pruned; adopting the
+    stamp would write typed tables into the Fast namespace (and skip the
+    Fast lane entirely), which the report then reads as Fast.
+    """
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "dataset:                    synth\n"
+        "path_mode:                  all\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n",
+        encoding="utf-8")
+    assert run_lane(
+        run, connections_path=root / "connections.parquet",
+        neuron_table=root / "neurons.parquet", infer_type_pruned=False)
+    fast = run / "route_scope_paths"
+    assert (fast / "route_provenance.json").exists()
+    prov = json.loads((fast / "route_provenance.json").read_text())
+    assert prov["type_pruned"] is False
+    assert (fast / "route_paths_type.csv").exists()
+    assert not (run / "route_scope_paths_type_pruned").exists()
 
 
 def test_typed_lane_honors_exclude_autapses(tmp_path):
@@ -2274,3 +2325,641 @@ def test_type_pruned_synapse_basis_defaults_to_the_asked_floor(tmp_path):
         type_min_ratio_adj=0.0)
     assert manifest["min_synapse"] == 3
     assert rows.height == 1
+
+
+# ------------------------------------------------ per-pair shortest scope
+def _scope_table(tmp_path, rows, name="scope.csv"):
+    import pandas as pd
+    path = tmp_path / name
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
+def test_per_pair_scope_phantom_shortest_discovers_validated_lt(tmp_path):
+    """Acceptance 1/2: the raw type-shortest A->B->C is a phantom (the B
+    bodies are disjoint), so discovery must advance to the first
+    bodyId-validated accepted length (4) and bound the pair at Lt+2, not
+    at the raw BFS length."""
+    # A->B->C is a real TYPE walk (both pair edges lie on some
+    # source->target body path) but has no bodyId realization: the A->B
+    # edge ends at b1 and the B->C edge starts at b2. Each pair edge is
+    # kept alive by its own 4-hop route, so the phantom survives the
+    # lossless cone and only bodyId validation can reject it.
+    edges = [
+        ("a1", "b1", 100),                    # A->B, ends at b1
+        ("b1", "x1", 90), ("x1", "y1", 80),
+        ("y1", "c1", 70),                     # A->B->X->Y->C (4 hops)
+        ("b2", "c1", 50),                     # B->C, starts at b2
+        ("a1", "p1", 60), ("p1", "q1", 40),
+        ("q1", "b2", 30),                     # A->P->Q->B->C (4 hops)
+    ]
+    types = {"a1": "A", "b1": "B", "b2": "B", "x1": "X",
+             "y1": "Y", "p1": "P", "q1": "Q", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out"
+    rows, manifest = _run_typed(
+        root, out, asked=3, max_interlayer=2, per_pair_scope=True,
+        scope_lt_mode="discover", scope_pad=2, scope_hard_cap=6)
+    assert set(rows["path"]) == {"A->B->X->Y->C", "A->P->Q->B->C"}
+    assert manifest["scope_mode"] == "per_pair_shortest_plus_2"
+    assert manifest["scope_lt"] == "max_local_validated"
+    assert manifest["scope_complete_by_pair"]["A->C"] == "exhausted"
+    assert manifest["scope_complete"] is True
+    assert manifest["type_pruned_complete"] is True
+    assert manifest["scope_pad"] == 2
+    assert manifest["scope_hard_cap"] == 6
+    assert manifest["scope_bound_source"] == "Lt_plus_pad"
+    scope = pl.read_csv(out / "route_scope_pairs.csv").to_dicts()
+    assert len(scope) == 1
+    pair = scope[0]
+    assert pair["Lt_i"] == 4 and pair["Lt"] == 4
+    assert pair["scope_bound"] == 6
+    assert pair["scope_pad_effective"] == 2
+    assert pair["scope_mode"] == "per_pair_shortest_plus_2"
+    assert pair["applied_floor"] == 3
+    assert pair["status"] == "exhausted"
+    assert pair["first_phantom_type_path"] == "A->B->C"
+    assert pair["witness_type_path"] == "A->B->X->Y->C"
+    assert pair["witness_body_path"] == "a1->b1->x1->y1->c1"
+    assert pair["paths"] == 2
+    # The reusable Pass-A table carries the same validated length.
+    table = pl.read_csv(out / "scope_table.csv").to_dicts()[0]
+    assert table["Lt_i"] == 4 and table["max_hops"] == 6
+    assert table["type_map_sha"] == manifest["type_map_sha"]
+    # The scoped universe is built at the discovered bound, not at the
+    # run's global max_interlayer+1 (3): the 4-hop route is enumerated.
+    assert manifest["scope_working_bound"] == 6
+    assert manifest["scope_final_max_bound"] == 6
+
+
+def test_per_pair_scope_hard_cap_marks_pair_capped(tmp_path):
+    """Acceptance 5: Lt+2 above the hard cap bounds the pair at the cap,
+    keeps the in-scope paths, and forces the scoped completeness false."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "d1", 90),
+        ("d1", "e1", 80), ("e1", "c1", 70),
+    ]
+    types = {"a1": "A", "b1": "B", "d1": "D",
+             "e1": "E", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out"
+    rows, manifest = _run_typed(
+        root, out, max_interlayer=2, per_pair_scope=True,
+        scope_lt_mode="discover", scope_pad=2, scope_hard_cap=4)
+    assert set(rows["path"]) == {"A->B->D->E->C"}
+    pair = pl.read_csv(out / "route_scope_pairs.csv").to_dicts()[0]
+    assert pair["Lt_i"] == 4
+    assert pair["scope_bound"] == 4
+    assert pair["hard_capped"] is True
+    assert pair["status"] == "capped"
+    assert manifest["scope_complete_by_pair"]["A->C"] == "capped"
+    assert manifest["scope_complete"] is False
+    assert manifest["type_pruned_complete"] is False
+    assert manifest["completeness_reason"] == "per_pair_capped"
+    assert manifest["scope_capped_pairs"] == ["A->C"]
+
+
+def test_per_pair_scope_external_table_scope_and_outside_target(tmp_path):
+    """Acceptance 3/4: a 1-hop target is in scope at bound 3; a target
+    reachable only at 4 hops is reported no_path and absent. The +1
+    sensitivity table includes it."""
+    edges = [
+        ("a1", "c1", 5),                       # A->C, 1 hop
+        ("a1", "b1", 10), ("b1", "e1", 9),
+        ("e1", "f1", 8), ("f1", "d1", 7),      # A->D, 4 hops
+    ]
+    types = {"a1": "A", "c1": "C", "b1": "B", "e1": "E",
+             "f1": "F", "d1": "D"}
+    root = _typed_dataset(tmp_path, edges, types)
+    table = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C",
+         "max_hops": 3, "Lt_i": 1},
+        {"source_type": "A", "target_type": "D",
+         "max_hops": None, "Lt_i": None},
+    ])
+    out = tmp_path / "out"
+    rows, manifest = _run_typed(
+        root, out, max_interlayer=2, source_types=["A"],
+        target_types=["C", "D"], per_pair_scope=True,
+        scope_lt_mode="external", scope_table=str(table),
+        scope_pad=2, scope_hard_cap=6)
+    assert set(rows["path"]) == {"A->C"}
+    assert manifest["scope_lt"] == "external_table"
+    assert manifest["scope_complete_by_pair"] == {
+        "A->C": "exhausted", "A->D": "no_path"}
+    assert manifest["scope_complete"] is False
+    assert manifest["type_pruned_complete"] is False
+    assert manifest["scope_no_path_pairs"] == ["A->D"]
+    scope = {f'{r["source_type"]}->{r["target_type"]}': r
+             for r in pl.read_csv(out / "route_scope_pairs.csv").to_dicts()}
+    assert scope["A->C"]["scope_bound"] == 3
+    assert scope["A->D"]["scope_bound"] is None
+    assert scope["A->D"]["status"] == "no_path"
+
+    # +1 sensitivity: the 4-hop target's own bound now admits it.
+    table2 = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C",
+         "max_hops": 3, "Lt_i": 1},
+        {"source_type": "A", "target_type": "D",
+         "max_hops": 4, "Lt_i": None},
+    ], name="scope_sensitivity.csv")
+    out2 = tmp_path / "out2"
+    rows2, manifest2 = _run_typed(
+        root, out2, max_interlayer=2, source_types=["A"],
+        target_types=["C", "D"], per_pair_scope=True,
+        scope_lt_mode="external", scope_table=str(table2),
+        scope_pad=2, scope_hard_cap=6)
+    assert set(rows2["path"]) == {"A->C", "A->B->E->F->D"}
+    assert manifest2["scope_complete_by_pair"] == {
+        "A->C": "exhausted", "A->D": "exhausted"}
+    assert manifest2["scope_complete"] is True
+
+
+def test_per_pair_scope_table_refusals(tmp_path):
+    """Acceptance 4: missing/extra/duplicate pairs, a bound below the
+    declared Lt_i, and stale mapping/asked metadata all refuse."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out"
+
+    def _run(table):
+        return run_lane(
+            None, asked=1, max_interlayer=2, source_types=["A"],
+            target_types=["C"], connections_path=root / "connections.parquet",
+            neuron_table=root / "neurons.parquet", out_dir=out,
+            type_pruned=True, type_prune_basis="synapse",
+            type_min_synapse=1, type_min_ratio_adj=0.0,
+            per_pair_scope=True, scope_lt_mode="external",
+            scope_table=str(table), scope_pad=2, scope_hard_cap=6)
+
+    missing = _scope_table(tmp_path, [], name="empty.csv")
+    if missing.stat().st_size == 0:
+        missing.write_text("source_type,target_type,max_hops\n",
+                           encoding="utf-8")
+    with pytest.raises(CorridorRefusal, match="no rows|does not cover"):
+        _run(missing)
+    extra = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C",
+         "max_hops": 3, "Lt_i": 2},
+        {"source_type": "A", "target_type": "Z",
+         "max_hops": 3, "Lt_i": None},
+    ], name="extra.csv")
+    with pytest.raises(CorridorRefusal, match="did not select"):
+        _run(extra)
+    dup = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C",
+         "max_hops": 3, "Lt_i": 2},
+        {"source_type": "A", "target_type": "C",
+         "max_hops": 3, "Lt_i": 2},
+    ], name="dup.csv")
+    with pytest.raises(CorridorRefusal, match="duplicate"):
+        _run(dup)
+    below = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C",
+         "max_hops": 2, "Lt_i": 3},
+    ], name="below.csv")
+    with pytest.raises(CorridorRefusal, match="below.*Lt_i"):
+        _run(below)
+    stale_hash = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C", "max_hops": 3,
+         "Lt_i": 2, "type_map_sha": "deadbeef0000"},
+    ], name="stale_hash.csv")
+    with pytest.raises(CorridorRefusal, match="stale"):
+        _run(stale_hash)
+    stale_asked = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C", "max_hops": 3,
+         "Lt_i": 2, "asked": 999},
+    ], name="stale_asked.csv")
+    with pytest.raises(CorridorRefusal, match="stale"):
+        _run(stale_asked)
+    stale_thr = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C", "max_hops": 3,
+         "Lt_i": 2, "threshold": 0.5},
+    ], name="stale_threshold.csv")
+    with pytest.raises(CorridorRefusal, match="stale"):
+        _run(stale_thr)
+    zero_bound = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C", "max_hops": 0,
+         "Lt": 1},
+    ], name="zero_bound.csv")
+    with pytest.raises(CorridorRefusal, match="no max_hops"):
+        _run(zero_bound)
+    low_common = _scope_table(tmp_path, [
+        {"source_type": "A", "target_type": "C", "max_hops": 4,
+         "Lt": 2, "Lt_BANC": 4},
+    ], name="low_common.csv")
+    with pytest.raises(CorridorRefusal, match="max_i Lt_i"):
+        _run(low_common)
+
+
+def test_per_pair_scope_discover_table_replays_as_external(tmp_path):
+    """The article workflow: discover writes scope_table.csv; a separate
+    external-mode run consumes it and reproduces the same walks."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "c1", 80),
+        ("a1", "d1", 90), ("d1", "c1", 70),
+    ]
+    types = {"a1": "A", "b1": "B", "c1": "C", "d1": "D"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out1 = tmp_path / "discover"
+    rows1, manifest1 = _run_typed(
+        root, out1, max_interlayer=2, per_pair_scope=True,
+        scope_lt_mode="discover", scope_pad=2, scope_hard_cap=6)
+    table = out1 / "scope_table.csv"
+    assert table.exists()
+    out2 = tmp_path / "external"
+    rows2, manifest2 = _run_typed(
+        root, out2, max_interlayer=2, per_pair_scope=True,
+        scope_lt_mode="external", scope_table=str(table),
+        scope_pad=2, scope_hard_cap=6)
+    assert set(rows1["path"]) == set(rows2["path"]) == {"A->B->C", "A->D->C"}
+    assert manifest1["scope_complete"] is True
+    assert manifest2["scope_lt"] == "external_table"
+    assert len(manifest2["scope_table_sha"]) == 12
+    assert manifest2["scope_complete"] is True
+
+
+def test_enumerate_type_walks_honours_per_pair_bounds():
+    """The per-pair DFS records a target only inside its own bound and
+    prunes prefixes that cannot reach any target inside that bound."""
+    from route_plan import _enumerate_type_walks
+    pairs = pl.DataFrame({
+        "type_pre": ["A", "B", "A", "D"],
+        "type_post": ["B", "C", "D", "E"],
+        "w_sum": [1.0, 1.0, 1.0, 1.0],
+        "w_max": [1.0, 1.0, 1.0, 1.0],
+        "n": [1, 1, 1, 1],
+    })
+    pairs2 = pl.concat([pairs, pl.DataFrame({
+        "type_pre": ["E"], "type_post": ["C"],
+        "w_sum": [1.0], "w_max": [1.0], "n": [1]})])
+    walks, stats = _enumerate_type_walks(
+        pairs2, ["A"], {"C"}, bound=4,
+        pair_bounds={("A", "C"): 2})
+    assert walks == [("A", "B", "C")]
+    assert stats["scope"] == "per_pair"
+    walks_all, stats_all = _enumerate_type_walks(
+        pairs2, ["A"], {"C"}, bound=4,
+        pair_bounds={("A", "C"): 4})
+    assert set(walks_all) == {("A", "B", "C"), ("A", "D", "E", "C")}
+    assert stats_all["max_bound"] == 4
+    none, stats_none = _enumerate_type_walks(
+        pairs2, ["A"], {"C"}, bound=4,
+        pair_bounds={("A", "C"): None})
+    assert none == []
+    assert stats_none["walks"] == 0
+
+
+def test_per_pair_scope_off_has_no_scope_contract(tmp_path):
+    """The global-bound path is unchanged: no scope table, no scope fields."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(root, tmp_path / "out", max_interlayer=2)
+    assert rows.height == 1
+    assert "scope_mode" not in manifest
+    assert not (tmp_path / "out" / "route_scope_pairs.csv").exists()
+    prov = json.loads((tmp_path / "out" / "route_provenance.json").read_text())
+    assert prov["bound_source"] == "max_interlayer"
+    assert prov["scope_mode"] is None
+
+
+def test_per_pair_scope_three_dataset_lt_max_local_contract(tmp_path):
+    """Acceptance 1: three datasets with per-pair Lt_i 2/3/4 and a
+    conserved 4-hop path. A global-min+1 table (3) excludes it; the
+    max-local+1 (5) and max-local+2 (6) scopes include it."""
+    # Dataset A: shortest A->C is 2 hops.
+    d2 = _typed_dataset(tmp_path, [
+        ("a1", "b1", 100), ("b1", "c1", 80),
+    ], {"a1": "A", "b1": "B", "c1": "C"}, name="ds2")
+    # Dataset B: shortest A->C is 3 hops.
+    d3 = _typed_dataset(tmp_path, [
+        ("a1", "b1", 100), ("b1", "x1", 90), ("x1", "c1", 80),
+    ], {"a1": "A", "b1": "B", "x1": "X", "c1": "C"}, name="ds3")
+    # Dataset C: the conserved path is 4 hops; this is the slowest dataset.
+    d4 = _typed_dataset(tmp_path, [
+        ("a1", "b1", 100), ("b1", "x1", 90),
+        ("x1", "y1", 80), ("y1", "c1", 70),
+        ("a1", "d1", 60),  # a direct control target, so a 3-hop bound
+                           # still has a non-empty lossless cone
+    ], {"a1": "A", "b1": "B", "x1": "X", "y1": "Y",
+        "c1": "C", "d1": "D"}, name="ds4")
+    lts = {}
+    for name, root in (("ds2", d2), ("ds3", d3), ("ds4", d4)):
+        out = tmp_path / f"discover_{name}"
+        _run_typed(root, out, max_interlayer=2, per_pair_scope=True,
+                   scope_lt_mode="discover", scope_pad=2,
+                   scope_hard_cap=6)
+        table = pl.read_csv(out / "scope_table.csv").to_dicts()[0]
+        lts[name] = int(table["Lt_i"])
+        assert table["max_hops"] == min(int(table["Lt_i"]) + 2, 6)
+    assert lts == {"ds2": 2, "ds3": 3, "ds4": 4}
+    common_lt = max(lts.values())
+    assert common_lt == 4
+
+    def _external(max_hops, tag, lt_i=None, lt_value=None):
+        table = _scope_table(tmp_path, [
+            {"source_type": "A", "target_type": "C",
+             "max_hops": max_hops, "Lt_i": lt_i,
+             "Lt": common_lt if lt_value is None else lt_value},
+            {"source_type": "A", "target_type": "D",
+             "max_hops": 3, "Lt_i": 1, "Lt": 1},
+        ], name=f"scope_{tag}.csv")
+        out = tmp_path / f"external_{tag}"
+        rows, manifest = _run_typed(
+            d4, out, max_interlayer=2, source_types=["A"],
+            target_types=["C", "D"], per_pair_scope=True,
+            scope_lt_mode="external", scope_table=str(table),
+            scope_pad=2, scope_hard_cap=6)
+        return rows, manifest
+
+    # global-min Lt + 1 = 3: the 4-hop conserved path is outside scope.
+    rows_min, man_min = _external(
+        3, "global_min_plus_1", lt_i=None, lt_value=min(lts.values()))
+    assert "A->B->X->Y->C" not in set(rows_min["path"])
+    assert "A->D" in set(rows_min["path"])
+    assert man_min["scope_complete_by_pair"] == {
+        "A->C": "no_path", "A->D": "exhausted"}
+    assert man_min["scope_complete"] is False
+    # max-local Lt + 1 = 5: included.
+    rows_1, man_1 = _external(5, "max_local_plus_1", lt_i=common_lt)
+    assert set(rows_1["path"]) == {"A->B->X->Y->C", "A->D"}
+    assert man_1["scope_complete_by_pair"] == {
+        "A->C": "exhausted", "A->D": "exhausted"}
+    assert man_1["scope_complete"] is True
+    _pair_1 = {r["target_type"]: r for r in pl.read_csv(
+        tmp_path / "external_max_local_plus_1"
+        / "route_scope_pairs.csv").to_dicts()}["C"]
+    assert _pair_1["Lt_i"] == 4
+    assert _pair_1["Lt"] == common_lt == 4
+    assert _pair_1["scope_bound"] == 5
+    assert _pair_1["scope_pad_effective"] == 1
+    # max-local Lt + 2 = 6: included (and equal to the full 1 % set here).
+    rows_2, man_2 = _external(6, "max_local_plus_2", lt_i=common_lt)
+    assert set(rows_2["path"]) == {"A->B->X->Y->C", "A->D"}
+    assert man_2["scope_complete"] is True
+
+
+def test_per_pair_scope_empty_cone_completes_as_no_path(tmp_path):
+    """A scope too small for every target is a legitimate no_path result,
+    not a refusal: the run reports the unreached pair and claims no
+    completeness."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "x1", 90),
+        ("x1", "y1", 80), ("y1", "c1", 70),   # A->C is 4 hops
+    ]
+    types = {"a1": "A", "b1": "B", "x1": "X",
+             "y1": "Y", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    table = _scope_table(tmp_path, [{
+        "source_type": "A", "target_type": "C", "max_hops": 3,
+    }], name="small_scope.csv")
+    out = tmp_path / "out"
+    assert run_lane(
+        None, asked=1, max_interlayer=2, source_types=["A"],
+        target_types=["C"], connections_path=root / "connections.parquet",
+        neuron_table=root / "neurons.parquet", out_dir=out,
+        type_pruned=True, type_prune_basis="synapse",
+        type_min_synapse=1, type_min_ratio_adj=0.0,
+        per_pair_scope=True, scope_lt_mode="external",
+        scope_table=str(table), scope_pad=2, scope_hard_cap=6)
+    manifest = json.loads((out / "type_prune_manifest.json").read_text())
+    assert manifest["scope_complete_by_pair"] == {"A->C": "no_path"}
+    assert manifest["scope_complete"] is False
+    assert manifest["type_pruned_complete"] is False
+    assert manifest["completeness_reason"] == "per_pair_no_path"
+    assert pl.read_csv(out / "route_paths_type.csv").height == 0
+    assert pl.read_csv(out / "route_scope_pairs.csv").height == 1
+    prov = json.loads((out / "route_provenance.json").read_text())
+    assert prov["status"] == "complete"
+    assert prov["scope_no_path_pairs"] == ["A->C"]
+
+
+def test_per_pair_scope_run_folder_external_round_trip(tmp_path):
+    """A run-folder replay reads `per pair scope`/`scope table` from
+    parameters.txt; an external scope table reproduces discover's paths."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "c1", 80),
+        ("a1", "d1", 90), ("d1", "c1", 70),
+    ]
+    types = {"a1": "A", "b1": "B", "c1": "C", "d1": "D"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out_discover = tmp_path / "discover"
+    rows_d, _ = _run_typed(
+        root, out_discover, max_interlayer=2, per_pair_scope=True,
+        scope_lt_mode="discover", scope_pad=2, scope_hard_cap=6)
+    table = out_discover / "scope_table.csv"
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "dataset:                    synth\n"
+        "path_mode:                  all\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n"
+        "type min ratio adj:         0.0\n"
+        "type min synapse:           1\n"
+        "per pair scope:             True\n"
+        "scope lt mode:              external\n"
+        f"scope table:                {table}\n"
+        "scope pad:                  2\n"
+        "scope hard cap:             6\n"
+        "scope discovery cap:        6\n",
+        encoding="utf-8")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    lane = run / "route_scope_paths_type_pruned"
+    rows_r = pl.read_csv(lane / "route_paths_type.csv")
+    manifest = json.loads((lane / "type_prune_manifest.json").read_text())
+    assert set(rows_r["path"]) == set(rows_d["path"])
+    assert manifest["scope_lt"] == "external_table"
+    assert manifest["scope_complete"] is True
+    assert (lane / "route_scope_pairs.csv").exists()
+    # The supplied table is preserved beside the lane outputs, byte-equal
+    # to the input whose sha the manifest records.
+    assert (lane / "scope_table.csv").read_bytes() == table.read_bytes()
+
+    # Portable replay: if the originally recorded table path is gone, the
+    # lane's byte-identical copy is the fallback audit witness.
+    table.unlink()
+    rerun = run / "rerun"
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet", out_dir=rerun)
+    rows_rerun = pl.read_csv(rerun / "route_paths_type.csv")
+    manifest2 = json.loads((rerun / "type_prune_manifest.json").read_text())
+    assert set(rows_rerun["path"]) == set(rows_d["path"])
+    assert manifest2["scope_table_sha"] == manifest["scope_table_sha"]
+    assert manifest2["scope_lt"] == "external_table"
+
+
+def test_per_pair_scope_all_unreached_table_completes(tmp_path):
+    """Every pair may be unreached: a table with no bounds completes with
+    no_path rows instead of refusing or inventing a global bound."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "x1", 90),
+        ("x1", "y1", 80), ("y1", "c1", 70),
+    ]
+    types = {"a1": "A", "b1": "B", "x1": "X",
+             "y1": "Y", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    table = _scope_table(tmp_path, [{
+        "source_type": "A", "target_type": "C", "max_hops": None,
+    }], name="all_unreached.csv")
+    out = tmp_path / "out"
+    assert run_lane(
+        None, asked=1, max_interlayer=2, source_types=["A"],
+        target_types=["C"], connections_path=root / "connections.parquet",
+        neuron_table=root / "neurons.parquet", out_dir=out,
+        type_pruned=True, type_prune_basis="synapse",
+        type_min_synapse=1, type_min_ratio_adj=0.0,
+        per_pair_scope=True, scope_lt_mode="external",
+        scope_table=str(table), scope_pad=2, scope_hard_cap=6)
+    manifest = json.loads((out / "type_prune_manifest.json").read_text())
+    assert manifest["scope_complete_by_pair"] == {"A->C": "no_path"}
+    assert manifest["scope_complete"] is False
+    assert manifest["type_pruned_complete"] is False
+    assert pl.read_csv(out / "route_paths_type.csv").height == 0
+    assert pl.read_csv(out / "route_scope_pairs.csv").height == 1
+
+
+def test_fast_subprocess_ignores_the_per_pair_scope_stamp(tmp_path):
+    """The Fast subprocess on a scoped typed folder passes
+    --no-infer-type-pruned; it must ignore the scope stamp too, or the
+    Fast lane would refuse as a typed run."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "path_mode:                  all\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n"
+        "type min ratio adj:         0.0\n"
+        "type min synapse:           1\n"
+        "per pair scope:             True\n"
+        "scope lt mode:              discover\n"
+        "scope pad:                  2\n"
+        "scope hard cap:             6\n"
+        "scope discovery cap:        6\n",
+        encoding="utf-8")
+    out = tmp_path / "fast"
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet", out_dir=out,
+                    type_pruned=False, infer_type_pruned=False)
+    assert (out / "route_paths_type.csv").exists()
+    assert not (out / "route_scope_pairs.csv").exists()
+    prov = json.loads((out / "route_provenance.json").read_text())
+    assert prov["type_pruned"] is False
+    assert prov["scope_mode"] is None
+    assert not (run / "route_scope_paths_type_pruned").exists()
+
+
+def test_per_pair_scope_external_lt_plus_pad_over_cap_is_capped(tmp_path):
+    """External mode: a pair whose Lt + pad exceeds the hard cap is capped
+    even when the table already clamped max_hops to the cap."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "x1", 90), ("x1", "c1", 80),
+    ]
+    types = {"a1": "A", "b1": "B", "x1": "X", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    table = _scope_table(tmp_path, [{
+        "source_type": "A", "target_type": "C", "max_hops": 4,
+        "Lt_i": 3, "Lt": 3,
+    }], name="cap_table.csv")
+    out = tmp_path / "out"
+    rows, manifest = _run_typed(
+        root, out, max_interlayer=2, per_pair_scope=True,
+        scope_lt_mode="external", scope_table=str(table),
+        scope_pad=2, scope_hard_cap=4)
+    assert set(rows["path"]) == {"A->B->X->C"}
+    pair = pl.read_csv(out / "route_scope_pairs.csv").to_dicts()[0]
+    assert pair["scope_bound"] == 4
+    assert pair["scope_pad_effective"] == 1
+    assert pair["hard_capped"] is True
+    assert pair["status"] == "capped"
+    assert manifest["scope_bound_source"] == "external_table"
+    assert manifest["scope_complete"] is False
+    assert manifest["completeness_reason"] == "per_pair_capped"
+
+
+def test_per_pair_scope_report_fills_the_local_volume_column(tmp_path):
+    """The per-pair report names Lt_FAFB/Lt_MCNS/Lt_BANC; a FAFB run fills
+    its own column even when the input table carries no Lt_<volume>."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out"
+    rows, manifest = _run_typed(
+        root, out, dataset="flywire_FAFB_v783", max_interlayer=2,
+        per_pair_scope=True, scope_lt_mode="discover",
+        scope_pad=2, scope_hard_cap=6)
+    pair = pl.read_csv(out / "route_scope_pairs.csv").to_dicts()[0]
+    assert pair["Lt_FAFB"] == pair["Lt_i"] == 2
+    assert pair["Lt_MCNS"] is None
+    assert pair["Lt_BANC"] is None
+    assert manifest["scope_dataset"] == "flywire_FAFB_v783"
+
+
+def test_per_pair_scope_external_validation_cap_is_not_upgraded(tmp_path):
+    """A supplied table whose scope discovery was validation-capped cannot
+    be reported as exhausted just because this run's enumeration drains."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    table = _scope_table(tmp_path, [{
+        "source_type": "A", "target_type": "C", "max_hops": 4,
+        "Lt_i": 2, "Lt": 2, "status": "validation_cap",
+    }], name="validation_cap_table.csv")
+    out = tmp_path / "out"
+    rows, manifest = _run_typed(
+        root, out, max_interlayer=2, per_pair_scope=True,
+        scope_lt_mode="external", scope_table=str(table),
+        scope_pad=2, scope_hard_cap=6)
+    assert set(rows["path"]) == {"A->B->C"}
+    pair = pl.read_csv(out / "route_scope_pairs.csv").to_dicts()[0]
+    assert pair["status"] == "validation_cap"
+    assert manifest["scope_complete_by_pair"] == {
+        "A->C": "validation_cap"}
+    assert manifest["scope_complete"] is False
+    assert manifest["completeness_reason"] == "per_pair_validation_cap"
+    assert manifest["type_pruned_complete"] is False
+
+
+def test_per_pair_scope_external_volume_columns_derive_common_lt(tmp_path):
+    """A multi-dataset table carrying only Lt_FAFB/Lt_MCNS/Lt_BANC takes
+    Lt = max(volumes) and derives max_hops = Lt + pad (issue §3 item 2)."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "x1", 90),
+        ("x1", "y1", 80), ("y1", "c1", 70),
+    ]
+    types = {"a1": "A", "b1": "B", "x1": "X",
+             "y1": "Y", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    table = _scope_table(tmp_path, [{
+        "source_type": "A", "target_type": "C",
+        "Lt_FAFB": 2, "Lt_MCNS": 3, "Lt_BANC": 4,
+    }], name="multi_volume.csv")
+    out = tmp_path / "out"
+    rows, manifest = _run_typed(
+        root, out, dataset="flywire_FAFB_v783", max_interlayer=2,
+        per_pair_scope=True, scope_lt_mode="external",
+        scope_table=str(table), scope_pad=2, scope_hard_cap=8)
+    assert set(rows["path"]) == {"A->B->X->Y->C"}
+    pair = pl.read_csv(out / "route_scope_pairs.csv").to_dicts()[0]
+    assert pair["Lt"] == 4
+    assert pair["scope_bound"] == 6
+    assert pair["scope_pad_effective"] == 2
+    assert pair["Lt_FAFB"] == 2
+    assert pair["Lt_MCNS"] == 3
+    assert pair["Lt_BANC"] == 4
+    assert pair["status"] == "exhausted"
+    assert manifest["scope_complete"] is True

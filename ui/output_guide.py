@@ -1395,16 +1395,39 @@ _PATHFINDING_FILES = [
                     "candidate/validated/phantom/unverified/weak-filtered "
                     "counts, type_pruned_complete + filter_complete + "
                     "completeness_reason, revisit policy, label-map hash, "
-                    "and the requested vs Complete tau."},
+                    "and the requested vs Complete tau. A per-pair run also "
+                    "carries scope_mode/scope_lt/scope_pad/scope_hard_cap/"
+                    "scope_table_sha, scope_complete_by_pair and the capped/"
+                    "no_path/validation_cap pair lists; type_pruned_complete "
+                    "then means complete WITHIN that per-pair scope only."},
     {"pattern": "route_scope_paths_type_pruned/route_type_pairs_pruned.csv",
      "description": "The kept type graph the lane enumerated: type_pre/"
                     "type_post, w_sum/w_max/n and both pair-level ratios, "
                     "so every candidate walk can be checked against its "
                     "coarse prune basis."},
+    {"pattern": "route_scope_paths_type_pruned/route_scope_pairs.csv",
+     "description": "Per-pair shortest scope (per-pair runs only): "
+                    "source_type, target_type, Lt_i/Lt/Lt_dataset, the "
+                    "scope_bound, paths/bodyId paths, and the status "
+                    "exhausted | capped | no_path | validation_cap. Pairs "
+                    "with no validated path carry no bound; the claim is "
+                    "complete within this scope only.",
+     "preview": True,
+     "preview_title": "Per-pair scope",
+     "columns": ["Lt_i", "scope_bound", "status"]},
+    {"pattern": "route_scope_paths_type_pruned/scope_table.csv",
+     "description": "Reusable Pass-A scope table from discover mode: "
+                    "source_type, target_type, Lt_i, Lt, max_hops and the "
+                    "type-map/threshold metadata. Feed it to a later "
+                    "external-scope run (or a cross-dataset max_i Lt_i "
+                    "table) without rediscovering."},
     {"pattern": "route_scope_paths_type_pruned/route_provenance.json",
      "description": "Type-pruned lane provenance: the same schema as the "
                     "Fast lane plus the type_prune block, label/enrollment "
-                    "witnesses and the separate completeness field."},
+                    "witnesses and the separate completeness field. A "
+                    "per-pair run also carries the top-level scope block "
+                    "(scope_complete, scope_complete_by_pair, capped/"
+                    "no_path pairs, bound source)."},
     # The lane's SECOND ROUND (Q2): the same validated chains re-valued at
     # synapse >= 1, so a Fast run answers the scope pair the Complete mode
     # does. One namespace (route_scope_paths/), the complete mode's names.

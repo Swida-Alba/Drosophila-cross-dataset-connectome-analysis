@@ -961,9 +961,675 @@ def _prune_type_pairs(pairs, type_incoming, type_incoming_adj, *,
                             if mass_before > 0 else None)}
 
 
+def _type_adjacency(pairs):
+    """Type-level adjacency in the lane's canonical order."""
+    adj: dict = {}
+    for a, b, w in zip(pairs["type_pre"], pairs["type_post"],
+                       pairs["w_max"]):
+        adj.setdefault(str(a), []).append((str(b), float(w)))
+    for a in adj:
+        adj[a].sort(key=lambda x: (-x[1], x[0]))
+    return adj
+
+
+def _type_distance_avoiding(pairs, source, target, targets, max_layers,
+                            adj=None):
+    """Shortest type-only hop count from *source* to *target* that never
+    passes THROUGH another target type (the lane's first-target rule).
+
+    Returns None when no such route exists within *max_layers*. This is a
+    discovery aid only; the validated shortest length is proven at bodyId
+    level, never taken from this BFS."""
+    adj = adj if adj is not None else _type_adjacency(pairs)
+    if source == target or source in targets:
+        return 0 if source == target else None
+    frontier = {source}
+    seen = {source}
+    for layer in range(1, int(max_layers) + 1):
+        nxt = set()
+        for u in frontier:
+            for v, _w in adj.get(u, ()):
+                if v in seen:
+                    continue
+                if v == target:
+                    return layer
+                if v in targets:
+                    # a first target ends the lane's walk; it is not a
+                    # valid intermediate
+                    continue
+                seen.add(v)
+                nxt.add(v)
+        if not nxt:
+            break
+        frontier = nxt
+    return None
+
+
+def _type_walks_exact(pairs, source, target, hops, targets, *,
+                      revisit_policy="bounded", max_type_visits=0,
+                      max_walks=2_000_000, adj=None):
+    """Every type walk of EXACTLY *hops* hops from source to target.
+
+    Uses the same first-target rule and canonical adjacency order as
+    ``_enumerate_type_walks``, so a discovered length is a length the
+    complete pass can actually enumerate. The discovery pass tries these
+    lengths in ascending order; a phantom shortest walk simply yields no
+    accepted realization and the pass advances one hop."""
+    adj = adj if adj is not None else _type_adjacency(pairs)
+    tgt = {str(t) for t in targets}
+    source = str(source)
+    target = str(target)
+    if source == target or source in tgt:
+        return [], {"walks": 0, "capped": False}
+    _max_visits = (int(max_type_visits) if int(max_type_visits) > 0
+                   else int(hops))
+    walks: list = []
+    capped = False
+
+    def _dfs(node, walk, visits, depth):
+        nonlocal capped
+        if depth >= hops:
+            return
+        for nxt, _w in adj.get(node, ()):
+            if len(walks) >= max_walks:
+                capped = True
+                return
+            nd = depth + 1
+            if nxt in tgt:
+                if nxt == target and nd == hops:
+                    walks.append(tuple(walk + (nxt,)))
+                # FIRST-TARGET RULE: never continue through a target
+                continue
+            if revisit_policy == "simple":
+                if nxt in visits:
+                    continue
+                nv = dict(visits)
+                nv[nxt] = 1
+                _dfs(nxt, walk + (nxt,), nv, nd)
+            elif revisit_policy == "bounded":
+                if visits.get(nxt, 0) >= _max_visits:
+                    continue
+                nv = dict(visits)
+                nv[nxt] = nv.get(nxt, 0) + 1
+                _dfs(nxt, walk + (nxt,), nv, nd)
+            else:
+                raise ValueError(
+                    f"unknown revisit policy {revisit_policy!r}")
+
+    _dfs(source, (source,), {source: 1}, 0)
+    return walks, {"walks": len(walks), "capped": capped}
+
+
+def _one_body_path(pair_edges, walk, src_bodies, tgt_bodies):
+    """One bodyId-simple witness for a type walk, in canonical order.
+    Evidence only: the exported masses stay chain-level."""
+    hops = [pair_edges.hop(a, b) for a, b in zip(walk, walk[1:])]
+    h = len(hops)
+    goals = set(tgt_bodies)
+
+    def _dfs(i, node, path, seen):
+        if i == h:
+            return list(path) if node in goals else None
+        for v in hops[i].get(node, ()):
+            if v in seen:
+                continue
+            got = _dfs(i + 1, v, path + [v], seen | {v})
+            if got is not None:
+                return got
+        return None
+
+    for start in sorted(src_bodies):
+        got = _dfs(0, start, [start], {start})
+        if got is not None:
+            return got
+    return None
+
+
+def _scope_chain_min_ratio_adj(walk, pair_edges, src_bodies, tgt_bodies,
+                               body2type, type_incoming_adj):
+    """The realized min_ratio_adj of ONE type walk, computed by the same
+    chain-level layered filter the exported lane rows use. None means the
+    chain has no realization (a phantom) or no hop has a conditioned
+    denominator (an unresolved adjusted readout)."""
+    from type_level_refill import _layered_chain_structures
+
+    hop_dicts = {}
+    for a, b in zip(walk, walk[1:]):
+        d = {}
+        for u, v, w in pair_edges.tuples(a, b):
+            d.setdefault(u, []).append((v, float(w)))
+        if not d:
+            return None
+        hop_dicts[(a, b)] = d
+    try:
+        st = _layered_chain_structures(
+            tuple(walk), hop_dicts, src_bodies, tgt_bodies,
+            body2type, set())
+    except Exception:  # noqa: BLE001 - fail closed, never fabricate
+        return None
+    if st is None:
+        return None
+    masses = [sum(e.values()) for e in st["edges_at"]]
+    finite = []
+    for i, mass in enumerate(masses):
+        denom = type_incoming_adj.get(walk[i + 1], 0.0)
+        if denom > 0:
+            finite.append(mass / denom)
+    return min(finite) if finite else None
+
+
+def _empty_scope_counts():
+    return {"candidate_walks": 0, "validated_walks": 0, "paths": 0,
+            "bodyid_paths": 0, "phantoms": 0, "filtered_weak": 0,
+            "unverified": 0, "validation_truncated": 0,
+            "realization_missing": 0, "ratio_unresolved": 0}
+
+
+def _scope_dataset_family(dataset):
+    """The per-pair report's Lt_<volume> column this dataset fills."""
+    name = str(dataset or "").strip().lower()
+    if "banc" in name:
+        return "BANC"
+    if "male-cns" in name or "mcns" in name:
+        return "MCNS"
+    if "fafb" in name or "flywire" in name:
+        return "FAFB"
+    return None
+
+
+def _discover_scope(*, pairs, pair_edges, src_types, tgt_types, src_ids,
+                    tgt_ids, src_keep, tgt_keep, body2type, discovery_cap,
+                    scope_pad, hard_cap, min_ratio_adj, validate_work_cap,
+                    type_incoming_adj, revisit_policy, max_type_visits,
+                    walk_cap, dataset="", deadline=None, log=None):
+    """Pass A: the per-pair validated shortest length.
+
+    For each selected (source_type, target_type) pair, try type walks in
+    ascending hop count. A type-shortest walk with no bodyId realization
+    (a phantom) does NOT set ``Lt_i``; the pass advances until the first
+    walk that is both bodyId-validated and clears the exact realized
+    ``min_ratio_adj`` gate. Returns (rows_by_pair, bounds_by_pair, block).
+
+    Raw type-BFS distances appear only as evidence
+    (``type_shortest_hops``); the stored ``Lt_i`` is the validated length.
+    """
+    say = log or (lambda *a, **k: None)
+    import time as _t
+
+    targets = {str(t) for t in tgt_types}
+    src_order = sorted({str(s) for s in src_types})
+    tgt_order = sorted(targets)
+    s_bodies_by_type, t_bodies_by_type = {}, {}
+    for b in src_ids:
+        typ = body2type.get(b)
+        if typ in targets or typ is None:
+            continue
+        if not src_keep or b in src_keep:
+            s_bodies_by_type.setdefault(typ, []).append(b)
+    for b in tgt_ids:
+        typ = body2type.get(b)
+        if typ is None:
+            continue
+        if not tgt_keep or b in tgt_keep:
+            t_bodies_by_type.setdefault(typ, set()).add(b)
+
+    unbounded_cap = max(1, len({str(x) for x in pairs["type_pre"]}) + 1)
+    adj = _type_adjacency(pairs)
+    rows: dict = {}
+    bounds: dict = {}
+    cap_hit = []
+    validation_cap_pairs = []
+    no_path_pairs = []
+
+    for s in src_order:
+        for t in tgt_order:
+            pair = (s, t)
+            row = {
+                "source_type": s, "target_type": t,
+                "Lt_i": None, "Lt": None, "Lt_dataset": dataset or None,
+                "scope_bound": None, "status": "no_path",
+                "hard_capped": False, "discovery_cap_hit": False,
+                "type_shortest_hops": None,
+                "phantom_attempts": 0,
+                "first_phantom_type_path": None,
+                "witness_type_path": None, "witness_body_path": None,
+                **_empty_scope_counts(),
+            }
+            bounds[pair] = None
+            if s in targets:
+                rows[pair] = row
+                no_path_pairs.append(pair)
+                continue
+            d_cap = _type_distance_avoiding(
+                pairs, s, t, targets, discovery_cap, adj=adj)
+            d_any = None
+            if d_cap is None:
+                d_any = _type_distance_avoiding(
+                    pairs, s, t, targets, unbounded_cap, adj=adj)
+            row["type_shortest_hops"] = d_cap if d_cap is not None else d_any
+            if d_cap is None:
+                if d_any is not None and d_any > discovery_cap:
+                    row["status"] = "capped"
+                    row["discovery_cap_hit"] = True
+                    cap_hit.append(pair)
+                else:
+                    no_path_pairs.append(pair)
+                rows[pair] = row
+                bounds[pair] = None
+                continue
+
+            found = False
+            walk_cap_hit = False
+            for hops in range(int(d_cap), int(discovery_cap) + 1):
+                if deadline is not None and _t.monotonic() > deadline:
+                    row["status"] = "capped"
+                    cap_hit.append(pair)
+                    break
+                walks, wstats = _type_walks_exact(
+                    pairs, s, t, hops, targets,
+                    revisit_policy=revisit_policy,
+                    max_type_visits=max_type_visits,
+                    max_walks=walk_cap, adj=adj)
+                if wstats.get("capped"):
+                    row["status"] = "capped"
+                    walk_cap_hit = True
+                    cap_hit.append(pair)
+                    break
+                for walk in walks:
+                    row["candidate_walks"] += 1
+                    s_bodies = s_bodies_by_type.get(s, [])
+                    t_bodies = t_bodies_by_type.get(t, set())
+                    if not s_bodies or not t_bodies:
+                        row["unverified"] += 1
+                        continue
+                    n, truncated = _realize_on_loss(
+                        pair_edges, walk, s_bodies, t_bodies, 1,
+                        dp_work_cap=int(validate_work_cap),
+                        dfs_work_cap=int(validate_work_cap))
+                    if n == 0:
+                        if truncated:
+                            row["unverified"] += 1
+                        else:
+                            row["phantoms"] += 1
+                            row["phantom_attempts"] += 1
+                            if row["first_phantom_type_path"] is None:
+                                row["first_phantom_type_path"] = "->".join(walk)
+                        continue
+                    row["validated_walks"] += 1
+                    if truncated:
+                        row["validation_truncated"] += 1
+                    min_adj = _scope_chain_min_ratio_adj(
+                        walk, pair_edges, s_bodies, t_bodies, body2type,
+                        type_incoming_adj)
+                    if min_adj is None:
+                        row["ratio_unresolved"] += 1
+                        continue
+                    if min_ratio_adj > 0 and float(min_adj) <= float(
+                            min_ratio_adj):
+                        row["filtered_weak"] += 1
+                        continue
+                    bound = int(hops) + int(scope_pad)
+                    hard_capped = bool(
+                        hard_cap is not None and bound > int(hard_cap))
+                    if hard_capped:
+                        bound = int(hard_cap)
+                    row.update({
+                        "Lt_i": int(hops), "Lt": int(hops),
+                        "scope_bound": int(bound),
+                        "scope_pad_effective": int(bound) - int(hops),
+                        "hard_capped": hard_capped,
+                        "status": "capped" if hard_capped else "exhausted",
+                        "witness_type_path": "->".join(walk),
+                    })
+                    witness = _one_body_path(
+                        pair_edges, walk, s_bodies, t_bodies)
+                    row["witness_body_path"] = (
+                        "->".join(str(b) for b in witness)
+                        if witness else None)
+                    found = True
+                    break
+                if found:
+                    break
+            if found:
+                bounds[pair] = row["scope_bound"]
+                if row["hard_capped"]:
+                    cap_hit.append(pair)
+            elif row["status"] == "no_path":
+                if (row["validation_truncated"] or row["unverified"]
+                        or row["realization_missing"]
+                        or row["ratio_unresolved"]):
+                    row["status"] = "validation_cap"
+                    validation_cap_pairs.append(pair)
+                elif walk_cap_hit:
+                    row["status"] = "capped"
+                else:
+                    no_path_pairs.append(pair)
+            rows[pair] = row
+
+    block = {
+        "scope_mode": "per_pair_shortest_plus_2",
+        "scope_lt": "max_local_validated",
+        "scope_pad": int(scope_pad),
+        "scope_hard_cap": (int(hard_cap) if hard_cap is not None else None),
+        "scope_discovery_cap": int(discovery_cap),
+        "scope_bound_source": "Lt_plus_pad",
+        "scope_pairs_total": len(rows),
+        "scope_pairs_with_lt": sum(
+            1 for r in rows.values() if r["Lt_i"] is not None),
+        "scope_capped_pairs": sorted(
+            {f"{s}->{t}" for s, t in cap_hit}),
+        "scope_no_path_pairs": sorted(
+            {f"{s}->{t}" for s, t in no_path_pairs}),
+        "scope_validation_cap_pairs": sorted(
+            {f"{s}->{t}" for s, t in validation_cap_pairs}),
+        "scope_lt_evidence": "bodyId-validated accepted walk per pair "
+                             "(not a raw type-BFS shortest)",
+    }
+    say(f"  · scope discovery: {block['scope_pairs_with_lt']}/"
+        f"{block['scope_pairs_total']} pairs with a validated Lt "
+        f"(cap {discovery_cap} hops)")
+    return rows, bounds, block
+
+
+def _scope_int(value):
+    """Parse a scope-table integer; blank/None/null/nan -> None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text.lower() in ("", "none", "null", "nan", "na"):
+        return None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        raise CorridorRefusal(f"scope table value {value!r} is not an int")
+    if not number.is_integer():
+        raise CorridorRefusal(
+            f"scope table value {value!r} is not a whole hop count")
+    return int(number)
+
+
+def _scope_table_value(df, column):
+    """One non-empty value from a scope-table column, refusing conflicts."""
+    if column is None:
+        return None
+    vals = set()
+    for value in df[column].to_list():
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text.lower() in ("", "none", "null", "nan", "na"):
+            continue
+        vals.add(text)
+    if len(vals) > 1:
+        raise CorridorRefusal(
+            f"scope table column {column!r} carries conflicting values "
+            f"{sorted(vals)[:4]}")
+    return next(iter(vals)) if vals else None
+
+
+def _load_scope_table(path, *, src_types, tgt_types, scope_pad, hard_cap,
+                      type_map_sha, asked, threshold):
+    """Load and validate the external per-pair scope table.
+
+    Required coverage is every selected (source_type, target_type) pair.
+    A row supplies ``max_hops`` (or ``scope_bound``/``bound``) and may
+    carry ``Lt_i``/``Lt``/``Lt_dataset`` evidence. Rows without a bound are
+    unreached pairs (bound None), never silently assigned a global bound.
+    Missing/extra/duplicate pairs, a bound below a declared Lt, and stale
+    mapping/threshold metadata all refuse the run.
+    """
+    import hashlib
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        raise CorridorRefusal(
+            f"scope table {str(p)!r} does not exist")
+    try:
+        raw = p.read_bytes()
+    except OSError as exc:
+        raise CorridorRefusal(
+            f"scope table {str(p)!r} is not readable ({exc})")
+    if not raw.strip():
+        raise CorridorRefusal("scope table has no rows")
+    try:
+        df = pl.read_csv(p, infer_schema_length=0)
+    except Exception as exc:  # noqa: BLE001 - refusal is the contract
+        raise CorridorRefusal(
+            f"scope table {str(p)!r} is not readable as CSV ({exc})")
+    if df.height == 0:
+        raise CorridorRefusal("scope table has no rows")
+    cols = {str(c).strip().lower(): c for c in df.columns}
+
+    def _col(*names):
+        for name in names:
+            if name in cols:
+                return cols[name]
+        return None
+
+    src_c = _col("source_type", "source", "type_pre")
+    tgt_c = _col("target_type", "target", "type_post")
+    max_c = _col("max_hops", "scope_bound", "bound", "hop_bound")
+    lti_c = _col("lt_i", "local_lt")
+    lt_c = _col("lt", "common_lt")
+    ltd_c = _col("lt_dataset")
+    status_c = _col("status", "scope_status")
+    vol_cols = {name: _col(name.lower())
+                for name in ("Lt_FAFB", "Lt_MCNS", "Lt_BANC")}
+    if src_c is None or tgt_c is None:
+        raise CorridorRefusal(
+            "scope table needs source_type and target_type columns")
+    if (max_c is None and lt_c is None
+            and not any(c is not None for c in vol_cols.values())):
+        raise CorridorRefusal(
+            "scope table needs max_hops (or scope_bound/bound), Lt, or "
+            "Lt_FAFB/Lt_MCNS/Lt_BANC")
+
+    hash_c = _col("type_map_sha")
+    asked_c = _col("asked", "requested_floor")
+    thr_c = _col("threshold", "min_ratio_adj")
+
+    def _check_meta(label, column, current, parse=float):
+        got = _scope_table_value(df, column)
+        if got is None:
+            return
+        try:
+            same = abs(parse(got) - parse(current)) <= 1e-9
+        except (TypeError, ValueError):
+            same = str(got) == str(current)
+        if not same:
+            raise CorridorRefusal(
+                f"scope table is stale: {label}={got!r} but this run's "
+                f"value is {current!r}")
+
+    if _scope_table_value(df, hash_c) is not None:
+        got = _scope_table_value(df, hash_c)
+        if str(got) != str(type_map_sha):
+            raise CorridorRefusal(
+                f"scope table is stale: type_map_sha={got!r} but this "
+                f"run's effective type map is {type_map_sha!r}")
+    _mode_col = _col("scope_mode")
+    _mode_val = _scope_table_value(df, _mode_col)
+    if _mode_val is not None:
+        _mode_val = _mode_val.strip().lower()
+    if _mode_val is not None and _mode_val != "per_pair_shortest_plus_2":
+        raise CorridorRefusal(
+            f"scope table declares scope_mode={_mode_val!r}; this lane "
+            "only consumes 'per_pair_shortest_plus_2'")
+    _check_meta("asked", asked_c, asked)
+    _check_meta("threshold", thr_c, threshold)
+
+    selected = {(str(s), str(t)) for s in src_types for t in tgt_types}
+    rows: dict = {}
+    bounds: dict = {}
+    capped_pairs = []
+    for rec in df.iter_rows(named=True):
+        s = str(rec[src_c] or "").strip()
+        t = str(rec[tgt_c] or "").strip()
+        if not s or not t:
+            raise CorridorRefusal(
+                "scope table has a row with an empty source/target type")
+        pair = (s, t)
+        if pair in rows:
+            raise CorridorRefusal(
+                f"scope table has duplicate rows for {s}->{t}")
+        max_hops = _scope_int(rec[max_c]) if max_c is not None else None
+        lt_i = _scope_int(rec[lti_c]) if lti_c is not None else None
+        lt = _scope_int(rec[lt_c]) if lt_c is not None else None
+        lt_dataset = (str(rec[ltd_c]).strip()
+                      if ltd_c is not None and rec[ltd_c] is not None
+                      else None)
+        status = (str(rec[status_c]).strip().lower()
+                  if status_c is not None and rec[status_c] is not None
+                  else None)
+        if status is not None and status not in (
+                "exhausted", "capped", "no_path", "validation_cap"):
+            raise CorridorRefusal(
+                f"scope table row {s}->{t} has unknown status {status!r}; "
+                "expected exhausted | capped | no_path | validation_cap")
+        extra = {}
+        for name, col in vol_cols.items():
+            if col is not None:
+                extra[name] = _scope_int(rec[col])
+        _vol_lts = [v for v in extra.values() if v is not None]
+        _vol_max = max(_vol_lts) if _vol_lts else None
+        if lt is None:
+            # A multi-dataset table may carry only the per-volume Lt
+            # columns: the common Lt is their maximum (issue §3 item 2).
+            if _vol_max is not None:
+                lt = _vol_max
+        elif _vol_max is not None and _vol_max > int(lt):
+            raise CorridorRefusal(
+                f"scope table row {s}->{t} declares Lt={lt} below its "
+                f"volume maximum {_vol_max}; Lt must be max_i Lt_i")
+        if max_hops is None and lt is not None:
+            max_hops = int(lt) + int(scope_pad)
+        if max_hops is not None and max_hops < 0:
+            raise CorridorRefusal(
+                f"scope table max_hops for {s}->{t} is negative")
+        if max_hops == 0:
+            max_hops = None
+        if lt_i is not None and int(lt_i) < 1:
+            raise CorridorRefusal(
+                f"scope table row {s}->{t} has Lt_i={lt_i}; a hop count "
+                "must be at least 1")
+        if lt is not None and int(lt) < 1:
+            raise CorridorRefusal(
+                f"scope table row {s}->{t} has Lt={lt}; a hop count "
+                "must be at least 1")
+        if lt_i is not None and max_hops is None:
+            raise CorridorRefusal(
+                f"scope table row {s}->{t} declares Lt_i={lt_i} but no "
+                "max_hops/scope_bound")
+        if lt is not None and max_hops is None:
+            raise CorridorRefusal(
+                f"scope table row {s}->{t} declares Lt={lt} but no "
+                "max_hops/scope_bound")
+        if lt_i is not None and max_hops < int(lt_i):
+            raise CorridorRefusal(
+                f"scope table max_hops={max_hops} for {s}->{t} is below "
+                f"its local Lt_i={lt_i}")
+        if lt is not None and max_hops < int(lt):
+            raise CorridorRefusal(
+                f"scope table max_hops={max_hops} for {s}->{t} is below "
+                f"its common Lt={lt}")
+        hard_capped = False
+        if max_hops is not None and hard_cap is not None \
+                and max_hops > int(hard_cap):
+            max_hops = int(hard_cap)
+            hard_capped = True
+        if status == "capped":
+            hard_capped = True
+        # The cap is what makes a pair incomplete when Lt + pad exceeds it,
+        # even if the table already clamped max_hops to the cap. The common
+        # Lt (when supplied) is the cross-dataset maximum, so it governs.
+        _lt_for_cap = lt if lt is not None else lt_i
+        if (_lt_for_cap is not None and hard_cap is not None
+                and int(_lt_for_cap) + int(scope_pad) > int(hard_cap)):
+            hard_capped = True
+        if hard_capped:
+            capped_pairs.append(pair)
+        bounds[pair] = max_hops
+        _lt_ref = lt if lt is not None else lt_i
+        _eff_pad = (int(max_hops) - int(_lt_ref)
+                    if (max_hops is not None and _lt_ref is not None)
+                    else None)
+        rows[pair] = {
+            "source_type": s, "target_type": t,
+            "Lt_i": lt_i, "Lt": lt, "Lt_dataset": lt_dataset or None,
+            "scope_bound": max_hops,
+            "scope_pad_effective": _eff_pad,
+            "status": status,
+            "hard_capped": hard_capped, "discovery_cap_hit": False,
+            "type_shortest_hops": None, "phantom_attempts": 0,
+            "first_phantom_type_path": None,
+            "witness_type_path": None, "witness_body_path": None,
+            **_empty_scope_counts(), **extra,
+        }
+    missing = sorted(selected - set(rows))
+    extra_pairs = sorted(set(rows) - selected)
+    if missing:
+        shown = ", ".join(f"{s}->{t}" for s, t in missing[:6])
+        raise CorridorRefusal(
+            f"scope table does not cover every selected pair "
+            f"({len(missing)} missing: {shown})")
+    if extra_pairs:
+        shown = ", ".join(f"{s}->{t}" for s, t in extra_pairs[:6])
+        raise CorridorRefusal(
+            f"scope table has pairs this run did not select "
+            f"({len(extra_pairs)} extra: {shown})")
+    block = {
+        "scope_mode": "per_pair_shortest_plus_2",
+        "scope_lt": "external_table",
+        "scope_pad": int(scope_pad),
+        "scope_hard_cap": (int(hard_cap) if hard_cap is not None else None),
+        "scope_bound_source": "external_table",
+        "scope_table_sha": hashlib.md5(raw).hexdigest()[:12],
+        "scope_table_source": str(p),
+        "scope_pairs_total": len(rows),
+        "scope_pairs_with_lt": sum(
+            1 for r in rows.values() if r["Lt_i"] is not None),
+        "scope_capped_pairs": sorted(
+            f"{s}->{t}" for s, t in capped_pairs),
+        "scope_lt_evidence": "external scope table (Lt/Lt_i supplier)",
+    }
+    return rows, bounds, block
+
+
+def _write_scope_table(out, rows, *, scope_pad, hard_cap, type_map_sha,
+                       asked, threshold, dataset):
+    """Write the reusable Pass-A table and return its sha12."""
+    import hashlib
+    import pandas as pd
+
+    out.mkdir(parents=True, exist_ok=True)
+    recs = []
+    for pair in sorted(rows):
+        row = rows[pair]
+        recs.append({
+            "source_type": row["source_type"],
+            "target_type": row["target_type"],
+            "Lt_i": row.get("Lt_i"),
+            "Lt": row.get("Lt"),
+            "Lt_dataset": row.get("Lt_dataset") or (dataset or ""),
+            "max_hops": row.get("scope_bound"),
+            "status": row.get("status"),
+            "type_map_sha": type_map_sha,
+            "asked": asked,
+            "threshold": threshold,
+            "scope_pad": int(scope_pad),
+            "scope_hard_cap": (int(hard_cap) if hard_cap is not None else ""),
+            "scope_mode": "per_pair_shortest_plus_2",
+            "scope_lt": "max_local_validated",
+        })
+    path = out / "scope_table.csv"
+    pd.DataFrame(recs).to_csv(path, index=False)
+    return hashlib.md5(path.read_bytes()).hexdigest()[:12]
+
+
 def _enumerate_type_walks(pairs, sources, targets, bound, *,
                           max_walks=2_000_000, revisit_policy="bounded",
-                          max_type_visits=0, log=None):
+                          max_type_visits=0, log=None, pair_bounds=None):
     """The COMPLETE type-walk set s -> ... -> t over the pruned pair table.
 
     The first-target rule is structural: a walk is recorded when it reaches
@@ -977,55 +1643,88 @@ def _enumerate_type_walks(pairs, sources, targets, bound, *,
     article's complete tables can carry type revisits realized by
     different bodies — P1-I). The default is bounded, disclosed in the
     manifest. Returns (walks, stats); stats['capped'] marks a
-    ``max_walks`` stop, which forbids a completeness claim."""
-    adj: dict = {}
-    for a, b, w in zip(pairs["type_pre"], pairs["type_post"],
-                       pairs["w_max"]):
-        adj.setdefault(str(a), []).append((str(b), float(w)))
-    for a in adj:
-        adj[a].sort(key=lambda x: (-x[1], x[0]))
+    ``max_walks`` stop, which forbids a completeness claim.
+
+    ``pair_bounds`` (per-pair scope) maps each selected (source, target)
+    type pair to its hop bound (or None for an unreached pair). When it is
+    given, a target is recorded only within ITS pair's bound and a prefix
+    is pruned unless at least one target is still reachable within that
+    target's bound. With it absent the behaviour is the original global
+    ``bound`` pass byte-for-byte (the regression contract)."""
+    adj = _type_adjacency(pairs)
     tgt = {str(t) for t in targets}
     srcs = sorted({str(s) for s in sources})
+    scoped = pair_bounds is not None
+    if scoped:
+        pb = { (str(s), str(t)): (None if b is None else int(b))
+               for (s, t), b in pair_bounds.items() }
+        _positive = [b for b in pb.values() if b is not None]
+        max_bound = max(_positive) if _positive else 0
+        dist_by_t = {
+            t: type_bfs(pairs, {t}, "bwd", max_bound)
+            for t in tgt} if pairs.height and max_bound > 0 else {}
+        bound = int(max_bound)
+    else:
+        pb = None
+        max_bound = int(bound)
+        dist = type_bfs(pairs, tgt, "bwd", bound) if pairs.height else {}
     # bounded: a type may appear at most as often as the hop bound allows
     # (0 = "use the bound"). This is the COMPLETE revisit set for walks up
     # to `bound`; a smaller positive value is a disclosed sub-policy.
     _max_visits = (int(max_type_visits) if int(max_type_visits) > 0
-                   else int(bound))
-    # minimum type hops to a target over the PRUNED graph: an exact
-    # reachability bound for the remaining walk, so dead prefixes die at
-    # the enumeration, not at validation.
-    dist = type_bfs(pairs, tgt, "bwd", bound) if pairs.height else {}
+                   else (max(1, int(max_bound)) if scoped
+                         else int(max_bound)))
     walks: list = []
     capped = False
     expanded = 0
 
-    def _dfs(node, walk, visits, remaining):
+    def _target_allowed(s, t, hops):
+        if not scoped:
+            return True
+        b = pb.get((s, t))
+        return b is not None and int(hops) <= b
+
+    def _prefix_feasible(s, node, depth):
+        if not scoped:
+            d = dist.get(node)
+            return d is not None and d <= int(max_bound) - int(depth)
+        for t in tgt:
+            b = pb.get((s, t))
+            if b is None:
+                continue
+            d = dist_by_t.get(t, {}).get(node)
+            if d is not None and int(depth) + int(d) <= b:
+                return True
+        return False
+
+    def _dfs(node, walk, visits, remaining, source):
         nonlocal capped, expanded
         for nxt, _w in adj.get(node, ()):
             if len(walks) >= max_walks:
                 capped = True
                 return
             if nxt in tgt:
-                walks.append(tuple(walk + (nxt,)))
+                if _target_allowed(source, nxt, len(walk)):
+                    walks.append(tuple(walk + (nxt,)))
                 # FIRST-TARGET RULE: never continue through a clock
                 continue
             if remaining <= 1:
                 continue
-            d = dist.get(nxt)
-            if d is None or d > remaining - 1:
+            depth = len(walk)
+            if not _prefix_feasible(source, nxt, depth):
                 continue
             if revisit_policy == "simple":
                 if nxt in visits:
                     continue
                 nv = dict(visits)
                 nv[nxt] = 1
-                _dfs(nxt, walk + (nxt,), nv, remaining - 1)
+                _dfs(nxt, walk + (nxt,), nv, remaining - 1, source)
             elif revisit_policy == "bounded":
                 if visits.get(nxt, 0) >= _max_visits:
                     continue
                 nv = dict(visits)
                 nv[nxt] = nv.get(nxt, 0) + 1
-                _dfs(nxt, walk + (nxt,), nv, remaining - 1)
+                _dfs(nxt, walk + (nxt,), nv, remaining - 1, source)
             else:
                 raise ValueError(
                     f"unknown revisit policy {revisit_policy!r}")
@@ -1034,7 +1733,10 @@ def _enumerate_type_walks(pairs, sources, targets, bound, *,
     for s in srcs:
         if s in tgt:
             continue
-        _dfs(s, (s,), {s: 1}, int(bound))
+        if scoped and not any(
+                b is not None for (ss, _t), b in pb.items() if ss == s):
+            continue
+        _dfs(s, (s,), {s: 1}, int(max_bound), s)
         if capped:
             break
     stats = {
@@ -1048,6 +1750,8 @@ def _enumerate_type_walks(pairs, sources, targets, bound, *,
         "revisit_policy": revisit_policy,
         "max_type_visits": (_max_visits
                             if revisit_policy == "bounded" else 1),
+        "scope": "per_pair" if scoped else "global",
+        "max_bound": int(max_bound),
     }
     return walks, stats
 
@@ -1087,15 +1791,21 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
                      type_nt, limit, write_bodyid, min_ratio_adj,
                      walk_cap, revisit_policy, validate_work_cap,
                      deadline, prune_block, syn_w=None,
-                     max_type_visits=0, log=None):
+                     max_type_visits=0, log=None, out_dir=None,
+                     pair_bounds=None, scope_seed=None,
+                     scope_context=None):
     """The TYPE-PRUNED COMPLETE drain (Phase B steps 3-6).
 
     Completeness is over the PRUNED TYPE GRAPH: every enumerated walk is
     assigned exactly one terminal state (phantom / unverified / validated
     but exact-filtered / exported), and no walk is hidden by a per-class
     share. ``type_pruned_complete`` is true only when the enumeration
-    exhausted and no existence probe hit its work cap."""
+    exhausted and no existence probe hit its work cap. With
+    ``pair_bounds`` it is true only when EVERY selected pair also
+    exhausted within its own bound; the manifest's
+    ``scope_complete_by_pair`` is the per-pair contract."""
     import time
+    from pathlib import Path
     from type_level_refill import _layered_chain_structures
     from vispath_pkg.fast_graph_core import FastGraph
 
@@ -1112,10 +1822,17 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
         if t in tgt_types and (not tgt_keep or b in tgt_keep):
             t_bodies_by_type.setdefault(t, []).append(b)
 
+    scoped = pair_bounds is not None
+    selected_pairs = ([(s, t) for s in sorted({str(x) for x in src_types})
+                       for t in sorted({str(x) for x in tgt_types})]
+                      if scoped else [])
+    scope_stats = ({p: _empty_scope_counts() for p in selected_pairs}
+                   if scoped else {})
     walks, enum = _enumerate_type_walks(
         pairs, src_types, set(tgt_types), bound,
         max_walks=walk_cap, revisit_policy=revisit_policy,
-        max_type_visits=max_type_visits, log=log)
+        max_type_visits=max_type_visits, log=log,
+        pair_bounds=pair_bounds)
     say(f"  · type-pruned complete: {enum['walks']} candidate walks over "
         f"{enum['adj_edges']} kept pairs"
         + (" (CAPPED)" if enum["capped"] else " (exhausted)"))
@@ -1289,10 +2006,16 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
         if deadline is not None and time.monotonic() > deadline:
             time_capped = True
             break
+        _pair_key = (str(walk[0]), str(walk[-1]))
+        _stat = scope_stats.get(_pair_key)
+        if _stat is not None:
+            _stat["candidate_walks"] += 1
         s_bodies = s_bodies_by_type.get(walk[0], [])
         t_bodies = set(t_bodies_by_type.get(walk[-1], []))
         if not s_bodies or not t_bodies:
             unverified += 1
+            if _stat is not None:
+                _stat["unverified"] += 1
             continue
         n, truncated = _realize_on_loss(
             pair_edges, walk, s_bodies, t_bodies, 1,
@@ -1301,15 +2024,25 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
         if n == 0:
             if truncated:
                 unverified += 1
+                if _stat is not None:
+                    _stat["unverified"] += 1
             else:
                 phantoms += 1
+                if _stat is not None:
+                    _stat["phantoms"] += 1
             continue
         validated += 1
+        if _stat is not None:
+            _stat["validated_walks"] += 1
         if truncated:
             validation_truncated += 1
+            if _stat is not None:
+                _stat["validation_truncated"] += 1
         got = _materialize(walk, s_bodies, t_bodies)
         if got is None:
             realization_missing += 1
+            if _stat is not None:
+                _stat["realization_missing"] += 1
             continue
         row, walk_body_rows, hop_edges = got
         if row["min_ratio_adj"] is None:
@@ -1318,16 +2051,23 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
             # it is exported with ratio_adj_complete=false, and the run
             # cannot claim filter_complete.
             ratio_unresolved += 1
+            if _stat is not None:
+                _stat["ratio_unresolved"] += 1
             if min_ratio_adj > 0:
                 continue
         elif min_ratio_adj > 0 and float(
                 row["min_ratio_adj"]) <= float(min_ratio_adj):
             filtered_weak += 1
+            if _stat is not None:
+                _stat["filtered_weak"] += 1
             continue
         walk_rows.append(row)
         body_rows.extend(walk_body_rows)
         bodyid_paths += len(walk_body_rows)
         accepted += 1
+        if _stat is not None:
+            _stat["paths"] += 1
+            _stat["bodyid_paths"] += len(walk_body_rows)
         if row.get("chain_revisit"):
             chains_revisit += 1
         h = len(walk) - 1
@@ -1382,16 +2122,185 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
             unverified=unverified, realization_missing=realization_missing,
             validation_truncated=validation_truncated,
             ratio_unresolved=ratio_unresolved)
-    block["type_pruned_complete"] = bool(complete)
+    scope_complete = None
+    scope_complete_by_pair = None
+    scope_capped_pairs = []
+    scope_no_path_pairs = []
+    scope_validation_cap_pairs = []
+    scope_exhausted_pairs = []
+    if scoped:
+        scope_complete_by_pair = {}
+        scope_rows_out = []
+        for pair in selected_pairs:
+            rec = scope_stats.get(pair, _empty_scope_counts())
+            seed = (scope_seed or {}).get(pair, {})
+            b = (pair_bounds or {}).get(pair)
+            seed_status = str(seed.get("status") or "").lower()
+            if b is None:
+                # No validated path: never assign a global bound. A
+                # discovery cap/validation cap is reported as such.
+                status = (seed_status if seed_status in
+                          ("capped", "validation_cap") else "no_path")
+            elif (enum["capped"] or time_capped
+                  or bool(seed.get("hard_capped"))
+                  or seed_status == "capped"):
+                status = "capped"
+            elif seed_status == "validation_cap":
+                # The supplied scope table itself was derived from
+                # incomplete validation evidence. Even if this run's
+                # enumeration exhausts at that bound, the scope is not
+                # certifiable as complete.
+                status = "validation_cap"
+            elif (rec["validation_truncated"] or rec["unverified"]
+                  or rec["realization_missing"]
+                  or rec["ratio_unresolved"]):
+                status = "validation_cap"
+            elif rec["validated_walks"] > 0:
+                status = "exhausted"
+            else:
+                status = "no_path"
+            scope_complete_by_pair[f"{pair[0]}->{pair[1]}"] = status
+            if status == "capped":
+                scope_capped_pairs.append(f"{pair[0]}->{pair[1]}")
+            elif status == "no_path":
+                scope_no_path_pairs.append(f"{pair[0]}->{pair[1]}")
+            elif status == "validation_cap":
+                scope_validation_cap_pairs.append(
+                    f"{pair[0]}->{pair[1]}")
+            elif status == "exhausted":
+                scope_exhausted_pairs.append(f"{pair[0]}->{pair[1]}")
+            row = {
+                "source_type": pair[0], "target_type": pair[1],
+                "scope_mode": "per_pair_shortest_plus_2",
+                "Lt_i": seed.get("Lt_i"), "Lt": seed.get("Lt"),
+                "Lt_dataset": seed.get("Lt_dataset"),
+                "scope_pad": (scope_context or {}).get("scope_pad"),
+                "scope_pad_effective": (
+                    seed.get("scope_pad_effective")
+                    if seed.get("scope_pad_effective") is not None else
+                    (int(b) - int(seed["Lt_i"])
+                     if (b is not None and seed.get("Lt_i") is not None)
+                     else None)),
+                "scope_bound": b,
+                "hard_capped": bool(seed.get("hard_capped")),
+                "status": status,
+                "scope_complete": status == "exhausted",
+                "paths": rec["paths"],
+                "bodyid_paths": rec["bodyid_paths"],
+                "candidate_walks": rec["candidate_walks"],
+                "validated_walks": rec["validated_walks"],
+                "phantoms": rec["phantoms"],
+                "filtered_weak": rec["filtered_weak"],
+                "validation_truncated": rec["validation_truncated"],
+                "ratio_unresolved": rec["ratio_unresolved"],
+                "discovery_cap_hit": bool(
+                    seed.get("discovery_cap_hit")),
+                "phantom_attempts": int(seed.get("phantom_attempts") or 0),
+                "first_phantom_type_path": seed.get(
+                    "first_phantom_type_path"),
+                "witness_type_path": seed.get("witness_type_path"),
+                "witness_body_path": seed.get("witness_body_path"),
+                "type_shortest_hops": seed.get("type_shortest_hops"),
+                "applied_floor": (scope_context or {}).get(
+                    "requested_floor"),
+                "threshold": float(min_ratio_adj),
+                "type_map_sha": (scope_context or {}).get("type_map_sha"),
+                "asked": (scope_context or {}).get("requested_floor"),
+            }
+            for extra in ("Lt_FAFB", "Lt_MCNS", "Lt_BANC"):
+                if extra in seed:
+                    row[extra] = seed.get(extra)
+            # The per-pair report names one Lt column per volume. DROCAT
+            # runs one dataset, so it can fill its OWN volume's column even
+            # when the input table did not carry the Lt_<volume> family.
+            _family = _scope_dataset_family(
+                (scope_context or {}).get("dataset"))
+            if _family:
+                _local_col = f"Lt_{_family}"
+                _lt_i = seed.get("Lt_i")
+                _lt_ds = seed.get("Lt_dataset")
+                if (row.get(_local_col) is None
+                        and _lt_i is not None
+                        and (not _lt_ds
+                             or _scope_dataset_family(_lt_ds) in
+                             (None, _family))):
+                    # Only a LOCAL Lt_i fills the run's volume column; the
+                    # common Lt may belong to a different dataset.
+                    row[_local_col] = _lt_i
+            scope_rows_out.append(row)
+        scope_complete = bool(
+            selected_pairs and all(
+                scope_complete_by_pair[f"{s}->{t}"] == "exhausted"
+                for s, t in selected_pairs))
+        block.update(scope_context or {})
+        block.update({
+            "scope_complete": bool(scope_complete),
+            "scope_complete_by_pair": scope_complete_by_pair,
+            "scope_capped_pairs": sorted(scope_capped_pairs),
+            "scope_no_path_pairs": sorted(scope_no_path_pairs),
+            "scope_validation_cap_pairs": sorted(
+                scope_validation_cap_pairs),
+            "scope_exhausted_pairs": sorted(scope_exhausted_pairs),
+            "scope_pairs_total": len(selected_pairs),
+            "scope_pairs_exhausted": len(scope_exhausted_pairs),
+            "scope_report_table": "route_scope_pairs.csv",
+            "scope_input_table": (
+                "scope_table.csv"
+                if (out_dir is not None
+                    and (Path(out_dir) / "scope_table.csv").exists())
+                else (scope_context or {}).get("scope_table_source")),
+            "scope_replaces_max_interlayer": True,
+        })
+        if out_dir is not None:
+            import pandas as _pd_scope
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            cols = ["source_type", "target_type", "scope_mode", "Lt_i",
+                    "Lt", "Lt_dataset", "Lt_FAFB", "Lt_MCNS", "Lt_BANC",
+                    "scope_pad", "scope_pad_effective", "scope_bound",
+                    "hard_capped", "status",
+                    "scope_complete", "paths", "bodyid_paths",
+                    "candidate_walks", "validated_walks", "phantoms",
+                    "filtered_weak", "validation_truncated",
+                    "ratio_unresolved", "discovery_cap_hit",
+                    "phantom_attempts", "first_phantom_type_path",
+                    "witness_type_path", "witness_body_path",
+                    "type_shortest_hops", "applied_floor", "threshold",
+                    "type_map_sha", "asked"]
+            _pd_scope.DataFrame(
+                [{c: r.get(c) for c in cols} for r in scope_rows_out],
+                columns=cols).to_csv(
+                    out_dir / "route_scope_pairs.csv", index=False)
+    if scoped:
+        block["type_pruned_complete"] = bool(complete and scope_complete)
+        if complete and not scope_complete:
+            if scope_capped_pairs:
+                completeness_reason = "per_pair_capped"
+            elif scope_no_path_pairs:
+                completeness_reason = "per_pair_no_path"
+            elif scope_validation_cap_pairs:
+                completeness_reason = "per_pair_validation_cap"
+            else:
+                completeness_reason = "per_pair_incomplete"
+        block["completeness_scope"] = (
+            "per-pair validated-shortest scope: each selected "
+            "(source,target) pair is enumerated to min(Lt + pad, hard cap) "
+            "hops; complete means exhausted WITHIN that per-pair scope only "
+            "(never 'complete up to max_interlayer')")
+    else:
+        block["type_pruned_complete"] = bool(complete)
+        block["completeness_scope"] = (
+            "pruned type graph enumerated + every validated walk "
+            "bodyId-checked; the exact realized min_ratio_adj gate applied "
+            "to the validated set")
     block["filter_complete"] = bool(filter_complete)
-    block["completeness_scope"] = (
-        "pruned type graph enumerated + every validated walk bodyId-checked; "
-        "the exact realized min_ratio_adj gate applied to the validated set")
     block["completeness_reason"] = completeness_reason
     say(f"  · type-pruned complete: {validated} validated / "
         f"{phantoms} phantoms / {unverified} unverified / "
         f"{filtered_weak} weak-filtered -> {accepted} paths "
-        f"(complete={complete})")
+        f"(complete={complete}"
+        + (f", scope_complete={scope_complete}" if scoped else "")
+        + ")")
     return block
 
 
@@ -1410,7 +2319,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
              type_max_type_visits=0,
              type_validate_work_cap=2_000_000,
              type_realization_envelope=None,
-             type_prune_scope="full_floor"):
+             type_prune_scope="full_floor", per_pair_scope=False,
+             scope_table=None, scope_pad=2, scope_hard_cap=6,
+             scope_lt_mode=None, scope_discovery_cap=6,
+             infer_type_pruned=True):
     """Standalone corridor lane (plan §23.3/§23.5): G_type* -> shared W ->
     per-source drain -> validate loop -> PER-WALK subgraph enumeration
     (§22 share-consumption) -> route_scope_paths/ exports.
@@ -1434,7 +2346,20 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     exported. ``type_pruned_complete`` is true only when the type-walk
     enumeration exhausted and no validation probe hit its work cap. This
     mode requires path_mode='all' (a shortest-run discovery store is not a
-    full-floor bodyId source)."""
+    full-floor bodyId source).
+
+    ``per_pair_scope=True`` replaces the single global hop bound with a
+    per-(source_type,target_type) scope. ``Lt_i`` is the shortest
+    bodyId-validated walk clearing the exact filter (never a raw type-BFS
+    shortest: a phantom walk advances the pass), ``bound(pair) = min(Lt +
+    scope_pad, scope_hard_cap)``, and a pair with no validated path gets
+    ``bound=None`` and is reported unreached. ``scope_lt_mode='discover'``
+    computes the scope locally and writes ``scope_table.csv``;
+    ``'external'`` reads a supplied table (``scope_table``). The
+    per-pair table ``route_scope_pairs.csv`` and the manifest state
+    ``scope_complete_by_pair``; ``type_pruned_complete`` is then true only
+    WITHIN that per-pair scope. With ``per_pair_scope=False`` the global
+    ``max_interlayer + 1`` behaviour is unchanged."""
     import json
     import os as _os
     import sys as _sys
@@ -1472,8 +2397,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     kv = read_run_params(run_dir) if run_dir else {}
     # P2-S round-trip: a folder stamped by a typed run reproduces the lane
     # on a bare `CorridorDeepDive.py <run_dir>` re-run. Explicit CLI flags
-    # still win for the knobs not present in the folder.
-    if run_dir and not type_pruned and _parse_bool(
+    # still win for the knobs not present in the folder. The in-run FAST
+    # subprocess disables this inference: it runs on a typed-stamped folder
+    # and must not write typed tables into route_scope_paths/.
+    if run_dir and infer_type_pruned and not type_pruned and _parse_bool(
             kv.get("type_pruned"), False):
         type_pruned = True
         type_prune_basis = (kv.get("type prune basis")
@@ -1494,6 +2421,30 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             kv.get("type max type visits"), type_max_type_visits)
         type_validate_work_cap = _parse_int(
             kv.get("type validate work cap"), type_validate_work_cap)
+    # A Fast-lane subprocess on a typed-stamped folder passes
+    # --no-infer-type-pruned: it must not adopt the per-pair scope stamp
+    # either, or a scoped typed run's Fast lane would refuse as typed.
+    if (run_dir and infer_type_pruned and not per_pair_scope
+            and _parse_bool(kv.get("per pair scope"), False)):
+        per_pair_scope = True
+        scope_lt_mode = (kv.get("scope lt mode") or scope_lt_mode)
+        scope_table = (kv.get("scope table") or scope_table)
+        scope_pad = _parse_int(kv.get("scope pad"), scope_pad)
+        scope_hard_cap = _parse_int(
+            kv.get("scope hard cap"), scope_hard_cap)
+        scope_discovery_cap = _parse_int(
+            kv.get("scope discovery cap"), scope_discovery_cap)
+        if scope_table and not Path(scope_table).is_absolute():
+            _cand = Path(run_dir) / scope_table
+            if _cand.exists():
+                scope_table = str(_cand)
+        if scope_table and not Path(scope_table).exists():
+            # Portable replay: an external run copies its supplied table
+            # into the lane folder. If the originally recorded path is
+            # gone, that byte-identical copy is the audit witness.
+            _copy = Path(run_dir) / TYPED_LANE_DIR / "scope_table.csv"
+            if _copy.exists():
+                scope_table = str(_copy)
     # D2-B: a run folder can request certified actual-strength selection
     # via parameters.txt (the CLI passes --certify-actual; the in-run
     # hook keeps the default off)
@@ -1540,6 +2491,39 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     bound = max_il + 1
     if max_il < 0:
         _refuse(f"max interlayer {max_il} is negative")
+    # ---- per-pair scope configuration -------------------------------
+    # The switched-off path keeps the global bound above byte-for-byte.
+    scope_mode_resolved = None
+    _scope_hard_cap = None
+    if per_pair_scope:
+        if not type_pruned:
+            _refuse("per-pair scope requires the type-pruned complete lane")
+        scope_pad = int(scope_pad if scope_pad is not None else 2)
+        if scope_pad < 0:
+            _refuse(f"scope pad {scope_pad} is negative")
+        scope_hard_cap = int(
+            scope_hard_cap if scope_hard_cap is not None else 6)
+        if scope_hard_cap < 0:
+            _refuse(f"scope hard cap {scope_hard_cap} is negative")
+        _scope_hard_cap = (scope_hard_cap if scope_hard_cap > 0 else None)
+        scope_discovery_cap = int(
+            scope_discovery_cap if scope_discovery_cap is not None else 6)
+        if scope_discovery_cap < 1:
+            _refuse("scope discovery cap must be at least 1 hop")
+        scope_lt_mode = str(
+            scope_lt_mode or ("external" if scope_table else "discover")
+        ).strip().lower()
+        if scope_lt_mode not in ("external", "discover"):
+            _refuse(f"scope LT mode {scope_lt_mode!r} is not one of "
+                    "external / discover")
+        scope_mode_resolved = scope_lt_mode
+        if scope_mode_resolved == "external" and not scope_table:
+            _refuse("scope LT mode 'external' requires --scope-table")
+        if scope_mode_resolved == "discover" and scope_table:
+            _refuse("scope LT mode 'discover' computes its own table; "
+                    "do not pass --scope-table")
+        if scope_mode_resolved == "external":
+            scope_table = str(scope_table)
     # P2-P: the Complete run may have raised its applied floor via the Edge
     # Budget. The typed lane rebuilds from the connection source at the
     # ASKED floor, so record both rather than inheriting the floor silently.
@@ -1858,6 +2842,53 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 f"(sources kept {sorted(src_labels)}, "
                 f"targets kept {sorted(tgt_labels)})")
     src_types, tgt_types = sorted(src_labels), sorted(tgt_labels)
+
+    # ---- per-pair scope: the working universe bound -------------------
+    # The scope REPLACES the global max_interlayer+1 bound for this lane
+    # only. External mode knows its maximum bound before the lossless cone
+    # is built; discover mode builds at the discovery cap (a superset of
+    # every bound it can later assign).
+    scope_seed: dict = {}
+    scope_bounds = None
+    scope_block: dict = {}
+    scope_working_bound = None
+    scope_table_sha = None
+    scope_table_source = None
+    if per_pair_scope:
+        if scope_mode_resolved == "external":
+            try:
+                scope_seed, scope_bounds, scope_block = _load_scope_table(
+                    scope_table, src_types=src_types, tgt_types=tgt_types,
+                    scope_pad=int(scope_pad),
+                    hard_cap=_scope_hard_cap, type_map_sha=type_map_sha,
+                    asked=asked, threshold=float(type_min_ratio_adj))
+            except CorridorRefusal as exc:
+                # Disclose the refusal in the lane namespace, exactly like
+                # every other deterministic lane refusal.
+                _refuse(str(exc))
+            scope_table_sha = scope_block["scope_table_sha"]
+            scope_table_source = scope_block["scope_table_source"]
+            # Keep the supplied table beside the lane outputs, so the
+            # scope is auditable/downloadable after the run (same bytes
+            # the sha above commits to).
+            try:
+                import shutil as _shutil
+                _src = Path(scope_table)
+                _dst = out / "scope_table.csv"
+                if _src.resolve() != _dst.resolve():
+                    out.mkdir(parents=True, exist_ok=True)
+                    _shutil.copyfile(_src, _dst)
+            except OSError:
+                pass  # the sha/source path still disclose the input
+            _pos = [b for b in scope_bounds.values() if b is not None]
+            scope_working_bound = max(_pos) if _pos else 1
+        else:
+            scope_working_bound = (
+                min(int(scope_discovery_cap), int(_scope_hard_cap))
+                if _scope_hard_cap is not None
+                else int(scope_discovery_cap))
+        scope_working_bound = max(1, int(scope_working_bound))
+        bound = int(scope_working_bound)
 
     # F-PF-005 (audit 2026-10-13): preserve the parent's EXACT endpoint
     # membership. (i) Query tokens that are explicit bodyIds restrict the
@@ -2190,11 +3221,56 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             min_wmax=int(type_min_wmax), default_floor=int(asked))
         _phase(f"type-pruned ({pairs.height:,} pairs, "
                f"{prune_block['mass_removed']:g} mass removed)")
-        if pairs.height == 0:
+        if pairs.height == 0 and not per_pair_scope:
             _refuse(f"type prune on {type_prune_basis!r} removed every "
                     f"type pair (basis threshold {type_min_ratio_adj:g}, "
                     f"min synapse {type_min_synapse}, min w_max "
                     f"{type_min_wmax})")
+        # A scoped run with an empty cone is a legitimate "no pair is
+        # reachable within its scope" result: it completes with the
+        # per-pair no_path rows, never silently invents a bound.
+    if per_pair_scope:
+        # Pass A (discover) or the already-loaded external table. The
+        # final per-pair bound is what the complete pass enumerates; the
+        # universe above is a superset built at the working bound.
+        if scope_mode_resolved == "discover":
+            scope_seed, scope_bounds, scope_block = _discover_scope(
+                pairs=pairs, pair_edges=pair_edges, src_types=src_types,
+                tgt_types=tgt_types, src_ids=src_ids, tgt_ids=tgt_ids,
+                src_keep=src_keep, tgt_keep=tgt_keep,
+                body2type=body2type,
+                discovery_cap=int(scope_working_bound),
+                scope_pad=int(scope_pad), hard_cap=_scope_hard_cap,
+                min_ratio_adj=float(type_min_ratio_adj),
+                validate_work_cap=int(type_validate_work_cap),
+                type_incoming_adj=type_incoming_adj,
+                revisit_policy=str(type_revisit_policy).lower(),
+                max_type_visits=int(type_max_type_visits),
+                walk_cap=int(type_walk_cap), dataset=dataset or "",
+                deadline=deadline,
+                log=((lambda *a, **k: print(
+                    *a, file=_sys.stderr, flush=True)) if _dbg else None))
+            scope_table_sha = _write_scope_table(
+                out, scope_seed, scope_pad=int(scope_pad),
+                hard_cap=_scope_hard_cap, type_map_sha=type_map_sha,
+                asked=asked, threshold=float(type_min_ratio_adj),
+                dataset=dataset or "")
+            scope_table_source = "discovered"
+            scope_block["scope_table_sha"] = scope_table_sha
+            scope_block["scope_table_source"] = scope_table_source
+        _pos = [b for b in (scope_bounds or {}).values()
+                if b is not None]
+        bound = max(_pos) if _pos else 1
+        scope_block.update({
+            "scope_table_sha": scope_table_sha,
+            "scope_table_source": scope_table_source,
+            "scope_working_bound": int(scope_working_bound),
+            "scope_final_max_bound": int(bound),
+            "scope_dataset": dataset,
+            "scope_requested_floor": asked,
+            "scope_threshold": float(type_min_ratio_adj),
+        })
+        _phase(f"scope ({scope_mode_resolved}, max bound {bound})")
     shared_W = (None if type_pruned
                 else widest_to_targets_fast(pairs, set(tgt_types), bound))
     limit = int(per_pair_length_budget)
@@ -2450,6 +3526,34 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             max_type_visits=int(type_max_type_visits),
             validate_work_cap=int(type_validate_work_cap),
             deadline=deadline, prune_block=prune_block, syn_w=syn_w,
+            out_dir=out,
+            pair_bounds=(scope_bounds if per_pair_scope else None),
+            scope_seed=(scope_seed if per_pair_scope else None),
+            scope_context=({
+                "scope_mode": "per_pair_shortest_plus_2",
+                "scope_lt": ("external_table"
+                             if scope_mode_resolved == "external"
+                             else "max_local_validated"),
+                "scope_pad": int(scope_pad),
+                "scope_hard_cap": _scope_hard_cap,
+                "scope_discovery_cap": (
+                    None if scope_mode_resolved == "external"
+                    else int(scope_discovery_cap)),
+                "scope_bound_source": (
+                    "external_table"
+                    if scope_mode_resolved == "external"
+                    else "Lt_plus_pad"),
+                "scope_lt_evidence": scope_block.get("scope_lt_evidence"),
+                "scope_table_sha": scope_table_sha,
+                "scope_table_source": scope_table_source,
+                "scope_working_bound": int(scope_working_bound),
+                "scope_final_max_bound": int(bound),
+                "scope_dataset": dataset,
+                "scope_report_table": "route_scope_pairs.csv",
+                "requested_floor": int(asked),
+                "type_map_sha": type_map_sha,
+                "dataset": dataset,
+            } if per_pair_scope else None),
             log=((lambda *a, **k: print(*a, file=_sys.stderr, flush=True))
                  if _dbg else None))
         type_block['refill_used'] = False
@@ -2501,6 +3605,19 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             'source_bodies': len(src_keep) or None,
             'target_bodies': len(tgt_keep) or None}
         time_capped = time_capped or type_block.get("time_capped", False)
+        if per_pair_scope:
+            # The provenance's scope block must carry the FINAL per-pair
+            # statuses (the discovery seed only knew hard caps), never a
+            # pre-enumeration snapshot.
+            scope_block.update({
+                k: type_block.get(k) for k in (
+                    "scope_complete", "scope_complete_by_pair",
+                    "scope_capped_pairs", "scope_no_path_pairs",
+                    "scope_validation_cap_pairs",
+                    "scope_exhausted_pairs", "scope_pairs_total",
+                    "scope_pairs_exhausted", "scope_report_table",
+                    "scope_input_table", "scope_bound_source",
+                    "scope_replaces_max_interlayer")})
         _phase(f"type-pruned complete ({type_block['accepted_paths']} "
                f"paths, {type_block['candidate_walks']} candidates)")
 
@@ -3152,8 +4269,17 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "type_max_type_visits": (int(type_max_type_visits)
                                      if type_pruned else None),
             "type_validate_work_cap": (int(type_validate_work_cap)
-                                       if type_pruned else None)},
+                                       if type_pruned else None),
+            "per_pair_scope": bool(per_pair_scope),
+            "scope_lt_mode": (scope_mode_resolved
+                              if per_pair_scope else None),
+            "scope_pad": (int(scope_pad) if per_pair_scope else None),
+            "scope_hard_cap": (_scope_hard_cap if per_pair_scope else None),
+            "scope_discovery_cap": (
+                int(scope_discovery_cap) if per_pair_scope else None),
+            "scope_table_sha": scope_table_sha},
         "type_prune": type_block,
+        "scope": (scope_block if per_pair_scope else None),
         "classes": {k: {"floor": budget.floor,
                         "floor_next": budget.floor_next,
                         "stop": budget.stop, "route_share": budget.share,
@@ -3277,11 +4403,48 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "type_pruned_complete": (type_block.get("type_pruned_complete")
                                  if type_block is not None else None),
         "type_prune": type_block,
+        # Per-pair scope contract (issue 2026-10-22): the scope fields are
+        # repeated at the top level so a reader never has to open the typed
+        # manifest to know which claim `type_pruned_complete` makes.
+        "scope": (scope_block if per_pair_scope else None),
+        "scope_mode": (scope_block.get("scope_mode")
+                       if per_pair_scope else None),
+        "scope_lt": (scope_block.get("scope_lt")
+                     if per_pair_scope else None),
+        "scope_pad": (int(scope_pad) if per_pair_scope else None),
+        "scope_table_sha": scope_table_sha,
+        "scope_hard_cap": (_scope_hard_cap if per_pair_scope else None),
+        "scope_complete": (type_block.get("scope_complete")
+                           if (per_pair_scope and type_block) else None),
+        "scope_complete_by_pair": (
+            type_block.get("scope_complete_by_pair")
+            if (per_pair_scope and type_block) else None),
+        "scope_capped_pairs": (
+            type_block.get("scope_capped_pairs")
+            if (per_pair_scope and type_block) else None),
+        "scope_no_path_pairs": (
+            type_block.get("scope_no_path_pairs")
+            if (per_pair_scope and type_block) else None),
+        "scope_validation_cap_pairs": (
+            type_block.get("scope_validation_cap_pairs")
+            if (per_pair_scope and type_block) else None),
+        "scope_exhausted_pairs": (
+            type_block.get("scope_exhausted_pairs")
+            if (per_pair_scope and type_block) else None),
+        "scope_report_table": ("route_scope_pairs.csv"
+                               if per_pair_scope else None),
+        "scope_input_table": (
+            type_block.get("scope_input_table")
+            if (per_pair_scope and type_block) else None),
+        "bound_source": ("per_pair_scope" if per_pair_scope
+                         else "max_interlayer"),
         "paths_complete": _parse_bool(kv.get("paths_complete"), None),
         "shortest_enforced": (store_distances is not None
                               if validation_basis.startswith(
                                   "shortest_dag") else None),
-        "validated_walks": len(walk_rows),
+        "validated_walks": (
+            type_block.get("validated_walks")
+            if type_block is not None else len(walk_rows)),
         "bodyId_paths": len(body_rows),
         "scope_pairs": len(scope_pairs),
         "gap_partition": gap,
@@ -3303,7 +4466,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
               f"off_len={v['off_len']}"
               for k, v in sorted(live.items())]
     _type_prune_txt = ""
+    _scope_txt = ""
     if type_block is not None:
+        _scope_phrase = (" within the per-pair scope" if per_pair_scope
+                         else "")
         _type_prune_txt = (
             "- TYPE-PRUNED COMPLETE lane (Phase B): the type graph was "
             f"pruned on `{type_block.get('basis')}` at "
@@ -3311,7 +4477,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             f"{type_block.get('pairs_before')} -> "
             f"{type_block.get('pairs_after')}; "
             f"{type_block.get('mass_removed')} synapses removed). "
-            f"{type_block.get('candidate_walks')} complete type walks "
+            f"{type_block.get('candidate_walks')} type walks"
+            f"{_scope_phrase} "
             f"(revisit policy `{type_block.get('revisit_policy')}`) were "
             f"enumerated ({type_block.get('enumeration_capped') and 'CAPPED' or 'exhausted'}); "
             f"{type_block.get('validated_walks')} validated, "
@@ -3326,8 +4493,39 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "paths carry `pair_weights` (the pruned pair's universe mass) "
             "beside the realized hop masses and adjusted ratios. "
             f"`type_pruned_complete={type_block.get('type_pruned_complete')}` "
-            f"({type_block.get('completeness_reason')}); this is NOT the "
-            "Complete lane's `paths_complete`.\n\n")
+            f"({type_block.get('completeness_reason')})"
+            + ("; that claim is WITHIN the per-pair scope only, never "
+               "'complete up to max_interlayer', and is NOT the Complete "
+               "lane's `paths_complete`." if per_pair_scope else
+               "; this is NOT the Complete lane's `paths_complete`.")
+            + "\n\n")
+        if per_pair_scope:
+            _scope_txt = (
+                "- PER-PAIR SHORTEST SCOPE: each selected "
+                "(source_type,target_type) pair carries its own validated "
+                "shortest length `Lt_i` (the first bodyId-validated walk "
+                "clearing the exact gate; a phantom type-shortest walk "
+                "advances the pass). Its bound is "
+                f"min(Lt + {int(scope_pad)}, "
+                f"{'no hard cap' if _scope_hard_cap is None else int(_scope_hard_cap)}"
+                ") hops. "
+                f"`scope_lt={type_block.get('scope_lt')}`, "
+                f"`scope_table_sha={scope_table_sha}`, "
+                f"`scope_complete={type_block.get('scope_complete')}`; "
+                "pairs with no validated path are reported unreached with "
+                "no bound, never assigned a global bound. Per-pair "
+                "statuses (`exhausted | capped | no_path | validation_cap`) "
+                "and the Lt/witness evidence are in "
+                "`route_scope_pairs.csv`. `scope_table.csv` is "
+                + ("the supplied table, copied byte-for-byte (the table's "
+                   "Lt/Lt_i is the audit witness; local rediscovery is "
+                   "deliberately skipped for external replay). "
+                   if scope_mode_resolved == "external" else
+                   "the reusable Pass-A table written by this run. ")
+                + "This run's `max_interlayer` does not bound the scoped "
+                "pairs.\n\n")
+        else:
+            _scope_txt = ""
     # The mirror pages (or their skip) are decided BEFORE the disclosure text
     # that reports them: the second-round block below names the pages only
     # when they were actually built (self-review 2026-10-15 — the first
@@ -3461,6 +4659,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
            "realizations — a large aggregate never implies one neuron "
            "path carrying all of it.\n\n")
         + _type_prune_txt
+        + _scope_txt
         + _second_round_txt
         + (f"- mirror pages (route_type_* / route_full_type_*): "
            f"{_viz_outcome}\n\n" if _viz_outcome else "")

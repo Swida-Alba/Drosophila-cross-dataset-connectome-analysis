@@ -301,7 +301,8 @@ class ComparisonParameters:
     """Type-pruned COMPLETE lane (plan-drocat-type-pruned-pathfinding
     Phase B/C): forwarded to every per-dataset run. A SEPARATE lane, not
     a Run Mode value; runs at the run's own bound and carries its own
-    `type_pruned_complete` field."""
+    `type_pruned_complete` field. When `per_pair_scope` is on, that field
+    means complete within the per-pair Lt+pad scope only."""
 
     type_prune_basis: str = "ratio_adj"
     """Coarse pair-level prune basis: ratio_adj | connection_ratio | synapse."""
@@ -330,6 +331,27 @@ class ComparisonParameters:
 
     type_validate_work_cap: int = 2_000_000
     """Per-walk bodyId validation work cap."""
+
+    per_pair_scope: bool = False
+    """Replace the typed lane's global bound with a per-(source,target)
+    validated-shortest scope: bound = min(Lt + scope_pad, hard cap).
+    Forwarded to every per-dataset typed run."""
+
+    scope_lt_mode: str = "discover"
+    """'discover' computes Lt_i per dataset and writes scope_table.csv;
+    'external' reads scope_table."""
+
+    scope_table: str = ""
+    """External per-pair scope CSV path."""
+
+    scope_pad: int = 2
+    """Hops added to each pair's validated shortest length."""
+
+    scope_hard_cap: int = 6
+    """Absolute hop cap for every per-pair bound; 0 = no cap."""
+
+    scope_discovery_cap: int = 6
+    """Deepest hop count Pass A may search for Lt_i."""
 
     max_paths_bodyid: Optional[int] = None
     """Path budget for the StrongestFirst enumerator (the default
@@ -2144,6 +2166,12 @@ class ComparisonParameters:
             'type_revisit_policy': self.type_revisit_policy,
             'type_walk_cap': self.type_walk_cap,
             'type_validate_work_cap': self.type_validate_work_cap,
+            'per_pair_scope': self.per_pair_scope,
+            'scope_lt_mode': self.scope_lt_mode,
+            'scope_table': self.scope_table,
+            'scope_pad': self.scope_pad,
+            'scope_hard_cap': self.scope_hard_cap,
+            'scope_discovery_cap': self.scope_discovery_cap,
             'replay_paths': self.replay_paths,
             # F7: auto-extend collapsed thresholds (k x tau_ref, capped at
             # 2x the max asked threshold) after the run reveals a collapse.
@@ -2434,6 +2462,12 @@ class ComparisonParameters:
             type_revisit_policy=data.get('type_revisit_policy', 'bounded'),
             type_walk_cap=data.get('type_walk_cap', 2_000_000),
             type_validate_work_cap=data.get('type_validate_work_cap', 2_000_000),
+            per_pair_scope=data.get('per_pair_scope', False),
+            scope_lt_mode=data.get('scope_lt_mode', 'discover'),
+            scope_table=data.get('scope_table', ''),
+            scope_pad=data.get('scope_pad', 2),
+            scope_hard_cap=data.get('scope_hard_cap', 6),
+            scope_discovery_cap=data.get('scope_discovery_cap', 6),
             replay_paths=data.get('replay_paths', True),
             auto_extend_thresholds=data.get('auto_extend_thresholds', False),
             capture_density=data.get('capture_density', False),

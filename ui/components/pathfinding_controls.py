@@ -287,9 +287,20 @@ class RunModeControl:
                 "Type-pruned complete lane",
                 bool(get_user_default("type_pruned")),
                 hint="Prune the type graph coarsely, enumerate EVERY type "
-                     "walk, validate each at bodyId level and export only "
-                     "paths clearing the exact realized min_ratio_adj gate. "
+                     "walk (within the per-pair scope when enabled), "
+                     "validate each at bodyId level and export only paths "
+                     "clearing the exact realized min_ratio_adj gate. "
                      "Writes route_scope_paths/ (type_prune_manifest.json).",
+            )
+            self.per_pair_scope = checkbox_input(
+                "Per-pair shortest scope",
+                bool(get_user_default("per_pair_scope")),
+                hint="Replace the typed lane's global max_interlayer bound "
+                     "with a per-(source,target) scope: bound = min(Lt + "
+                     "pad, hard cap), where Lt is the shortest "
+                     "bodyId-validated accepted path. Pairs without a "
+                     "validated path are reported unreached, never given a "
+                     "global bound.",
             )
         _basis_default = TYPE_PRUNE_BASIS_CHOICES.get(
             str(get_user_default("type_prune_basis")), "Adjusted ratio")
@@ -344,22 +355,67 @@ class RunModeControl:
             )
             ui.label("Scope: full_floor").classes(
                 "text-caption text-blue-8")
+        _lt_default = str(
+            get_user_default("scope_lt_mode") or "discover").lower()
+        if _lt_default not in ("external", "discover"):
+            _lt_default = "discover"
+        with ui.row().classes("items-center gap-4 flex-wrap") as self._scope_row:
+            self.scope_lt_mode = select_input(
+                "Scope Lt mode", ["discover", "external"], _lt_default,
+                hint="discover computes the local validated Lt and writes "
+                     "scope_table.csv; external reads the supplied table.",
+                inline=True,
+            )
+            self.scope_table = ui.input(
+                "Scope table (external)",
+                value=str(get_user_default("scope_table") or ""),
+            ).props("dense outlined").classes("w-80")
+            self.scope_pad = number_input(
+                "Scope pad", int(get_user_default("scope_pad") or 2),
+                min_val=0, max_val=10, step=1,
+                hint="Hops added to the validated shortest length.",
+            )
+            self.scope_hard_cap = number_input(
+                "Scope hard cap",
+                int(get_user_default("scope_hard_cap") or 6),
+                min_val=0, max_val=10, step=1,
+                hint="0 = no cap. A pair cut by the cap is reported capped.",
+            )
+            self.scope_discovery_cap = number_input(
+                "Scope discovery cap",
+                int(get_user_default("scope_discovery_cap") or 6),
+                min_val=1, max_val=10, step=1,
+                hint="Deepest hop count discovery may search for Lt.",
+            )
         def _on_type_toggle(_e):
             self._sync_type_visibility()
             self.refresh()
 
+        def _on_scope_toggle(_e):
+            self._sync_type_visibility()
+            self.refresh()
+
         self.type_pruned.on_value_change(_on_type_toggle)
+        self.per_pair_scope.on_value_change(_on_scope_toggle)
         self._sync_type_visibility()
         self.refresh()
 
     def _sync_type_visibility(self) -> None:
-        self._type_row.set_visibility(bool(self.type_pruned.value))
+        typed = bool(self.type_pruned.value)
+        self._type_row.set_visibility(typed)
+        if typed:
+            self.per_pair_scope.enable()
+        else:
+            self.per_pair_scope.disable()
+            self.per_pair_scope.value = False
+        self._scope_row.set_visibility(
+            typed and bool(self.per_pair_scope.value))
 
     def payload(self) -> dict:
         """The constructor keys the typed lane needs (empty when off)."""
         if not self.type_pruned.value:
             return {"type_pruned": False}
-        return {
+        payload = {
             "type_pruned": True,
             "type_prune_basis": _TYPE_PRUNE_BASIS_KEYS[self.type_basis.value],
             "type_prune_scope": "full_floor",
@@ -372,7 +428,23 @@ class RunModeControl:
             "type_walk_cap": int(self.type_walk_cap.value or 2_000_000),
             "type_validate_work_cap": int(
                 self.type_validate_work_cap.value or 2_000_000),
+            "per_pair_scope": bool(self.per_pair_scope.value),
         }
+        if self.per_pair_scope.value:
+            _lt_mode = str(
+                self.scope_lt_mode.value or "discover").strip().lower()
+            payload.update({
+                "scope_lt_mode": _lt_mode,
+                # discover owns its table; never forward a stale path that
+                # would make run_lane refuse the combination
+                "scope_table": (str(self.scope_table.value or "").strip()
+                                if _lt_mode == "external" else ""),
+                "scope_pad": int(self.scope_pad.value or 0),
+                "scope_hard_cap": int(self.scope_hard_cap.value or 0),
+                "scope_discovery_cap": int(
+                    self.scope_discovery_cap.value or 6),
+            })
+        return payload
 
     def note_text(self) -> str:
         text = run_mode_note_text(self.control.value,
@@ -381,6 +453,15 @@ class RunModeControl:
             text += (" Type-pruned COMPLETE lane: every type walk over the "
                      "pruned graph, bodyId-validated, exact realized "
                      "min_ratio_adj gate; separate completeness field.")
+        if self.type_pruned.value and self.per_pair_scope.value:
+            cap = int(self.scope_hard_cap.value or 0)
+            text += (
+                " Per-pair shortest scope: bound = min(Lt + "
+                f"{int(self.scope_pad.value or 0)}, "
+                f"{cap if cap else 'no hard cap'}) hops per "
+                "(source, target); max_interlayer is REPLACED for this "
+                "lane. Pairs without a validated path are reported "
+                "unreached.")
         return text
 
     def refresh(self) -> None:

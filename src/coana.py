@@ -4049,6 +4049,29 @@ class FindNeuronConnection:
     '''Per-walk bodyId validation work cap; a cap hit marks the walk
     unverified, never phantom.'''
 
+    per_pair_scope: bool = False
+    '''Replace the type-pruned lane's global max_interlayer+1 bound with a
+    per-(source_type,target_type) scope: Lt_i is the shortest bodyId-
+    validated accepted walk, bound = min(Lt + scope_pad, scope_hard_cap).
+    Pairs with no validated path are reported unreached, never assigned a
+    global bound. Only meaningful with type_pruned=True.'''
+
+    scope_lt_mode: str = 'discover'
+    ''''discover' computes Lt_i locally and writes scope_table.csv;
+    'external' reads scope_table.'''
+
+    scope_table: str = ''
+    '''External scope CSV: source_type,target_type,max_hops[,Lt_i,Lt].'''
+
+    scope_pad: int = 2
+    '''Hops added to each pair's validated shortest length.'''
+
+    scope_hard_cap: int = 6
+    '''Absolute hop cap for every per-pair bound; 0 = no cap.'''
+
+    scope_discovery_cap: int = 6
+    '''Deepest hop count Pass A may search for a validated Lt_i.'''
+
     max_paths_bodyid: Optional[int] = None
     '''
     Path budget for bodyId-level path enumeration.
@@ -13354,6 +13377,10 @@ class FindNeuronConnection:
                 "type_min_synapse", "type_min_wmax", "type_walk_mode",
                 "type_walk_cap", "type_revisit_policy",
                 "type_max_type_visits", "type_validate_work_cap",
+                # Per-pair scope knobs are stamped as ONE `scope` block
+                # below, never as loose attributes.
+                "per_pair_scope", "scope_lt_mode", "scope_table",
+                "scope_pad", "scope_hard_cap", "scope_discovery_cap",
             )
         }
         if getattr(self, 'type_pruned', False):
@@ -13380,6 +13407,19 @@ class FindNeuronConnection:
                     self, 'type_validate_work_cap', 2_000_000) or
                     2_000_000),
                 'completeness_field': 'type_pruned_complete',
+            }
+        if (getattr(self, 'per_pair_scope', False)
+                and getattr(self, 'type_pruned', False)):
+            public_attrs['scope'] = {
+                'mode': 'per_pair_shortest_plus_2',
+                'lt_mode': str(getattr(self, 'scope_lt_mode',
+                                       'discover')),
+                'table': str(getattr(self, 'scope_table', '') or ''),
+                'pad': int(getattr(self, 'scope_pad', 2) or 0),
+                'hard_cap': int(getattr(self, 'scope_hard_cap', 6) or 0),
+                'discovery_cap': int(getattr(
+                    self, 'scope_discovery_cap', 6) or 6),
+                'completeness_field': 'scope_complete',
             }
         if getattr(self, '_refill_status_block', None):
             public_attrs['type_level_refill'] = dict(self._refill_status_block)
@@ -18999,7 +19039,7 @@ class FindNeuronConnection:
         pre-typed folder's bytes are unchanged."""
         if not getattr(self, 'type_pruned', False):
             return []
-        return [
+        lines = [
             f'type_pruned: {bool(self.type_pruned)}',
             f'type prune basis: {getattr(self, "type_prune_basis", "ratio_adj")}',
             f'type prune scope: {getattr(self, "type_prune_scope", "full_floor")}',
@@ -19012,6 +19052,17 @@ class FindNeuronConnection:
             f'type max type visits: {int(getattr(self, "type_max_type_visits", 0) or 0)}',
             f'type validate work cap: {int(getattr(self, "type_validate_work_cap", 2_000_000) or 2_000_000)}',
         ]
+        if getattr(self, 'per_pair_scope', False):
+            lines += [
+                'per pair scope: True',
+                f'scope lt mode: {getattr(self, "scope_lt_mode", "discover")}',
+                f'scope table: {getattr(self, "scope_table", "") or ""}',
+                f'scope pad: {int(getattr(self, "scope_pad", 2) or 0)}',
+                f'scope hard cap: {int(getattr(self, "scope_hard_cap", 6) or 0)}',
+                'scope discovery cap: '
+                f'{int(getattr(self, "scope_discovery_cap", 6) or 6)}',
+            ]
+        return lines
 
     def _resolved_run_mode(self):
         """The Run Mode knob as its canonical value: 'complete' | 'auto' |
@@ -19095,6 +19146,11 @@ class FindNeuronConnection:
                 ]
                 if lane_out:
                     cmd += ['--out', lane_out]
+                if not lane_typed:
+                    # The run folder may be typed-stamped; the Fast lane must
+                    # not adopt that stamp and write typed tables under
+                    # route_scope_paths/ (the two lanes are separate).
+                    cmd.append('--no-infer-type-pruned')
                 cmd += [
                     '--top-m-base',
                     str(int(getattr(self, 'route_top_m_base', 10))),
@@ -19133,6 +19189,23 @@ class FindNeuronConnection:
                         str(int(getattr(self, 'type_validate_work_cap',
                                         2_000_000) or 2_000_000)),
                     ]
+                    if getattr(self, 'per_pair_scope', False):
+                        cmd += [
+                            '--per-pair-scope',
+                            '--scope-lt-mode',
+                            str(getattr(self, 'scope_lt_mode', 'discover')),
+                            '--scope-pad',
+                            str(int(getattr(self, 'scope_pad', 2) or 0)),
+                            '--scope-hard-cap',
+                            str(int(getattr(self, 'scope_hard_cap', 6) or 0)),
+                            '--scope-discovery-cap',
+                            str(int(getattr(
+                                self, 'scope_discovery_cap', 6) or 6)),
+                        ]
+                        _scope_tbl = str(
+                            getattr(self, 'scope_table', '') or '').strip()
+                        if _scope_tbl:
+                            cmd += ['--scope-table', _scope_tbl]
                 if getattr(self, 'skip_bodyId', False):
                     cmd.append('--no-bodyid')
                 # CORRIDOR-ON-RATIO: the adaptive ratio cone makes the

@@ -997,7 +997,17 @@ def test_typed_lane_fields_and_hook_flags(tmp_path, monkeypatch):
     assert inst.type_pruned is False
     assert inst.type_prune_basis == "ratio_adj"
     assert inst.type_min_ratio_adj == 0.01
+    assert inst.per_pair_scope is False
+    assert inst.scope_lt_mode == "discover"
+    assert inst.scope_pad == 2 and inst.scope_hard_cap == 6
+    assert inst.scope_discovery_cap == 6
     inst.type_pruned = True
+    inst.per_pair_scope = True
+    inst.scope_lt_mode = "external"
+    inst.scope_table = str(tmp_path / "scope.csv")
+    inst.scope_pad = 1
+    inst.scope_hard_cap = 5
+    inst.scope_discovery_cap = 4
     inst.corridor_mode = "complete"       # no Fast lane requested
     inst.max_interlayer = 3               # below the auto gate
     inst.allpath_folder = str(tmp_path)
@@ -1017,7 +1027,10 @@ def test_typed_lane_fields_and_hook_flags(tmp_path, monkeypatch):
                  "--type-min-ratio-adj", "0.01", "--type-min-synapse",
                  "--type-min-wmax", "--type-walk-cap",
                  "--type-revisit-policy", "--type-max-type-visits",
-                 "--type-validate-work-cap"):
+                 "--type-validate-work-cap", "--per-pair-scope",
+                 "--scope-lt-mode", "external", "--scope-table",
+                 str(tmp_path / "scope.csv"), "--scope-pad", "1",
+                 "--scope-hard-cap", "5", "--scope-discovery-cap", "4"):
         assert flag in cmd, flag
     # the typed knobs are stamped as ONE block, never loose attributes
     attrs = inst._run_export_attributes("all")
@@ -1025,11 +1038,22 @@ def test_typed_lane_fields_and_hook_flags(tmp_path, monkeypatch):
     assert attrs["type_prune"]["scope"] == "full_floor"
     assert attrs["type_prune"]["completeness_field"] == \
         "type_pruned_complete"
+    assert attrs["scope"]["mode"] == "per_pair_shortest_plus_2"
+    assert attrs["scope"]["lt_mode"] == "external"
+    assert attrs["scope"]["pad"] == 1
+    assert attrs["scope"]["hard_cap"] == 5
+    assert attrs["scope"]["discovery_cap"] == 4
+    assert attrs["scope"]["completeness_field"] == "scope_complete"
     assert "type_pruned" not in attrs
+    assert "per_pair_scope" not in attrs
     # parameters.txt carries the spaced keys read_run_params parses
     lines = inst._type_prune_parameter_lines()
     assert any(line.startswith("type prune basis:") for line in lines)
     assert any(line.startswith("type min ratio adj:") for line in lines)
+    assert any(line.startswith("per pair scope:") for line in lines)
+    assert any(line.startswith("scope pad:") for line in lines)
+    assert any(line.startswith("scope hard cap:") for line in lines)
+    assert any(line.startswith("scope table:") for line in lines)
 
 
 def test_corridor_section_names_the_typed_lane(tmp_path):
@@ -1117,8 +1141,20 @@ def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
         'type_pruned_complete': True, 'filter_complete': True,
         'completeness_reason': 'exhausted', 'mass_source': 'lossless_cone',
         'revisit_policy': 'bounded', 'max_type_visits': 4,
-        'type_pruned_floor': 3, 'complete_tau': 8}
+        'type_pruned_floor': 3, 'complete_tau': 8,
+        # Issue 2026-10-22: per-pair shortest scope metadata.
+        'scope_mode': 'per_pair_shortest_plus_2',
+        'scope_lt': 'external_table', 'scope_pad': 2,
+        'scope_hard_cap': 6, 'scope_complete': True,
+        'scope_pairs_total': 2, 'scope_pairs_exhausted': 2,
+        'scope_complete_by_pair': {'A->C': 'exhausted',
+                                   'A->D': 'exhausted'},
+        'scope_capped_pairs': []}
     prov['type_pruned_complete'] = True
+    prov['scope_mode'] = 'per_pair_shortest_plus_2'
+    prov['scope_complete'] = True
+    prov['scope_complete_by_pair'] = {'A->C': 'exhausted',
+                                      'A->D': 'exhausted'}
     (lane / 'route_provenance.json').write_text(
         json.dumps(prov), encoding='utf-8')
     (lane / 'type_prune_manifest.json').write_text(
@@ -1133,6 +1169,14 @@ def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
             'min_ratio_adj,length,nt_types,coverage\n'
             'A->B,"[10]","[0.5]","[0.5]",10,0.5,0.5,1,"[]",'
             '"[1/1, 1/1]"\n', encoding='utf-8')
+    (lane / 'route_scope_pairs.csv').write_text(
+        'source_type,target_type,scope_mode,Lt_i,Lt,scope_bound,status,'
+        'scope_complete,paths\n'
+        'A,C,per_pair_shortest_plus_2,2,2,4,exhausted,True,7\n',
+        encoding='utf-8')
+    (lane / 'scope_table.csv').write_text(
+        'source_type,target_type,Lt_i,max_hops\nA,C,2,4\n',
+        encoding='utf-8')
     return lane
 
 
@@ -1153,6 +1197,8 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     assert 'Fast mode (corridor)' in text
     assert 'type_pruned_complete' in text
     assert 'filter_complete' in text
+    assert 'Per-pair shortest scope' in text
+    assert 'route_scope_pairs.csv' in text
     assert fast_csv.read_bytes() == before
 
     # typed-only: the lane unit falls through to the typed namespace
@@ -1191,6 +1237,7 @@ def test_comparison_corridor_section_reads_typed_namespace(tmp_path):
     html = generate_corridor_section(_Analyzer(), ["ds_a"], [1], {})
     assert "Type-pruned complete lane" in html
     assert "type_pruned_complete" in html
+    assert "per_pair_shortest_plus_2" in html
     # the typed manifest's pair counts, not the Fast provenance's
     assert "20" in html and "8" in html
 
@@ -1235,6 +1282,12 @@ def test_comparison_parameters_accepts_the_typed_payload():
         type_revisit_policy='bounded',
         type_walk_cap=1234,
         type_validate_work_cap=5678,
+        per_pair_scope=True,
+        scope_lt_mode='external',
+        scope_table='/tmp/scope.csv',
+        scope_pad=1,
+        scope_hard_cap=5,
+        scope_discovery_cap=4,
     )
     d = p.to_dict()
     for key, value in (
@@ -1242,13 +1295,25 @@ def test_comparison_parameters_accepts_the_typed_payload():
             ('type_prune_scope', 'full_floor'),
             ('type_revisit_policy', 'bounded'),
             ('type_walk_cap', 1234),
-            ('type_validate_work_cap', 5678)):
+            ('type_validate_work_cap', 5678),
+            ('per_pair_scope', True),
+            ('scope_lt_mode', 'external'),
+            ('scope_table', '/tmp/scope.csv'),
+            ('scope_pad', 1),
+            ('scope_hard_cap', 5),
+            ('scope_discovery_cap', 4)):
         assert d[key] == value, key
     restored = ComparisonParameters.from_dict(d)
     assert restored.type_pruned is True
     assert restored.type_walk_cap == 1234
     assert restored.type_validate_work_cap == 5678
     assert restored.type_revisit_policy == 'bounded'
+    assert restored.per_pair_scope is True
+    assert restored.scope_lt_mode == 'external'
+    assert restored.scope_table == '/tmp/scope.csv'
+    assert restored.scope_pad == 1
+    assert restored.scope_hard_cap == 5
+    assert restored.scope_discovery_cap == 4
 
 
 def test_comparison_prefers_a_complete_lane_over_a_refused_one(tmp_path):
@@ -1297,3 +1362,19 @@ def test_comparison_prefers_a_complete_lane_over_a_refused_one(tmp_path):
     html2 = generate_corridor_section(_Analyzer(mixed), ["ds_a"], [1], {})
     assert "Type-pruned complete lane" in html2
     assert "fast unavailable" not in html2
+
+
+def test_per_pair_scope_control_is_wired():
+    """Issue 2026-10-22: the shared Run Mode block exposes the scope
+    controls and sends the typed lane's scope payload."""
+    src = (ROOT / "ui" / "components"
+           / "pathfinding_controls.py").read_text()
+    for token in ("Per-pair shortest scope", "scope_lt_mode",
+                  "scope_pad", "scope_hard_cap", "scope_discovery_cap",
+                  "max_interlayer is REPLACED"):
+        assert token in src, token
+    import ui.config as cfg
+    assert cfg.DEFAULTS["per_pair_scope"] is False
+    assert cfg.DEFAULTS["scope_lt_mode"] == "discover"
+    assert cfg.DEFAULTS["scope_pad"] == 2
+    assert cfg.DEFAULTS["scope_hard_cap"] == 6
