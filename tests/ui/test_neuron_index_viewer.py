@@ -1456,6 +1456,9 @@ class TestNeuronIndexViewer:
         with client:
             link = create_neuron_index_viewer_link(lambda: dataset)
         self._click(link)
+        # Keep the row for aMe050 off the first page so the click below must
+        # jump pages regardless of the default rows-per-page setting.
+        self._fire_rows(client, 25)
 
         search_input = next(
             element for element in client.elements.values()
@@ -1528,6 +1531,7 @@ class TestNeuronIndexViewer:
         from nicegui.page import page
         import ui.components.neuron_index_viewer as viewer
         from ui.components.neuron_index_viewer import (
+            FULL_TABLE_PAGE_SIZE,
             MATCH_GROUP_PAGE_SIZE,
             create_neuron_index_viewer_link,
         )
@@ -1563,7 +1567,7 @@ class TestNeuronIndexViewer:
             if table._props["columns"][0]["name"] == "bodyId"
         )
         assert len(match_table._props["rows"]) == 0
-        assert len(full_table._props["rows"]) == 50
+        assert len(full_table._props["rows"]) == FULL_TABLE_PAGE_SIZE
 
         search_input._handle_event({
             "listener_id": search_listener.id,
@@ -1580,7 +1584,7 @@ class TestNeuronIndexViewer:
             if table._props["columns"][0]["name"] == "bodyId"
         )
         assert len(match_table._props["rows"]) == MATCH_GROUP_PAGE_SIZE
-        assert len(full_table._props["rows"]) == 50
+        assert len(full_table._props["rows"]) == FULL_TABLE_PAGE_SIZE
         status_text = [
             getattr(element, "text", "")
             for element in client.elements.values()
@@ -1844,7 +1848,10 @@ class TestNeuronIndexViewer:
         from nicegui import Client
         from nicegui.page import page
         import ui.components.neuron_index_viewer as viewer
-        from ui.components.neuron_index_viewer import create_neuron_index_viewer_link
+        from ui.components.neuron_index_viewer import (
+            FULL_TABLE_PAGE_SIZE,
+            create_neuron_index_viewer_link,
+        )
 
         dataset = _write_paged_index(isolated_index_root, row_count=600)
         monkeypatch.setattr(viewer, "PROJECT_ROOT", isolated_index_root)
@@ -1853,6 +1860,9 @@ class TestNeuronIndexViewer:
         with client:
             link = create_neuron_index_viewer_link(lambda: dataset)
         self._click(link)
+
+        select, _ = self._rows_select(client)
+        assert select.value == FULL_TABLE_PAGE_SIZE
 
         self._fire_rows(client, 500)
 
@@ -2308,6 +2318,8 @@ class TestNeuronIndexViewer:
                 query_selection=sync_query,
             )
         self._click(link)
+        # The fixture must span pages under the current default page size.
+        self._fire_rows(client, 25)
 
         tables = [el for el in client.elements.values() if type(el).__name__ == "Table"]
         full_table = next(
@@ -2367,6 +2379,9 @@ class TestNeuronIndexViewer:
                 query_resolution=sync_resolution,
             )
         self._click(link)
+        # Keep the 60 rows across multiple pages so select-all proves it
+        # reaches beyond the current page.
+        self._fire_rows(client, 25)
 
         tables = [el for el in client.elements.values() if type(el).__name__ == "Table"]
         full_table = next(
@@ -2382,7 +2397,7 @@ class TestNeuronIndexViewer:
 
         expected = {str(1000 + i) for i in range(60)}
         # The first click selects every matching row on every page (60 total),
-        # not only the 50 rows visible on the current page.
+        # not only the 25 rows visible on the current page.
         select_all_listener.handler(SimpleNamespace())
         assert set(selection_batches[-1]) == expected
         assert set(resolution_batches[-1]) == expected
@@ -2663,6 +2678,45 @@ class TestNeuronIndexViewer:
         # Removed-node capture: a scroll event that never fired before the
         # rebuild (frame throttling) still leaves the offset on record.
         assert "removedNodes" in script
+
+    def test_metadata_table_has_draggable_scrollbars(
+        self, isolated_index_root, monkeypatch
+    ):
+        """The full metadata table carries persistent, draggable bars."""
+        from nicegui import Client
+        from nicegui.page import page
+        import ui.components.neuron_index_viewer as viewer
+        from ui.components.neuron_index_viewer import create_neuron_index_viewer_link
+
+        dataset = _write_paged_index(isolated_index_root)
+        monkeypatch.setattr(viewer, "PROJECT_ROOT", isolated_index_root)
+
+        client = Client(page("/neuron-index-viewer-scrollbars"))
+        with client:
+            link = create_neuron_index_viewer_link(lambda: dataset)
+        self._click(link)
+
+        bars = [
+            element for element in client.elements.values()
+            if "drocat-data-viewer-bar" in getattr(element, "_classes", set())
+        ]
+        assert {class_name for bar in bars for class_name in bar._classes
+                if class_name.endswith("-y") or class_name.endswith("-x")} == {
+            "drocat-data-viewer-bar-y",
+            "drocat-data-viewer-bar-x",
+        }
+        thumbs = [
+            element for element in client.elements.values()
+            if "drocat-data-viewer-bar-thumb" in getattr(element, "_classes", set())
+        ]
+        assert len(thumbs) == 2
+
+        script = viewer._TABLE_SCROLLBAR_JS
+        assert "__drocatTableScrollbars" in script
+        assert "pointerdown" in script
+        assert "setPointerCapture" in script
+        assert "ResizeObserver" in script
+        assert "drocat-data-viewer-bar-thumb" in script
 
     def test_subtype_select_all_toggles_every_displayed_type(
         self, isolated_index_root, monkeypatch

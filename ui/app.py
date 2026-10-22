@@ -996,7 +996,9 @@ html, body {
     display: flex;
     flex-direction: column;
     flex: 0 1 auto;
+    min-width: 0;
     min-height: 0;
+    overflow: hidden;
 }
 .drocat-neuron-full-panel .drocat-data-viewer-table.q-table__container {
     display: flex;
@@ -1008,6 +1010,66 @@ html, body {
     min-height: 0;
     flex: 0 1 auto;
     overflow: auto;
+    /* The strips below the table hold the persistent custom scrollbars.
+       macOS native overlay bars only appear during a scroll gesture and
+       ignore CSS widths, so they cannot be grabbed with the mouse. */
+    margin-right: 14px;
+    margin-bottom: 14px;
+    scrollbar-width: none;
+}
+.drocat-data-viewer-table .q-table__middle::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+.drocat-data-viewer-bar {
+    position: absolute;
+    z-index: 7;
+    background: var(--drocat-soft);
+    touch-action: none;
+    user-select: none;
+}
+.drocat-data-viewer-bar-y {
+    top: 0;
+    right: 0;
+    bottom: 14px;
+    width: 14px;
+    border-left: 1px solid var(--drocat-line);
+}
+.drocat-data-viewer-bar-x {
+    left: 0;
+    right: 14px;
+    bottom: 0;
+    height: 14px;
+    border-top: 1px solid var(--drocat-line);
+}
+.drocat-data-viewer-bar-thumb {
+    position: absolute;
+    background: var(--drocat-faint);
+    border-radius: 6px;
+    cursor: grab;
+}
+.drocat-data-viewer-bar-thumb:hover {
+    background: var(--drocat-muted);
+}
+.drocat-data-viewer-bar-thumb:active {
+    background: var(--drocat-muted);
+    cursor: grabbing;
+}
+.drocat-data-viewer-bar-idle .drocat-data-viewer-bar-thumb {
+    opacity: 0;
+}
+.drocat-data-viewer-bar-y .drocat-data-viewer-bar-thumb {
+    top: 0;
+    left: 2px;
+    right: 2px;
+    height: 40px;
+}
+.drocat-data-viewer-bar-x .drocat-data-viewer-bar-thumb {
+    top: 2px;
+    bottom: 2px;
+    left: 0;
+    width: 40px;
 }
 .drocat-data-viewer-table .q-table__middle thead tr:first-child th {
     position: sticky;

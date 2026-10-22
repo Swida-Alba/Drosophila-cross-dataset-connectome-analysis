@@ -38,6 +38,8 @@ from ..neuron_index import (
 # Keep the full membership maps for exact selection, but render a fixed page
 # of match details; the panel pager still exposes every matched name.
 MATCH_GROUP_PAGE_SIZE = 50
+# Default rows per page for the full metadata table.
+FULL_TABLE_PAGE_SIZE = 200
 # One gesture can produce a value-click, a QTable selection event, and a
 # delayed table update. Cover the maximum scroll-settle plus notification
 # lifetime so that these events can never start a second focus animation.
@@ -101,6 +103,226 @@ _MATCH_SUBTYPE_SCROLL_GUARD_JS = r"""
       for (const node of mutation.addedNodes) restoreIn(node);
     }
   }).observe(document.body, { childList: true, subtree: true });
+})();
+"""
+
+# macOS Chromium renders native scrollbars as overlay bars that appear only
+# during a scroll gesture and ignore ::-webkit-scrollbar sizing, so the
+# metadata table's bars cannot be grabbed and dragged. Two 14px strips drawn
+# by CSS hold persistent custom bars; this one-time page installer keeps
+# their thumbs in sync with the table's scroll metrics and wires dragging,
+# track clicks, the wheel and the keyboard. It upgrades tables recreated by
+# viewer re-renders/dataset switches and releases observers for closed ones.
+_TABLE_SCROLLBAR_JS = r"""
+(() => {
+  if (window.__drocatTableScrollbars) return;
+  const MIN_THUMB = 30;
+  const SELECTOR = '.drocat-neuron-full-panel .drocat-data-viewer-scroll';
+  const tracked = new Set();
+  const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+
+  const upgrade = (wrap) => {
+    if (!wrap || wrap.dataset.drocatScrollbarReady === '1') return;
+    const middle = wrap.querySelector('.q-table__middle');
+    const vbar = wrap.querySelector('.drocat-data-viewer-bar-y');
+    const hbar = wrap.querySelector('.drocat-data-viewer-bar-x');
+    if (!middle || !vbar || !hbar) return;
+    const vthumb = vbar.querySelector('.drocat-data-viewer-bar-thumb');
+    const hthumb = hbar.querySelector('.drocat-data-viewer-bar-thumb');
+    if (!vthumb || !hthumb) return;
+    wrap.dataset.drocatScrollbarReady = '1';
+    tracked.add(wrap);
+
+    let raf = 0;
+    let drag = null;
+    let table = null;
+
+    const valueFor = (axis) => axis === 'y'
+      ? middle.scrollTop : middle.scrollLeft;
+    const maxFor = (axis) => axis === 'y'
+      ? Math.max(0, middle.scrollHeight - middle.clientHeight)
+      : Math.max(0, middle.scrollWidth - middle.clientWidth);
+    const scrollTo = (axis, value) => {
+      const next = clamp(value, 0, maxFor(axis));
+      if (axis === 'y') middle.scrollTop = next;
+      else middle.scrollLeft = next;
+    };
+
+    const render = () => {
+      if (!wrap.isConnected) return;
+      const viewWidth = middle.clientWidth;
+      const viewHeight = middle.clientHeight;
+      const contentWidth = middle.scrollWidth;
+      const contentHeight = middle.scrollHeight;
+      const vMax = Math.max(0, contentHeight - viewHeight);
+      const hMax = Math.max(0, contentWidth - viewWidth);
+      const vTrack = vbar.clientHeight;
+      const hTrack = hbar.clientWidth;
+      const vThumb = vMax
+        ? Math.max(MIN_THUMB, vTrack * viewHeight / contentHeight)
+        : vTrack;
+      const hThumb = hMax
+        ? Math.max(MIN_THUMB, hTrack * viewWidth / contentWidth)
+        : hTrack;
+      const vOffset = vMax
+        ? (vTrack - vThumb) * middle.scrollTop / vMax : 0;
+      const hOffset = hMax
+        ? (hTrack - hThumb) * middle.scrollLeft / hMax : 0;
+      vthumb.style.height = vThumb + 'px';
+      vthumb.style.transform = 'translateY(' + vOffset + 'px)';
+      hthumb.style.width = hThumb + 'px';
+      hthumb.style.transform = 'translateX(' + hOffset + 'px)';
+      vbar.classList.toggle('drocat-data-viewer-bar-idle', vMax <= 0);
+      hbar.classList.toggle('drocat-data-viewer-bar-idle', hMax <= 0);
+      vbar.setAttribute('aria-valuemax', String(Math.round(vMax)));
+      vbar.setAttribute('aria-valuenow', String(Math.round(middle.scrollTop)));
+      hbar.setAttribute('aria-valuemax', String(Math.round(hMax)));
+      hbar.setAttribute('aria-valuenow', String(Math.round(middle.scrollLeft)));
+    };
+    const schedule = () => {
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        render();
+      });
+    };
+
+    const beginDrag = (axis, event) => {
+      if (event.button) return;
+      const bar = axis === 'y' ? vbar : hbar;
+      const thumb = axis === 'y' ? vthumb : hthumb;
+      const barRect = bar.getBoundingClientRect();
+      const thumbRect = thumb.getBoundingClientRect();
+      const pointer = axis === 'y' ? event.clientY : event.clientX;
+      const trackStart = axis === 'y' ? barRect.top : barRect.left;
+      const trackSize = axis === 'y' ? barRect.height : barRect.width;
+      const thumbSize = axis === 'y' ? thumbRect.height : thumbRect.width;
+      if (event.target !== thumb) {
+        const ratio = clamp(
+          (pointer - trackStart - thumbSize / 2)
+            / Math.max(1, trackSize - thumbSize),
+          0, 1);
+        scrollTo(axis, ratio * maxFor(axis));
+        schedule();
+      }
+      drag = {
+        axis, pointerId: event.pointerId, trackSize, thumbSize,
+        maxScroll: maxFor(axis), startPointer: pointer,
+        startScroll: valueFor(axis),
+      };
+      if (bar.setPointerCapture) bar.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const moveDrag = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const pointer = drag.axis === 'y' ? event.clientY : event.clientX;
+      const range = Math.max(1, drag.trackSize - drag.thumbSize);
+      scrollTo(
+        drag.axis,
+        drag.startScroll
+          + (pointer - drag.startPointer) * drag.maxScroll / range
+      );
+      event.preventDefault();
+    };
+    const endDrag = (event) => {
+      if (!drag) return;
+      if (event.pointerId !== undefined
+          && event.pointerId !== drag.pointerId) return;
+      drag = null;
+    };
+
+    for (const [bar, axis] of [[vbar, 'y'], [hbar, 'x']]) {
+      bar.addEventListener('pointerdown', (event) => beginDrag(axis, event));
+      bar.addEventListener('pointermove', moveDrag);
+      bar.addEventListener('pointerup', endDrag);
+      bar.addEventListener('pointercancel', endDrag);
+      bar.addEventListener('lostpointercapture', endDrag);
+      bar.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        const delta = axis === 'y'
+          ? event.deltaY
+          : (Math.abs(event.deltaX) > Math.abs(event.deltaY)
+            ? event.deltaX : event.deltaY);
+        scrollTo(axis, valueFor(axis) + delta);
+        schedule();
+      }, { passive: false });
+      bar.addEventListener('keydown', (event) => {
+        const page = axis === 'y' ? middle.clientHeight : middle.clientWidth;
+        const forward = axis === 'y' ? 'ArrowDown' : 'ArrowRight';
+        const backward = axis === 'y' ? 'ArrowUp' : 'ArrowLeft';
+        let delta = 0;
+        let absolute = null;
+        if (event.key === forward) delta = 40;
+        else if (event.key === backward) delta = -40;
+        else if (event.key === 'PageDown') delta = page;
+        else if (event.key === 'PageUp') delta = -page;
+        else if (event.key === 'Home') absolute = 0;
+        else if (event.key === 'End') absolute = maxFor(axis);
+        else return;
+        event.preventDefault();
+        scrollTo(
+          axis,
+          absolute !== null ? absolute : valueFor(axis) + delta);
+        schedule();
+      });
+    }
+
+    const resizeObserver = new ResizeObserver(schedule);
+    resizeObserver.observe(middle);
+    function observeTable() {
+      const current = middle.querySelector('table');
+      if (current === table) return;
+      if (table) resizeObserver.unobserve(table);
+      table = current;
+      if (table) resizeObserver.observe(table);
+    }
+    observeTable();
+    const contentObserver = new MutationObserver(() => {
+      observeTable();
+      schedule();
+    });
+    contentObserver.observe(middle, { childList: true, subtree: true });
+    middle.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule, { passive: true });
+    wrap.__drocatScrollbarCleanup = () => {
+      middle.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      resizeObserver.disconnect();
+      contentObserver.disconnect();
+    };
+    render();
+  };
+
+  const scan = (node) => {
+    if (!(node instanceof Element)) return;
+    const wraps = node.matches(SELECTOR)
+      ? [node] : Array.from(node.querySelectorAll(SELECTOR));
+    for (const wrap of wraps) upgrade(wrap);
+  };
+  const sweep = () => {
+    for (const wrap of Array.from(tracked)) {
+      if (wrap.isConnected) continue;
+      tracked.delete(wrap);
+      wrap.dataset.drocatScrollbarReady = '0';
+      if (wrap.__drocatScrollbarCleanup) {
+        wrap.__drocatScrollbarCleanup();
+        delete wrap.__drocatScrollbarCleanup;
+      }
+    }
+  };
+  new MutationObserver((mutations) => {
+    let removed = false;
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) scan(node);
+      if (mutation.removedNodes.length) removed = true;
+    }
+    // A modal teleport removes and re-appends synchronously; check after the
+    // current task so moved tables are not mistaken for closed ones.
+    if (removed) window.setTimeout(sweep, 0);
+  }).observe(document.body, { childList: true, subtree: true });
+  window.__drocatTableScrollbars = { scan };
+  scan(document.body);
 })();
 """
 
@@ -492,7 +714,7 @@ def _render_index(
                     200: "200 / page",
                     500: "500 / page",
                 },
-                value=50,
+                value=FULL_TABLE_PAGE_SIZE,
                 label="Rows",
             ).props("outlined").classes(
                 "drocat-select drocat-neuron-search-field"
@@ -537,7 +759,8 @@ def _render_index(
         # changes until the user edits the search text again.
         search_state = {"forced_text": None}
 
-        initial = query_neuron_index(index, page_size=50)
+        initial = query_neuron_index(
+            index, page_size=FULL_TABLE_PAGE_SIZE)
         match_columns = [
             {
                 "name": "match_column",
@@ -755,7 +978,7 @@ def _render_index(
                         index,
                         **query_kwargs_with_mapped(),
                         page=1,
-                        page_size=50,
+                        page_size=FULL_TABLE_PAGE_SIZE,
                         include_all_keys=True,
                     ).all_keys
                 )
@@ -1654,8 +1877,30 @@ def _render_index(
                         </q-tr>
                         """,
                     )
+                    # Persistent scrollbars in the reserved strips beside and
+                    # below the table (see _TABLE_SCROLLBAR_JS).
+                    with ui.element("div").classes(
+                        "drocat-data-viewer-bar drocat-data-viewer-bar-y"
+                    ).props(
+                        'role="scrollbar" aria-orientation="vertical" '
+                        'aria-valuemin="0" '
+                        'aria-label="Scroll metadata vertically" tabindex="0"'
+                    ):
+                        ui.element("div").classes(
+                            "drocat-data-viewer-bar-thumb")
+                    with ui.element("div").classes(
+                        "drocat-data-viewer-bar drocat-data-viewer-bar-x"
+                    ).props(
+                        'role="scrollbar" aria-orientation="horizontal" '
+                        'aria-valuemin="0" '
+                        'aria-label="Scroll metadata horizontally" tabindex="0"'
+                    ):
+                        ui.element("div").classes(
+                            "drocat-data-viewer-bar-thumb")
 
-        state = {"page": initial.page, "page_size": 50}
+        state = {
+            "page": initial.page, "page_size": FULL_TABLE_PAGE_SIZE,
+        }
         # Total of the most recent query. The cross-dataset mode toggle
         # re-evaluates only the results footer with it — the table query
         # itself does not change when the mode flips.
@@ -1714,7 +1959,7 @@ def _render_index(
                     index,
                     **query_kwargs_with_mapped(),
                     page=1,
-                    page_size=50,
+                    page_size=FULL_TABLE_PAGE_SIZE,
                     include_all_rows=True,
                 )
             except Exception as exc:
@@ -2919,9 +3164,9 @@ def _render_index(
             state["page"] = 1
             match_state["page"] = 1
         try:
-            current_page_size = int(page_size.value or 50)
+            current_page_size = int(page_size.value or FULL_TABLE_PAGE_SIZE)
         except (TypeError, ValueError):
-            current_page_size = 50
+            current_page_size = FULL_TABLE_PAGE_SIZE
         state["page_size"] = current_page_size
         # Selecting every row needs the complete result set; fetching it here
         # would make every keystroke build the whole key map, so it stays lazy.
@@ -3105,9 +3350,9 @@ def _render_index(
             state["page"] = 1
             match_state["page"] = 1
         try:
-            current_page_size = int(page_size.value or 50)
+            current_page_size = int(page_size.value or FULL_TABLE_PAGE_SIZE)
         except (TypeError, ValueError):
-            current_page_size = 50
+            current_page_size = FULL_TABLE_PAGE_SIZE
         state["page_size"] = current_page_size
         full_table_all_keys = None
         query_kwargs = query_kwargs_with_mapped(force_search=force_search)
@@ -3368,6 +3613,7 @@ def _render_index(
         pass
     else:
         match_table.client.run_javascript(_MATCH_SUBTYPE_SCROLL_GUARD_JS)
+        match_table.client.run_javascript(_TABLE_SCROLLBAR_JS)
     refresh()
 
 
