@@ -1082,6 +1082,9 @@ def _render_mapping_graph(graph, output_path: str, *, open_browser: bool = False
         a missing attribute while the pathway-data loading is skipped."""
 
         _SAFE_FALLBACKS = {
+            # The network stylesheet reads path_df for a declared line_style
+            # column; mapping graphs come from a DiGraph, not a path table.
+            "path_df": None,
             "conn_df": None, "showfig": False, "verbose": False,
             "network_layout": "mapping",
             "node_color": ["#5b8cff", "#94a3b8"],
