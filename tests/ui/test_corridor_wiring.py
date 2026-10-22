@@ -1150,8 +1150,9 @@ def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
         'completeness_reason': 'exhausted', 'mass_source': 'lossless_cone',
         'revisit_policy': 'bounded', 'max_type_visits': 4,
         'chains_revisit': 2,
-        'exact_gate_basis': 'body_simple_sample_for_revisits',
-        'realization_truncated': 0,
+        'validation_basis': 'layered_fwd_bwd',
+        'revisit_semantics': 'layered_fwd_bwd_superset',
+        'bodyid_export': 'none', 'bodyId_paths': 0,
         'type_pruned_floor': 3, 'complete_tau': 8,
         # Issue 2026-10-22: per-pair shortest scope metadata.
         'scope_mode': 'per_pair_shortest_plus_2',
@@ -1164,6 +1165,7 @@ def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
     prov['type_pruned_complete'] = True
     prov['scope_mode'] = 'per_pair_shortest_plus_2'
     prov['scope_complete'] = True
+    prov['full'] = {'status': 'skipped_not_requested'}
     prov['scope_complete_by_pair'] = {'A->C': 'exhausted',
                                       'A->D': 'exhausted'}
     (lane / 'route_provenance.json').write_text(
@@ -1211,8 +1213,10 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     assert 'Per-pair shortest scope' in text
     assert 'route_scope_pairs.csv' in text
     assert 'revisit an effective type label' in text
-    assert 'layered-walk superset' in text
-    assert 'best sampled body-simple realization' in text
+    assert 'layered forward/backward superset' in text
+    assert 'No bodyId witness enumeration' in text
+    assert 'layered_fwd_bwd' in text
+    assert 'not requested for this typed lane' in text
     assert fast_csv.read_bytes() == before
 
     # typed-only: the lane unit falls through to the typed namespace
@@ -1241,7 +1245,7 @@ def test_pair_report_marks_an_incomplete_typed_lane(tmp_path):
     manifest = json.loads(manifest_p.read_text())
     manifest['type_pruned_complete'] = False
     manifest['completeness_reason'] = 'type_walk_cap'
-    manifest['realization_truncated'] = 1
+    manifest['unverified'] = 3
     manifest_p.write_text(json.dumps(manifest), encoding='utf-8')
     prov_p = run / ppr.TYPED_LANE_DIR / 'route_provenance.json'
     prov = json.loads(prov_p.read_text())
@@ -1253,7 +1257,7 @@ def test_pair_report_marks_an_incomplete_typed_lane(tmp_path):
     text = Path(report).read_text(encoding='utf-8')
     assert 'Type-pruned lane (INCOMPLETE)' in text
     assert 'type_walk_cap' in text
-    assert 'Realization envelope hit' in text
+    assert 'No bodyId witness enumeration' in text
 
 
 def test_comparison_corridor_section_reads_typed_namespace(tmp_path):

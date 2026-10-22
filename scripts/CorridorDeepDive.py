@@ -16,12 +16,18 @@ Direct mode:
 Outputs land in <run_dir>/route_scope_paths/ (Fast) or
 <run_dir>/route_scope_paths_type_pruned/ (typed) in run-folder mode, or
 --out (both modes): route_paths_type.csv (one row per validated walk),
-route_paths_bodyId.csv, route_connection_type.csv, route_type_incoming_asked.csv,
-route_provenance.json, README.md — plus the lane's OWN second round at
-synapse >= 1 (route_full_paths_type.csv, route_full_carrying_paths_type.csv,
-route_full_type_pairs.csv, route_type_incoming.csv and the
-route_full_type_{network,heatmap}.html mirrors) — plus plan.json under
+route_paths_bodyId.csv (Fast lane), route_connection_type.csv,
+route_type_incoming_asked.csv, route_provenance.json, README.md — plus the
+lane's OWN second round at synapse >= 1 (route_full_paths_type.csv,
+route_full_carrying_paths_type.csv, route_full_type_pairs.csv,
+route_type_incoming.csv and the route_full_type_{network,heatmap}.html
+mirrors; opt-in for the typed lane via --full-scope) — plus plan.json under
 data_details/route_plan/ beside the output root.
+
+The typed lane validates each type walk with ONE layered forward/backward
+pass (issue 2026-10-23). It writes no bodyId witness rows and has no
+realization envelope; label-revisiting walks carry the disclosed layered
+superset masses.
 
 Per-pair shortest scope (typed lane only, issue 2026-10-22):
 --per-pair-scope replaces the global bound with min(Lt + --scope-pad,
@@ -67,13 +73,19 @@ def main():
     ap.add_argument("--length-decay", type=float, default=1.5,
                     help="per-hop decay applied to --top-m-base")
     ap.add_argument("--pair-length-budget", type=int, default=100,
-                    help="the class's REALIZATION envelope: how many bodyId "
-                         "witness paths the materialization pass may "
-                         "enumerate per (pair, length) class. Every accepted "
-                         "route keeps at least one witness, so this bounds "
-                         "the tie mass, never the route list.")
+                    help="Fast lane's REALIZATION envelope per (pair, "
+                         "length) class. The typed lane validates with one "
+                         "layered forward/backward pass and ignores this "
+                         "(issue 2026-10-23).")
     ap.add_argument("--no-bodyid", action="store_true",
-                    help="skip route_paths_bodyId.csv")
+                    help="skip route_paths_bodyId.csv (Fast lane only; the "
+                         "typed lane never writes bodyId witness rows)")
+    ap.add_argument("--full-scope", action="store_true",
+                    default=None,
+                    help="also run the synapse >= 1 second round for the "
+                         "typed lane. It is off by default there (layered "
+                         "validation is the production contract; the Fast "
+                         "lane keeps its existing default).")
     ap.add_argument("--time-budget", type=float, default=900.0,
                     help="wall-clock budget in seconds (0 = unlimited)")
     ap.add_argument("--allow-multi-visit", action="store_true",
@@ -121,8 +133,9 @@ def main():
                     help="bounded-policy visit cap per type; 0 = the hop "
                          "bound (the complete revisit set for that bound)")
     ap.add_argument("--type-validate-work-cap", type=int, default=2_000_000,
-                    help="per-walk bodyId validation work cap (a cap hit "
-                         "marks the walk unverified, never phantom)")
+                    help="legacy typed-lane knobs: the layered "
+                         "forward/backward validation has no witness work "
+                         "cap, so this is accepted but ignored")
     ap.add_argument("--per-pair-scope", action="store_true",
                     help="replace the global max_interlayer+1 bound with a "
                          "per-(source,target) scope derived from validated "
@@ -174,6 +187,7 @@ def main():
                   length_decay=args.length_decay,
                   per_pair_length_budget=args.pair_length_budget,
                   write_bodyid=not args.no_bodyid,
+                  full_scope=(True if args.full_scope else None),
                   time_budget_s=(args.time_budget or None),
                   type_pruned=args.type_pruned,
                   type_prune_basis=args.type_prune_basis,

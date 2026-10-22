@@ -155,6 +155,25 @@ def test_strongest_retained_reported_in_stats_and_note(tmp_path):
     # we assert the stats contract used by that reporting.
 
 
+def test_strongest_retained_can_be_suppressed_without_changing_pruning():
+    """The typed corridor lane discards the widest-path stat; skipping it
+    must not change which edges survive."""
+    edges = [('S', 'A', 5), ('A', 'T', 9), ('S', 'B', 2), ('B', 'T', 3),
+             ('S', 'X', 7), ('X', 'Y', 1)]
+    tables = [_layer(edges, '0->1')]
+    kept_default, stats_default = prune_layers_hop_budget(
+        [t.clone() for t in tables], ['S'], ['T'], 2,
+        vprint=lambda *a, **k: None, warn_notes=[])
+    kept_off, stats_off = prune_layers_hop_budget(
+        [t.clone() for t in tables], ['S'], ['T'], 2,
+        vprint=lambda *a, **k: None, warn_notes=[],
+        compute_strongest=False)
+    assert stats_default['strongest_retained'] == 5
+    assert stats_off['strongest_retained'] is None
+    assert stats_default['rows_dropped'] == stats_off['rows_dropped']
+    assert [t.equals(u) for t, u in zip(kept_default, kept_off)] == [True]
+
+
 def test_ratio_basis_suppresses_synapse_bottleneck_bound():
     """Round-10: under the connection_ratio basis the pruning bound is a
     synapse-unit widest path (computed on the raw weight column before the

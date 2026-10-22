@@ -353,9 +353,11 @@ class RunModeControl:
                 min_val=1, max_val=100_000_000, step=1,
             )
             self.type_validate_work_cap = number_input(
-                "Validation work cap", int(
+                "Validation work cap (legacy)", int(
                     get_user_default("type_validate_work_cap") or 2_000_000),
                 min_val=1, max_val=1_000_000_000, step=1,
+                hint="Accepted but ignored: layered forward/backward "
+                     "validation has no bodyId witness work cap.",
             )
             ui.label("Scope: full_floor").classes(
                 "text-caption text-blue-8")

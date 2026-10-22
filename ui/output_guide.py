@@ -293,6 +293,14 @@ COLUMN_GLOSSARY = {
                 "integer"),
     "route_ub": ("Plan upper bound: min over the walk's hops of the "
                  "type-pair max edge weight.", "number"),
+    "Lt_i": ("Per-pair validated shortest length (per-pair scope runs): the "
+             "first body-validated type walk that clears the exact gate. "
+             "None for an unreached pair — an unreached pair is never "
+             "assigned a global bound.", "integer"),
+    "scope_bound": ("The pair's per-pair enumeration bound, "
+                    "min(Lt_i + scope_pad, scope_hard_cap). The typed "
+                    "lane's completeness claim covers this bound only.",
+                    "integer"),
     "route_floor_h": ("Class floor: the lowest accepted walk's UB, with "
                       "`floor_next` (the first skipped candidate's UB) as its "
                       "companion — the class ADMISSION certificate, and a "
@@ -1384,11 +1392,12 @@ _PATHFINDING_FILES = [
                     "walk over the pruned lossless cone. Carries the "
                     "realized weights/ratios, ratios_adj/min_ratio_adj, "
                     "pair_weights (the pruned pair's universe mass), "
-                    "chain_revisit and type_pruned=true. Every row clears "
-                    "the exact realized min_ratio_adj gate; label-revisiting "
-                    "rows carry layered-walk superset chain masses, gate on "
-                    "the best sampled body-simple realization, and disclose "
-                    "exact_gate_basis/realization_sample_truncated.",
+                    "chain_revisit and type_pruned=true. Every row is "
+                    "validated by ONE layered forward/backward pass and "
+                    "clears the exact realized min_ratio_adj gate. "
+                    "Label-revisiting rows carry the disclosed layered-walk "
+                    "superset masses; this lane writes no bodyId CSV and "
+                    "has no realization envelope.",
      "preview": True,
      "preview_title": "Type-pruned walks",
      "columns": ["pair_weights", "ratio_adj_complete", "type_pruned"]},
@@ -1397,7 +1406,9 @@ _PATHFINDING_FILES = [
                     "pairs and mass before/after (mass_source=lossless_cone), "
                     "candidate/validated/phantom/unverified/weak-filtered "
                     "counts, type_pruned_complete + filter_complete + "
-                    "completeness_reason, revisit policy, label-map hash, "
+                    "completeness_reason, validation_basis=layered_fwd_bwd, "
+                    "revisit_semantics, bodyid_export=disabled, revisit "
+                    "policy, label-map hash, "
                     "and the requested vs Complete tau. A per-pair run also "
                     "carries scope_mode/scope_lt/scope_pad/scope_hard_cap/"
                     "scope_table_sha, scope_complete_by_pair and the capped/"
@@ -1408,10 +1419,17 @@ _PATHFINDING_FILES = [
                     "type_post, w_sum/w_max/n and both pair-level ratios, "
                     "so every candidate walk can be checked against its "
                     "coarse prune basis."},
+    {"pattern": "route_scope_paths_type_pruned/route_full_paths_type.csv",
+     "description": "Typed lane's additive synapse >= 1 second round. Off by "
+                    "default (layered validation is the production "
+                    "contract); written only when --full-scope is passed. "
+                    "Same route_full_* schema as the Fast lane's second "
+                    "round."},
     {"pattern": "route_scope_paths_type_pruned/route_scope_pairs.csv",
      "description": "Per-pair shortest scope (per-pair runs only): "
                     "source_type, target_type, Lt_i/Lt/Lt_dataset, the "
-                    "scope_bound, paths/bodyId paths, and the status "
+                    "scope_bound, paths (bodyid_paths=0 for the layered "
+                    "lane), and the status "
                     "exhausted | capped | no_path | validation_cap. Pairs "
                     "with no validated path carry no bound; the claim is "
                     "complete within this scope only.",

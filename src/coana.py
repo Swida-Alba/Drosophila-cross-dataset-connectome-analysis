@@ -907,7 +907,8 @@ def _run_folder_is_replay_slice(run_dir) -> bool:
 def prune_layers_hop_budget(conn_layers, sources, targets, bound,
                             pre_col='bodyId_pre', post_col='bodyId_post',
                             vprint=None, warn_notes=None, label='bodyId',
-                            max_passes=4, report_bottleneck_bound=True):
+                            max_passes=4, report_bottleneck_bound=True,
+                            compute_strongest=True):
     """Lossless hop-budget pruning of the discovery layer tables, iterated
     to a fixpoint.
 
@@ -933,6 +934,9 @@ def prune_layers_hop_budget(conn_layers, sources, targets, bound,
     reports rows_before/rows_dropped/nodes/strongest_retained plus
     ``passes`` (the number of passes actually run; 1 reproduces the
     historical single-pass behavior, which fit_edge_budget probes use).
+    ``compute_strongest=False`` skips the widest-path report (a
+    dict-of-dicts over the cone) for callers that discard ``stats``; the
+    retained edges are identical.
     """
     stats = {'rows_before': 0, 'rows_dropped': 0, 'nodes': 0,
              'strongest_retained': None, 'passes': 0}
@@ -951,7 +955,8 @@ def prune_layers_hop_budget(conn_layers, sources, targets, bound,
     for _ in range(max(1, int(max_passes))):
         current, pstats = _hop_budget_pass_once(
             current, sources, targets, bound,
-            pre_col=pre_col, post_col=post_col, label=label)
+            pre_col=pre_col, post_col=post_col, label=label,
+            report_strongest=compute_strongest)
         stats['passes'] += 1
         dropped_total += pstats['rows_dropped']
         if pstats['nodes'] and not stats['nodes']:
@@ -1090,7 +1095,7 @@ def classify_cone_edges(pre_ids, post_ids, table_ids, typed_ids):
 
 def _hop_budget_pass_once(conn_layers, sources, targets, bound,
                           pre_col='bodyId_pre', post_col='bodyId_post',
-                          label='bodyId'):
+                          label='bodyId', report_strongest=True):
     """One lossless hop-budget pass (see ``prune_layers_hop_budget``).
 
     Drops every edge (u, v) that cannot lie on ANY simple source->target
@@ -1142,7 +1147,11 @@ def _hop_budget_pass_once(conn_layers, sources, targets, bound,
 
     adj = {}
     radj = {}
-    adj_w = {}  # u -> {v: max weight} for the strongest-retained report
+    # u -> {v: max weight} for the strongest-retained report. Skipped when
+    # the caller does not consume that stat: on a multimillion-edge cone
+    # this dict-of-dicts is a large share of the prune's peak (the typed
+    # corridor lane discards the stats; 2026-10-23 memory bound).
+    adj_w = {} if report_strongest else None
     code_pairs = []  # (pre_codes, post_codes) per table
     for table in tables:
         pre_iter = (table[pre_col].to_list()
@@ -1163,9 +1172,10 @@ def _hop_budget_pass_once(conn_layers, sources, targets, bound,
             w = float(w_iter[i]) if i < len(w_iter) else 1.0
             adj.setdefault(u, set()).add(v)
             radj.setdefault(v, set()).add(u)
-            prev_w = adj_w.setdefault(u, {}).get(v)
-            if prev_w is None or w > prev_w:
-                adj_w[u][v] = w
+            if adj_w is not None:
+                prev_w = adj_w.setdefault(u, {}).get(v)
+                if prev_w is None or w > prev_w:
+                    adj_w[u][v] = w
         code_pairs.append((pre_codes, post_codes))
         del pre_iter, post_iter, w_iter
 
@@ -1224,29 +1234,30 @@ def _hop_budget_pass_once(conn_layers, sources, targets, bound,
     # Strongest-retained report (§6b): the widest-path bottleneck of the
     # best source->target path. Pruning is lossless, so this value is
     # IDENTICAL before and after pruning — stating it tells the user the
-    # top paths are untouched by the pass. Computed unconditionally so the
-    # stats contract is stable.
+    # top paths are untouched by the pass. Computed by default so the
+    # stats contract is stable; callers that discard stats may skip it.
     strongest_retained = None
-    import heapq
-    INF = float('inf')
-    best = {c: INF for c in src_codes}
-    heap = [(-INF, c) for c in src_codes]
-    heapq.heapify(heap)
-    settled = set()
-    while heap:
-        neg_b, u = heapq.heappop(heap)
-        b = -neg_b
-        if u in settled:
-            continue
-        settled.add(u)
-        for v, w in adj_w.get(u, {}).items():
-            nb = min(b, w)
-            if nb > best.get(v, -INF):
-                best[v] = nb
-                heapq.heappush(heap, (-nb, v))
-    cand = [best[c] for c in tgt_codes if c in best]
-    if cand:
-        strongest_retained = max(cand)
+    if report_strongest:
+        import heapq
+        INF = float('inf')
+        best = {c: INF for c in src_codes}
+        heap = [(-INF, c) for c in src_codes]
+        heapq.heapify(heap)
+        settled = set()
+        while heap:
+            neg_b, u = heapq.heappop(heap)
+            b = -neg_b
+            if u in settled:
+                continue
+            settled.add(u)
+            for v, w in adj_w.get(u, {}).items():
+                nb = min(b, w)
+                if nb > best.get(v, -INF):
+                    best[v] = nb
+                    heapq.heappush(heap, (-nb, v))
+        cand = [best[c] for c in tgt_codes if c in best]
+        if cand:
+            strongest_retained = max(cand)
     stats['strongest_retained'] = strongest_retained
 
     stats['rows_dropped'] = dropped_total

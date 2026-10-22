@@ -2033,33 +2033,77 @@ def test_type_pruned_bounded_revisit_is_enumerated(tmp_path):
     assert manifest_s["revisit_policy"] == "simple"
 
 
-def test_type_pruned_revisit_gate_is_body_simple(tmp_path):
-    """A label-revisiting walk must clear the exact gate through ONE
-    body-simple path, not through the layered union mass."""
+def test_type_pruned_revisit_uses_layered_superset(tmp_path):
+    """Issue 2026-10-23: a label-revisiting walk is validated by ONE
+    layered forward/backward pass. The layered intersection overcounts a
+    body reused at two positions, so its masses are a disclosed superset
+    of body-simple realizations; no witness sample or envelope exists."""
     edges = [
         ("a1", "b1", 100), ("b1", "a2", 100), ("a2", "c1", 1),
-        # The a1-returning route makes the layered A->C hop mass 101 and the
-        # layered gate 101/101; it is not body-simple and must not gate the walk.
+        # The a1-returning route makes the layered A->C hop mass 101 and
+        # the layered gate 101/101; it is not body-simple but IS in the
+        # layered corridor semantics.
         ("b1", "a1", 100), ("a1", "c1", 100),
     ]
     types = {"a1": "A", "a2": "A", "b1": "B", "c1": "C"}
     root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out_layered"
+    out.mkdir()
+    stale_full = out / "route_full_paths_type.csv"
+    stale_full.write_text("stale\n", encoding="utf-8")
     rows, manifest = _run_typed(
-        root, tmp_path / "out_gate", max_interlayer=3,
-        type_min_ratio_adj=0.01)
-    assert "A->B->A->C" not in set(rows["path"])
-    assert manifest["filtered_weak"] >= 1
-
-    rows0, _ = _run_typed(
-        root, tmp_path / "out_gate_zero", max_interlayer=3,
-        type_min_ratio_adj=0.0)
-    row = rows0.filter(pl.col("path") == "A->B->A->C").row(0, named=True)
-    # Chain masses carry the layered superset; the gate is the sampled
-    # body-simple a1->b1->a2->c1 (its C share is 1/101).
-    assert row["exact_gate_basis"] == "body_simple_sample"
-    assert row["realization_sample_truncated"] is False
+        root, out, max_interlayer=3, type_min_ratio_adj=0.01)
+    assert "A->B->A->C" in set(rows["path"])
+    row = rows.filter(pl.col("path") == "A->B->A->C").row(0, named=True)
+    assert row["chain_revisit"] is True
     assert abs(float(row["min_ratio_adj"]) - 1.0) < 1e-9
-    assert abs(float(row["gate_min_ratio_adj"]) - 1.0 / 101.0) < 1e-9
+    assert row["ratio_adj_complete"] is True
+    simple = rows.filter(pl.col("path") == "A->C").row(0, named=True)
+    assert simple["chain_revisit"] is False
+    # A->C is type-simple; the layered pass keeps both source bodies'
+    # A->C edges, so its hop mass and conditioned denominator are 101/101.
+    assert abs(float(simple["min_ratio_adj"]) - 1.0) < 1e-9
+    # The layered contract has no sampled witness fields or envelope.
+    for removed in ("exact_gate_basis", "realization_sample_truncated",
+                    "sampled_support_mass", "sampled_ratios",
+                    "sampled_coverage", "realized_paths",
+                    "gate_min_ratio_adj"):
+        assert removed not in rows.columns
+    assert manifest["validation_basis"] == "layered_fwd_bwd"
+    assert manifest["revisit_semantics"] == "layered_fwd_bwd_superset"
+    assert manifest["chains_revisit"] >= 1
+    assert "realization_truncated" not in manifest
+    assert "realization_envelope" not in manifest
+    assert not (out / "route_paths_bodyId.csv").exists()
+    # The additive synapse >= 1 round is off by default for the typed lane;
+    # stale artifacts from an older in-place run are removed.
+    prov = json.loads((out / "route_provenance.json").read_text())
+    assert prov["full"]["status"] == "skipped_not_requested"
+    assert not stale_full.exists()
+    assert not (out / "route_full_carrying_paths_type.csv").exists()
+
+
+def test_type_pruned_layered_revisit_needs_no_body_simple_witness(tmp_path):
+    """The chosen contract is corridor/refill layered semantics: a walk
+    whose forward∩backward corridor exists is validated even when every
+    realization reuses a body (no body-simple witness). The old lane
+    classified such a walk as a phantom."""
+    edges = [
+        ("a1", "b1", 100), ("b1", "a1", 100), ("a1", "c1", 100),
+    ]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    rows, manifest = _run_typed(
+        root, tmp_path / "out_reuse", max_interlayer=3,
+        type_min_ratio_adj=0.01)
+    assert "A->B->A->C" in set(rows["path"])
+    row = rows.filter(pl.col("path") == "A->B->A->C").row(0, named=True)
+    assert row["chain_revisit"] is True
+    # a1 is the only A body: the A->B->A->C route reuses it at positions
+    # 0 and 2, so no body-simple realization exists.
+    assert manifest["phantoms"] == 0
+    assert manifest["unverified"] == 0
+    assert manifest["revisit_semantics"] == "layered_fwd_bwd_superset"
 
 
 def test_type_pruned_manifest_records_filter_and_label_parity(tmp_path):
@@ -2280,24 +2324,20 @@ def test_type_prune_completeness_includes_unresolved_ratios():
 
     ok = _type_prune_completeness(
         enum_capped=False, time_capped=False, unverified=0,
-        realization_missing=0, validation_truncated=0,
         ratio_unresolved=0)
     assert ok == (True, True, "exhausted")
     bad = _type_prune_completeness(
         enum_capped=False, time_capped=False, unverified=0,
-        realization_missing=0, validation_truncated=0,
         ratio_unresolved=3)
     assert bad == (False, False, "ratio_unresolved")
     capped = _type_prune_completeness(
         enum_capped=True, time_capped=False, unverified=0,
-        realization_missing=0, validation_truncated=0,
         ratio_unresolved=0)
     assert capped[0] is False and capped[1] is True
-    probe_capped = _type_prune_completeness(
-        enum_capped=False, time_capped=False, unverified=0,
-        realization_missing=0, validation_truncated=1,
+    unverified = _type_prune_completeness(
+        enum_capped=False, time_capped=False, unverified=1,
         ratio_unresolved=0)
-    assert probe_capped == (False, True, "validation_work_cap")
+    assert unverified == (False, True, "unverified")
 
 
 def test_type_pruned_label_mapper_witness_is_real(tmp_path):
@@ -2445,7 +2485,9 @@ def test_per_pair_scope_phantom_shortest_discovers_validated_lt(tmp_path):
     assert pair["status"] == "exhausted"
     assert pair["first_phantom_type_path"] == "A->B->C"
     assert pair["witness_type_path"] == "A->B->X->Y->C"
-    assert pair["witness_body_path"] == "a1->b1->x1->y1->c1"
+    # Layered validation produces no bodyId witness column at all.
+    assert "witness_body_path" not in pair
+    assert pair["bodyid_paths"] == 0
     assert pair["paths"] == 2
     # The reusable Pass-A table carries the same validated length.
     table = pl.read_csv(out / "scope_table.csv").to_dicts()[0]

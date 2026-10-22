@@ -2947,7 +2947,10 @@ def _render_corridor_section(folder: Path, label: str,
         if (folder / lane_dir / fname).exists():
             links.append('<a href="' + link_prefix + lane_dir + '/'
                          + fname + '">' + lab + '</a>')
-    basis = _esc(str(prov.get('validation_basis') or 'lossless_prune'))
+    _typed_block = prov.get('type_prune') if _is_typed else {}
+    basis = _esc(str(
+        (_typed_block.get('validation_basis') if _is_typed
+         else prov.get('validation_basis')) or 'lossless_prune'))
     floor_txt = ((str(min(floors)) + '..' + str(max(floors)))
                  if floors else '&mdash;')
     capped = ' &middot; <b>time-capped</b>' if prov.get('time_capped') else ''
@@ -3000,6 +3003,11 @@ def _render_corridor_section(folder: Path, label: str,
                         + _esc(str(_full.get('error') or ''))
                         + '. The lane&#8217;s asked-scope tables are '
                         'unaffected.</p>')
+        elif _fstat == 'skipped_not_requested':
+            full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1): '
+                        'not requested for this typed lane. Pass '
+                        '<code>--full-scope</code> to re-value its chains; '
+                        'the asked-scope tables are unaffected.</p>')
         elif _fstat in ('empty',):
             full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1): '
                         'none of the lane&#8217;s chains realizes at the '
@@ -3034,7 +3042,7 @@ def _render_corridor_section(folder: Path, label: str,
                     'the synapse &ge; 1 re-value existed &mdash; regenerate '
                     'with <code>scripts/CorridorDeepDive.py &lt;run_dir&gt;'
                     '</code> to get the Refill view for the lane.</p>')
-    _tp = prov.get('type_prune') if _is_typed else {}
+    _tp = _typed_block
     _typed_para = (
         '<p><b>Type-pruned COMPLETE lane</b>: '
         + _esc(str(_tp.get('basis') or '&mdash;')) + ' prune at '
@@ -3069,8 +3077,10 @@ def _render_corridor_section(folder: Path, label: str,
             '<p>Validated walks: ' + str(prov.get('validated_walks',
                                                   '&mdash;')) + ' over '
             + str(prov.get('scope_pairs', '&mdash;'))
-            + ' scope type-pairs &middot; bodyId paths: '
-            + str(prov.get('bodyId_paths', '&mdash;'))
+            + ' scope type-pairs &middot; '
+            + ('layered forward/backward validation (no bodyId witness '
+               'rows)' if _is_typed else
+               'bodyId paths: ' + str(prov.get('bodyId_paths', '&mdash;')))
             + ' &middot; class floors: ' + floor_txt
             + ' &middot; runtime: ' + str(prov.get('runtime_s', '&mdash;'))
             + 's' + capped + sample_txt + '</p>'
@@ -3143,6 +3153,17 @@ def _render_type_pruned_section(folder: Path, label: str,
             '<code>route_scope_pairs.csv</code>; the claim below is '
             'WITHIN this scope only (never "complete up to '
             'max_interlayer").</p>')
+    full_txt = ""
+    _full = prov.get("full") or {}
+    if str(_full.get("status") or "") == "skipped_not_requested":
+        full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1): '
+                    'not requested for this typed lane. Pass '
+                    '<code>--full-scope</code> to re-value its chains; the '
+                    'asked-scope tables are unaffected.</p>')
+    elif str(_full.get("status") or "") == "failed":
+        full_txt = ('<p><b>Full-scope second round: FAILED</b> &mdash; '
+                    + _esc(str(_full.get("error") or ""))
+                    + '. The asked-scope tables are unaffected.</p>')
     html = (
         '<div class="card"><h3>' + _esc(label)
         + ' &mdash; ' + lane_title + '</h3>'
@@ -3153,8 +3174,9 @@ def _render_type_pruned_section(folder: Path, label: str,
         + ((' scoped type walks (' if scope_mode else ' complete type walks (')
            + _v("revisit_policy")
            + ', max ' + _v("max_type_visits") + ' visits/type), validated '
-           + _v("validated_walks") + ' at bodyId level, rejected '
-           + _v("phantoms") + ' phantoms, applied the exact realized '
+           + _v("validated_walks") + ' with one layered forward/backward '
+           + 'pass, rejected ' + _v("phantoms") + ' phantoms, applied the '
+           + 'exact realized '
            + '<code>min_ratio_adj</code> gate to ' + _v("filtered_weak")
            + ' weak and exported ' + _v("accepted_paths") + ' paths.</p>')
         + scope_txt
@@ -3163,15 +3185,16 @@ def _render_type_pruned_section(folder: Path, label: str,
             'enumerated walks.</p>') if complete is False else '')
         + (('<p><b>' + f'{int(manifest.get("chains_revisit") or 0):,}'
             + '</b> exported walk(s) revisit an effective type label. Their '
-            'chain masses carry the disclosed layered-walk superset semantics '
-            '(a body may occupy two positions); the exact gate uses the best '
-            'sampled body-simple realization.</p>')
+            'chain masses are the layered forward/backward superset of '
+            'body-simple realizations (a body may occupy two positions); '
+            'the exact gate is the minimum adjusted ratio of those kept '
+            'edges.</p>')
            if int(manifest.get("chains_revisit") or 0) else '')
-        + (('<p><b>Realization envelope hit</b> on '
-            + f'{int(manifest.get("realization_truncated") or 0):,}'
-            + ' label-revisiting walk(s): the body-simple gate sample was '
-            'capped, so <code>filter_complete=false</code>.</p>')
-           if int(manifest.get("realization_truncated") or 0) else '')
+        + ('<p>Validation basis: <code>'
+           + _esc(str(manifest.get("validation_basis") or "layered_fwd_bwd"))
+           + '</code>. No bodyId witness enumeration / realization envelope '
+           'is used by this lane; no route_paths_bodyId.csv is written.</p>')
+        + full_txt
         + '<p>Pairs ' + pair_txt + '; mass source '
         + _esc(str(manifest.get("mass_source") or "&mdash;"))
         + '; floor ' + _v("type_pruned_floor")
