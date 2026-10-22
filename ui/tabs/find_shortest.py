@@ -160,7 +160,10 @@ def create_find_shortest_tab():
                 run_mode = pc.run_mode_block(
                     depth_getter=lambda: int(max_interlayer.value or 0),
                     extra=" At this tab's default depth (5) the built-in "
-                          "'auto' runs the lane on every query.")
+                          "'auto' runs the lane on every query.",
+                    # The typed lane requires path_mode='all'; offering it
+                    # on Shortest would guarantee a post-run refusal.
+                    supports_type_pruned=False)
                 edge_limit = number_input(
                     "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
                     hint="Drawing-only cap: at most this many unique edges are "

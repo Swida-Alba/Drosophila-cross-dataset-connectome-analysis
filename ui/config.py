@@ -1002,7 +1002,8 @@ DEFAULT_SETTING_SPECS = {
                 "min_ratio_adj gate. Separate from Run Mode; carries its own "
                 "completeness field (type_pruned_complete; scoped to the "
                 "per-pair bound when Per-pair shortest scope is on) and "
-                "writes route_scope_paths/type_prune_manifest.json.",
+                "writes route_scope_paths_type_pruned/"
+                "type_prune_manifest.json.",
     },
     "per_pair_scope": {
         "label": "Per-pair shortest scope",

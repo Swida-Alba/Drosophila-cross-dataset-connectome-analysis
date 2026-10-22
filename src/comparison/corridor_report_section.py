@@ -91,12 +91,28 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
     typed_only = bool(lanes) and all(
         isinstance(lane["prov"].get("type_prune"), dict)
         for _t, lane in lanes.values())
+    incomplete = []
+    for ds, (t, lane) in sorted(lanes.items()):
+        block = lane["prov"].get("type_prune")
+        if (isinstance(block, dict)
+                and block.get("type_pruned_complete") is False):
+            incomplete.append((ds, t, block))
     parts = ['<div class="card">']
     parts.append(
+        '<h2>Type-pruned lane (INCOMPLETE &mdash; see notes)</h2>'
+        if typed_only and incomplete else
         '<h2>Type-pruned complete lane (every type walk over the pruned '
         'graph, bodyId-validated)</h2>' if typed_only else
         '<h2>Fast mode (corridor lane — strongest type-level routes at the '
         'asked threshold)</h2>')
+    for ds, t, block in incomplete:
+        reason = str(block.get("completeness_reason") or "incomplete")
+        parts.append(
+            '<p><b>INCOMPLETE</b> typed lane for '
+            + html.escape(str(nickname_map.get(ds, ds))) + ' @ ' + str(t)
+            + ': <code>type_pruned_complete=false</code> ('
+            + html.escape(reason) + '). The numbers cover only the '
+            'enumerated walks.</p>')
     for ds, (t, lane) in sorted(refused.items()):
         reason = str(lane["prov"].get("reason") or "refused")
         parts.append(
@@ -142,6 +158,12 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
         notes = []
         if prov.get("time_capped"):
             notes.append("time-capped")
+        type_block = prov.get("type_prune")
+        if (isinstance(type_block, dict)
+                and type_block.get("type_pruned_complete") is False):
+            notes.append("typed lane INCOMPLETE: "
+                         + str(type_block.get("completeness_reason")
+                               or "incomplete"))
         bitten = sum(1 for v in prov.get("classes", {}).values()
                      if v.get("stop") == "budget")
         notes.append(f"{bitten} class(es) budget-bound")

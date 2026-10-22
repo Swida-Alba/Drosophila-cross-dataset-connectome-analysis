@@ -276,13 +276,16 @@ class RunModeControl:
     vocabulary would make two different claims share one label.
     """
 
-    def __init__(self, depth_getter, extra=''):
+    def __init__(self, depth_getter, extra='', *,
+                 supports_type_pruned=True):
         self.depth_getter = depth_getter
         self.extra = extra
+        self._supports_type_pruned = bool(supports_type_pruned)
         self.control = run_mode_selector()
         self.note = ui.label("").classes("text-caption text-blue-8")
         self.control.on_value_change(lambda _e: self.refresh())
-        with ui.row().classes("items-center gap-4 flex-wrap"):
+        with ui.row().classes(
+                "items-center gap-4 flex-wrap") as self._type_toggle_row:
             self.type_pruned = checkbox_input(
                 "Type-pruned complete lane",
                 bool(get_user_default("type_pruned")),
@@ -290,7 +293,8 @@ class RunModeControl:
                      "walk (within the per-pair scope when enabled), "
                      "validate each at bodyId level and export only paths "
                      "clearing the exact realized min_ratio_adj gate. "
-                     "Writes route_scope_paths/ (type_prune_manifest.json).",
+                     "Writes route_scope_paths_type_pruned/ "
+                     "(type_prune_manifest.json).",
             )
             self.per_pair_scope = checkbox_input(
                 "Per-pair shortest scope",
@@ -399,9 +403,29 @@ class RunModeControl:
         self.per_pair_scope.on_value_change(_on_scope_toggle)
         self._sync_type_visibility()
         self.refresh()
+        if not self._supports_type_pruned:
+            self.set_type_pruned_supported(False)
+
+    def set_type_pruned_supported(self, supported: bool) -> None:
+        """Show/disable the typed-lane controls for the current path mode.
+
+        The backend refuses the typed lane on shortest runs, so offering it
+        there would be a guaranteed post-run refusal.
+        """
+        self._supports_type_pruned = bool(supported)
+        self._type_toggle_row.set_visibility(self._supports_type_pruned)
+        if self._supports_type_pruned:
+            self.type_pruned.enable()
+            if self.type_pruned.value:
+                self.per_pair_scope.enable()
+        else:
+            self.type_pruned.disable()
+            self.per_pair_scope.disable()
+        self._sync_type_visibility()
+        self.refresh()
 
     def _sync_type_visibility(self) -> None:
-        typed = bool(self.type_pruned.value)
+        typed = bool(self._supports_type_pruned and self.type_pruned.value)
         self._type_row.set_visibility(typed)
         if typed:
             self.per_pair_scope.enable()
@@ -413,7 +437,7 @@ class RunModeControl:
 
     def payload(self) -> dict:
         """The constructor keys the typed lane needs (empty when off)."""
-        if not self.type_pruned.value:
+        if not self._supports_type_pruned or not self.type_pruned.value:
             return {"type_pruned": False}
         payload = {
             "type_pruned": True,
@@ -449,6 +473,8 @@ class RunModeControl:
     def note_text(self) -> str:
         text = run_mode_note_text(self.control.value,
                                   self.depth_getter(), self.extra)
+        if not self._supports_type_pruned:
+            return text
         if self.type_pruned.value:
             text += (" Type-pruned COMPLETE lane: every type walk over the "
                      "pruned graph, bodyId-validated, exact realized "
@@ -473,9 +499,11 @@ class RunModeControl:
         return self.control.value
 
 
-def run_mode_block(depth_getter, extra: str = '') -> RunModeControl:
+def run_mode_block(depth_getter, extra: str = '',
+                   *, supports_type_pruned: bool = True) -> RunModeControl:
     """Build the selector + live line in the caller's current container."""
-    return RunModeControl(depth_getter, extra)
+    return RunModeControl(depth_getter, extra,
+                          supports_type_pruned=supports_type_pruned)
 
 
 # --- Hemisphere card --------------------------------------------------------

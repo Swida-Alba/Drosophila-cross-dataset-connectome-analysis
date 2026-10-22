@@ -917,6 +917,8 @@ def create_inter_dataset_tab():
                         edge_budget.enable()
                         edge_budget.value = get_user_default("graph_edge_limit_bodyid") or 1000000
                     # the reset above moved the depth the live line quotes
+                    run_mode.set_type_pruned_supported(
+                        path_mode.value != 'shortest')
                     run_mode.refresh()
                     _sync_xcoverage()
                     if notify:

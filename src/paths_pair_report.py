@@ -3123,6 +3123,8 @@ def _render_type_pruned_section(folder: Path, label: str,
                          + fname + '">' + lab + '</a>')
     complete = manifest.get("type_pruned_complete")
     filter_complete = manifest.get("filter_complete")
+    lane_title = ('Type-pruned complete lane' if complete is not False
+                  else 'Type-pruned lane (INCOMPLETE)')
     scope_mode = manifest.get("scope_mode")
     scope_txt = ""
     if scope_mode:
@@ -3143,7 +3145,7 @@ def _render_type_pruned_section(folder: Path, label: str,
             'max_interlayer").</p>')
     html = (
         '<div class="card"><h3>' + _esc(label)
-        + ' &mdash; Type-pruned complete lane</h3>'
+        + ' &mdash; ' + lane_title + '</h3>'
         + '<p>Pruned the lossless discovery cone on '
         + _esc(str(manifest.get("basis") or "&mdash;")) + ' at '
         + _esc(str(manifest.get("min_ratio_adj") or "&mdash;"))
@@ -3156,6 +3158,15 @@ def _render_type_pruned_section(folder: Path, label: str,
            + '<code>min_ratio_adj</code> gate to ' + _v("filtered_weak")
            + ' weak and exported ' + _v("accepted_paths") + ' paths.</p>')
         + scope_txt
+        + (('<p><b>INCOMPLETE</b>: <code>type_pruned_complete=false</code> ('
+            + _v("completeness_reason") + '). The walk list covers only the '
+            'enumerated walks.</p>') if complete is False else '')
+        + (('<p><b>' + f'{int(manifest.get("chains_revisit") or 0):,}'
+            + '</b> exported walk(s) revisit an effective type label. Their '
+            'chain masses and exact gate carry the disclosed layered-walk '
+            'superset semantics (a body may occupy two positions), not '
+            'body-simple path masses.</p>')
+           if int(manifest.get("chains_revisit") or 0) else '')
         + '<p>Pairs ' + pair_txt + '; mass source '
         + _esc(str(manifest.get("mass_source") or "&mdash;"))
         + '; floor ' + _v("type_pruned_floor")
@@ -5656,15 +5667,18 @@ def _write_empty_state_report(run_dir: Path, meta: Dict[str, Any],
                            for n in present)
     lane_section = ''
     if lane_ok:
+        _lane_dir = (TYPED_LANE_DIR
+                     if (Path(run_dir) / TYPED_LANE_DIR
+                         / 'route_provenance.json').exists()
+                     and not (Path(run_dir) / LANE_DIR
+                              / 'route_provenance.json').exists()
+                     else LANE_DIR)
+        _lane_label = ('Type-pruned complete lane'
+                       if _lane_dir == TYPED_LANE_DIR
+                       else 'Fast (corridor) lane')
         try:
             lane_section, _found = _render_corridor_section(
-                run_dir, 'Fast (corridor) lane',
-                lane_dir=(TYPED_LANE_DIR
-                          if (Path(run_dir) / TYPED_LANE_DIR
-                              / 'route_provenance.json').exists()
-                          and not (Path(run_dir) / LANE_DIR
-                                   / 'route_provenance.json').exists()
-                          else LANE_DIR))
+                run_dir, _lane_label, lane_dir=_lane_dir)
         except Exception:  # noqa: BLE001 - the lane read is additive here
             lane_section = ''
     headline = ('Complete mode produced no paths' if lane_ok
@@ -6141,6 +6155,11 @@ def generate_paths_pair_report(
             or _has_pairs('corridor_refill_full'):
         modes.append('corridor')
     payload['run']['modes'] = modes
+    if _corridor_lane == TYPED_LANE_DIR:
+        # The Analysis bar's shared JS name is 'Fast (corridor)'; a
+        # typed-only run must not present its lane as Fast.
+        payload['run']['mode_labels'] = {
+            'corridor': 'Type-pruned complete'}
     views = {
         'complete': ([] if lane_only else
                      [v for v, ok in (

@@ -75,6 +75,14 @@ def test_find_shortest_tab_wired():
     assert "shortest-DAG" in src  # honest scope label
     # the tab whose default depth already clears the auto gate says so
     assert "default depth (5)" in src
+    # the typed lane requires path_mode='all'; Shortest hides its controls
+    assert "supports_type_pruned=False" in src
+
+
+def test_cross_dataset_typed_control_follows_path_mode():
+    src = _tab_wired("ui/tabs/inter_dataset.py")
+    assert "set_type_pruned_supported(" in src
+    assert "path_mode.value != 'shortest'" in src
 
 
 def test_inter_dataset_tab_wired():
@@ -1141,6 +1149,7 @@ def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
         'type_pruned_complete': True, 'filter_complete': True,
         'completeness_reason': 'exhausted', 'mass_source': 'lossless_cone',
         'revisit_policy': 'bounded', 'max_type_visits': 4,
+        'chains_revisit': 2,
         'type_pruned_floor': 3, 'complete_tau': 8,
         # Issue 2026-10-22: per-pair shortest scope metadata.
         'scope_mode': 'per_pair_shortest_plus_2',
@@ -1199,6 +1208,8 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     assert 'filter_complete' in text
     assert 'Per-pair shortest scope' in text
     assert 'route_scope_pairs.csv' in text
+    assert 'revisit an effective type label' in text
+    assert 'layered-walk superset' in text
     assert fast_csv.read_bytes() == before
 
     # typed-only: the lane unit falls through to the typed namespace
@@ -1211,6 +1222,33 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     report2 = ppr.generate_paths_pair_report(typed_only, log=None)
     text2 = Path(report2).read_text(encoding='utf-8')
     assert 'Type-pruned complete lane' in text2
+    assert '"corridor": "Type-pruned complete"' in text2
+    assert 'Fast (corridor) only' not in text2
+
+
+def test_pair_report_marks_an_incomplete_typed_lane(tmp_path):
+    """A capped typed lane must not be presented as complete."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / 'src'))
+    import paths_pair_report as ppr
+
+    run = _lane_only_run(tmp_path)
+    _write_typed_lane(run)
+    manifest_p = (run / ppr.TYPED_LANE_DIR / 'type_prune_manifest.json')
+    manifest = json.loads(manifest_p.read_text())
+    manifest['type_pruned_complete'] = False
+    manifest['completeness_reason'] = 'type_walk_cap'
+    manifest_p.write_text(json.dumps(manifest), encoding='utf-8')
+    prov_p = run / ppr.TYPED_LANE_DIR / 'route_provenance.json'
+    prov = json.loads(prov_p.read_text())
+    prov['type_prune'] = manifest
+    prov['type_pruned_complete'] = False
+    prov_p.write_text(json.dumps(prov), encoding='utf-8')
+
+    report = ppr.generate_paths_pair_report(run, log=None)
+    text = Path(report).read_text(encoding='utf-8')
+    assert 'Type-pruned lane (INCOMPLETE)' in text
+    assert 'type_walk_cap' in text
 
 
 def test_comparison_corridor_section_reads_typed_namespace(tmp_path):
@@ -1240,6 +1278,37 @@ def test_comparison_corridor_section_reads_typed_namespace(tmp_path):
     assert "per_pair_shortest_plus_2" in html
     # the typed manifest's pair counts, not the Fast provenance's
     assert "20" in html and "8" in html
+
+
+def test_comparison_corridor_section_marks_an_incomplete_typed_lane(tmp_path):
+    """A capped typed lane is called out instead of claiming completeness."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from comparison.corridor_report_section import generate_corridor_section
+
+    run = _lane_only_run(tmp_path)
+    _write_typed_lane(run)
+    prov_p = run / 'route_scope_paths_type_pruned' / 'route_provenance.json'
+    prov = json.loads(prov_p.read_text())
+    prov['type_prune']['type_pruned_complete'] = False
+    prov['type_prune']['completeness_reason'] = 'type_walk_cap'
+    prov['type_pruned_complete'] = False
+    prov_p.write_text(json.dumps(prov), encoding='utf-8')
+
+    class _Params:
+        def get_dataset_output_path(self, ds, t):
+            return str(run)
+
+    class _Analyzer:
+        def __init__(self):
+            self.parameters = _Params()
+
+        def _get_canonical_type(self, t, ds):
+            return t
+
+    html = generate_corridor_section(_Analyzer(), ["ds_a"], [1], {})
+    assert "Type-pruned lane (INCOMPLETE" in html
+    assert "type_walk_cap" in html
 
 
 def test_refill_status_is_stamped_in_all_attributes(tmp_path):

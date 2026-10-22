@@ -1385,7 +1385,8 @@ _PATHFINDING_FILES = [
                     "realized weights/ratios, ratios_adj/min_ratio_adj, "
                     "pair_weights (the pruned pair's universe mass), "
                     "chain_revisit and type_pruned=true. Every row clears "
-                    "the exact realized min_ratio_adj gate.",
+                    "the exact realized min_ratio_adj gate; label-revisiting "
+                    "rows carry the disclosed layered-walk superset masses.",
      "preview": True,
      "preview_title": "Type-pruned walks",
      "columns": ["pair_weights", "ratio_adj_complete", "type_pruned"]},
