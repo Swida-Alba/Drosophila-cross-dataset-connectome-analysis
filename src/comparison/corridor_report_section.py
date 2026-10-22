@@ -46,11 +46,19 @@ def _load_lane(analyzer, dataset_name: str, threshold):
         loaded.append({"prov": prov, "base": base, "lane_dir": lane_dir})
     if not loaded:
         return None
-    # Prefer a COMPLETE lane (typed first when both are complete); a refused
-    # typed lane must not hide a complete Fast lane.
-    complete = [x for x in loaded
-                if str(x["prov"].get("status") or "") == "complete"]
-    return (complete or loaded)[0]
+
+    def _rank(item):
+        prov = item["prov"]
+        finished = str(prov.get("status") or "") == "complete"
+        block = prov.get("type_prune")
+        exhaustive = (not isinstance(block, dict)
+                      or block.get("type_pruned_complete") is not False)
+        typed = item["lane_dir"] == "route_scope_paths_type_pruned"
+        # A complete/exhaustive lane wins; typed stays first within a tier.
+        # An incomplete typed lane must not hide a complete Fast lane.
+        return (not (finished and exhaustive), not finished, not typed)
+
+    return min(loaded, key=_rank)
 
 
 def _walk_key(analyzer, dataset_name: str, path_str: str):

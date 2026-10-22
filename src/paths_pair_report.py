@@ -3163,10 +3163,15 @@ def _render_type_pruned_section(folder: Path, label: str,
             'enumerated walks.</p>') if complete is False else '')
         + (('<p><b>' + f'{int(manifest.get("chains_revisit") or 0):,}'
             + '</b> exported walk(s) revisit an effective type label. Their '
-            'chain masses and exact gate carry the disclosed layered-walk '
-            'superset semantics (a body may occupy two positions), not '
-            'body-simple path masses.</p>')
+            'chain masses carry the disclosed layered-walk superset semantics '
+            '(a body may occupy two positions); the exact gate uses the best '
+            'sampled body-simple realization.</p>')
            if int(manifest.get("chains_revisit") or 0) else '')
+        + (('<p><b>Realization envelope hit</b> on '
+            + f'{int(manifest.get("realization_truncated") or 0):,}'
+            + ' label-revisiting walk(s): the body-simple gate sample was '
+            'capped, so <code>filter_complete=false</code>.</p>')
+           if int(manifest.get("realization_truncated") or 0) else '')
         + '<p>Pairs ' + pair_txt + '; mass source '
         + _esc(str(manifest.get("mass_source") or "&mdash;"))
         + '; floor ' + _v("type_pruned_floor")
