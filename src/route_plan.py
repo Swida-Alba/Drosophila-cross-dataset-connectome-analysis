@@ -2876,7 +2876,12 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             label_mapper_sha = 'unreadable'
             label_mapper_source = f'file-unreadable:{mapping_file_path}'
     elif label_mapper is not None:
-        _overall = getattr(label_mapper, 'overall_mapping', None) or {}
+        # A live LabelMapper stores its groups in _source/_target/
+        # _intermediate_mapping; ``overall_mapping`` does not exist on it.
+        # Hashing only the latter made every live map 'live-empty' and hid
+        # the grouped-vs-native mapping distinction from provenance.
+        _overall = (getattr(label_mapper, 'overall_mapping', None)
+                    or _label_mapper_payload(label_mapper) or {})
         if _overall:
             try:
                 label_mapper_sha = _hashlib.md5(json.dumps(
@@ -3111,7 +3116,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         typed, pairs = _typed_universe_cached(
             conn_path, neuron_source, conn, tmap, asked, drop_untyped,
             exclude_intra, separate_hemi, hemi_filter, label_mapper,
-            _phase, exclude_autapses=exclude_autapses)
+            _phase, exclude_autapses=exclude_autapses,
+            type_map_sha=type_map_sha)
         # Same rule on the synapse basis: all pres, synapse units,
         # conditioned at the lane's own asked floor. At asked <= 1 nothing is
         # cut, so the conditioned denominator IS the plain one and
@@ -3146,6 +3152,34 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         _refuse(f"no typed edges at asked threshold {asked}")
     src_ids = tmap.filter(pl.col("t").is_in(src_types))["bid"].to_list()
     tgt_ids = tmap.filter(pl.col("t").is_in(tgt_types))["bid"].to_list()
+    # Grouped-source provenance (issue 2026-10-22): an effective source
+    # label may fold many native subtypes. Report both the grouped labels
+    # and the native types of the enrolled source bodies, so a grouped run
+    # is auditable and a partially-folded mapping is visible.
+    _src_members = [b for b in src_ids if (not src_keep or b in src_keep)]
+    _native_by_bid = {}
+    try:
+        if "type" in frame.columns:
+            _native_by_bid = {
+                str(b): str(t) for b, t in zip(
+                    frame["bodyId"].astype(str), frame["type"])}
+    except Exception:
+        _native_by_bid = {}
+    from collections import Counter as _Counter
+    _src_type_set = set(src_types)
+    source_group_counts = dict(sorted(_Counter(
+        str(type_map.get(b)) for b in _src_members
+        if type_map.get(b) in _src_type_set).items()))
+    source_group_counts_all = dict(sorted(_Counter(
+        str(type_map.get(b)) for b in src_ids
+        if type_map.get(b) in _src_type_set).items()))
+    source_unenrolled_counts = {
+        k: int(v) - int(source_group_counts.get(k, 0))
+        for k, v in source_group_counts_all.items()
+        if int(v) - int(source_group_counts.get(k, 0)) > 0}
+    source_native_counts = dict(sorted(_Counter(
+        _native_by_bid[b] for b in _src_members
+        if _native_by_bid.get(b)).items()))
 
     # ---- per-type support tables (route_paths_type.csv mirrors the
     # *_allpaths_type.csv column semantics: weights/ratios/min_weight/
@@ -3663,10 +3697,24 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         type_block['type_map_size'] = len(type_map)
         type_block['label_mapper_sha'] = label_mapper_sha
         type_block['label_mapper_source'] = label_mapper_source
+        type_block['sources'] = src_types
+        type_block['targets'] = tgt_types
+        type_block['source_bodies_effective'] = len(_src_members)
+        type_block['source_group_counts'] = source_group_counts
+        type_block['source_group_counts_all'] = source_group_counts_all
+        type_block['source_unenrolled_counts'] = source_unenrolled_counts
+        type_block['source_native_counts'] = source_native_counts
+        type_block['source_group_mapping_sha'] = label_mapper_sha
         type_block['enrollment'] = {
             'sources': src_enrollment, 'targets': tgt_enrollment,
             'source_bodies': len(src_keep) or None,
-            'target_bodies': len(tgt_keep) or None}
+            'target_bodies': len(tgt_keep) or None,
+            'source_bodies_effective': len(_src_members),
+            'source_group_counts': source_group_counts,
+            'source_group_counts_all': source_group_counts_all,
+            'source_unenrolled_counts': source_unenrolled_counts,
+            'source_native_counts': source_native_counts,
+            'source_group_mapping_sha': label_mapper_sha}
         time_capped = time_capped or type_block.get("time_capped", False)
         if per_pair_scope:
             # The provenance's scope block must carry the FINAL per-pair
@@ -4446,7 +4494,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         # endpoints (source_neurons.csv + Checked target_neurons.csv)
         "enrollment": {"sources": src_enrollment, "targets": tgt_enrollment,
                        "source_bodies": len(src_keep) or None,
-                       "target_bodies": len(tgt_keep) or None},
+                       "target_bodies": len(tgt_keep) or None,
+                       "source_bodies_effective": len(_src_members),
+                       "source_group_counts": source_group_counts,
+                       "source_group_counts_all": source_group_counts_all,
+                       "source_unenrolled_counts": source_unenrolled_counts,
+                       "source_native_counts": source_native_counts,
+                       "source_group_mapping_sha": label_mapper_sha},
         "sources": src_types, "targets": tgt_types,
         "connections": str(conn_path), "neuron_table": neuron_source,
         "knobs": {"top_m_base": top_m_base,
@@ -5217,14 +5271,63 @@ def _read_store_universe(run_dir, _phase=None):
     return universe, conflicts
 
 
+def _label_mapper_payload(label_mapper):
+    """Stable JSON-able mapping content for hashing.
+
+    ``LabelMapper`` stores its groups in ``_source_mapping`` /
+    ``_target_mapping`` / ``_intermediate_mapping``; it has no
+    ``overall_mapping`` attribute. Reading the latter alone made every
+    mapping hash ``{}`` and let a grouped run reuse a universe built
+    under the native labels. Returns None when the mapper carries no
+    readable mapping content."""
+    if label_mapper is None:
+        return None
+    overall = getattr(label_mapper, "overall_mapping", None)
+    if overall:
+        return overall
+    payload = {}
+    for attr in ("_source_mapping", "_target_mapping",
+                 "_intermediate_mapping"):
+        mapping = getattr(label_mapper, attr, None)
+        if not mapping:
+            continue
+        try:
+            normalized = {}
+            for label, ds_map in dict(mapping).items():
+                normalized[str(label)] = {
+                    str(ds): [list(x) if isinstance(x, (list, tuple))
+                              else [x] for x in groups]
+                    for ds, groups in dict(ds_map).items()}
+        except Exception:  # noqa: BLE001 - an unhashable mapper is disclosed
+            continue
+        if normalized:
+            payload[attr] = normalized
+    if payload:
+        return payload
+    # A wrapper mapper may expose only its source files; hash their bytes.
+    import hashlib
+    for attr in ("_source_file", "_target_file", "_intermediate_file"):
+        path = getattr(label_mapper, attr, None)
+        if not path:
+            continue
+        try:
+            with open(path, "rb") as _fh:
+                payload[attr] = hashlib.md5(_fh.read()).hexdigest()
+        except OSError:
+            continue
+    return payload or None
+
+
 def _universe_signature(conn_path, neuron_source, asked, drop_untyped,
                         exclude_intra, separate_hemi, hemi_filter,
-                        label_mapper, exclude_autapses=False) -> str:
+                        label_mapper, exclude_autapses=False,
+                        type_map_sha=None) -> str:
     """Fail-closed cache key material (P1.1): file stats of BOTH input
-    tables + every filter that shapes the universe + the label-mapper
-    digest. Any change ⇒ a different key ⇒ rebuild; nothing stale is
-    ever served (cache-survey c2e26c1 discipline; the lane uses direct
-    file stats because it can run on release tables where the engine's
+    tables + every filter that shapes the universe + the EFFECTIVE
+    bodyId->type digest (and, as a fallback, the mapper content). Any
+    change ⇒ a different key ⇒ rebuild; nothing stale is ever served
+    (cache-survey c2e26c1 discipline; the lane uses direct file stats
+    because it can run on release tables where the engine's
     data-generation stamp does not exist)."""
     import hashlib
     import os
@@ -5237,29 +5340,42 @@ def _universe_signature(conn_path, neuron_source, asked, drop_untyped,
             return ""  # unstat-able input ⇒ no caching
     h.update(f"|{asked}|{drop_untyped}|{exclude_intra}|"
              f"{separate_hemi}|{hemi_filter}|{exclude_autapses}".encode())
-    if label_mapper is not None:
+    # The cached frame carries effective labels. The digest is the exact
+    # map the lane used; without it a grouped mapping silently reuses a
+    # native-label universe (MCNS grouped-source bug, 2026-10-22).
+    if type_map_sha:
+        h.update(f"|tm:{type_map_sha}".encode())
+    payload = _label_mapper_payload(label_mapper)
+    if payload is not None:
         try:
             import json as _json
             h.update(_json.dumps(
-                getattr(label_mapper, "overall_mapping", None)
-                or {}, sort_keys=True, default=str).encode())
+                payload, sort_keys=True, default=str).encode())
         except Exception:
             h.update(b"|mapper-unhashable")
+    elif label_mapper is not None:
+        h.update(b"|mapper-no-mapping")
     return h.hexdigest()[:12]
 
 
 def _typed_universe_cached(conn_path, neuron_source, conn, tmap, asked,
                            drop_untyped, exclude_intra, separate_hemi,
                            hemi_filter, label_mapper, _phase,
-                           exclude_autapses=False):
+                           exclude_autapses=False, type_map_sha=None):
     """typed/pairs universe with a signature-keyed parquet cache
     (P1.1): cache/route_plan/<dataset_safe>/universe__w<min>__u<0|1>__a<0|1>__<sig12>.parquet (typed edges; pairs re-derive in <1 s). Atomic write;
-any signature mismatch ⇒ rebuild — fail-closed."""
+any signature mismatch ⇒ rebuild — fail-closed.
+
+    ``type_map_sha`` is the EFFECTIVE bodyId->type digest. It is part of
+    the key because the cached `typed` frame carries the effective labels:
+    a custom mapping that folds native subtypes into a source group must
+    never reuse a universe built under another mapping."""
     import os
     from pathlib import Path as _P
     sig = _universe_signature(conn_path, neuron_source, asked,
                               drop_untyped, exclude_intra, separate_hemi,
-                              hemi_filter, label_mapper, exclude_autapses)
+                              hemi_filter, label_mapper, exclude_autapses,
+                              type_map_sha=type_map_sha)
     cache_file = None
     if sig:
         dataset_safe = _P(str(conn_path)).resolve().parent.name or "default"

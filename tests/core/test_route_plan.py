@@ -3028,3 +3028,193 @@ def test_per_pair_scope_external_volume_columns_derive_common_lt(tmp_path):
     assert pair["Lt_BANC"] == 4
     assert pair["status"] == "exhausted"
     assert manifest["scope_complete"] is True
+
+
+def test_grouped_source_mapping_end_to_end(tmp_path):
+    """Issue 2026-10-22 (grouped source scope): a custom mapping that folds
+    several native R7/R8 subtypes into R7/R8 must build the typed universe
+    with the GROUPED labels. A previous native run's cached universe must
+    not be reused (the cache key now carries the effective type-map digest).
+
+    Fixture: two native R7 subtypes + two R8 subtypes mapped to R7/R8,
+    one intermediate type B and 21 targets. Expected 2 x 21 = 42 pairs,
+    all exhausted, full-floor rows > 0 and a non-empty path table.
+    """
+    targets = [f"C{i:02d}" for i in range(1, 22)]
+    edges = [
+        ("a1", "b1", 100), ("a2", "b1", 90),
+        ("a3", "b2", 80), ("a4", "b2", 70),
+    ]
+    for c in targets:
+        edges.append(("b1", f"c_{c}", 50))
+        edges.append(("b2", f"c_{c}", 40))
+    types = {"a1": "R7p", "a2": "R7d", "a3": "R8p", "a4": "R8d",
+             "b1": "B", "b2": "B"}
+    types.update({f"c_{c}": c for c in targets})
+    root = _typed_dataset(tmp_path, edges, types, name="grouped")
+
+    # 1) A native run first, so its cached universe has native labels.
+    out_native = tmp_path / "native"
+    assert run_lane(
+        None, asked=1, max_interlayer=2,
+        source_types=["R7p", "R7d", "R8p", "R8d"],
+        target_types=targets,
+        connections_path=root / "connections.parquet",
+        neuron_table=root / "neurons.parquet", out_dir=out_native,
+        type_pruned=True, type_prune_basis="synapse",
+        type_min_synapse=1, type_min_ratio_adj=0.0)
+    native_rows = pl.read_csv(out_native / "route_paths_type.csv")
+    assert native_rows.height > 0
+    assert all(p.split("->")[0] in {"R7p", "R7d", "R8p", "R8d"}
+               for p in native_rows["path"])
+
+    # 2) The grouped mapping must rebuild with R7/R8, not reuse native.
+    mapping = {
+        "format": "drocat_custom_groups/v1",
+        "source_mapping": {
+            "custom_label": ["R7", "R8"],
+            "synth": [["R7p", "R7d"], ["R8p", "R8d"]],
+        },
+        "target_mapping": {"custom_label": [], "synth": []},
+    }
+    mapping_path = tmp_path / "grouped_mapping.json"
+    mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
+    run = tmp_path / "grouped_run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "dataset:                    synth\n"
+        # The article's 80 run passes the resolved source bodyIds, not the
+        # grouped labels; enrollment must still resolve them to R7/R8.
+        "source neurons:             ['a1', 'a2', 'a3', 'a4']\n"
+        f"target neurons:             {targets!r}\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "path_mode:                  all\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n"
+        "type min ratio adj:         0.0\n"
+        "type min synapse:           1\n"
+        "per pair scope:             True\n"
+        "scope lt mode:              discover\n"
+        "scope pad:                  2\n"
+        "scope hard cap:             6\n"
+        "scope discovery cap:        6\n"
+        f"custom mapping file:        {mapping_path}\n",
+        encoding="utf-8")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    lane = run / "route_scope_paths_type_pruned"
+    rows = pl.read_csv(lane / "route_paths_type.csv")
+    manifest = json.loads((lane / "type_prune_manifest.json").read_text())
+    assert rows.height > 0
+    assert manifest["full_floor_rows"] > 0
+    assert manifest["scope_pairs_total"] == 42
+    assert manifest["scope_complete"] is True
+    assert set(manifest["scope_complete_by_pair"].values()) == {"exhausted"}
+    assert manifest["sources"] == ["R7", "R8"]
+    assert manifest["targets"] == targets
+    assert manifest["source_bodies_effective"] == 4
+    assert manifest["source_group_counts"] == {"R7": 2, "R8": 2}
+    assert manifest["source_group_counts_all"] == {"R7": 2, "R8": 2}
+    assert manifest["source_unenrolled_counts"] == {}
+    assert manifest["source_native_counts"] == {
+        "R7d": 1, "R7p": 1, "R8d": 1, "R8p": 1}
+    assert len(manifest["source_group_mapping_sha"]) == 12
+    # Both grouped sources are present in the exported paths.
+    assert any(p.startswith("R7->B->") for p in rows["path"])
+    assert any(p.startswith("R8->B->") for p in rows["path"])
+    # No native source label leaks into the grouped path table.
+    assert not any(p.startswith(("R7p", "R7d", "R8p", "R8d"))
+                   for p in rows["path"])
+
+
+def test_universe_cache_key_carries_effective_type_map(tmp_path):
+    """Issue 2026-10-22 (grouped source scope): the typed-universe cache
+    key must change with the effective bodyId->type map. Previously every
+    LabelMapper hashed as {} (no `overall_mapping` attribute), so a grouped
+    run reused a native-label universe."""
+    from route_plan import _label_mapper_payload, _universe_signature
+    root = _typed_dataset(
+        tmp_path, [("a1", "b1", 10), ("b1", "c1", 5)],
+        {"a1": "A", "b1": "B", "c1": "C"})
+    args = (root / "connections.parquet", root / "neurons.parquet",
+            1, True, False, False, "both", None, False)
+    native = _universe_signature(*args, type_map_sha="aaaa")
+    grouped = _universe_signature(*args, type_map_sha="bbbb")
+    assert native != grouped
+
+    from comparison.label_mapper import LabelMapper
+    mapper = LabelMapper(
+        source_mapping_dict={"synth": [["R7p"], ["R7d"]]},
+        source_labels=["R7", "R8"],
+    )
+    payload = _label_mapper_payload(mapper)
+    assert payload and "_source_mapping" in payload
+    assert payload["_source_mapping"]["R7"]["synth"] == [["R7p"]]
+    assert payload["_source_mapping"]["R8"]["synth"] == [["R7d"]]
+
+
+def test_grouped_source_prefix_reports_unenrolled_group(tmp_path):
+    """Prefix-source grouped run (the article's 80-folder shape): the
+    effective label R7R8_unclear exists but no body is enrolled. The
+    manifest must keep it in source_group_counts_all and disclose the
+    unenrolled count, while the 42 enrolled R7/R8 pairs still work."""
+    targets = [f"C{i:02d}" for i in range(1, 22)]
+    edges = [
+        ("a1", "b1", 100), ("a2", "b1", 90),
+        ("a3", "b2", 80), ("a4", "b2", 70),
+    ]
+    for c in targets:
+        edges.append(("b1", f"c_{c}", 50))
+        edges.append(("b2", f"c_{c}", 40))
+    types = {"a1": "R7p", "a2": "R7d", "a3": "R8p", "a4": "R8d",
+             "a5": "R7R8_unclear", "b1": "B", "b2": "B"}
+    types.update({f"c_{c}": c for c in targets})
+    root = _typed_dataset(tmp_path, edges, types, name="grouped_prefix")
+    mapping = {
+        "format": "drocat_custom_groups/v1",
+        "source_mapping": {
+            "custom_label": ["R7", "R8"],
+            "synth": [["R7p", "R7d"], ["R8p", "R8d"]],
+        },
+        "target_mapping": {"custom_label": [], "synth": []},
+    }
+    mapping_path = tmp_path / "grouped_mapping.json"
+    mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
+    run = tmp_path / "grouped_prefix_run"
+    run.mkdir()
+    (run / "source_neurons.csv").write_text(
+        "bodyId\na1\na2\na3\na4\n", encoding="utf-8")
+    (run / "parameters.txt").write_text(
+        "dataset:                    synth\n"
+        "source neurons:             {'startswith': ['R7', 'R8']}\n"
+        f"target neurons:             {targets!r}\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "path_mode:                  all\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n"
+        "type min ratio adj:         0.0\n"
+        "type min synapse:           1\n"
+        "per pair scope:             True\n"
+        "scope lt mode:              discover\n"
+        "scope pad:                  2\n"
+        "scope hard cap:             6\n"
+        "scope discovery cap:        6\n"
+        f"custom mapping file:        {mapping_path}\n",
+        encoding="utf-8")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    lane = run / "route_scope_paths_type_pruned"
+    manifest = json.loads((lane / "type_prune_manifest.json").read_text())
+    assert manifest["sources"] == ["R7", "R7R8_unclear", "R8"]
+    assert manifest["scope_pairs_total"] == 63
+    assert manifest["source_bodies_effective"] == 4
+    assert manifest["source_group_counts"] == {"R7": 2, "R8": 2}
+    assert manifest["source_group_counts_all"] == {
+        "R7": 2, "R7R8_unclear": 1, "R8": 2}
+    assert manifest["source_unenrolled_counts"] == {"R7R8_unclear": 1}
+    status = manifest["scope_complete_by_pair"]
+    assert all(status[f"R7R8_unclear->{c}"] == "no_path" for c in targets)
+    assert all(status[f"R7->{c}"] == "exhausted" for c in targets)
+    assert all(status[f"R8->{c}"] == "exhausted" for c in targets)
