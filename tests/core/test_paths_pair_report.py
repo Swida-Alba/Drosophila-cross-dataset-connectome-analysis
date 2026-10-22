@@ -21,6 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from paths_pair_report import (  # noqa: E402
+    DATA_TAB_CENSUS_DIRS,
     DEFAULT_TOP_PER_LENGTH,
     INTERMEDIATES_CSV_NAME,
     OUTPUT_DIR_NAME,
@@ -1883,3 +1884,8 @@ def test_the_empty_state_advice_names_the_gate_that_actually_ran(tmp_path):
     assert "a ratio gate of 0.01" in ratio
     assert "Lower Min Synapse Count" not in ratio, (
         'the ratio run was handed the synapse advice')
+
+
+def test_data_tab_census_links_the_typed_lane_namespace():
+    """A typed-only run's sidecars must appear in the Data tab census."""
+    assert 'route_scope_paths_type_pruned' in DATA_TAB_CENSUS_DIRS

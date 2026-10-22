@@ -15,6 +15,7 @@ import pytest
 from comparison.comparison_analyzer import (
     ComparisonAnalyzer,
     _escape_cypher_string_fallback,
+    _type_pruned_for_threshold,
     quick_compare,
 )
 from comparison.comparison_parameters import ComparisonParameters
@@ -116,6 +117,22 @@ def analyzer():
 
 def test_escape_cypher_string_fallback():
     assert _escape_cypher_string_fallback("a'b") == "a\\'b"
+
+
+def test_type_pruned_provenance_is_lowest_tier_only():
+    """A threshold sweep runs the single-floor typed lane only at tier 0."""
+    class _Params:
+        type_pruned = True
+
+        def get_thresholds_for_dataset(self, _dataset):
+            return [1, 3, 5]
+
+    params = _Params()
+    assert _type_pruned_for_threshold("d", 1, params) is True
+    assert _type_pruned_for_threshold("d", 3, params) is False
+    assert _type_pruned_for_threshold("d", 5, params) is False
+    params.type_pruned = False
+    assert _type_pruned_for_threshold("d", 1, params) is False
     assert _escape_cypher_string_fallback("a\\b") == "a\\\\b"
     assert _escape_cypher_string_fallback(123) == "123"
 
