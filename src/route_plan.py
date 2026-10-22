@@ -1069,6 +1069,10 @@ def _type_prune_completeness(*, enum_capped, time_capped, unverified,
         return False, filter_complete, "time_budget"
     if unverified:
         return False, filter_complete, "validation_work_cap"
+    if validation_truncated:
+        # the existence probe found a realization but hit its work cap;
+        # the walk is validated, yet its adjusted readout is incomplete.
+        return False, filter_complete, "validation_work_cap"
     if realization_missing:
         return False, filter_complete, "realization_missing"
     if not filter_complete:
@@ -1308,13 +1312,18 @@ def _run_type_pruned(*, walk_rows, body_rows, scope_pairs, pairs,
             realization_missing += 1
             continue
         row, walk_body_rows, hop_edges = got
-        if min_ratio_adj > 0:
-            if row["min_ratio_adj"] is None:
-                ratio_unresolved += 1
+        if row["min_ratio_adj"] is None:
+            # The adjusted readout is incomplete whether or not an exact
+            # gate is active. With a gate the row is dropped; without one
+            # it is exported with ratio_adj_complete=false, and the run
+            # cannot claim filter_complete.
+            ratio_unresolved += 1
+            if min_ratio_adj > 0:
                 continue
-            if float(row["min_ratio_adj"]) <= float(min_ratio_adj):
-                filtered_weak += 1
-                continue
+        elif min_ratio_adj > 0 and float(
+                row["min_ratio_adj"]) <= float(min_ratio_adj):
+            filtered_weak += 1
+            continue
         walk_rows.append(row)
         body_rows.extend(walk_body_rows)
         bodyid_paths += len(walk_body_rows)
@@ -3312,7 +3321,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             f"realized min_ratio_adj > "
             f"{(type_block.get('exact_filter') or {}).get('threshold')} "
             f"gate, {type_block.get('accepted_paths')} paths exported. "
-            "The type prune is a COARSE candidate filter; the exported "
+            f"`filter_complete={type_block.get('filter_complete')}`; "
+            "the type prune is a COARSE candidate filter; the exported "
             "paths carry `pair_weights` (the pruned pair's universe mass) "
             "beside the realized hop masses and adjusted ratios. "
             f"`type_pruned_complete={type_block.get('type_pruned_complete')}` "

@@ -34,6 +34,7 @@ def _load_lane(analyzer, dataset_name: str, threshold):
         return None
     # Issue 2026-10-22 §2.1: the typed lane owns its own namespace. Prefer
     # it when present, then fall back to the Fast lane; a run can have both.
+    loaded = []
     for lane_dir in ("route_scope_paths_type_pruned", "route_scope_paths"):
         prov_file = base / lane_dir / "route_provenance.json"
         if not prov_file.exists():
@@ -42,8 +43,14 @@ def _load_lane(analyzer, dataset_name: str, threshold):
             prov = json.loads(prov_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        return {"prov": prov, "base": base, "lane_dir": lane_dir}
-    return None
+        loaded.append({"prov": prov, "base": base, "lane_dir": lane_dir})
+    if not loaded:
+        return None
+    # Prefer a COMPLETE lane (typed first when both are complete); a refused
+    # typed lane must not hide a complete Fast lane.
+    complete = [x for x in loaded
+                if str(x["prov"].get("status") or "") == "complete"]
+    return (complete or loaded)[0]
 
 
 def _walk_key(analyzer, dataset_name: str, path_str: str):

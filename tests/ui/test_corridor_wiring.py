@@ -1249,3 +1249,51 @@ def test_comparison_parameters_accepts_the_typed_payload():
     assert restored.type_walk_cap == 1234
     assert restored.type_validate_work_cap == 5678
     assert restored.type_revisit_policy == 'bounded'
+
+
+def test_comparison_prefers_a_complete_lane_over_a_refused_one(tmp_path):
+    """A refused typed lane must not hide a complete Fast lane (and vice
+    versa); the report picks the lane that actually produced data."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from comparison.corridor_report_section import generate_corridor_section
+
+    class _Params:
+        def __init__(self, run):
+            self.run = run
+
+        def get_dataset_output_path(self, ds, t):
+            return str(self.run)
+
+    class _Analyzer:
+        def __init__(self, run):
+            self.parameters = _Params(run)
+
+        def _get_canonical_type(self, t, ds):
+            return t
+
+    # Fast complete + typed refused -> Fast is reported
+    fast = _lane_only_run(tmp_path / "fast_wins")
+    typed = fast / "route_scope_paths_type_pruned"
+    typed.mkdir()
+    (typed / "route_provenance.json").write_text(json.dumps({
+        "status": "refused", "reason": "typed unavailable"}), encoding="utf-8")
+    html = generate_corridor_section(_Analyzer(fast), ["ds_a"], [1], {})
+    assert "Fast mode (corridor lane" in html
+    assert "typed unavailable" not in html
+
+    # Fast refused + typed complete -> typed is reported
+    mixed = _lane_only_run(tmp_path / "typed_wins")
+    (mixed / "route_scope_paths" / "route_provenance.json").write_text(
+        json.dumps({"status": "refused", "reason": "fast unavailable"}),
+        encoding="utf-8")
+    _write_typed_lane(mixed)
+    prov = json.loads((mixed / "route_scope_paths_type_pruned"
+                       / "route_provenance.json").read_text())
+    prov["status"] = "complete"
+    (mixed / "route_scope_paths_type_pruned"
+     / "route_provenance.json").write_text(json.dumps(prov),
+                                           encoding="utf-8")
+    html2 = generate_corridor_section(_Analyzer(mixed), ["ds_a"], [1], {})
+    assert "Type-pruned complete lane" in html2
+    assert "fast unavailable" not in html2

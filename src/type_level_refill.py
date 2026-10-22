@@ -2221,7 +2221,7 @@ def compute_type_level_refill(
             if full_floor_paths:
                 pd.DataFrame(
                     full_floor_paths,
-                    columns=list(_FULL_COMPLETE_PATHS_COLUMNS)).to_csv(
+                    columns=list(_FLOOR_PATHS_COLUMNS)).to_csv(
                     full_dir / 'refill_full_floor_paths_type.csv',
                     index=False)
             # The >=threshold incoming per type (the Adj. ratios'
@@ -2264,7 +2264,7 @@ def compute_type_level_refill(
                 if full_floor_paths:
                     pd.DataFrame(
                         full_floor_paths,
-                        columns=list(_FULL_COMPLETE_PATHS_COLUMNS)).to_csv(
+                        columns=list(_FLOOR_PATHS_COLUMNS)).to_csv(
                         mirror / 'refill_full_floor_paths_type.csv',
                         index=False)
         # P0-E: a full-scope export without its guard reference is
@@ -3320,6 +3320,13 @@ _COMPLETE_PATHS_COLUMNS = _PATHS_MIRROR_COLUMNS + (
 # paired-file readers of `refill_complete_paths_type.csv` keep their
 # exact schema.
 _FULL_COMPLETE_PATHS_COLUMNS = _COMPLETE_PATHS_COLUMNS + (
+    'ratios_adj', 'min_ratio_adj', 'ratio_adj_complete')
+
+# The ASKED-floor chain table has no emitted/refill split: every hop's mass
+# is the asked-tier mass. Keeping the >= 1 split columns here would print
+# emitted_weights=0 and refill_weights=weights, which reads as a split that
+# does not exist.
+_FLOOR_PATHS_COLUMNS = _PATHS_MIRROR_COLUMNS + (
     'ratios_adj', 'min_ratio_adj', 'ratio_adj_complete')
 
 

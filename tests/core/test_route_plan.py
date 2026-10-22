@@ -2177,6 +2177,11 @@ def test_type_prune_completeness_includes_unresolved_ratios():
         realization_missing=0, validation_truncated=0,
         ratio_unresolved=0)
     assert capped[0] is False and capped[1] is True
+    probe_capped = _type_prune_completeness(
+        enum_capped=False, time_capped=False, unverified=0,
+        realization_missing=0, validation_truncated=1,
+        ratio_unresolved=0)
+    assert probe_capped == (False, True, "validation_work_cap")
 
 
 def test_type_pruned_label_mapper_witness_is_real(tmp_path):

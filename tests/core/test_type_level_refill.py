@@ -2596,6 +2596,9 @@ def test_full_floor_type_pairs_export(tmp_path):
     assert len(fp) > 0
     assert {'ratios_adj', 'min_ratio_adj',
             'ratio_adj_complete'} <= set(fp.columns)
+    # no >= 1 emitted/refill split on an asked-floor table
+    assert 'emitted_weights' not in fp.columns
+    assert 'refill_weights' not in fp.columns
     assert full['full_floor']['paths'] == len(fp)
     assert full['full_floor']['paths_scope'] == (
         'emitted chains re-valued at the asked floor')

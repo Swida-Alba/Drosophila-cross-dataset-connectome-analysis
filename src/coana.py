@@ -19272,7 +19272,6 @@ class FindNeuronConnection:
         try:
             from type_level_refill import (
                 TypeLevelRefillError,
-                build_effective_type_map,
                 choose_refill_type_map,
                 compute_type_level_refill,
                 filter_edges_by_hemisphere,
