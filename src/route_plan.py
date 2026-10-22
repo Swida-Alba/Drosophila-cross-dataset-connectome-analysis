@@ -2716,6 +2716,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         bool(getattr(fnc, "exclude_autapses", False))
         if fnc is not None
         else _parse_bool(kv.get("exclude autapses"), False))
+    # The ENGINE's denominators are all-pres: they count the body autapses
+    # even when the run's graph rule drops those self-edges. Keep a copy
+    # before filtering so the lane's ratios match connection_type.csv.
+    denom_conn = conn
     if exclude_autapses:
         conn = conn.filter(pl.col("bodyId_pre") != pl.col("bodyId_post"))
         _phase(f"conn-collapsed+autapses-removed ({conn.height:,} rows)")
@@ -3003,7 +3007,12 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         # slices of the same edge inconsistently
         conn_pairs = conn.group_by(["bodyId_pre", "bodyId_post"]).agg(
             pl.col("weight").sum().alias("weight"))
-        W_post = conn.group_by("bodyId_post").agg(
+        # The ratio denominator is the engine's all-pres universe; a
+        # filtered self-edge must still contribute its incoming mass.
+        denom_pairs = denom_conn.group_by(
+            ["bodyId_pre", "bodyId_post"]).agg(
+                pl.col("weight").sum().alias("weight"))
+        W_post = denom_conn.group_by("bodyId_post").agg(
             pl.col("weight").sum().alias("_W"))
         conn_r = (conn_pairs.join(W_post, on="bodyId_post", how="left")
                   .with_columns(
@@ -3021,9 +3030,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         # not only synapse runs). `conn_r` here would cut the ratio gate
         # too, leaving an 8/8 adj != plain cone denominator (measured on
         # L1r0.001). Same universe as the synapse branch below.
-        adj_denom_src = (conn_pairs.filter(
+        adj_denom_src = (denom_pairs.filter(
             pl.col("weight") >= int(t_syn_floor))
-            if int(t_syn_floor) > 1 else conn_pairs)
+            if int(t_syn_floor) > 1 else denom_pairs)
         typed = typed.join(
             conn_r.select("bodyId_pre", "bodyId_post", "_ratio"),
             on=["bodyId_pre", "bodyId_post"], how="left")
@@ -3053,8 +3062,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         # conditioned at the lane's own asked floor. At asked <= 1 nothing is
         # cut, so the conditioned denominator IS the plain one and
         # adj == plain by construction (gate L1).
-        adj_denom_src = (conn.filter(pl.col("weight") >= int(asked))
-                         if int(asked) > 1 else conn)
+        adj_denom_src = (denom_conn.filter(pl.col("weight") >= int(asked))
+                         if int(asked) > 1 else denom_conn)
     # CANONICAL ROW ORDER (2026-10-11): polars group_by is a parallel
     # hash aggregate — its output order varies run to run, which leaks
     # into FastGraph edge-insertion order and the budgeted tie-drain's
@@ -3093,7 +3102,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     type_membership = dict(zip(
         *(tmap.group_by("t").agg(pl.len().alias("n")).sort("t")
           .select("t", "n")).to_dict().values()))
-    incoming = (conn.group_by("bodyId_post")
+    incoming = (denom_conn.group_by("bodyId_post")
                 .agg(pl.col("weight").sum().alias("w")))
     incoming = incoming.join(tmap, left_on="bodyId_post", right_on="bid")
     type_incoming = {}

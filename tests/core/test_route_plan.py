@@ -447,6 +447,42 @@ def test_lane_adj_denominator_is_all_pres(tmp_path):
     assert r_adj[0] >= r_plain[0]
 
 
+def test_lane_denominator_keeps_excluded_autapses(tmp_path):
+    """An excluded body autapse still belongs to the engine's all-pres
+    denominator, exactly like connection_type.csv's ratio."""
+    import pandas as pd
+    root = tmp_path / "ds_autapse"
+    root.mkdir()
+    pl.DataFrame({
+        "bodyId_pre": ["a1", "b1", "c1"],
+        "bodyId_post": ["b1", "c1", "c1"],
+        "weight": [100.0, 80.0, 100.0],
+    }).write_parquet(root / "connections.parquet")
+    pd.DataFrame({"bodyId": ["a1", "b1", "c1"],
+                  "type": ["A", "B", "C"]}).to_parquet(
+        root / "neurons.parquet", index=False)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "path_mode:                  all\n"
+        "dataset:                    synth\n"
+        "exclude autapses:           True\n",
+        encoding="utf-8")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    row = pl.read_csv(
+        run / "route_scope_paths" / "route_paths_type.csv").row(
+            0, named=True)
+    assert json.loads(row["weights"]) == [100.0, 80.0]
+    # C's all-pres incoming is 80 (b1->c1) + 100 (c1->c1 autapse) = 180.
+    assert json.loads(row["ratios"])[-1] == 80.0 / 180.0
+    assert json.loads(row["ratios_adj"])[-1] == 80.0 / 180.0
+
+
 def test_run_lane_direct_end_to_end_plan_faithful(tmp_path):
     root = _write_synth_dataset(tmp_path)
     out = tmp_path / "lane_out"
