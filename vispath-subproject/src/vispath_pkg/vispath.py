@@ -1495,6 +1495,39 @@ function edgeLegendLayout(spec) {
             titleSize: titleSize, labelSize: labelSize};
 }
 
+function edgeLegendShafts(x0, cy0, width, color, opacity, lineStyle) {
+    /* Office-safe arrow shafts: PowerPoint displaces <line> elements whose
+       bounding box is degenerate (the horizontal shaft's box has no height),
+       so every shaft is one or more filled <rect> segments. Dashed/dotted
+       items are drawn as real gap-separated segments, not a stroke dash an
+       Office conversion can drop. */
+    const h = 2.5, y = cy0 - h / 2;
+    const attrs = 'data-vp-edge-legend="1" data-vp-edge-legend-shaft="1" '
+        + 'fill="' + color + '" fill-opacity="' + opacity + '"';
+    if (lineStyle !== 'dashed' && lineStyle !== 'dotted') {
+        return ['<rect ' + attrs + ' x="' + x0 + '" y="' + y
+            + '" width="' + width + '" height="' + h + '"/>'];
+    }
+    const parts = [];
+    if (lineStyle === 'dotted') {
+        const size = 2.5, gap = 4.5;
+        for (let x = x0; x < x0 + width; x += gap) {
+            const w = Math.min(size, x0 + width - x);
+            parts.push('<rect ' + attrs + ' x="' + x + '" y="'
+                + (cy0 - size / 2) + '" width="' + w + '" height="'
+                + size + '"/>');
+        }
+    } else {
+        const dash = 6, gap = 3;
+        for (let x = x0; x < x0 + width; x += dash + gap) {
+            const w = Math.min(dash, x0 + width - x);
+            parts.push('<rect ' + attrs + ' x="' + x + '" y="' + y
+                + '" width="' + w + '" height="' + h + '"/>');
+        }
+    }
+    return parts;
+}
+
 function edgeLegendBody(spec) {
     const L = edgeLegendLayout(spec);
     const parts = [];
@@ -1518,15 +1551,12 @@ function edgeLegendBody(spec) {
         group.items.forEach(function (item) {
             const cy0 = y + L.rowH / 2;
             const x1 = x0 + L.arrowW;
-            const dash = item.lineStyle === 'dashed'
-                ? ' stroke-dasharray="5 3"'
-                : (item.lineStyle === 'dotted' ? ' stroke-dasharray="1 3"' : '');
             const color = edgeLegendEscape(item.color);
-            parts.push('<line data-vp-edge-legend="1" x1="' + x0
-                + '" y1="' + cy0 + '" x2="' + x1
-                + '" y2="' + cy0 + '" stroke="' + color
-                + '" stroke-width="2.5" stroke-opacity="' + item.opacity + '"'
-                + dash + '/>');
+            edgeLegendShafts(
+                x0, cy0, L.arrowW, color, item.opacity,
+                item.lineStyle).forEach(function (shaft) {
+                parts.push(shaft);
+            });
             parts.push('<polygon data-vp-edge-legend="1" points="'
                 + x1 + ',' + (cy0 - 4.5) + ' '
                 + (x1 + 9) + ',' + cy0 + ' ' + x1 + ',' + (cy0 + 4.5)
@@ -7060,10 +7090,12 @@ class VisualizePath:
                 "{ left: 12px; bottom: 12px; }\n"
                 "        .vp-edge-legend-host.vp-edge-legend-bottom-right "
                 "{ right: 12px; bottom: 12px; }\n"
+                "        /* Top anchors clear the 8 px edit badge and the "
+                "Pan/Select hints (top:8px, ~22px tall). */\n"
                 "        .vp-edge-legend-host.vp-edge-legend-top-left "
-                "{ left: 12px; top: 12px; }\n"
+                "{ left: 12px; top: 40px; }\n"
                 "        .vp-edge-legend-host.vp-edge-legend-top-right "
-                "{ right: 12px; top: 12px; }\n"
+                "{ right: 12px; top: 40px; }\n"
             )
             edge_legend_host_html = (
                 '<div id="vpEdgeLegendHost" class="vp-edge-legend-host '
@@ -7077,10 +7109,13 @@ class VisualizePath:
             edge_legend_svg_onclick = 'exportSVGWithLegend()'
             edge_legend_js = (
                 _NETWORK_EDGE_LEGEND_JS
-                .replace("__EDGE_LEGEND_SPEC__",
-                         json_safe(self.network_edge_legend))
+                # Replace the position FIRST: a caller-supplied label may
+                # itself contain the position token, and replacing the spec
+                # before it would then rewrite text inside the JSON payload.
                 .replace("__EDGE_LEGEND_POSITION__",
                          json_safe(_legend_pos))
+                .replace("__EDGE_LEGEND_SPEC__",
+                         json_safe(self.network_edge_legend))
             )
 
         # Footer legends: with declared groups the structural role

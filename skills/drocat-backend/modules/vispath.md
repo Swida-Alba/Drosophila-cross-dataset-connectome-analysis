@@ -301,9 +301,10 @@ column, blank included).
 ### Edge-arrow legend (2026-10-22)
 
 `VisualizePath(network_edge_legend=[…])` draws a caller-supplied legend as
-**arrow samples** (a `<line>` + triangular `<polygon>` per item, never colour
-swatches) on the network page, in the network's own SVG export and as a
-standalone `edge_legend.svg` download:
+**arrow samples** (a filled `<rect>` shaft — one solid segment, or
+gap-separated segments for dashed/dotted — plus a triangular `<polygon>` per
+item, never colour swatches) on the network page, in the network's own SVG
+export and as a standalone `edge_legend.svg` download:
 
 ```python
 network_edge_legend=[
@@ -319,16 +320,19 @@ network_edge_legend=[
 ```
 
 - `label` is required; `color` defaults `#333333`; `opacity` clamps to 0–1
-  (written as `stroke-opacity` / `fill-opacity`); `line_style` is `solid`
-  (default), `dashed` or `dotted`.
+  (written as `fill-opacity`); `line_style` is `solid` (default), `dashed` or
+  `dotted`, drawn as real filled segments rather than a stroke dash.
 - `edge_legend_position` chooses the exported SVG's corner (`bottom-left`
   default; the other three corners are accepted). `edge_legend_page_position`
   (default `top-left`) chooses the on-page card — the canvas bottom sits below
   a 900 px viewport, so the page follows the pilot's top-left placement while
-  the export keeps the requested bottom-left.
+  the export keeps the requested bottom-left. Top anchors start at 40 px to
+  clear the edit badge and the Pan/Select hints.
 - The legend is appended **before** `sanitizeSvgForOffice`, so the Office
-  rewrite applies to it; every `<text>` carries `font-family="Arial"`
-  explicitly and there is no `<image>` / `<foreignObject>`.
+  rewrite applies to it; shafts are filled `<rect>`s (never `<line>`, whose
+  degenerate box PowerPoint displaces), every `<text>` carries
+  `font-family="Arial"` explicitly, and there is no `<image>` /
+  `<foreignObject>`.
 - The sanitized export then keeps the legend as ONE standalone root group
   (`edgeLegend`) holding `edgeLegendShapes` and `edgeLegendTexts` subgroups,
   rather than dissolving it into the network's global `#shapes` / `#texts`

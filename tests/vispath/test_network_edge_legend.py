@@ -3,7 +3,8 @@
 Pins the feature requester's contract from
 `clock-production/_plan/plan-2026-10-22-network-edge-legend.md`:
 
-* a spec of titled groups is drawn as ``<line>`` + ``<polygon>`` arrow
+* a spec of titled groups is drawn as a filled-``<rect>`` shaft (one solid
+  segment, or gap-separated segments for dashed/dotted) + ``<polygon>`` arrow
   samples (never colour swatches) in a page overlay, in the network's own
   SVG export (legend appended BEFORE ``sanitizeSvgForOffice``) and in a
   standalone SVG download;
@@ -11,8 +12,8 @@ Pins the feature requester's contract from
   separate ``edgeLegendShapes`` / ``edgeLegendTexts`` subgroups, kept out
   of the network's global ``#shapes`` / ``#texts`` groups;
 * every legend ``<text>`` carries ``font-family="Arial"`` explicitly and
-  opacity is written as ``stroke-opacity`` / ``fill-opacity`` — the
-  PPT-safe contract;
+  opacity is written as ``fill-opacity`` — the PPT-safe contract; shafts are
+  never ``<line>`` (PowerPoint displaces their degenerate boxes).
 * a page without ``network_edge_legend`` emits none of the overlay /
   spec / button / builder JS and keeps ``exportSVG()`` as its handler.
 
@@ -212,6 +213,20 @@ class TestGeneratedPage:
         assert "\\u003c/script\\u003e" in line
         assert "\\u0026" in line
 
+    def test_placeholder_text_in_labels_stays_in_the_spec(self, tmp_path):
+        """A label may contain the position placeholder without corruption."""
+        token = "__EDGE_LEGEND_POSITION__"
+        _, _, html = _render(
+            tmp_path, "placeholder",
+            network_edge_legend=[{"title": token, "items": [
+                {"label": token, "color": "#123456"}]}],
+            edge_legend_page_position="bottom-left")
+        spec_line = _script_spec_line(html)
+        payload = json.loads(spec_line.split("=", 1)[1].strip().rstrip(";"))
+        assert payload[0]["title"] == token
+        assert payload[0]["items"][0]["label"] == token
+        assert 'const edgeLegendPosition = "bottom-left";' in html
+
 
 # =============================================================================
 # Live page: builder, overlay geometry, exports
@@ -236,23 +251,29 @@ def test_live_standalone_legend_matches_the_ppt_contract(legend_page):
             "edgeLegendShapes", "edgeLegendTexts"]
         shape_g = outer.find(NS + "g[@id='edgeLegendShapes']")
         text_g = outer.find(NS + "g[@id='edgeLegendTexts']")
-        assert len(shape_g.findall(".//" + NS + "line")) == 7
+        assert not shape_g.findall(".//" + NS + "line")
         assert len(shape_g.findall(".//" + NS + "polygon")) == 7
-        assert len(shape_g.findall(".//" + NS + "rect")) == 1
+        shafts = [el for el in shape_g.findall(".//" + NS + "rect")
+                  if el.get("data-vp-edge-legend-shaft") == "1"]
+        assert len(shafts) == 7
         assert not shape_g.findall(".//" + NS + "text")
         assert not text_g.findall(".//" + NS + "line")
 
         texts = text_g.findall(".//" + NS + "text")
-        lines = shape_g.findall(".//" + NS + "line")
         polygons = shape_g.findall(".//" + NS + "polygon")
         assert [t.text for t in texts] == LEGEND_LABELS
-        assert len(lines) == 7
         assert len(polygons) == 7
         assert not root.findall(".//" + NS + "image")
         assert not root.findall(".//" + NS + "foreignObject")
         assert all(t.get("font-family") == "Arial" for t in texts)
-        assert [line.get("stroke-opacity") for line in lines] == [
+        assert [shaft.get("fill-opacity") for shaft in shafts] == [
             "1", "1", "1", "0.2", "0.4", "0.75", "1"]
+        assert [shaft.get("fill") for shaft in shafts] == [
+            "#FFA500", "#008000", "#95A5A6",
+            "#6b7280", "#6b7280", "#6b7280", "#6b7280"]
+        assert [p.get("fill") for p in polygons] == [
+            "#FFA500", "#008000", "#95A5A6",
+            "#6b7280", "#6b7280", "#6b7280", "#6b7280"]
         assert [p.get("fill-opacity") for p in polygons] == [
             "1", "1", "1", "0.2", "0.4", "0.75", "1"]
         assert root.get("viewBox") == (
@@ -269,10 +290,13 @@ def test_live_dashed_and_dotted_items(legend_page):
         _wait_ready(browser)
         svg = browser.js(
             "return standaloneEdgeLegendSvg(" + json.dumps(spec) + ");")
-        assert 'stroke-dasharray="5 3"' in svg
-        assert 'stroke-dasharray="1 3"' in svg
+        assert "stroke-dasharray" not in svg
         root = ET.fromstring(svg)
-        assert len(root.findall(".//" + NS + "line")) == 3
+        assert not root.findall(".//" + NS + "line")
+        shafts = [el for el in root.findall(".//" + NS + "rect")
+                  if el.get("data-vp-edge-legend-shaft") == "1"]
+        # solid = one shaft; dashed = 4 segments; dotted = 8 segments.
+        assert len(shafts) == 13, [s.get("x") for s in shafts]
         assert browser.errors() == [], browser.errors()
 
 
@@ -298,9 +322,10 @@ def test_live_overlay_sits_at_the_chosen_canvas_corner(legend_page):
             assert label in geom["text"]
         assert geom["pointerEvents"] == "none"
         assert geom["zIndex"] == "45"
-        # 1 px canvas border puts the 12 px anchor at 13 px from the box edge.
+        # 1 px canvas border plus the 40 px top anchor clears the edit badge
+        # and the Pan/Select hints.
         assert 11 <= geom["left"] <= 14, geom
-        assert 11 <= geom["top"] <= 14, geom
+        assert 39 <= geom["top"] <= 42, geom
         assert geom["width"] == 170, geom
         assert geom["height"] == 200, geom
         assert browser.errors() == [], browser.errors()
@@ -318,7 +343,8 @@ def test_live_network_export_carries_legend_after_sanitize(legend_page):
         # are untouched (the sanitizer runs later, on the download path).
         assert appended.count("<path") == raw.count("<path")
         assert appended.count("<text") == raw.count("<text") + 9
-        assert appended.count("<line") == raw.count("<line") + 7
+        assert appended.count("<line") == raw.count("<line")
+        assert appended.count("<rect") == raw.count("<rect") + 8
         assert appended.count("<polygon") == raw.count("<polygon") + 7
 
         browser.js(_wire_download_js("__svgOut") + "exportSVGWithLegend();")
@@ -336,13 +362,17 @@ def test_live_network_export_carries_legend_after_sanitize(legend_page):
                 if label in LEGEND_LABELS] == LEGEND_LABELS
         arial = [t for t in texts if t.get("font-family") == "Arial"]
         assert len(arial) == 9
-        assert len(root.findall(".//" + NS + "line")) == 7
+        assert not root.findall(".//" + NS + "line")
         assert len(root.findall(".//" + NS + "polygon")) == 7
         rects = root.findall(".//" + NS + "rect")
-        assert len(rects) == 2  # canvas background + the legend card
+        # canvas background + legend card + seven filled shaft segments
+        assert len(rects) == 9
         card = next(r for r in rects if r.get("rx") == "4")
         assert card.get("fill") == "#ffffff"
         assert card.get("fill-opacity") == "0.94"
+        shafts = [r for r in rects
+                  if r.get("data-vp-edge-legend-shaft") == "1"]
+        assert len(shafts) == 7
         assert not root.findall(".//" + NS + "image")
         assert not root.findall(".//" + NS + "foreignObject")
         assert [g.get("id") for g in root.findall(NS + "g")
@@ -355,9 +385,12 @@ def test_live_network_export_carries_legend_after_sanitize(legend_page):
         shape_g = legend.find(NS + "g[@id='edgeLegendShapes']")
         text_g = legend.find(NS + "g[@id='edgeLegendTexts']")
         assert shape_g is not None and text_g is not None
-        assert len(shape_g.findall(".//" + NS + "line")) == 7
+        assert not shape_g.findall(".//" + NS + "line")
         assert len(shape_g.findall(".//" + NS + "polygon")) == 7
-        assert len(shape_g.findall(".//" + NS + "rect")) == 1
+        shape_shafts = [r for r in shape_g.findall(".//" + NS + "rect")
+                        if r.get("data-vp-edge-legend-shaft") == "1"]
+        assert len(shape_shafts) == 7
+        assert len(shape_g.findall(".//" + NS + "rect")) == 8
         assert not shape_g.findall(".//" + NS + "text")
         assert len(text_g.findall(".//" + NS + "text")) == 9
         assert not text_g.findall(".//" + NS + "line")
@@ -414,6 +447,9 @@ def test_live_standalone_download(legend_page):
         root = ET.fromstring(out["text"])
         assert [t.text for t in root.findall(".//" + NS + "text")] == \
             LEGEND_LABELS
-        assert len(root.findall(".//" + NS + "line")) == 7
+        assert not root.findall(".//" + NS + "line")
         assert len(root.findall(".//" + NS + "polygon")) == 7
+        shafts = [el for el in root.findall(".//" + NS + "rect")
+                  if el.get("data-vp-edge-legend-shaft") == "1"]
+        assert len(shafts) == 7
         assert browser.errors() == [], browser.errors()
