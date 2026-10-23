@@ -2942,6 +2942,12 @@ def _render_corridor_section(folder: Path, label: str,
                         'conditioned incoming (&ge; asked)'),
                        ('route_type_incoming.csv',
                         'incoming (synapse &ge; 1)'),
+                       ('route_paths_type_diverse.csv',
+                        'diverse path view (edge quota)'),
+                       ('route_diversity_pairs.csv',
+                        'diverse per-class audit'),
+                       ('type_nt_consensus.csv',
+                        'effective-label NT consensus'),
                        ('route_provenance.json', 'provenance'),
                        ('README.md', 'lane README')):
         if (folder / lane_dir / fname).exists():
@@ -3043,8 +3049,23 @@ def _render_corridor_section(folder: Path, label: str,
                     'with <code>scripts/CorridorDeepDive.py &lt;run_dir&gt;'
                     '</code> to get the Refill view for the lane.</p>')
     _tp = _typed_block
-    _typed_para = (
-        '<p><b>Type-pruned COMPLETE lane</b>: '
+    _dv = prov.get('diversity') or {}
+    div_txt = ''
+    if _dv and not _is_typed:
+        div_txt = (
+            '<p><b>Diverse path view</b> (' + _esc(str(_dv.get("mode")))
+            + ', ' + _esc(str(_dv.get("edge_basis") or 'type_edges'))
+            + '): ' + _esc(str(_dv.get("diverse_paths")))
+            + ' selected, ' + _esc(str(_dv.get("overflow_paths")))
+            + ' overflow; max observed reuse '
+            + _esc(str(_dv.get("max_edge_reuse_observed")))
+            + ', mean pairwise Jaccard '
+            + _esc(str(_dv.get("mean_pairwise_jaccard")))
+            + ', strength loss max '
+            + _esc(str(_dv.get("strength_loss_abs_max")))
+            + '. The pure route_paths_type.csv is unchanged; see '
+            '<code>route_diversity_pairs.csv</code>.</p>')
+    _typed_para = (        '<p><b>Type-pruned COMPLETE lane</b>: '
         + _esc(str(_tp.get('basis') or '&mdash;')) + ' prune at '
         + _esc(str(_tp.get('min_ratio_adj') or '&mdash;')) + '; '
         + _esc(str(_tp.get('candidate_walks') or '&mdash;'))
@@ -3084,7 +3105,7 @@ def _render_corridor_section(folder: Path, label: str,
             + ' &middot; class floors: ' + floor_txt
             + ' &middot; runtime: ' + str(prov.get('runtime_s', '&mdash;'))
             + 's' + capped + sample_txt + '</p>'
-            + gap_txt + full_txt
+            + gap_txt + full_txt + div_txt
             + '<p>' + ' &middot; '.join(links) + '</p></div>', True)
 
 
@@ -3123,9 +3144,20 @@ def _render_type_pruned_section(folder: Path, label: str,
             ("route_type_pairs_pruned.csv", "pruned type graph"),
             ("route_scope_pairs.csv", "per-pair scope table"),
             ("scope_table.csv", "reusable scope table"),
+            ("route_topk_pairs.csv", "top-k per-pair search table"),
+            ("route_topk_pairs_diverse.csv", "diverse top-k audit"),
+            ("route_paths_type_diverse.csv", "diverse path view"),
+            ("route_paths_type_first_clock.csv", "first-clock paths"),
+            ("route_paths_type_clock_relay.csv", "clock-relay paths"),
+            ("route_paths_type_clock_relay_no_intra.csv",
+             "clock-relay paths (no intra-clock)"),
+            ("route_paths_type_clock_relay_intra.csv",
+             "clock-relay paths (intra-clock kept)"),
             ("route_full_paths_type.csv", "full-scope (synapse &ge; 1) chains"),
             ("route_full_type_pairs.csv", "full-scope pair table"),
             ("type_prune_manifest.json", "type-prune manifest"),
+            ("type_nt_consensus.csv",
+             "effective-label NT consensus"),
             ("route_provenance.json", "provenance"),
             ("README.md", "lane README")):
         if (lane / fname).exists():
@@ -3133,8 +3165,12 @@ def _render_type_pruned_section(folder: Path, label: str,
                          + fname + '">' + lab + '</a>')
     complete = manifest.get("type_pruned_complete")
     filter_complete = manifest.get("filter_complete")
-    lane_title = ('Type-pruned complete lane' if complete is not False
-                  else 'Type-pruned lane (INCOMPLETE)')
+    _topk = str(manifest.get("selection_mode") or "") == "strongest_first"
+    _topk_ok = bool(manifest.get("topk_certified"))
+    lane_title = (
+        'Type-pruned complete lane' if complete is not False else
+        ('Type-pruned lane — strongest-first top-k' if _topk and _topk_ok
+         else 'Type-pruned lane (INCOMPLETE)'))
     scope_mode = manifest.get("scope_mode")
     scope_txt = ""
     if scope_mode:
@@ -3164,6 +3200,66 @@ def _render_type_pruned_section(folder: Path, label: str,
         full_txt = ('<p><b>Full-scope second round: FAILED</b> &mdash; '
                     + _esc(str(_full.get("error") or ""))
                     + '. The asked-scope tables are unaffected.</p>')
+    selection_txt = ""
+    if str(manifest.get("selection_mode") or "") == "strongest_first":
+        _cert = manifest.get("topk_certified")
+        selection_txt = (
+            '<p><b>Strongest-first top-k</b>: k=' + _v("type_top_k")
+            + ' per source-target pair; <b>topk_certified</b>='
+            + _esc(str(_cert)) + ', bound '
+            + _esc(str(manifest.get("topk_bound") or "&mdash;"))
+            + ', next candidate bound '
+            + _esc(str(manifest.get("topk_next_bound") or "&mdash;"))
+            + ', candidates pulled ' + _v("candidates_pulled")
+            + ' / prefixes expanded ' + _v("candidates_expanded")
+            + '. Per-pair stop reasons are in '
+            '<code>route_topk_pairs.csv</code>. This is a selected '
+            'top-k, not the exhaustive <code>type_pruned_complete</code> '
+            'claim.</p>')
+    relay_txt = ""
+    if str(manifest.get("clock_relay_mode") or "off") == "all":
+        _cr = manifest.get("clock_relay_counts") or {}
+        relay_txt = (
+            '<p><b>Clock-relay search</b>: clock types are intermediates; '
+            'only the final clock token defines the target. From this '
+            'search: first-clock ' + _esc(str(_cr.get("first_clock_paths")))
+            + ', relay ' + _esc(str(_cr.get("relay_paths")))
+            + ' (no intra-clock ' + _esc(str(_cr.get("relay_no_intra")))
+            + ', intra-clock ' + _esc(str(_cr.get("relay_intra")))
+            + '). Views: <code>route_paths_type_first_clock.csv</code>, '
+            '<code>route_paths_type_clock_relay.csv</code> and its '
+            'no-intra / intra splits.</p>')
+    exclusion_txt = ""
+    _excl = manifest.get("exclusions") or {}
+    if _excl.get("enabled"):
+        exclusion_txt = (
+            '<p><b>Excluded type pairs</b>: '
+            + _esc(str(_excl.get("applied_count") or 0)) + ' applied'
+            + (' (clock-clock switch on)'
+               if _excl.get("exclude_clock_clock") else '')
+            + '; requested ' + _esc(str(_excl.get("requested_count") or 0))
+            + ', not present ' + _esc(str(
+                _excl.get("not_present_count",
+                          len(_excl.get("not_present") or []))))
+            + '. These hops were removed from enumeration.</p>')
+    diversity_txt = ""
+    _dv = manifest.get("diversity") or {}
+    if _dv:
+        diversity_txt = (
+            '<p><b>Diverse top-k</b> (' + _esc(str(_dv.get("mode")))
+            + '): edge quota '
+            + _esc(str(_dv.get("max_edge_reuse_fraction"))) + ' of the class '
+            'budget, ' + _esc(str(_dv.get("diverse_paths")))
+            + ' selected, ' + _esc(str(_dv.get("overflow_paths")))
+            + ' overflow; max observed edge reuse '
+            + _esc(str(_dv.get("max_edge_reuse_observed")))
+            + ', mean pairwise Jaccard '
+            + _esc(str(_dv.get("mean_pairwise_jaccard")))
+            + ', strength loss max '
+            + _esc(str(_dv.get("strength_loss_abs_max")))
+            + '. The pure <code>route_paths_type.csv</code> remains the '
+            'strength reference; see '
+            '<code>route_topk_pairs_diverse.csv</code>.</p>')
     html = (
         '<div class="card"><h3>' + _esc(label)
         + ' &mdash; ' + lane_title + '</h3>'
@@ -3180,9 +3276,14 @@ def _render_type_pruned_section(folder: Path, label: str,
            + '<code>min_ratio_adj</code> gate to ' + _v("filtered_weak")
            + ' weak and exported ' + _v("accepted_paths") + ' paths.</p>')
         + scope_txt
+        + selection_txt
+        + relay_txt
+        + exclusion_txt
+        + diversity_txt
         + (('<p><b>INCOMPLETE</b>: <code>type_pruned_complete=false</code> ('
             + _v("completeness_reason") + '). The walk list covers only the '
-            'enumerated walks.</p>') if complete is False else '')
+            'enumerated walks.</p>')
+           if complete is False and not (_topk and _topk_ok) else '')
         + (('<p><b>' + f'{int(manifest.get("chains_revisit") or 0):,}'
             + '</b> exported walk(s) revisit an effective type label. Their '
             'chain masses are the layered forward/backward superset of '
@@ -3194,6 +3295,12 @@ def _render_type_pruned_section(folder: Path, label: str,
            + _esc(str(manifest.get("validation_basis") or "layered_fwd_bwd"))
            + '</code>. No bodyId witness enumeration / realization envelope '
            'is used by this lane; no route_paths_bodyId.csv is written.</p>')
+        + (('<p><b>Transmitter metadata</b>: ' + _v("nt_consensus_labels")
+            + ' effective labels, ' + _v("nt_ambiguous_labels")
+            + ' ambiguous. <code>type_nt_consensus.csv</code> carries the '
+            'majority, votes, agreement, member count and native types; a '
+            'group majority is a summary, not per-body truth.</p>')
+           if manifest.get("nt_consensus_labels") is not None else '')
         + full_txt
         + '<p>Pairs ' + pair_txt + '; mass source '
         + _esc(str(manifest.get("mass_source") or "&mdash;"))

@@ -1149,7 +1149,42 @@ class LabelMapper:
             df['std_label_post'] = std_post
 
         return df
-    
+
+    def group_membership(self) -> Dict[str, Dict[str, List[str]]]:
+        """The mapper's group membership: ``{std_label: {dataset: ids}}``.
+
+        Source, target and intermediate roles are merged by standard label
+        and dataset. This is the mapper-level view callers should use for
+        group-aware metadata instead of inverting a bodyId map themselves.
+        """
+        out: Dict[str, Dict[str, set]] = {}
+        for store in (self._source_mapping, self._target_mapping,
+                      self._intermediate_mapping):
+            for label, per_ds in store.items():
+                for dataset, ids in per_ds.items():
+                    bucket = out.setdefault(str(label), {}).setdefault(
+                        str(dataset), set())
+                    bucket.update(str(i) for i in (ids or []) if i != '')
+        return {label: {ds: sorted(ids) for ds, ids in sorted(per_ds.items())}
+                for label, per_ds in sorted(out.items())}
+
+    def label_metadata(self, neuron_frame, effective_map=None, *,
+                       dataset=None, nt_columns=None) -> Dict[str, Dict]:
+        """Effective-label transmitter metadata (majority/votes/agreement).
+
+        With a live mapper and a ``dataset`` the effective bodyId map is
+        derived through :func:`build_effective_type_map`, so a folded group
+        is one label. Callers that already hold the run's effective map
+        should pass it directly.
+        """
+        from type_level_refill import (build_effective_type_map,
+                                       build_effective_type_metadata)
+        if effective_map is None and dataset is not None:
+            effective_map = build_effective_type_map(
+                neuron_frame, dataset=dataset, label_mapper=self)
+        return build_effective_type_metadata(
+            neuron_frame, effective_map, nt_columns=nt_columns)
+
     def __repr__(self) -> str:
         source_labels = len(self._source_mapping)
         target_labels = len(self._target_mapping)

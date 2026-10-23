@@ -4057,8 +4057,33 @@ class FindNeuronConnection:
     revisit set for walks up to that bound).'''
 
     type_validate_work_cap: int = 2_000_000
-    '''Per-walk bodyId validation work cap; a cap hit marks the walk
-    unverified, never phantom.'''
+    '''Legacy typed-lane knob: accepted but ignored by the layered
+    forward/backward validation (no bodyId witness work cap).'''
+
+    type_top_k: int = 0
+    '''Typed lane only: strongest-first top-k per source-target pair;
+    0 = exhaustive enumeration.'''
+
+    type_diversity: str = 'off'
+    '''Typed top-k only: 'off' or 'edge_quota' (per-edge-per-depth reuse
+    quota with deferred overflow; pure top-k remains the reference).'''
+
+    type_edge_reuse_fraction: float = 0.05
+    '''Diverse top-k per-edge quota as a fraction of the class budget.'''
+
+    type_diversity_pool: float = 2.0
+    '''Diverse top-k candidate-pool multiplier over k.'''
+
+    clock_relay_mode: bool = False
+    '''Typed lane only: allow clock types as intermediates; only the final
+    clock token defines the target.'''
+
+    type_exclude_pairs: str = ''
+    '''Typed lane only: comma-separated type pairs removed from the
+    enumerated graph, e.g. ``A->B,C->D``.'''
+
+    exclude_clock_clock: bool = False
+    '''Typed lane only: remove every (clock, clock) type pair.'''
 
     per_pair_scope: bool = False
     '''Replace the type-pruned lane's global max_interlayer+1 bound with a
@@ -13388,6 +13413,9 @@ class FindNeuronConnection:
                 "type_min_synapse", "type_min_wmax", "type_walk_mode",
                 "type_walk_cap", "type_revisit_policy",
                 "type_max_type_visits", "type_validate_work_cap",
+                "type_top_k", "clock_relay_mode", "type_exclude_pairs",
+                "exclude_clock_clock", "type_diversity",
+                "type_edge_reuse_fraction", "type_diversity_pool",
                 # Per-pair scope knobs are stamped as ONE `scope` block
                 # below, never as loose attributes.
                 "per_pair_scope", "scope_lt_mode", "scope_table",
@@ -13417,6 +13445,19 @@ class FindNeuronConnection:
                 'validate_work_cap': int(getattr(
                     self, 'type_validate_work_cap', 2_000_000) or
                     2_000_000),
+                'type_top_k': int(getattr(self, 'type_top_k', 0) or 0),
+                'type_diversity': str(getattr(
+                    self, 'type_diversity', 'off') or 'off'),
+                'type_edge_reuse_fraction': float(getattr(
+                    self, 'type_edge_reuse_fraction', 0.05)),
+                'type_diversity_pool': float(getattr(
+                    self, 'type_diversity_pool', 2.0)),
+                'clock_relay_mode': bool(getattr(
+                    self, 'clock_relay_mode', False)),
+                'exclude_pairs': str(getattr(
+                    self, 'type_exclude_pairs', '') or ''),
+                'exclude_clock_clock': bool(getattr(
+                    self, 'exclude_clock_clock', False)),
                 'completeness_field': 'type_pruned_complete',
             }
         if (getattr(self, 'per_pair_scope', False)
@@ -19063,6 +19104,22 @@ class FindNeuronConnection:
             f'type max type visits: {int(getattr(self, "type_max_type_visits", 0) or 0)}',
             f'type validate work cap: {int(getattr(self, "type_validate_work_cap", 2_000_000) or 2_000_000)}',
         ]
+        if int(getattr(self, 'type_top_k', 0) or 0) > 0:
+            lines.append(f'type top k: {int(self.type_top_k)}')
+        _div = str(getattr(self, 'type_diversity', 'off') or 'off')
+        if _div != 'off':
+            lines.append(f'type diversity: {_div}')
+            lines.append('type edge reuse fraction: '
+                         f'{float(getattr(self, "type_edge_reuse_fraction", 0.05))}')
+            lines.append('type diversity pool: '
+                         f'{float(getattr(self, "type_diversity_pool", 2.0))}')
+        if getattr(self, 'clock_relay_mode', False):
+            lines.append('clock relay mode: all')
+        _excl = str(getattr(self, 'type_exclude_pairs', '') or '').strip()
+        if _excl:
+            lines.append(f'type exclude pairs: {_excl}')
+        if getattr(self, 'exclude_clock_clock', False):
+            lines.append('type exclude clock clock: True')
         if getattr(self, 'per_pair_scope', False):
             lines += [
                 'per pair scope: True',
@@ -19200,6 +19257,28 @@ class FindNeuronConnection:
                         str(int(getattr(self, 'type_validate_work_cap',
                                         2_000_000) or 2_000_000)),
                     ]
+                    _topk = int(getattr(self, 'type_top_k', 0) or 0)
+                    if _topk > 0:
+                        cmd += ['--type-top-k', str(_topk)]
+                    _div = str(getattr(self, 'type_diversity', 'off') or 'off')
+                    if _div != 'off':
+                        cmd += [
+                            '--type-diversity', _div,
+                            '--type-edge-reuse-fraction',
+                            str(float(getattr(
+                                self, 'type_edge_reuse_fraction', 0.05))),
+                            '--type-diversity-pool',
+                            str(float(getattr(
+                                self, 'type_diversity_pool', 2.0))),
+                        ]
+                    if getattr(self, 'clock_relay_mode', False):
+                        cmd.append('--allow-clock-relays')
+                    _excl = str(getattr(
+                        self, 'type_exclude_pairs', '') or '').strip()
+                    if _excl:
+                        cmd += ['--exclude-pairs', _excl]
+                    if getattr(self, 'exclude_clock_clock', False):
+                        cmd.append('--exclude-clock-clock')
                     if getattr(self, 'per_pair_scope', False):
                         cmd += [
                             '--per-pair-scope',
@@ -19217,6 +19296,16 @@ class FindNeuronConnection:
                             getattr(self, 'scope_table', '') or '').strip()
                         if _scope_tbl:
                             cmd += ['--scope-table', _scope_tbl]
+                else:
+                    _div = str(getattr(
+                        self, 'type_diversity', 'off') or 'off')
+                    if _div != 'off':
+                        cmd += [
+                            '--type-diversity', _div,
+                            '--type-edge-reuse-fraction',
+                            str(float(getattr(
+                                self, 'type_edge_reuse_fraction', 0.05))),
+                        ]
                 if getattr(self, 'skip_bodyId', False):
                     cmd.append('--no-bodyid')
                 # CORRIDOR-ON-RATIO: the adaptive ratio cone makes the

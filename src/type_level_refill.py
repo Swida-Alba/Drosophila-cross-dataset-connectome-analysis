@@ -1006,6 +1006,133 @@ def build_effective_type_map(neuron_frame, *, dataset,
     return dict(zip(body_ids[keep], effective[keep]))
 
 
+def build_effective_type_metadata(neuron_frame, effective_map=None, *,
+                                  nt_columns=None) -> dict:
+    """Per effective label, deterministic transmitter metadata over members.
+
+    ``effective_map`` is the run's bodyId -> effective label map
+    (:func:`build_effective_type_map`). When omitted, the native ``type``
+    column is the grouping key. For every effective label this returns::
+
+        {
+          'nt_majority': canonical NT or 'unknown',
+          'nt_votes': {canonical NT: count},
+          'nt_n': number of non-null voters,
+          'nt_agreement': majority / nt_n (0.0 when no voters),
+          'nt_ambiguous': tie or no strict majority,
+          'nt_source_column': column that supplied the majority
+                              ('mixed' when votes span columns),
+          'n_bodies': member bodies,
+          'native_types': sorted native type names in the group,
+        }
+
+    A custom LabelMapper group is ONE effective label: its transmitter is
+    the majority over member bodies, never a native subtype's row. Ties
+    are resolved by sorted canonical name, so frame row order cannot
+    decide. Null/empty/unclear values are ignored; a label with no known
+    NT is ``unknown`` (never NaN or an empty string).
+    """
+    from utils.label_utils import canonical_neurotransmitter
+
+    frame = (neuron_frame.to_pandas()
+             if hasattr(neuron_frame, 'to_pandas') else neuron_frame)
+    columns = list(nt_columns) if nt_columns else [
+        c for c in ('nt_type', 'consensusNt', 'predictedNt',
+                    'celltypePredictedNt')
+        if c in getattr(frame, 'columns', [])]
+    has_body = 'bodyId' in getattr(frame, 'columns', [])
+    has_type = 'type' in getattr(frame, 'columns', [])
+    body_ids = ([str(b) for b in frame['bodyId']] if has_body
+                else [None] * len(frame))
+    native = ([str(t) if t is not None else '' for t in frame['type']]
+              if has_type else [''] * len(frame))
+
+    records: dict = {}
+
+    def _record(label):
+        rec = records.get(label)
+        if rec is None:
+            rec = {
+                'n_bodies': 0,
+                'native_types': set(),
+                'votes': defaultdict(int),
+                'nt_n': 0,
+                'columns': defaultdict(lambda: defaultdict(int)),
+            }
+            records[label] = rec
+        return rec
+
+    for i, body in enumerate(body_ids):
+        if effective_map is not None:
+            label = (str(effective_map.get(body) or '')
+                     if body is not None else '')
+        else:
+            label = native[i]
+        label = str(label).strip()
+        if not label:
+            # No effective membership: the body contributes to no label.
+            continue
+        rec = _record(label)
+        rec['n_bodies'] += 1
+        if native[i]:
+            rec['native_types'].add(native[i])
+        value, source_col = '', None
+        for col in columns:
+            if col not in getattr(frame, 'columns', []):
+                continue
+            raw = frame[col].iloc[i]
+            if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                continue
+            try:
+                canon = canonical_neurotransmitter(raw)
+            except Exception:
+                continue
+            if not canon or canon.strip().lower() in (
+                    'unknown', 'unclear', 'no_cons'):
+                continue
+            value, source_col = canon.strip().lower(), col
+            break
+        if value:
+            rec['votes'][value] += 1
+            rec['nt_n'] += 1
+            rec['columns'][value][source_col] += 1
+
+    out = {}
+    for label, rec in sorted(records.items()):
+        votes = dict(rec['votes'])
+        n = int(rec['nt_n'])
+        if votes:
+            top = max(votes.values())
+            tied = sorted(v for v, c in votes.items() if c == top)
+            winner = tied[0]
+            cols = [c for c, ncol in rec['columns'][winner].items() if ncol]
+            source = cols[0] if len(cols) == 1 else 'mixed'
+            out[label] = {
+                'nt_majority': winner,
+                'nt_votes': dict(sorted(votes.items(),
+                                        key=lambda kv: (-kv[1], kv[0]))),
+                'nt_n': n,
+                'nt_agreement': (top / n) if n else 0.0,
+                # A tie OR no strict majority (top*2 <= n) is ambiguous.
+                'nt_ambiguous': bool(len(tied) > 1 or top * 2 <= n),
+                'nt_source_column': source,
+                'n_bodies': int(rec['n_bodies']),
+                'native_types': sorted(rec['native_types']),
+            }
+        else:
+            out[label] = {
+                'nt_majority': 'unknown',
+                'nt_votes': {},
+                'nt_n': 0,
+                'nt_agreement': 0.0,
+                'nt_ambiguous': True,
+                'nt_source_column': None,
+                'n_bodies': int(rec['n_bodies']),
+                'native_types': sorted(rec['native_types']),
+            }
+    return out
+
+
 def build_refill_type_map(neuron_frame, *, dataset,
                           mapping_file=None, label_mapper=None,
                           separate_hemispheres=False) -> dict:

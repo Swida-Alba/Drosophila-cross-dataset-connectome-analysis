@@ -33,6 +33,27 @@ def _dict_mapper():
     )
 
 
+def test_label_mapper_exposes_membership_and_label_metadata():
+    """Issue 2026-10-23: the mapper, not each caller, owns group
+    membership and can return effective-label NT metadata."""
+    mapper = _dict_mapper()
+    groups = mapper.group_membership()
+    assert groups["aMe12_grp1"][DS1] == ["aMe12", "aMe12_R"]
+    assert groups["aMe12_grp1"][DS2] == ["aMe12"]
+    assert groups["pn_grp"][DS2] == ["PN1", "PN2"]
+    frame = pd.DataFrame({
+        "bodyId": ["b1", "b2", "b3"],
+        "type": ["aMe12", "aMe12_R", "aMe12_L"],
+        "consensusNt": ["gaba", "gaba", "acetylcholine"],
+    })
+    effective = {"b1": "aMe12_grp1", "b2": "aMe12_grp1",
+                 "b3": "aMe12_grp2"}
+    meta = mapper.label_metadata(frame, effective)
+    assert meta["aMe12_grp1"]["nt_majority"] == "gaba"
+    assert meta["aMe12_grp1"]["nt_votes"] == {"gaba": 2}
+    assert meta["aMe12_grp1"]["native_types"] == ["aMe12", "aMe12_R"]
+
+
 def test_empty_mapper():
     mapper = LabelMapper()
     assert mapper.is_empty

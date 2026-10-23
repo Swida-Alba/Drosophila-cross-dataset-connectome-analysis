@@ -29,6 +29,26 @@ pass (issue 2026-10-23). It writes no bodyId witness rows and has no
 realization envelope; label-revisiting walks carry the disclosed layered
 superset masses.
 
+Strongest-first top-k (typed lane): --type-top-k N ranks prefixes by an
+admissible forward-reachable upper bound and stops when the bound certifies
+the N-th accepted path per source-target pair. It writes
+route_topk_pairs.csv and reports topk_certified/topk_approximate; the
+exhaustive mode remains the default. --type-diversity edge_quota also
+writes a diverse top-k under a per-edge-per-depth reuse quota (pure
+route_paths_type.csv remains the strength reference). The same quota is
+available as a type-edge post-view for the corridor/budgeted lane.
+
+Transmitter metadata: every lane writes type_nt_consensus.csv (effective
+label majority/votes/agreement/ambiguity/native membership). A custom
+LabelMapper group is one label, so folding native R7*/R8* subtypes still
+yields histamine rather than a blank/NaN NT.
+
+Clock relays (typed lane): --allow-clock-relays treats clock types as
+intermediates and writes route_paths_type_first_clock.csv,
+route_paths_type_clock_relay.csv and the no-intra/intra splits from one
+search. --exclude-pairs / --exclude-pairs-file / --exclude-clock-clock
+remove type pairs (e.g. clock-clock hops) from the enumerated graph.
+
 Per-pair shortest scope (typed lane only, issue 2026-10-22):
 --per-pair-scope replaces the global bound with min(Lt + --scope-pad,
 --scope-hard-cap) per (source,target) pair. --scope-lt-mode discover
@@ -43,6 +63,36 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "vispath-subproject" / "src"))
+
+
+def _read_exclude_pairs_file(path):
+    """Type-pair exclusions from a CSV (header optional)."""
+    import csv
+    rows = list(csv.reader(Path(path).open(newline="", encoding="utf-8")))
+    if not rows:
+        return []
+    header = [str(x).strip().lower() for x in rows[0]]
+    if "pair" in header:
+        col = header.index("pair")
+        out = [r[col].strip() for r in rows[1:] if len(r) > col and r[col].strip()]
+    elif "type_pre" in header and "type_post" in header:
+        a, b = header.index("type_pre"), header.index("type_post")
+        out = [f"{r[a].strip()}->{r[b].strip()}" for r in rows[1:]
+               if len(r) > max(a, b) and r[a].strip() and r[b].strip()]
+    elif "source_type" in header and "target_type" in header:
+        a, b = header.index("source_type"), header.index("target_type")
+        out = [f"{r[a].strip()}->{r[b].strip()}" for r in rows[1:]
+               if len(r) > max(a, b) and r[a].strip() and r[b].strip()]
+    elif "source" in header and "target" in header:
+        a, b = header.index("source"), header.index("target")
+        out = [f"{r[a].strip()}->{r[b].strip()}" for r in rows[1:]
+               if len(r) > max(a, b) and r[a].strip() and r[b].strip()]
+    elif len(rows[0]) >= 2:
+        out = [f"{r[0].strip()}->{r[1].strip()}" for r in rows
+               if len(r) >= 2 and r[0].strip() and r[1].strip()]
+    else:
+        out = []
+    return out
 
 
 def main():
@@ -105,6 +155,41 @@ def main():
                          "EVERY type walk over it, validate each at bodyId "
                          "level and apply the exact realized "
                          "min_ratio_adj filter. No top-M share.")
+    ap.add_argument("--type-top-k", type=int, default=0,
+                    help="typed lane only: strongest-first top-k per "
+                         "source-target pair (0 = exhaustive enumeration). "
+                         "Stops once the admissible prefix bound certifies "
+                         "the k-th accepted path.")
+    ap.add_argument("--type-diversity", choices=["off", "edge_quota"],
+                    default="off",
+                    help="edge-reuse quota diversity: typed top-k emits a "
+                         "diverse top-k; the corridor/budgeted lane emits a "
+                         "type-edge post-view under the same quota. The pure "
+                         "route_paths_type.csv remains the strength reference.")
+    ap.add_argument("--type-edge-reuse-fraction", type=float, default=0.05,
+                    help="diverse top-k edge quota as a fraction of the "
+                         "per-pair class budget (default 0.05 = 5%%).")
+    ap.add_argument("--type-diversity-pool", type=float, default=2.0,
+                    help="diverse top-k candidate-pool multiplier over k "
+                         "(default 2x; lower scores are only used by the "
+                         "overflow fallback).")
+    ap.add_argument("--allow-clock-relays", action="store_true",
+                    help="typed lane only: clock types may be ordinary "
+                         "intermediates; only the final clock token defines "
+                         "the target. Writes first-clock and clock-relay "
+                         "path views from the same search.")
+    ap.add_argument("--exclude-pairs",
+                    help="typed lane only: comma/semicolon-separated type "
+                         "pairs to remove from the enumerated graph, e.g. "
+                         "'A->B,C->D'. Use to disable clock-clock or any "
+                         "other connections.")
+    ap.add_argument("--exclude-pairs-file",
+                    help="CSV of type pairs to exclude: columns "
+                         "type_pre,type_post (or source_type,target_type / "
+                         "pair). Combined with --exclude-pairs.")
+    ap.add_argument("--exclude-clock-clock", action="store_true",
+                    help="typed lane only: remove every (clock, clock) "
+                         "type pair (clock set = the run's target types).")
     ap.add_argument("--type-prune-basis",
                     choices=["ratio_adj", "connection_ratio", "synapse"],
                     default="ratio_adj",
@@ -175,6 +260,30 @@ def main():
         ap.error("--scope-table requires --per-pair-scope")
     if args.scope_lt_mode and not args.per_pair_scope:
         ap.error("--scope-lt-mode requires --per-pair-scope")
+    if (args.type_top_k < 0):
+        ap.error("--type-top-k must be non-negative")
+    if args.type_diversity == "edge_quota":
+        if args.type_edge_reuse_fraction <= 0:
+            ap.error("--type-edge-reuse-fraction must be positive")
+        if args.type_diversity_pool < 1:
+            ap.error("--type-diversity-pool must be >= 1")
+        if args.type_pruned and args.type_top_k <= 0:
+            ap.error("typed-lane --type-diversity edge_quota requires "
+                     "--type-top-k > 0")
+        if not args.type_pruned and args.type_top_k:
+            ap.error("--type-top-k is typed-lane only; corridor diversity "
+                     "uses each class's route share as its budget")
+    if ((args.type_top_k or args.allow_clock_relays
+         or args.exclude_pairs or args.exclude_pairs_file
+         or args.exclude_clock_clock)
+            and not args.type_pruned):
+        ap.error("--type-top-k, --allow-clock-relays, --exclude-pairs and "
+                 "--exclude-clock-clock require --type-pruned")
+    _exclude = args.exclude_pairs or ""
+    if args.exclude_pairs_file:
+        _file_pairs = _read_exclude_pairs_file(args.exclude_pairs_file)
+        _exclude = ",".join(
+            x for x in ([_exclude] if _exclude else []) + _file_pairs if x)
 
     from route_plan import (FAST_LANE_DIR, TYPED_LANE_DIR, CorridorRefusal,
                             run_lane)
@@ -199,6 +308,13 @@ def main():
                   type_revisit_policy=args.type_revisit_policy,
                   type_max_type_visits=args.type_max_type_visits,
                   type_validate_work_cap=args.type_validate_work_cap,
+                  type_top_k=args.type_top_k,
+                  type_diversity=args.type_diversity,
+                  type_edge_reuse_fraction=args.type_edge_reuse_fraction,
+                  type_diversity_pool=args.type_diversity_pool,
+                  clock_relay_mode=bool(args.allow_clock_relays),
+                  exclude_pairs=(_exclude or None),
+                  exclude_clock_clock=bool(args.exclude_clock_clock),
                   per_pair_scope=args.per_pair_scope,
                   scope_lt_mode=args.scope_lt_mode,
                   scope_table=args.scope_table,

@@ -41,6 +41,8 @@ Heavy imports (coana, type_level_refill, FastGraph) happen inside run_lane.
 from __future__ import annotations
 
 import heapq
+import math
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -1001,11 +1003,47 @@ def _type_adjacency(pairs):
     return adj
 
 
+def parse_exclude_pairs(value):
+    """Normalize ``A->B[,C->D]`` (or an iterable of pairs) to a sorted
+    list of ``(source_type, target_type)`` tuples.
+
+    Used by the typed lane's explicit pair exclusions. A malformed token is
+    a hard error rather than a silently ignored exclusion."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        tokens = [x for x in re.split(r"[,;\n]+", value) if x.strip()]
+    else:
+        tokens = list(value)
+    out = set()
+    for item in tokens:
+        if isinstance(item, (tuple, list)):
+            if len(item) != 2:
+                raise ValueError(
+                    f"excluded pair {item!r} is not a (pre, post) pair")
+            a, b = item
+        else:
+            text = str(item).strip()
+            if not text:
+                continue
+            if text.count("->") != 1:
+                raise ValueError(
+                    f"excluded pair {text!r} must be written A->B")
+            a, b = text.split("->", 1)
+        a, b = str(a).strip(), str(b).strip()
+        if not a or not b:
+            raise ValueError(f"excluded pair {item!r} has an empty type")
+        out.add((a, b))
+    return sorted(out)
+
+
 def _type_distance_avoiding(pairs, source, target, targets, max_layers,
-                            adj=None):
+                            adj=None, allow_targets=False):
     """Shortest type-only hop count from *source* to *target* that never
     passes THROUGH another target type (the lane's first-target rule).
 
+    ``allow_targets=True`` is the clock-relay contract: other targets are
+    ordinary intermediates and only the FINAL target ends the walk.
     Returns None when no such route exists within *max_layers*. This is a
     discovery aid only; the validated shortest length is proven at bodyId
     level, never taken from this BFS."""
@@ -1022,7 +1060,7 @@ def _type_distance_avoiding(pairs, source, target, targets, max_layers,
                     continue
                 if v == target:
                     return layer
-                if v in targets:
+                if v in targets and not allow_targets:
                     # a first target ends the lane's walk; it is not a
                     # valid intermediate
                     continue
@@ -1036,14 +1074,16 @@ def _type_distance_avoiding(pairs, source, target, targets, max_layers,
 
 def _type_walks_exact(pairs, source, target, hops, targets, *,
                       revisit_policy="bounded", max_type_visits=0,
-                      max_walks=2_000_000, adj=None):
+                      max_walks=2_000_000, adj=None, clock_relay=False):
     """Every type walk of EXACTLY *hops* hops from source to target.
 
     Uses the same first-target rule and canonical adjacency order as
     ``_enumerate_type_walks``, so a discovered length is a length the
-    complete pass can actually enumerate. The discovery pass tries these
-    lengths in ascending order; a phantom shortest walk simply yields no
-    accepted realization and the pass advances one hop."""
+    complete pass can actually enumerate. With ``clock_relay=True`` other
+    clocks are ordinary intermediates and only the final target ends the
+    walk. The discovery pass tries these lengths in ascending order; a
+    phantom shortest walk simply yields no accepted realization and the
+    pass advances one hop."""
     adj = adj if adj is not None else _type_adjacency(pairs)
     tgt = {str(t) for t in targets}
     source = str(source)
@@ -1067,8 +1107,11 @@ def _type_walks_exact(pairs, source, target, hops, targets, *,
             if nxt in tgt:
                 if nxt == target and nd == hops:
                     walks.append(tuple(walk + (nxt,)))
-                # FIRST-TARGET RULE: never continue through a target
-                continue
+                if not clock_relay:
+                    # FIRST-TARGET RULE: never continue through a target
+                    continue
+                # Clock relay: another clock may be an intermediate; only
+                # the final target at the requested length ends the walk.
             if revisit_policy == "simple":
                 if nxt in visits:
                     continue
@@ -1087,6 +1130,249 @@ def _type_walks_exact(pairs, source, target, hops, targets, *,
 
     _dfs(source, (source,), {source: 1}, 0)
     return walks, {"walks": len(walks), "capped": capped}
+
+
+def _type_reverse_adjacency(adj):
+    radj: dict = {}
+    for u, children in adj.items():
+        for v, _w in children:
+            radj.setdefault(v, []).append(u)
+    for v in radj:
+        radj[v].sort()
+    return radj
+
+
+def _type_distances_to_target(target, max_bound, clock_types, clock_relay,
+                              radj):
+    """Hop distances to *target* under the lane's intermediate rule.
+
+    First-target mode never expands backwards through another clock: such a
+    node could only be an earlier clock, which the first-clock view drops.
+    Relay mode expands every node. Returns {type: hops}."""
+    target = str(target)
+    dist = {target: 0}
+    dq = [target]
+    head = 0
+    clocks = {str(x) for x in clock_types}
+    while head < len(dq):
+        v = dq[head]
+        head += 1
+        if int(dist[v]) >= int(max_bound):
+            continue
+        if (not clock_relay and v in clocks and v != target):
+            # A path reaching this clock through a predecessor would carry
+            # an earlier clock token; it is not a first-clock path.
+            continue
+        for u in radj.get(v, ()):
+            if u not in dist:
+                dist[u] = int(dist[v]) + 1
+                dq.append(u)
+    return dist
+
+
+def _clock_metadata(walk, clock_types):
+    """(clock_sequence, intra_clock_edges) for one accepted walk."""
+    clocks = [str(x) for x in walk if str(x) in clock_types]
+    intra = sum(
+        1 for a, b in zip(walk, walk[1:])
+        if str(a) in clock_types and str(b) in clock_types)
+    return clocks, intra
+
+
+def _edge_sets_for_walk(walk, hop_edges, clock_types):
+    """(bodyId edges, type edges, clock-clock edges) keyed by depth."""
+    body, types, clock = set(), set(), set()
+    for depth, edges in enumerate(hop_edges):
+        a, b = walk[depth], walk[depth + 1]
+        types.add((depth, a, b))
+        if a in clock_types and b in clock_types:
+            clock.add((depth, a, b))
+        for (u, v) in edges:
+            body.add((depth, u, v))
+    return body, types, clock
+
+
+def _select_diverse_topk(final, top_k, max_reuse, clock_types):
+    """Select ``top_k`` accepted rows with a per-edge-per-depth quota.
+
+    ``final`` is strength-ordered (score desc, path). A candidate is
+    deferred when any bodyId, type, or clock-clock edge at its depth has
+    already reached ``max_reuse``. Unfilled slots are then filled from the
+    deferred candidates in strength order (``overflow``), so the class is
+    never silently under-filled. Returns (selected, stats)."""
+    body_counts: dict = {}
+    type_counts: dict = {}
+    clock_counts: dict = {}
+    selected, deferred = [], []
+    overflow = 0
+    for item in final:
+        score, walk, row, hop = item
+        body, types, clock = _edge_sets_for_walk(walk, hop, clock_types)
+        over = (
+            any(body_counts.get(e, 0) + 1 > max_reuse for e in body)
+            or any(type_counts.get(e, 0) + 1 > max_reuse for e in types)
+            or any(clock_counts.get(e, 0) + 1 > max_reuse for e in clock))
+        if over:
+            deferred.append(item)
+            continue
+        selected.append(item)
+        for e in body:
+            body_counts[e] = body_counts.get(e, 0) + 1
+        for e in types:
+            type_counts[e] = type_counts.get(e, 0) + 1
+        for e in clock:
+            clock_counts[e] = clock_counts.get(e, 0) + 1
+        if len(selected) >= top_k:
+            break
+    if len(selected) < top_k:
+        for item in deferred:
+            if len(selected) >= top_k:
+                break
+            score, walk, row, hop = item
+            body, types, clock = _edge_sets_for_walk(walk, hop, clock_types)
+            selected.append(item)
+            overflow += 1
+            for e in body:
+                body_counts[e] = body_counts.get(e, 0) + 1
+            for e in types:
+                type_counts[e] = type_counts.get(e, 0) + 1
+            for e in clock:
+                clock_counts[e] = clock_counts.get(e, 0) + 1
+
+    # Metrics over the selected set. Jaccard is bodyId-edge based; for very
+    # large k a deterministic evenly-spaced sample keeps the audit cheap.
+    jsets = [frozenset(_edge_sets_for_walk(
+        w, h, clock_types)[0]) for _s, w, _r, h in selected]
+    if len(jsets) > 64:
+        step = max(1, len(jsets) // 64)
+        sample = jsets[::step][:64]
+    else:
+        sample = jsets
+    jac = []
+    for i in range(len(sample)):
+        for j in range(i + 1, len(sample)):
+            a, b = sample[i], sample[j]
+            union = len(a | b)
+            jac.append((len(a & b) / union) if union else 0.0)
+    distinct = {}
+    for depth in range(max((len(h) for _s, w, _r, h in selected),
+                           default=0)):
+        edges = set()
+        for _s, walk, _r, hop in selected:
+            if depth < len(hop):
+                for (u, v) in hop[depth]:
+                    edges.add((u, v))
+        distinct[depth] = len(edges)
+    relay_types = set()
+    for _s, walk, row, _h in selected:
+        if row.get("clock_relay"):
+            seq = str(row.get("clock_sequence") or "")
+            relay_types.update(t for t in seq.split(",") if t)
+    observed = max(
+        [max(body_counts.values(), default=0),
+         max(type_counts.values(), default=0),
+         max(clock_counts.values(), default=0)])
+    stats = {
+        "selected": len(selected),
+        "overflow": int(overflow),
+        "deferred": len(deferred),
+        "max_edge_reuse_observed": int(observed),
+        "max_clock_edge_reuse_observed": int(
+            max(clock_counts.values(), default=0)),
+        "clock_edge_quota": int(max_reuse),
+        "distinct_edges_per_depth": {str(k): v
+                                     for k, v in sorted(distinct.items())},
+        "mean_pairwise_jaccard": (sum(jac) / len(jac) if jac else 0.0),
+        "jaccard_pairs": len(jac),
+        "jaccard_paths_sampled": len(sample),
+        "relay_type_coverage": sorted(relay_types),
+    }
+    return selected, stats
+
+
+def _select_diverse_type_rows(rows, quota, clock_types, target=None):
+    """Type-edge quota for the corridor/budgeted lane's class rows.
+
+    The Fast lane's rows carry a type path but not one exact bodyId edge
+    union (its witnesses are a sample), so this quota is disclosed as
+    type-edge based. ``target`` is the class budget; pure rows may exceed
+    it on cutoff ties, and the diverse view selects at most that budget.
+    Returns (selected, stats)."""
+    target = len(rows) if target is None else min(int(target), len(rows))
+    counts, clock_counts = {}, {}
+    selected, deferred = [], []
+    overflow = 0
+    for row in rows:
+        walk = str(row.get("path") or "").split("->")
+        types, clock = set(), set()
+        for depth, (a, b) in enumerate(zip(walk, walk[1:])):
+            types.add((depth, a, b))
+            if a in clock_types and b in clock_types:
+                clock.add((depth, a, b))
+        over = (
+            any(counts.get(e, 0) + 1 > quota for e in types)
+            or any(clock_counts.get(e, 0) + 1 > quota for e in clock))
+        if over:
+            deferred.append(row)
+            continue
+        selected.append(row)
+        for e in types:
+            counts[e] = counts.get(e, 0) + 1
+        for e in clock:
+            clock_counts[e] = clock_counts.get(e, 0) + 1
+        if len(selected) >= target:
+            break
+    if len(selected) < target:
+        for row in deferred:
+            if len(selected) >= target:
+                break
+            selected.append(row)
+            overflow += 1
+            walk = str(row.get("path") or "").split("->")
+            for depth, (a, b) in enumerate(zip(walk, walk[1:])):
+                e = (depth, a, b)
+                counts[e] = counts.get(e, 0) + 1
+                if a in clock_types and b in clock_types:
+                    clock_counts[e] = clock_counts.get(e, 0) + 1
+    jsets = []
+    for row in selected:
+        walk = str(row.get("path") or "").split("->")
+        jsets.append(frozenset(
+            (d, a, b) for d, (a, b) in enumerate(zip(walk, walk[1:]))))
+    jac = []
+    for i in range(len(jsets)):
+        for j in range(i + 1, len(jsets)):
+            union = len(jsets[i] | jsets[j])
+            jac.append((len(jsets[i] & jsets[j]) / union) if union else 0.0)
+    distinct = {}
+    for d in range(max((len(str(r.get("path") or "").split("->")) - 1
+                        for r in selected), default=0)):
+        distinct[str(d)] = len({
+            (a, b) for r in selected
+            for dd, (a, b) in enumerate(zip(
+                str(r.get("path") or "").split("->"),
+                str(r.get("path") or "").split("->")[1:])) if dd == d})
+    relay = set()
+    for row in selected:
+        if row.get("clock_relay"):
+            relay.update(t for t in str(
+                row.get("clock_sequence") or "").split(",") if t)
+    observed = max([max(counts.values(), default=0),
+                    max(clock_counts.values(), default=0)])
+    return selected, {
+        "selected": len(selected),
+        "overflow": overflow,
+        "deferred": len(deferred),
+        "max_edge_reuse_observed": int(observed),
+        "max_clock_edge_reuse_observed": int(
+            max(clock_counts.values(), default=0)),
+        "clock_edge_quota": int(quota),
+        "distinct_edges_per_depth": distinct,
+        "mean_pairwise_jaccard": (sum(jac) / len(jac) if jac else 0.0),
+        "jaccard_pairs": len(jac),
+        "jaccard_paths_sampled": len(jsets),
+        "relay_type_coverage": sorted(relay),
+    }
 
 
 def _layered_chain_walk(walk, pair_edges, src_bodies, tgt_bodies,
@@ -1221,7 +1507,8 @@ def _discover_scope(*, pairs, pair_edges, src_types, tgt_types, src_ids,
                     tgt_ids, src_keep, tgt_keep, body2type, discovery_cap,
                     scope_pad, hard_cap, min_ratio_adj,
                     type_incoming_adj, revisit_policy, max_type_visits,
-                    walk_cap, dataset="", deadline=None, log=None):
+                    walk_cap, dataset="", deadline=None, log=None,
+                    clock_relay=False):
     """Pass A: the per-pair validated shortest length.
 
     For each selected (source_type, target_type) pair, try type walks in
@@ -1282,11 +1569,13 @@ def _discover_scope(*, pairs, pair_edges, src_types, tgt_types, src_ids,
                 no_path_pairs.append(pair)
                 continue
             d_cap = _type_distance_avoiding(
-                pairs, s, t, targets, discovery_cap, adj=adj)
+                pairs, s, t, targets, discovery_cap, adj=adj,
+                allow_targets=clock_relay)
             d_any = None
             if d_cap is None:
                 d_any = _type_distance_avoiding(
-                    pairs, s, t, targets, unbounded_cap, adj=adj)
+                    pairs, s, t, targets, unbounded_cap, adj=adj,
+                    allow_targets=clock_relay)
             row["type_shortest_hops"] = d_cap if d_cap is not None else d_any
             if d_cap is None:
                 if d_any is not None and d_any > discovery_cap:
@@ -1310,7 +1599,8 @@ def _discover_scope(*, pairs, pair_edges, src_types, tgt_types, src_ids,
                     pairs, s, t, hops, targets,
                     revisit_policy=revisit_policy,
                     max_type_visits=max_type_visits,
-                    max_walks=walk_cap, adj=adj)
+                    max_walks=walk_cap, adj=adj,
+                    clock_relay=clock_relay)
                 if wstats.get("capped"):
                     row["status"] = "capped"
                     walk_cap_hit = True
@@ -1694,14 +1984,18 @@ def _write_scope_table(out, rows, *, scope_pad, hard_cap, type_map_sha,
 
 def _enumerate_type_walks(pairs, sources, targets, bound, *,
                           max_walks=2_000_000, revisit_policy="bounded",
-                          max_type_visits=0, log=None, pair_bounds=None):
+                          max_type_visits=0, log=None, pair_bounds=None,
+                          clock_relay=False):
     """The COMPLETE type-walk set s -> ... -> t over the pruned pair table.
 
     The first-target rule is structural: a walk is recorded when it reaches
     a target and is NOT expanded through that target, so every walk carries
     exactly one clock token at its final node (for the clock lane). Sources
     that are themselves targets are skipped (a clock at position 0 is not
-    an input path).
+    an input path). With ``clock_relay=True`` clock types are ordinary
+    intermediate nodes: a walk is recorded at each clock it reaches and may
+    continue to later clocks, so ``clock_relay`` rows carry several clock
+    tokens and only the final token defines the target.
 
     ``revisit_policy='bounded'`` (default) permits up to
     ``max_type_visits`` visits of one type; ``'simple'`` forbids repeats (the
@@ -1771,8 +2065,12 @@ def _enumerate_type_walks(pairs, sources, targets, bound, *,
             if nxt in tgt:
                 if _target_allowed(source, nxt, len(walk)):
                     walks.append(tuple(walk + (nxt,)))
-                # FIRST-TARGET RULE: never continue through a clock
-                continue
+                if not clock_relay:
+                    # FIRST-TARGET RULE: never continue through a clock
+                    continue
+                # Clock relay: every clock may be an intermediate; a walk
+                # is recorded at each clock it reaches and the search may
+                # continue to later clocks. The final clock is the target.
             if remaining <= 1:
                 continue
             depth = len(walk)
@@ -1817,6 +2115,7 @@ def _enumerate_type_walks(pairs, sources, targets, bound, *,
                             if revisit_policy == "bounded" else 1),
         "scope": "per_pair" if scoped else "global",
         "max_bound": int(max_bound),
+        "clock_relay_mode": ("all" if clock_relay else "off"),
     }
     return walks, stats
 
@@ -1853,7 +2152,11 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
                      deadline, prune_block,
                      max_type_visits=0, log=None, out_dir=None,
                      pair_bounds=None, scope_seed=None,
-                     scope_context=None):
+                     scope_context=None, type_top_k=0,
+                     clock_relay_mode=False, clock_types=None,
+                     type_diversity="off",
+                     type_edge_reuse_fraction=0.05,
+                     type_diversity_pool=2.0, diverse_rows=None):
     """The TYPE-PRUNED COMPLETE drain (Phase B steps 3-6).
 
     Completeness is over the PRUNED TYPE GRAPH: every enumerated walk is
@@ -1865,12 +2168,29 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
     the enumeration exhausted and every walk got a layered verdict. With
     ``pair_bounds`` it is true only when EVERY selected pair also
     exhausted within its own bound; the manifest's
-    ``scope_complete_by_pair`` is the per-pair contract."""
+    ``scope_complete_by_pair`` is the per-pair contract.
+
+    ``type_top_k > 0`` switches to a strongest-first per-(source,target)
+    search (issue 2026-10-23 §2): prefixes are ranked by the admissible
+    pair-mass upper bound on the exact layered ``min_ratio_adj``, a prefix
+    is expanded only while it can still beat the k-th accepted score, and
+    the run stops when that bound certifies the top-k. ``clock_relay_mode``
+    lets clock types act as intermediates, recording a walk at each clock
+    it reaches. ``type_diversity='edge_quota'`` runs the search with a
+    larger candidate pool and also selects a diverse top-k under a
+    per-edge-per-depth reuse quota (deferred overflow disclosed); the pure
+    strongest-first table remains the strength reference."""
+    import json
+    import math
     import time
     from pathlib import Path
 
     say = log or (lambda *a, **k: None)
     started = time.monotonic()
+    top_k = max(0, int(type_top_k or 0))
+    clock_relay = bool(clock_relay_mode)
+    clock_types = {str(x) for x in (clock_types or tgt_types)}
+    tgt = {str(x) for x in tgt_types}
     s_bodies_by_type: dict = {}
     for b in src_ids:
         t = body2type.get(b)
@@ -1883,81 +2203,19 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
             t_bodies_by_type.setdefault(t, []).append(b)
 
     scoped = pair_bounds is not None
-    selected_pairs = ([(s, t) for s in sorted({str(x) for x in src_types})
-                       for t in sorted({str(x) for x in tgt_types})]
-                      if scoped else [])
-    scope_stats = ({p: _empty_scope_counts() for p in selected_pairs}
-                   if scoped else {})
-    walks, enum = _enumerate_type_walks(
-        pairs, src_types, set(tgt_types), bound,
-        max_walks=walk_cap, revisit_policy=revisit_policy,
-        max_type_visits=max_type_visits, log=log,
-        pair_bounds=pair_bounds)
-    say(f"  · type-pruned complete: {enum['walks']} candidate walks over "
-        f"{enum['adj_edges']} kept pairs"
-        + (" (CAPPED)" if enum["capped"] else " (exhausted)"))
-
+    src_order = sorted({str(x) for x in src_types})
+    tgt_order = sorted({str(x) for x in tgt_types})
+    all_pairs = [(s, t) for s in src_order for t in tgt_order]
+    selected_pairs = all_pairs if scoped else []
+    scope_stats = ({p: _empty_scope_counts()
+                    for p in (all_pairs if (scoped or top_k > 0) else [])})
     pair_lookup = {(str(a), str(b)): (float(ws), float(wm), int(n))
                    for a, b, ws, wm, n in
                    zip(pairs["type_pre"], pairs["type_post"],
                        pairs["w_sum"], pairs["w_max"], pairs["n"])}
 
-    time_capped = False
-    validated = phantoms = unverified = 0
-    filtered_weak = ratio_unresolved = 0
-    accepted = chains_revisit = 0
-    for walk in walks:
-        if deadline is not None and time.monotonic() > deadline:
-            time_capped = True
-            break
-        _pair_key = (str(walk[0]), str(walk[-1]))
-        _stat = scope_stats.get(_pair_key)
-        if _stat is not None:
-            _stat["candidate_walks"] += 1
-        s_bodies = s_bodies_by_type.get(walk[0], [])
-        t_bodies = set(t_bodies_by_type.get(walk[-1], []))
-        if not s_bodies or not t_bodies:
-            unverified += 1
-            if _stat is not None:
-                _stat["unverified"] += 1
-            continue
-        got = _layered_row(
-            walk, pair_edges, s_bodies, t_bodies, body2type,
-            type_incoming, type_incoming_adj, type_membership,
-            type_nt, pair_lookup)
-        if got is None:
-            phantoms += 1
-            if _stat is not None:
-                _stat["phantoms"] += 1
-            continue
-        row, hop_edges = got
-        validated += 1
-        if _stat is not None:
-            _stat["validated_walks"] += 1
-        if row["min_ratio_adj"] is None:
-            # The adjusted readout is incomplete whether or not an exact
-            # gate is active. With a gate the row is dropped; without one
-            # it is exported with ratio_adj_complete=false, and the run
-            # cannot claim filter_complete.
-            ratio_unresolved += 1
-            if _stat is not None:
-                _stat["ratio_unresolved"] += 1
-            if min_ratio_adj > 0:
-                continue
-        elif min_ratio_adj > 0 and float(
-                row["min_ratio_adj"]) <= float(min_ratio_adj):
-            filtered_weak += 1
-            if _stat is not None:
-                _stat["filtered_weak"] += 1
-            continue
-        walk_rows.append(row)
-        accepted += 1
-        if _stat is not None:
-            _stat["paths"] += 1
-        if row.get("chain_revisit"):
-            chains_revisit += 1
-        h = len(walk) - 1
-        for i in range(h):
+    def _record_scope_mass(walk, hop_edges):
+        for i in range(len(walk) - 1):
             key = (walk[i], walk[i + 1])
             # Retain only the summed selected mass for the typed lane; the
             # per-edge union of every accepted walk was a large retained
@@ -1968,14 +2226,463 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
             rec["mass"] += float(sum(hop_edges[i].values()))
             rec["paths"] += 1
             rec["walks"] += 1
+
+    time_capped = False
+    validated = phantoms = unverified = 0
+    filtered_weak = ratio_unresolved = 0
+    accepted = chains_revisit = 0
+    topk_meta = {}
+
+    def _decorate_clock(row, walk):
+        if not clock_relay:
+            return
+        seq, intra = _clock_metadata(walk, clock_types)
+        row["clock_sequence"] = ",".join(seq)
+        row["intra_clock_edges"] = int(intra)
+        row["first_clock"] = (seq[0] if seq else None)
+        row["clock_relay"] = bool(len(seq) > 1)
+
+    def _evaluate(walk, s_bodies, t_bodies, stat):
+        """One candidate's layered verdict + exact gate.
+
+        Returns (row, hop_edges, score) for an accepted row; ``score`` is
+        None when the adjusted readout is unresolved (accepted only with
+        no gate). Returns None otherwise. Updates the run and per-pair
+        counters exactly once."""
+        nonlocal validated, phantoms, unverified, filtered_weak
+        nonlocal ratio_unresolved
+        if not s_bodies or not t_bodies:
+            unverified += 1
+            if stat is not None:
+                stat["unverified"] += 1
+            return None
+        got = _layered_row(
+            walk, pair_edges, s_bodies, t_bodies, body2type,
+            type_incoming, type_incoming_adj, type_membership,
+            type_nt, pair_lookup)
+        if got is None:
+            phantoms += 1
+            if stat is not None:
+                stat["phantoms"] += 1
+            return None
+        row, hop_edges = got
+        validated += 1
+        if stat is not None:
+            stat["validated_walks"] += 1
+        if row["min_ratio_adj"] is None:
+            # The adjusted readout is incomplete whether or not an exact
+            # gate is active. With a gate the row is dropped; without one
+            # it is exported with ratio_adj_complete=false, and the run
+            # cannot claim filter_complete.
+            ratio_unresolved += 1
+            if stat is not None:
+                stat["ratio_unresolved"] += 1
+            if min_ratio_adj > 0:
+                return None
+            score = None
+        elif min_ratio_adj > 0 and float(
+                row["min_ratio_adj"]) <= float(min_ratio_adj):
+            filtered_weak += 1
+            if stat is not None:
+                stat["filtered_weak"] += 1
+            return None
+        else:
+            score = float(row["min_ratio_adj"])
+        _decorate_clock(row, walk)
+        return row, hop_edges, score
+
+    if top_k > 0:
+        # Strongest-first per-pair search (issue 2026-10-23 §2). The
+        # The bound is the forward-reachable body mass of the prefix: a
+        # hop's eventual kept mass is a subset of the edges leaving the
+        # source-reachable bodies at that position, so this is admissible
+        # and much tighter than the whole type-pair mass at a 1% gate.
+        # Prefix bounds are monotone, which lets the heap certify the k-th.
+        adj = _type_adjacency(pairs)
+        radj = _type_reverse_adjacency(adj)
+        _positive_bounds = [
+            int(b) for b in (pair_bounds or {}).values() if b is not None]
+        _tk_max_bound = max(_positive_bounds) if _positive_bounds else bound
+        _tk_max_visits = (int(max_type_visits) if int(max_type_visits) > 0
+                          else max(1, int(_tk_max_bound)))
+        diversity_mode = str(type_diversity or "off").strip().lower()
+        if diversity_mode not in ("off", "edge_quota"):
+            raise ValueError(
+                f"unknown type diversity mode {diversity_mode!r}; expected "
+                "off or edge_quota")
+        diversity_on = diversity_mode == "edge_quota"
+        if diversity_on and type_edge_reuse_fraction <= 0:
+            raise ValueError(
+                "type_edge_reuse_fraction must be positive for edge_quota")
+        retention_k = int(top_k)
+        if diversity_on:
+            _mult = max(1.0, float(type_diversity_pool or 1.0))
+            retention_k = max(int(top_k) + 1,
+                              int(math.ceil(int(top_k) * _mult)))
+        retention_k = max(1, min(retention_k, int(walk_cap)))
+        diversity_rows_local = []
+        NEG = float("-inf")
+        INF = float("inf")
+        candidates_pulled = 0
+        expanded_nodes = 0
+        cap_stop = False
+
+        def _ret_key(item):
+            score, path, _row, _hop = item
+            return ((1, 0.0, path) if score is None
+                    else (0, -float(score), path))
+
+        def _search_pair(s, t, pair_bound, stat):
+            nonlocal candidates_pulled, expanded_nodes, time_capped
+            nonlocal cap_stop
+            local_expanded = 0
+            local_validated = stat["validated_walks"]
+            local_phantoms = stat["phantoms"]
+            local_filtered = stat["filtered_weak"]
+            local_unresolved = stat["ratio_unresolved"]
+            local_unverified = stat["unverified"]
+            meta = {
+                "source_type": s, "target_type": t, "topk": int(top_k),
+                "accepted": 0, "bound": None, "next_bound": None,
+                "stop_reason": "exhausted", "certified": False,
+                "candidates_pulled": 0, "expanded_nodes": 0,
+                "validated_walks": 0, "phantoms": 0,
+                "filtered_weak": 0, "ratio_unresolved": 0,
+                "unverified": 0,
+            }
+            if s in tgt:
+                meta.update(stop_reason="source_is_target", certified=True)
+                return meta, []
+            s_bodies = s_bodies_by_type.get(s, [])
+            t_bodies = set(t_bodies_by_type.get(t, []))
+            if not s_bodies or not t_bodies:
+                meta.update(stop_reason="no_body", certified=True,
+                            unverified=1)
+                return meta, []
+            dist = _type_distances_to_target(
+                t, pair_bound, clock_types, clock_relay, radj)
+            if dist.get(s) is None or int(dist[s]) > int(pair_bound):
+                meta.update(stop_reason="no_path", certified=True)
+                return meta, []
+
+            def _forward_state(path):
+                """(forward body set, admissible prefix ratio bound).
+
+                The forward set at position 0 is the source bodies; each
+                hop keeps every edge leaving the previous forward set. The
+                kept mass of any complete realization is a subset of these
+                edges, so min(mass_i/denom_i) is an upper bound on the
+                exact layered score of every extension."""
+                fwd = set(s_bodies)
+                bound = INF
+                for a, b in zip(path, path[1:]):
+                    d = pair_edges.full(a, b)
+                    if not d:
+                        return None, None
+                    nxt = set()
+                    mass = 0.0
+                    for u in fwd:
+                        for v, w in d.get(u, ()):
+                            nxt.add(v)
+                            mass += float(w)
+                    if not nxt:
+                        return None, None
+                    denom = type_incoming_adj.get(b, 0.0)
+                    if denom <= 0:
+                        # Unresolved adjusted readout: the walk may still
+                        # validate (gate 0 exports it with a null score),
+                        # but it can never beat a finite k-th score.
+                        bound = NEG
+                    else:
+                        bound = min(bound, mass / float(denom))
+                    fwd = nxt
+                return fwd, bound
+
+            heap = [(-INF, (s,), INF)]
+            retained = []
+            scores = []
+            stop = "exhausted"
+            certified = False
+            next_bound = None
+            while heap:
+                if deadline is not None and time.monotonic() > deadline:
+                    stop = "time_budget"
+                    time_capped = True
+                    break
+                best = -heap[0][0]
+                if len(scores) >= retention_k and best < scores[0]:
+                    certified = True
+                    stop = "certified"
+                    next_bound = float(best)
+                    break
+                _negb, path, pbound = heapq.heappop(heap)
+                if expanded_nodes >= int(walk_cap):
+                    stop = "expansion_cap"
+                    cap_stop = True
+                    break
+                expanded_nodes += 1
+                local_expanded += 1
+                node = path[-1]
+                fwd, fbound = _forward_state(path)
+                if fwd is None:
+                    continue
+                if len(scores) >= retention_k and fbound < scores[0]:
+                    continue
+                if node == t:
+                    candidates_pulled += 1
+                    if candidates_pulled > int(walk_cap):
+                        stop = "candidate_cap"
+                        cap_stop = True
+                        break
+                    stat["candidate_walks"] += 1
+                    meta["candidates_pulled"] += 1
+                    got = _evaluate(path, s_bodies, t_bodies, stat)
+                    if got is not None:
+                        row, hop_edges, score = got
+                        retained.append((score, path, row, hop_edges))
+                        heapq.heappush(
+                            scores, NEG if score is None else score)
+                        if len(scores) > retention_k:
+                            heapq.heappop(scores)
+                        if (len(scores) >= retention_k
+                                and len(retained) > max(
+                                    4 * retention_k, 1024)):
+                            _kth = scores[0]
+                            retained = [
+                                item for item in retained
+                                if item[0] is None or item[0] >= _kth]
+                if node == t and not clock_relay:
+                    continue
+                if len(path) - 1 >= int(pair_bound):
+                    continue
+                for nxt, _w in adj.get(node, ()):
+                    if (not clock_relay and nxt in clock_types
+                            and nxt != t):
+                        continue
+                    nd = len(path)
+                    if nd > int(pair_bound):
+                        continue
+                    d = dist.get(nxt)
+                    if d is None or nd + int(d) > int(pair_bound):
+                        continue
+                    if revisit_policy == "simple":
+                        if nxt in path:
+                            continue
+                    elif revisit_policy == "bounded":
+                        if path.count(nxt) >= _tk_max_visits:
+                            continue
+                    else:
+                        raise ValueError(
+                            f"unknown revisit policy {revisit_policy!r}")
+                    d_child = pair_edges.full(node, nxt)
+                    if not d_child:
+                        continue
+                    child_fwd = set()
+                    child_mass = 0.0
+                    for u in fwd:
+                        for v, w in d_child.get(u, ()):
+                            child_fwd.add(v)
+                            child_mass += float(w)
+                    if not child_fwd:
+                        continue
+                    denom = type_incoming_adj.get(nxt, 0.0)
+                    if denom <= 0:
+                        nb = NEG
+                    else:
+                        nb = min(fbound, child_mass / float(denom))
+                    if len(scores) >= retention_k and nb < scores[0]:
+                        continue
+                    heapq.heappush(heap, (-nb, path + (nxt,), nb))
+            if not heap and stop == "exhausted":
+                # Every feasible prefix was expanded; top-k is exact even
+                # when fewer than k paths exist.
+                certified = True
+            if stop in ("time_budget", "expansion_cap", "candidate_cap"):
+                certified = False
+            if len(scores) >= retention_k:
+                meta["bound"] = float(scores[0])
+            meta["next_bound"] = next_bound
+            meta.update({
+                "stop_reason": stop, "certified": bool(certified),
+                "expanded_nodes": local_expanded,
+                "validated_walks": stat["validated_walks"] - local_validated,
+                "phantoms": stat["phantoms"] - local_phantoms,
+                "filtered_weak": stat["filtered_weak"] - local_filtered,
+                "ratio_unresolved": (stat["ratio_unresolved"]
+                                     - local_unresolved),
+                "unverified": stat["unverified"] - local_unverified,
+                "pool_k": retention_k,
+            })
+            retained.sort(key=_ret_key)
+            final = retained[:retention_k]
+            meta["pool_accepted"] = len(final)
+            return meta, final
+
+        for pair in all_pairs:
+            stat = scope_stats[pair]
+            pair_bound = ((pair_bounds or {}).get(pair)
+                          if scoped else bound)
+            if pair_bound is None:
+                topk_meta[pair] = {
+                    "source_type": pair[0], "target_type": pair[1],
+                    "topk": int(top_k), "accepted": 0, "bound": None,
+                    "next_bound": None, "stop_reason": "no_path",
+                    "certified": True, "candidates_pulled": 0,
+                    "expanded_nodes": 0, "validated_walks": 0,
+                    "phantoms": 0, "filtered_weak": 0,
+                    "ratio_unresolved": 0, "unverified": 0}
+                continue
+            if cap_stop or (deadline is not None
+                            and time.monotonic() > deadline):
+                if deadline is not None and time.monotonic() > deadline:
+                    time_capped = True
+                reason = ("time_budget" if deadline is not None
+                          and time.monotonic() > deadline else "cap")
+                topk_meta[pair] = {
+                    "source_type": pair[0], "target_type": pair[1],
+                    "topk": int(top_k), "accepted": 0, "bound": None,
+                    "next_bound": None, "stop_reason": reason,
+                    "certified": False, "candidates_pulled": 0,
+                    "expanded_nodes": 0, "validated_walks": 0,
+                    "phantoms": 0, "filtered_weak": 0,
+                    "ratio_unresolved": 0, "unverified": 0}
+                continue
+            meta, pool = _search_pair(
+                pair[0], pair[1], int(pair_bound), stat)
+            topk_meta[pair] = meta
+            pure = pool[:top_k]
+            for rank, (_score, walk, row, hop_edges) in enumerate(pure, 1):
+                row["plan_rank"] = rank
+                walk_rows.append(row)
+                _record_scope_mass(walk, hop_edges)
+                stat["paths"] += 1
+                accepted += 1
+                if row.get("chain_revisit"):
+                    chains_revisit += 1
+            meta["accepted"] = len(pure)
+            meta["bound"] = (
+                None if len(pure) < top_k else
+                (None if pure[-1][0] is None else float(pure[-1][0])))
+            if diversity_on:
+                _quota = max(1, int(math.ceil(
+                    top_k * float(type_edge_reuse_fraction))))
+                selected, dstats = _select_diverse_topk(
+                    pool, top_k, _quota, clock_types)
+                for rank, (_score, _walk, row, _hop) in enumerate(
+                        selected, 1):
+                    drow = dict(row)
+                    drow["plan_rank"] = rank
+                    diversity_rows_local.append(drow)
+                _pure_floor = (float(pure[-1][0])
+                               if len(pure) >= top_k
+                               and pure[-1][0] is not None else None)
+                _div_floor = (min(float(item[0]) for item in selected
+                                  if item[0] is not None)
+                              if selected and any(
+                                  item[0] is not None for item in selected)
+                              else None)
+                _loss = (None if _pure_floor is None or _div_floor is None
+                         else max(0.0, _pure_floor - _div_floor))
+                dstats.update({
+                    "mode": "edge_quota",
+                    "max_edge_reuse_fraction": float(
+                        type_edge_reuse_fraction),
+                    "max_edge_reuse": int(_quota),
+                    "pool_k": int(retention_k),
+                    "pool_accepted": len(pool),
+                    "pure_floor": _pure_floor,
+                    "diverse_floor": _div_floor,
+                    "strength_loss_abs": _loss,
+                    "strength_loss_rel": (
+                        (_loss / _pure_floor) if (
+                            _loss is not None and _pure_floor) else None),
+                })
+                meta["diversity"] = dstats
+        if diversity_on and diverse_rows is not None:
+            diverse_rows.extend(diversity_rows_local)
+        topk_complete = all(m["certified"] for m in topk_meta.values())
+        enum = {
+            "sources": src_order, "targets": tgt_order,
+            "adj_nodes": len(adj), "adj_edges": int(pairs.height),
+            "walks": candidates_pulled,
+            "expanded_nodes": expanded_nodes,
+            "capped": bool(not topk_complete),
+            "max_walks": int(walk_cap),
+            "revisit_policy": revisit_policy,
+            "max_type_visits": _tk_max_visits,
+            "scope": "per_pair" if scoped else "global",
+            "max_bound": int(_tk_max_bound),
+            "clock_relay_mode": "all" if clock_relay else "off",
+            "selection_mode": "strongest_first",
+            "top_k": int(top_k),
+            "topk_complete": bool(topk_complete),
+        }
+        say(f"  · type-pruned top-k: {candidates_pulled} candidates "
+            f"({expanded_nodes} prefixes expanded), "
+            f"{accepted} paths; "
+            + ("certified" if topk_complete else "APPROXIMATE"))
+    else:
+        walks, enum = _enumerate_type_walks(
+            pairs, src_types, set(tgt_types), bound,
+            max_walks=walk_cap, revisit_policy=revisit_policy,
+            max_type_visits=max_type_visits, log=log,
+            pair_bounds=pair_bounds, clock_relay=clock_relay)
+        say(f"  · type-pruned complete: {enum['walks']} candidate walks over "
+            f"{enum['adj_edges']} kept pairs"
+            + (" (CAPPED)" if enum["capped"] else " (exhausted)"))
+        for walk in walks:
+            if deadline is not None and time.monotonic() > deadline:
+                time_capped = True
+                break
+            _pair_key = (str(walk[0]), str(walk[-1]))
+            _stat = scope_stats.get(_pair_key)
+            if _stat is not None:
+                _stat["candidate_walks"] += 1
+            s_bodies = s_bodies_by_type.get(walk[0], [])
+            t_bodies = set(t_bodies_by_type.get(walk[-1], []))
+            got = _evaluate(walk, s_bodies, t_bodies, _stat)
+            if got is None:
+                continue
+            row, hop_edges, _score = got
+            walk_rows.append(row)
+            accepted += 1
+            if _stat is not None:
+                _stat["paths"] += 1
+            if row.get("chain_revisit"):
+                chains_revisit += 1
+            _record_scope_mass(walk, hop_edges)
     block = dict(prune_block or {})
+    first_clock_rows = [r for r in walk_rows if not r.get("clock_relay")]
+    relay_rows = [r for r in walk_rows if r.get("clock_relay")]
+    relay_no_intra = [
+        r for r in relay_rows
+        if int(r.get("intra_clock_edges") or 0) == 0]
+    relay_intra = [
+        r for r in relay_rows
+        if int(r.get("intra_clock_edges") or 0) > 0]
+    from collections import Counter as _Counter
+    clock_sequence_counts = dict(sorted(_Counter(
+        str(r.get("clock_sequence") or "") for r in relay_rows).items()))
+    clock_token_counts = {}
+    for _r in walk_rows:
+        _seq = [x for x in str(_r.get("clock_sequence") or "").split(",")
+                if x]
+        for _tok in set(_seq):
+            clock_token_counts[_tok] = clock_token_counts.get(_tok, 0) + 1
+    clock_token_counts = dict(sorted(clock_token_counts.items()))
     block.update({
         "mode": "type_pruned_complete",
-        "walk_mode": "complete",
+        "walk_mode": ("topk" if top_k > 0 else "complete"),
+        "selection_mode": ("strongest_first" if top_k > 0
+                           else "exhaustive"),
+        "type_top_k": int(top_k),
+        "diversity_mode": (diversity_mode if top_k > 0 else "off"),
         "revisit_policy": revisit_policy,
         "max_type_visits": enum.get("max_type_visits"),
         "type_walk_cap": int(walk_cap),
         "candidate_walks": enum["walks"],
+        "candidates_pulled": enum.get("walks"),
+        "candidates_expanded": enum.get("expanded_nodes"),
         "enumeration_capped": bool(enum["capped"]),
         "enumeration": enum,
         "type_self_edges": int((pairs["type_pre"]
@@ -1987,8 +2694,21 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
             "forward/backward superset of body-simple realizations "
             "(a body may occupy two positions); disclosed per row via "
             "chain_revisit"),
-        "first_target_rule": ("exactly one target token, at the final "
-                              "node; targets are not expanded"),
+        "first_target_rule": (
+            "clock types are ordinary intermediates; only the final "
+            "clock token defines the target"
+            if clock_relay else
+            "exactly one target token, at the final node; targets are "
+            "not expanded"),
+        "clock_relay_mode": ("all" if clock_relay else "off"),
+        "clock_relay_counts": {
+            "first_clock_paths": len(first_clock_rows),
+            "relay_paths": len(relay_rows),
+            "relay_no_intra": len(relay_no_intra),
+            "relay_intra": len(relay_intra),
+        },
+        "clock_sequence_counts": clock_sequence_counts,
+        "clock_token_counts": clock_token_counts,
         "validated_walks": validated,
         "phantoms": phantoms,
         "unverified": unverified,
@@ -2029,7 +2749,26 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
             seed = (scope_seed or {}).get(pair, {})
             b = (pair_bounds or {}).get(pair)
             seed_status = str(seed.get("status") or "").lower()
-            if b is None:
+            if top_k > 0:
+                _m = topk_meta.get(pair, {})
+                _sr = str(_m.get("stop_reason") or "")
+                if b is None or _sr in ("no_path", "source_is_target"):
+                    status = "no_path"
+                elif _sr == "no_body":
+                    status = "validation_cap"
+                elif _sr == "certified":
+                    # Bound-certified top-k, not exhaustive enumeration.
+                    status = "capped"
+                elif _sr == "exhausted":
+                    status = ("validation_cap"
+                              if (rec["unverified"]
+                                  or rec["ratio_unresolved"])
+                              else "exhausted")
+                elif (rec["unverified"] or rec["ratio_unresolved"]):
+                    status = "validation_cap"
+                else:
+                    status = "capped"
+            elif b is None:
                 # No validated path: never assign a global bound. A
                 # discovery cap/validation cap is reported as such.
                 status = (seed_status if seed_status in
@@ -2186,6 +2925,189 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
             "validated set")
     block["filter_complete"] = bool(filter_complete)
     block["completeness_reason"] = completeness_reason
+    if top_k > 0:
+        topk_complete = bool(enum.get("topk_complete"))
+        kth_vals = [m["bound"] for m in topk_meta.values()
+                    if m.get("bound") is not None]
+        next_vals = [m["next_bound"] for m in topk_meta.values()
+                     if m.get("next_bound") is not None]
+        block.update({
+            "selection_mode": "strongest_first",
+            "type_top_k": int(top_k),
+            "topk_complete": topk_complete,
+            "topk_approximate": not topk_complete,
+            "topk_certified": topk_complete,
+            "selection_complete": topk_complete,
+            # The scalar bound is the weakest per-pair k-th score; the
+            # next-bound scalar is the strongest unfelt prefix bound. The
+            # per-pair values are the audit record.
+            "topk_bound": (min(kth_vals) if kth_vals else None),
+            "topk_next_bound": (max(next_vals) if next_vals else None),
+            "topk_bounds_by_pair": {
+                f"{pairstr[0]}->{pairstr[1]}": m.get("bound")
+                for pairstr, m in sorted(topk_meta.items())},
+            "topk_next_bounds_by_pair": {
+                f"{pairstr[0]}->{pairstr[1]}": m.get("next_bound")
+                for pairstr, m in sorted(topk_meta.items())},
+            "topk_stop_reasons": {
+                f"{pairstr[0]}->{pairstr[1]}": m.get("stop_reason")
+                for pairstr, m in sorted(topk_meta.items())},
+            "topk_pairs_table": "route_topk_pairs.csv",
+            "completeness_scope": (
+                "strongest-first top-k per source-target pair; "
+                "topk_certified is the selection certificate, not the "
+                "exhaustive type_pruned_complete claim"),
+            # Top-k selection is never the exhaustive-completeness claim.
+            "type_pruned_complete": False,
+            "completeness_reason": (
+                "topk_certified" if topk_complete else
+                ("time_budget" if time_capped else "topk_approximate")),
+        })
+        if scoped:
+            block["scope_complete"] = False
+            _by_pair = {}
+            for s, t in selected_pairs:
+                _reason = str(topk_meta.get(
+                    (s, t), {}).get("stop_reason") or "")
+                if _reason in ("no_path", "source_is_target"):
+                    _by_pair[f"{s}->{t}"] = "no_path"
+                elif _reason == "no_body":
+                    _by_pair[f"{s}->{t}"] = "validation_cap"
+                elif _reason == "exhausted":
+                    _by_pair[f"{s}->{t}"] = "exhausted"
+                elif _reason in ("time_budget", "expansion_cap",
+                                 "candidate_cap", "cap"):
+                    _by_pair[f"{s}->{t}"] = "capped"
+                else:
+                    _by_pair[f"{s}->{t}"] = "capped"
+            block["scope_complete_by_pair"] = _by_pair
+            block["scope_capped_pairs"] = sorted(
+                k for k, v in _by_pair.items() if v == "capped")
+            block["scope_no_path_pairs"] = sorted(
+                k for k, v in _by_pair.items() if v == "no_path")
+            block["scope_validation_cap_pairs"] = sorted(
+                k for k, v in _by_pair.items() if v == "validation_cap")
+            block["scope_exhausted_pairs"] = sorted(
+                k for k, v in _by_pair.items() if v == "exhausted")
+            block["scope_pairs_exhausted"] = len(
+                block["scope_exhausted_pairs"])
+        if diversity_on:
+            _div_rows = []
+            for pair in all_pairs:
+                _d = topk_meta.get(pair, {}).get("diversity")
+                if not _d:
+                    continue
+                _div_rows.append({
+                    "source_type": pair[0], "target_type": pair[1],
+                    "topk": int(top_k),
+                    "selected": int(_d.get("selected") or 0),
+                    "pool_k": int(_d.get("pool_k") or 0),
+                    "pool_accepted": int(_d.get("pool_accepted") or 0),
+                    "max_edge_reuse": int(_d.get("max_edge_reuse") or 0),
+                    "max_edge_reuse_observed": int(
+                        _d.get("max_edge_reuse_observed") or 0),
+                    "overflow": int(_d.get("overflow") or 0),
+                    "deferred": int(_d.get("deferred") or 0),
+                    "distinct_edges_per_depth": json.dumps(
+                        _d.get("distinct_edges_per_depth") or {},
+                        sort_keys=True),
+                    "mean_pairwise_jaccard": float(
+                        _d.get("mean_pairwise_jaccard") or 0.0),
+                    "jaccard_paths_sampled": int(
+                        _d.get("jaccard_paths_sampled") or 0),
+                    "relay_type_coverage": json.dumps(
+                        _d.get("relay_type_coverage") or []),
+                    "pure_floor": _d.get("pure_floor"),
+                    "diverse_floor": _d.get("diverse_floor"),
+                    "strength_loss_abs": _d.get("strength_loss_abs"),
+                    "strength_loss_rel": _d.get("strength_loss_rel"),
+                    "stop_reason": topk_meta.get(pair, {}).get(
+                        "stop_reason"),
+                    "certified": bool(topk_meta.get(pair, {}).get(
+                        "certified")),
+                })
+            _quotas = [r["max_edge_reuse"] for r in _div_rows]
+            _loss_abs = [r["strength_loss_abs"] for r in _div_rows
+                         if r["strength_loss_abs"] is not None]
+            _loss_rel = [r["strength_loss_rel"] for r in _div_rows
+                         if r["strength_loss_rel"] is not None]
+            _jac = [r["mean_pairwise_jaccard"] for r in _div_rows
+                    if r["selected"]]
+            _per_depth = {}
+            for _d in topk_meta.values():
+                for _dep, _n in ((_d.get("diversity") or {}).get(
+                        "distinct_edges_per_depth") or {}).items():
+                    _per_depth[_dep] = _per_depth.get(_dep, 0) + int(_n)
+            _relay_cov = set()
+            for _d in topk_meta.values():
+                _relay_cov.update((_d.get("diversity") or {}).get(
+                    "relay_type_coverage") or [])
+            block["diversity"] = {
+                "mode": "edge_quota",
+                "max_edge_reuse_fraction": float(
+                    type_edge_reuse_fraction),
+                "max_edge_reuse": (max(_quotas) if _quotas else None),
+                "max_edge_reuse_by_pair": {
+                    f"{r['source_type']}->{r['target_type']}":
+                    r["max_edge_reuse"] for r in _div_rows},
+                "pool_multiplier": float(type_diversity_pool),
+                "pure_paths": int(accepted),
+                "diverse_paths": int(sum(
+                    r["selected"] for r in _div_rows)),
+                "overflow_paths": int(sum(
+                    r["overflow"] for r in _div_rows)),
+                "deferred_paths": int(sum(
+                    r["deferred"] for r in _div_rows)),
+                "max_edge_reuse_observed": int(max(
+                    [r["max_edge_reuse_observed"] for r in _div_rows],
+                    default=0)),
+                "max_clock_edge_reuse_observed": int(max(
+                    [(topk_meta.get(p, {}).get("diversity") or {}).get(
+                        "max_clock_edge_reuse_observed", 0)
+                     for p in topk_meta], default=0)),
+                "distinct_edges_per_depth": {
+                    str(k): v for k, v in sorted(_per_depth.items())},
+                "mean_pairwise_jaccard": (
+                    sum(_jac) / len(_jac) if _jac else 0.0),
+                "jaccard_basis": "bodyId_edges",
+                "jaccard_paths_sampled": int(sum(
+                    int((topk_meta.get(p, {}).get("diversity") or {}).get(
+                        "jaccard_paths_sampled") or 0)
+                    for p in topk_meta)),
+                "relay_type_coverage": sorted(_relay_cov),
+                "strength_loss_abs_max": (
+                    max(_loss_abs) if _loss_abs else None),
+                "strength_loss_rel_max": (
+                    max(_loss_rel) if _loss_rel else None),
+                "strength_loss_abs_mean": (
+                    sum(_loss_abs) / len(_loss_abs) if _loss_abs else None),
+                "diverse_table": "route_topk_pairs_diverse.csv",
+                "diverse_paths_table": "route_paths_type_diverse.csv",
+            }
+            if out_dir is not None:
+                import pandas as _pd_div
+                out_dir = Path(out_dir)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                _pd_div.DataFrame(_div_rows).to_csv(
+                    out_dir / "route_topk_pairs_diverse.csv", index=False)
+        if out_dir is not None:
+            import pandas as _pd_topk
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            cols = ["source_type", "target_type", "topk", "accepted",
+                    "validated_walks", "phantoms", "filtered_weak",
+                    "ratio_unresolved", "unverified", "candidates_pulled",
+                    "expanded_nodes", "bound", "next_bound",
+                    "pool_k", "pool_accepted",
+                    "stop_reason", "certified", "scope_bound"]
+            recs = []
+            for pair in all_pairs:
+                _m = dict(topk_meta.get(pair, {}))
+                _m["scope_bound"] = (
+                    (pair_bounds or {}).get(pair) if scoped else bound)
+                recs.append(_m)
+            _pd_topk.DataFrame(recs, columns=cols).to_csv(
+                out_dir / "route_topk_pairs.csv", index=False)
     say(f"  · type-pruned complete: {validated} validated / "
         f"{phantoms} phantoms / {unverified} unverified / "
         f"{filtered_weak} weak-filtered -> {accepted} paths "
@@ -2212,6 +3134,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
              type_prune_scope="full_floor", per_pair_scope=False,
              scope_table=None, scope_pad=2, scope_hard_cap=6,
              scope_lt_mode=None, scope_discovery_cap=6,
+             type_top_k=0, clock_relay_mode=False,
+             exclude_pairs=None, exclude_clock_clock=False,
+             type_diversity="off", type_edge_reuse_fraction=0.05,
+             type_diversity_pool=2.0,
              infer_type_pruned=True):
     """Standalone corridor lane (plan §23.3/§23.5): G_type* -> shared W ->
     per-source drain -> validate loop -> PER-WALK subgraph enumeration
@@ -2254,7 +3180,22 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     per-pair table ``route_scope_pairs.csv`` and the manifest state
     ``scope_complete_by_pair``; ``type_pruned_complete`` is then true only
     WITHIN that per-pair scope. With ``per_pair_scope=False`` the global
-    ``max_interlayer + 1`` behaviour is unchanged."""
+    ``max_interlayer + 1`` behaviour is unchanged.
+
+    ``type_top_k > 0`` enables the typed lane's strongest-first per-pair
+    top-k search (issue 2026-10-23 §2) instead of exhaustive walk
+    enumeration: the manifest's ``selection_mode``, ``topk_complete`` /
+    ``topk_certified``, per-pair bounds and ``route_topk_pairs.csv``
+    carry the selection contract. ``type_diversity='edge_quota'`` also
+    writes a diverse top-k under a per-edge-per-depth quota (pure
+    ``route_paths_type.csv`` remains the strength reference; the
+    corridor/budgeted lane gets a type-edge post-view) with overflow and
+    strength-loss disclosure. ``clock_relay_mode`` (``--allow-clock-
+    relays``) lets clock types act as intermediates; the run writes the
+    first-clock and clock-relay path views. ``exclude_pairs`` /
+    ``exclude_clock_clock`` remove type pairs from the enumerated graph
+    (e.g. disabling clock→clock connections) and are disclosed in the
+    manifest. All typed-lane options."""
     import json
     import os as _os
     import sys as _sys
@@ -2316,7 +3257,50 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             kv.get("type max type visits"), type_max_type_visits)
         type_validate_work_cap = _parse_int(
             kv.get("type validate work cap"), type_validate_work_cap)
-    # A Fast-lane subprocess on a typed-stamped folder passes
+    type_top_k = _parse_int(kv.get("type top k"), type_top_k)
+    type_diversity = str(kv.get("type diversity") or type_diversity).strip().lower()
+    type_edge_reuse_fraction = _parse_float(
+        kv.get("type edge reuse fraction"), type_edge_reuse_fraction)
+    type_diversity_pool = _parse_float(
+        kv.get("type diversity pool"), type_diversity_pool)
+    _param_error = None
+    if type_diversity not in ("off", "edge_quota"):
+        _param_error = (f"unknown type diversity mode {type_diversity!r}; "
+                        "expected off or edge_quota")
+    elif type_diversity == "edge_quota":
+        if type_pruned and type_top_k <= 0:
+            _param_error = ("typed-lane type diversity requires "
+                            "--type-top-k > 0")
+        if type_edge_reuse_fraction <= 0:
+            _param_error = "type edge reuse fraction must be positive"
+        if type_diversity_pool < 1.0:
+            _param_error = "type diversity pool multiplier must be >= 1"
+    _relay_txt = str(kv.get("clock relay mode") or "").strip().lower()
+    if _relay_txt:
+        if _relay_txt in ("all", "on", "true", "1", "yes"):
+            clock_relay_mode = True
+        elif _relay_txt in ("off", "false", "0", "no"):
+            clock_relay_mode = False
+        else:
+            _param_error = (f"unknown clock relay mode {_relay_txt!r} "
+                            "(expected all or off)")
+    exclude_clock_clock = bool(
+        exclude_clock_clock
+        or _parse_bool(kv.get("type exclude clock clock"), False))
+    _exclude_set = set()
+    try:
+        _exclude_set = set(parse_exclude_pairs(exclude_pairs))
+        _exclude_set |= set(parse_exclude_pairs(
+            kv.get("type exclude pairs")))
+    except ValueError as _exc:
+        _param_error = str(_exc)
+    if type_top_k < 0:
+        _param_error = (f"type top k must be non-negative "
+                        f"(got {type_top_k})")
+    if ((type_top_k > 0 or clock_relay_mode or _exclude_set
+         or exclude_clock_clock) and not type_pruned):
+        _param_error = ("--type-top-k, --allow-clock-relays and excluded "
+                        "type pairs are typed-lane options")
     # --no-infer-type-pruned: it must not adopt the per-pair scope stamp
     # either, or a scoped typed run's Fast lane would refuse as typed.
     if (run_dir and infer_type_pruned and not per_pair_scope
@@ -2379,6 +3363,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             f"NOT generated — refused: {reason}\n", encoding="utf-8")
         raise CorridorRefusal(reason)
 
+    if _param_error:
+        _refuse(_param_error)
     asked = int(asked if asked is not None
                 else _parse_int(kv.get("min synapse number"), 1) or 1)
     max_il = int(max_interlayer if max_interlayer is not None
@@ -2698,6 +3684,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                          "t": list(type_map.values())},
                         schema={"bid": pl.Utf8, "t": pl.Utf8})
     body2type = dict(type_map)
+    custom_mapping = bool(mapping_file_path) or label_mapper is not None
     # P0-D/P1-K: the ONE effective map this lane used, hashed. The label
     # mapper's own serialized map is hashed too when it is live; a recorded
     # mapping file that had to be loaded is covered by type_map_sha.
@@ -3066,7 +4053,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     # cannot serve a column named `weight_max`). Built AFTER the body prune
     # so the dict does not sit on the prune's peak (issue 2026-10-23).
     _mass = "weight_syn" if ratio_basis else "weight"
-    type_nt = _type_nt_map(frame)
+    from type_level_refill import build_effective_type_metadata
+    type_nt_meta = build_effective_type_metadata(frame, body2type)
+    type_nt = {label: rec["nt_majority"]
+               for label, rec in type_nt_meta.items()}
 
     # F-PF-009 D3-B (ruled follow-up, implemented): load the parent's
     # per-target distance maps and ENFORCE per-endpoint minimum hops at
@@ -3191,6 +4181,48 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         # A scoped run with an empty cone is a legitimate "no pair is
         # reachable within its scope" result: it completes with the
         # per-pair no_path rows, never silently invents a bound.
+    exclusion_block = {
+        "enabled": bool(_exclude_set or exclude_clock_clock),
+        "exclude_clock_clock": bool(exclude_clock_clock),
+        "requested": [], "applied": [], "not_present": [],
+    }
+    if type_pruned and exclusion_block["enabled"]:
+        _wanted = set(_exclude_set)
+        if exclude_clock_clock:
+            _clk = {str(t) for t in tgt_types}
+            _wanted |= {(a, b) for a in _clk for b in _clk}
+        _present = set(zip(
+            [str(x) for x in pairs["type_pre"].to_list()],
+            [str(x) for x in pairs["type_post"].to_list()]))
+        _applied = _wanted & _present
+        _not_present = _wanted - _present
+        exclusion_block.update({
+            # The clock-clock switch generates O(clock_types^2) pairs; the
+            # manifest keeps the applied set and counts, not 400+ repeated
+            # generated names.
+            "requested": ([] if exclude_clock_clock else
+                          sorted(f"{a}->{b}" for a, b in _wanted)),
+            "applied": sorted(f"{a}->{b}" for a, b in _applied),
+            "not_present": ([] if exclude_clock_clock else
+                            sorted(f"{a}->{b}" for a, b in _not_present)),
+            "applied_count": len(_applied),
+            "requested_count": len(_wanted),
+            "not_present_count": len(_not_present),
+            "pairs_before": int(pairs.height),
+        })
+        if _applied:
+            _keys = pl.DataFrame({
+                "k": [f"{a}\x1f{b}" for a, b in _applied]})
+            pairs = (
+                pairs.with_columns(pl.concat_str([
+                    pl.col("type_pre"), pl.lit("\x1f"),
+                    pl.col("type_post")]).alias("k"))
+                .join(_keys, on="k", how="anti")
+                .drop("k"))
+        exclusion_block["pairs_after"] = int(pairs.height)
+        if pairs.height == 0 and not per_pair_scope:
+            _refuse("the excluded type pairs removed every pair from the "
+                    "type-pruned graph")
     if per_pair_scope:
         # Pass A (discover) or the already-loaded external table. The
         # final per-pair bound is what the complete pass enumerates; the
@@ -3208,7 +4240,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 revisit_policy=str(type_revisit_policy).lower(),
                 max_type_visits=int(type_max_type_visits),
                 walk_cap=int(type_walk_cap), dataset=dataset or "",
-                deadline=deadline,
+                deadline=deadline, clock_relay=bool(clock_relay_mode),
                 log=((lambda *a, **k: print(
                     *a, file=_sys.stderr, flush=True)) if _dbg else None))
             scope_table_sha = _write_scope_table(
@@ -3245,6 +4277,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     limit = int(per_pair_length_budget)
 
     walk_rows, body_rows = [], []
+    diverse_rows = []
     provenance_classes, budgets = {}, {}
     scope_pairs = {}      # (a, b) -> {"mass": x, "paths": n, "walks": k}
     time_capped = False
@@ -3492,6 +4525,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             max_type_visits=int(type_max_type_visits),
             deadline=deadline, prune_block=prune_block,
             out_dir=out,
+            type_top_k=int(type_top_k),
+            clock_relay_mode=bool(clock_relay_mode),
+            clock_types=set(str(x) for x in tgt_types),
+            type_diversity=str(type_diversity),
+            type_edge_reuse_fraction=float(type_edge_reuse_fraction),
+            type_diversity_pool=float(type_diversity_pool),
+            diverse_rows=diverse_rows,
             pair_bounds=(scope_bounds if per_pair_scope else None),
             scope_seed=(scope_seed if per_pair_scope else None),
             scope_context=({
@@ -3523,6 +4563,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                  if _dbg else None))
         type_block['refill_used'] = False
         type_block['refill_status'] = _refill_status
+        type_block['exclusions'] = exclusion_block
         type_block['universe_source'] = (
             'lossless_discovery_cone (run connection source; not the '
             'materialized path store and not the refill emitted chains)')
@@ -4057,6 +5098,129 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 cb.off_len = off_len
                 cb.off_plan = off_plan
 
+    fast_diversity = None
+    if (not type_pruned and str(type_diversity) == "edge_quota"
+            and walk_rows):
+        out.mkdir(parents=True, exist_ok=True)        # Corridor/budgeted classes: the class budget is route_share (the
+        # same budget the drain fills), and the quota is a fraction of it.
+        # Fast rows carry a type path, not one exact bodyId union, so this
+        # quota is type-edge based and disclosed as such.
+        _groups = {}
+        for _row in walk_rows:
+            _walk = str(_row.get("path") or "").split("->")
+            if len(_walk) < 2:
+                continue
+            _key = (_walk[0], _walk[-1], len(_walk) - 1)
+            _groups.setdefault(_key, []).append(_row)
+        _div_rows = []
+        _div_classes = []
+        for _key, _rows in sorted(_groups.items()):
+            _s, _t, _h = _key
+            _cm = provenance_classes.get(f"{_s}->{_t}@h{_h}") or {}
+            _budget = int(_cm.get("route_share") or len(_rows))
+            _quota = max(1, int(math.ceil(
+                _budget * float(type_edge_reuse_fraction))))
+            _ordered = sorted(
+                _rows, key=lambda r: (
+                    -float(r.get("min_ratio_adj") or 0.0),
+                    str(r.get("path") or "")))
+            _selected, _dst = _select_diverse_type_rows(
+                _ordered, _quota, set(str(x) for x in tgt_types),
+                target=_budget)
+            for _rank, _row in enumerate(_selected, 1):
+                _d = dict(_row)
+                _d["plan_rank"] = _rank
+                _div_rows.append(_d)
+            _pure_floor = min(
+                [float(r.get("min_ratio_adj"))
+                 for r in _rows if r.get("min_ratio_adj") is not None],
+                default=None)
+            _div_floor = min(
+                [float(r.get("min_ratio_adj"))
+                 for r in _selected
+                 if r.get("min_ratio_adj") is not None],
+                default=None)
+            _loss = (None if _pure_floor is None or _div_floor is None
+                     else max(0.0, _pure_floor - _div_floor))
+            _div_classes.append({
+                "source_type": _s, "target_type": _t, "length": _h,
+                "budget": _budget, "max_edge_reuse": _quota,
+                "selected": int(_dst["selected"]),
+                "overflow": int(_dst["overflow"]),
+                "deferred": int(_dst["deferred"]),
+                "max_edge_reuse_observed": int(
+                    _dst["max_edge_reuse_observed"]),
+                "max_clock_edge_reuse_observed": int(
+                    _dst["max_clock_edge_reuse_observed"]),
+                "distinct_edges_per_depth": json.dumps(
+                    _dst["distinct_edges_per_depth"], sort_keys=True),
+                "mean_pairwise_jaccard": float(
+                    _dst["mean_pairwise_jaccard"]),
+                "jaccard_paths_sampled": int(
+                    _dst.get("jaccard_paths_sampled") or 0),
+                "relay_type_coverage": json.dumps(
+                    _dst["relay_type_coverage"]),
+                "pure_floor": _pure_floor, "diverse_floor": _div_floor,
+                "strength_loss_abs": _loss,
+                "strength_loss_rel": (
+                    (_loss / _pure_floor) if (
+                        _loss is not None and _pure_floor) else None),
+            })
+        diverse_rows.extend(_div_rows)
+        _per_depth = {}
+        for _c in _div_classes:
+            for _d, _n in json.loads(
+                    _c["distinct_edges_per_depth"]).items():
+                _per_depth[_d] = _per_depth.get(_d, 0) + int(_n)
+        _jac = [_c["mean_pairwise_jaccard"] for _c in _div_classes]
+        _loss_abs = [_c["strength_loss_abs"] for _c in _div_classes
+                     if _c["strength_loss_abs"] is not None]
+        _loss_rel = [_c["strength_loss_rel"] for _c in _div_classes
+                     if _c["strength_loss_rel"] is not None]
+        _quotas = [_c["max_edge_reuse"] for _c in _div_classes]
+        fast_diversity = {
+            "mode": "edge_quota",
+            "edge_basis": "type_edges",
+            "scope": "post_emitted_class_rows",
+            "max_edge_reuse_fraction": float(type_edge_reuse_fraction),
+            "max_edge_reuse": (max(_quotas) if _quotas else None),
+            "max_edge_reuse_by_class": {
+                f"{c['source_type']}->{c['target_type']}@h{c['length']}":
+                c["max_edge_reuse"] for c in _div_classes},
+            "pure_paths": len(walk_rows),
+            "diverse_paths": len(_div_rows),
+            "overflow_paths": int(sum(
+                c["overflow"] for c in _div_classes)),
+            "deferred_paths": int(sum(
+                c["deferred"] for c in _div_classes)),
+            "max_edge_reuse_observed": int(max(
+                [c["max_edge_reuse_observed"] for c in _div_classes],
+                default=0)),
+            "max_clock_edge_reuse_observed": int(max(
+                [c.get("max_clock_edge_reuse_observed", 0)
+                 for c in _div_classes], default=0)),
+            "distinct_edges_per_depth": {
+                str(k): v for k, v in sorted(_per_depth.items())},
+            "mean_pairwise_jaccard": (
+                sum(_jac) / len(_jac) if _jac else 0.0),
+            "jaccard_basis": "type_edges",
+            "jaccard_paths_sampled": int(sum(
+                c.get("jaccard_paths_sampled", 0)
+                for c in _div_classes)),
+            "relay_type_coverage": [],
+            "strength_loss_abs_max": (
+                max(_loss_abs) if _loss_abs else None),
+            "strength_loss_rel_max": (
+                max(_loss_rel) if _loss_rel else None),
+            "strength_loss_abs_mean": (
+                sum(_loss_abs) / len(_loss_abs) if _loss_abs else None),
+            "diverse_paths_table": "route_paths_type_diverse.csv",
+            "diverse_classes_table": "route_diversity_pairs.csv",
+        }
+        import pandas as _pd_div
+        _pd_div.DataFrame(_div_classes).to_csv(
+            out / "route_diversity_pairs.csv", index=False)
+
     # ---- exports (§23.5; lane namespace only) -------------------------
     runtime = round(time.time() - wall0, 2)
     for (pair, h), cb in budgets.items():
@@ -4080,11 +5244,47 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             entry["weakest_emitted"] = (cb.weakest_emitted
                                         if certify_actual else None)
     out.mkdir(parents=True, exist_ok=True)
+    if not type_pruned and str(type_diversity) != "edge_quota":
+        for _stale in ("route_paths_type_diverse.csv",
+                       "route_diversity_pairs.csv"):
+            (out / _stale).unlink(missing_ok=True)
+    # Effective-label transmitter consensus (issue 2026-10-23): one audit
+    # row per label, so a grouped source (R7*/R8* -> R7/R8) carries its
+    # majority, votes, agreement and native membership instead of a blank
+    # NT. Values are `unknown`, never NaN/empty.
+    import pandas as _pd_nt
+    _nt_rows = []
+    for _label, _rec in sorted(type_nt_meta.items()):
+        _nt_rows.append({
+            "type": _label,
+            "nt_majority": _rec.get("nt_majority") or "unknown",
+            "nt_votes": json.dumps(_rec.get("nt_votes") or {},
+                                   sort_keys=True),
+            "nt_n": int(_rec.get("nt_n") or 0),
+            "nt_agreement": round(float(_rec.get("nt_agreement") or 0.0), 6),
+            "nt_ambiguous": bool(_rec.get("nt_ambiguous")),
+            "nt_source_column": _rec.get("nt_source_column"),
+            "n_bodies": int(_rec.get("n_bodies") or 0),
+            "native_types": json.dumps(_rec.get("native_types") or []),
+        })
+    _pd_nt.DataFrame(_nt_rows, columns=[
+        "type", "nt_majority", "nt_votes", "nt_n", "nt_agreement",
+        "nt_ambiguous", "nt_source_column", "n_bodies",
+        "native_types"]).to_csv(out / "type_nt_consensus.csv", index=False)
+    if type_block is not None:
+        type_block["nt_consensus_table"] = "type_nt_consensus.csv"
+        type_block["nt_consensus_labels"] = len(_nt_rows)
+        type_block["nt_ambiguous_labels"] = sum(
+            1 for r in _nt_rows if r["nt_ambiguous"])
     if type_block is not None:
         # The layered typed lane writes no bodyId witness rows (issue
         # 2026-10-23). Remove a stale CSV left by an older in-place run so
         # the folder cannot advertise a table this lane no longer produces.
         (out / "route_paths_bodyId.csv").unlink(missing_ok=True)
+        if str(type_diversity) != "edge_quota":
+            for _stale in ("route_paths_type_diverse.csv",
+                           "route_topk_pairs_diverse.csv"):
+                (out / _stale).unlink(missing_ok=True)
         # P2-N: the typed lane's own completeness field and manifest live
         # beside the tables, so no reader has to infer them from `paths_complete`
         # (the Complete lane's tau field).
@@ -4114,8 +5314,45 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "pair_weights": pl.Utf8,
             "ratio_adj_complete": pl.Boolean,
             "type_pruned": pl.Boolean}
-        pl.DataFrame(walk_rows, schema=typed_schema).write_csv(
-            out / "route_paths_type.csv")
+        if clock_relay_mode:
+            relay_schema = dict(typed_schema)
+            relay_schema.update({
+                "clock_sequence": pl.Utf8,
+                "intra_clock_edges": pl.Int64,
+                "first_clock": pl.Utf8,
+                "clock_relay": pl.Boolean,
+            })
+            pl.DataFrame(walk_rows, schema=relay_schema).write_csv(
+                out / "route_paths_type.csv")
+            _first_clock_rows = [
+                {k: v for k, v in r.items() if k not in (
+                    "clock_sequence", "intra_clock_edges", "first_clock",
+                    "clock_relay")}
+                for r in walk_rows if not r.get("clock_relay")]
+            _relay_rows = [r for r in walk_rows if r.get("clock_relay")]
+            pl.DataFrame(_first_clock_rows, schema=typed_schema).write_csv(
+                out / "route_paths_type_first_clock.csv")
+            pl.DataFrame(_relay_rows, schema=relay_schema).write_csv(
+                out / "route_paths_type_clock_relay.csv")
+            pl.DataFrame(
+                [r for r in _relay_rows
+                 if int(r.get("intra_clock_edges") or 0) == 0],
+                schema=relay_schema).write_csv(
+                out / "route_paths_type_clock_relay_no_intra.csv")
+            pl.DataFrame(
+                [r for r in _relay_rows
+                 if int(r.get("intra_clock_edges") or 0) > 0],
+                schema=relay_schema).write_csv(
+                out / "route_paths_type_clock_relay_intra.csv")
+        else:
+            pl.DataFrame(walk_rows, schema=typed_schema).write_csv(
+                out / "route_paths_type.csv")
+        if str(type_diversity) == "edge_quota" and diverse_rows:
+            diverse_rows.sort(key=lambda r: (r["path"], r["route_h"],
+                                             r["plan_rank"]))
+            _div_schema = relay_schema if clock_relay_mode else typed_schema
+            pl.DataFrame(diverse_rows, schema=_div_schema).write_csv(
+                out / "route_paths_type_diverse.csv")
     else:
         for _row in walk_rows:
             _row.setdefault("gate_min_ratio_adj",
@@ -4146,6 +5383,11 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "type_pruned": pl.Boolean}
         pl.DataFrame(walk_rows, schema=type_schema).write_csv(
             out / "route_paths_type.csv")
+        if str(type_diversity) == "edge_quota" and diverse_rows:
+            diverse_rows.sort(key=lambda r: (r["path"], r["route_h"],
+                                             r["plan_rank"]))
+            pl.DataFrame(diverse_rows, schema=type_schema).write_csv(
+                out / "route_paths_type_diverse.csv")
     if write_bodyid and not type_pruned:
         pl.DataFrame(body_rows, schema={
             "path": pl.Utf8, "weights": pl.Utf8, "length": pl.Int64,
@@ -4160,6 +5402,15 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                        zip(pairs["type_pre"], pairs["type_post"],
                            pairs["w_sum"], pairs["w_max"], pairs["n"])}
         conn_rows = []
+        relay_edge_pairs = set()
+        _clock_types = {str(x) for x in tgt_types}
+        if clock_relay_mode:
+            for _r in walk_rows:
+                if not _r.get("clock_relay"):
+                    continue
+                _seq = str(_r.get("path") or "").split("->")
+                for _a, _b in zip(_seq, _seq[1:]):
+                    relay_edge_pairs.add((_a, _b))
         for (a, b) in sorted(scope_pairs):
             rec = scope_pairs[(a, b)]
             wsum, wmax, n = pair_lookup.get((a, b), (None, None, None))
@@ -4174,16 +5425,15 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             _mean_ratio = (round(sum(_sel_ratios.values())
                                  / len(_sel_ratios), 6)
                            if _sel_ratios else None)
-            conn_rows.append({
+            row = {
                 # _TYPE_MIRROR_COLUMNS family (type_level_refill.py:1758)
-                "type_pre": a, "type_post": b,
-                "weight": wsum,
+                "type_pre": a, "type_post": b,                "weight": wsum,
                 # F-EX-006: `nt_type` is the PRESYNAPTIC type's
                 # transmitter, exactly as `connection_type.csv` publishes it
                 # in this same mirror family. It used to read the POST type,
                 # so `aMe26→SMP091` said acetylcholine here and gaba there,
                 # and every hop into PPL101/PPL103 claimed dopamine.
-                "nt_type": type_nt.get(a, ""),
+                "nt_type": type_nt.get(a, "unknown"),
                 # F-EX-011 (Decisions 4): the ratio columns are MASS SHARES on
                 # every weight basis — a quotient a reader can reproduce from
                 # the row's own numbers, like every other connection table.
@@ -4220,7 +5470,20 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 # Fast lane: bodyId paths. Layered typed lane: 0 (no
                 # witness rows); its accepted walks live in used_by_walks.
                 "realizing_paths": int(rec.get("bodyid_paths", rec["paths"])),
-                "used_by_walks": rec["walks"]})
+                "used_by_walks": rec["walks"]}
+            if custom_mapping:
+                _ntm = type_nt_meta.get(a, {})
+                row["nt_agreement"] = round(float(
+                    _ntm.get("nt_agreement") or 0.0), 6)
+                row["nt_votes"] = json.dumps(
+                    _ntm.get("nt_votes") or {}, sort_keys=True)
+                row["nt_n"] = int(_ntm.get("nt_n") or 0)
+                row["nt_ambiguous"] = bool(_ntm.get("nt_ambiguous"))
+            if clock_relay_mode:
+                row["intra_clock"] = bool(
+                    a in _clock_types and b in _clock_types)
+                row["clock_relay"] = bool((a, b) in relay_edge_pairs)
+            conn_rows.append(row)
         pl.DataFrame(conn_rows).write_csv(
             out / "route_connection_type.csv")
     # The lane's CONDITIONED denominators (>= asked), published beside the
@@ -4474,12 +5737,18 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "plan_hash": plan_hash,
         "path_mode": path_mode,
         "validation_basis": validation_basis,
+        "nt_consensus_table": "type_nt_consensus.csv",
         # P2-N/P2-S: the typed lane's identity and completeness are SEPARATE
         # from the Complete lane's `paths_complete`.
         "type_pruned": bool(type_pruned),
         "type_pruned_complete": (type_block.get("type_pruned_complete")
                                  if type_block is not None else None),
         "type_prune": type_block,
+        "diversity_mode": (
+            type_block.get("diversity_mode") if type_block is not None
+            else ("edge_quota" if fast_diversity else "off")),
+        "diversity": (type_block.get("diversity") if type_block is not None
+                      else fast_diversity),
         # Per-pair scope contract (issue 2026-10-22): the scope fields are
         # repeated at the top level so a reader never has to open the typed
         # manifest to know which claim `type_pruned_complete` makes.
@@ -4573,6 +5842,26 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "Validation basis `layered_fwd_bwd`; label-revisiting walks "
             "carry the disclosed layered-superset masses (`chain_revisit`). "
             "No bodyId witness rows or realization envelope are produced. "
+            + (f"Strongest-first top-k: k={int(type_block.get('type_top_k') or 0)} "
+               f"per pair, certified={type_block.get('topk_certified')}, "
+               f"bound={type_block.get('topk_bound')}, "
+               f"candidates pulled={type_block.get('candidates_pulled')}."
+               if str(type_block.get('selection_mode')) == "strongest_first"
+               else "")
+            + (f" Clock relays: first-clock "
+               f"{(type_block.get('clock_relay_counts') or {}).get('first_clock_paths')}, "
+               f"relay "
+               f"{(type_block.get('clock_relay_counts') or {}).get('relay_paths')} "
+               f"(no intra "
+               f"{(type_block.get('clock_relay_counts') or {}).get('relay_no_intra')}, "
+               f"intra "
+               f"{(type_block.get('clock_relay_counts') or {}).get('relay_intra')})."
+               if str(type_block.get('clock_relay_mode')) == "all" else "")
+            + (f" Excluded type pairs: "
+               f"{(type_block.get('exclusions') or {}).get('applied_count')} "
+               "applied."
+               if (type_block.get('exclusions') or {}).get('enabled') else "")
+            + " "
             f"`type_pruned_complete={type_block.get('type_pruned_complete')}` "
             f"({type_block.get('completeness_reason')})"
             + ("; that claim is WITHIN the per-pair scope only, never "
@@ -4717,6 +6006,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
            "validation)\n")
         + f"- runtime: {runtime}s\n"
         + _basis_line
+        + ("- transmitter metadata: `type_nt_consensus.csv` (effective-label "
+           "majority/votes/agreement; group membership and native types)\n"
+           + (f"- diversity: `{((type_block or {}).get('diversity') or fast_diversity or {}).get('mode', 'off')}` "
+              "— pure `route_paths_type.csv` remains the strength reference; "
+              "see the diversity audit table\n\n"
+              if ((type_block or {}).get('diversity') or fast_diversity)
+              else "\n"))
         + ("- RATIO BASIS: the corridor admits each edge on its own F9 "
            "input share (weight / the post neuron's FULL-table incoming "
            ">= t_r = the run's Min Connection Ratio), ranks type pairs by "
@@ -4974,7 +6270,7 @@ def _full_scope_refill(out, *, conn, tmap, body2type, src_ids, tgt_ids,
             # the mirror family's transmitter column names the PRESYNAPTIC
             # type (F-EX-006), so the second round's pages can colour edges
             # by NT exactly like the run's own Network page
-            "nt_type": (type_nt or {}).get(a, ""),
+            "nt_type": (type_nt or {}).get(a, "unknown"),
             "emitted_weight": emitted, "refill_weight": refill,
             "refilled_total": total,
             "refilled_connection_ratio": (round(total / denom, 6)
@@ -5134,11 +6430,31 @@ def _write_mirror_visualizations(out, src_types=(), tgt_types=(),
             if totals:
                 pair_extra = {'refilled': totals}
         from vispath_pkg.vispath import VisualizePath
+        # Transmitter agreement on the edge hover for a custom LabelMapper
+        # group (issue 2026-10-23). Native tables have no agreement
+        # columns and keep their previous hover.
+        edge_labels = {}
+        if "nt_agreement" in frame.columns:
+            import json as _json_hover
+            for _, _r in frame.iterrows():
+                try:
+                    _votes = _json_hover.loads(_r.get("nt_votes") or "{}")
+                except Exception:
+                    _votes = {}
+                _nt = str(_r.get("nt_type") or "unknown")
+                _n = int(_r.get("nt_n") or 0)
+                _won = int(_votes.get(_nt, 0))
+                _txt = f"{_nt} {_won}/{_n}"
+                if bool(_r.get("nt_ambiguous")):
+                    _txt += " (ambiguous)"
+                edge_labels[(str(_r["type_pre"]),
+                             str(_r["type_post"]))] = {"NT": _txt}
         vp = VisualizePath(
             path_file=frame[cols].rename(columns=rename),
             output_folder=str(out), showfig=False, verbose=False,
             adj_ratio_threshold=adj_ratio_tier,
             pair_extra_metrics=pair_extra,
+            edge_labels=(edge_labels or None),
             color_edges_by_nt=("nt_type" in frame.columns),
             edgeN_limit=500)
         vp.base_filename = base_filename
@@ -5396,28 +6712,18 @@ def _fmt_mass(value) -> str:
         float(value))
 
 
-def _type_nt_map(frame):
-    """Type -> neurotransmitter via the engine's column preference chain
-    (coana enrichment: nt_type > consensusNt > predictedNt >
-    celltypePredictedNt), most common non-null label per type."""
-    import collections
-    from utils.label_utils import canonical_neurotransmitter
-    nt_col = next((c for c in ("nt_type", "consensusNt", "predictedNt",
-                               "celltypePredictedNt")
-                   if c in getattr(frame, "columns", [])), None)
-    counts = collections.defaultdict(collections.Counter)
-    if nt_col is not None:
-        try:
-            types = frame["type"].astype(str)
-            nts = frame[nt_col].astype(str).where(
-                frame[nt_col].notna(), "")
-            for t, nt in zip(types, nts):
-                canon = canonical_neurotransmitter(nt)
-                if canon:
-                    counts[t][canon] += 1
-        except Exception:
-            pass
-    return {t: c.most_common(1)[0][0] for t, c in counts.items()}
+def _type_nt_map(frame, body2type=None):
+    """Effective type -> majority transmitter (canonical lowercase).
+
+    Thin consumer of the shared effective-label metadata helper: votes are
+    aggregated over the run's **effective** label (a custom LabelMapper
+    group is one label), using the engine's NT column preference chain and
+    :func:`canonical_neurotransmitter`. A label with no known NT is
+    ``unknown``, never an empty/NaN value.
+    """
+    from type_level_refill import build_effective_type_metadata
+    meta = build_effective_type_metadata(frame, body2type)
+    return {label: rec["nt_majority"] for label, rec in meta.items()}
 
 
 def _type_adj(pairs, src_types, tgt_types, bound):

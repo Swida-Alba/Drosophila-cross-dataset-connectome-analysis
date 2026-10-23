@@ -1153,6 +1153,28 @@ def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
         'validation_basis': 'layered_fwd_bwd',
         'revisit_semantics': 'layered_fwd_bwd_superset',
         'bodyid_export': 'none', 'bodyId_paths': 0,
+        'selection_mode': 'strongest_first', 'type_top_k': 1000,
+        'topk_complete': True, 'topk_certified': True,
+        'topk_bound': 0.02, 'topk_next_bound': 0.015,
+        'candidates_pulled': 900, 'candidates_expanded': 1200,
+        'clock_relay_mode': 'all',
+        'clock_relay_counts': {'first_clock_paths': 4, 'relay_paths': 3,
+                               'relay_no_intra': 1, 'relay_intra': 2},
+        'nt_consensus_labels': 12, 'nt_ambiguous_labels': 1,
+        'diversity_mode': 'edge_quota',
+        'diversity': {'mode': 'edge_quota',
+                      'max_edge_reuse_fraction': 0.05,
+                      'diverse_paths': 5, 'overflow_paths': 1,
+                      'max_edge_reuse_observed': 2,
+                      'mean_pairwise_jaccard': 0.1,
+                      'strength_loss_abs_max': 0.01,
+                      'diverse_paths_table':
+                          'route_paths_type_diverse.csv',
+                      'diverse_table':
+                          'route_topk_pairs_diverse.csv'},
+        'exclusions': {'enabled': True, 'exclude_clock_clock': True,
+                       'applied_count': 1, 'requested_count': 1,
+                       'not_present': []},
         'type_pruned_floor': 3, 'complete_tau': 8,
         # Issue 2026-10-22: per-pair shortest scope metadata.
         'scope_mode': 'per_pair_shortest_plus_2',
@@ -1190,6 +1212,38 @@ def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
     (lane / 'scope_table.csv').write_text(
         'source_type,target_type,Lt_i,max_hops\nA,C,2,4\n',
         encoding='utf-8')
+    (lane / 'route_topk_pairs.csv').write_text(
+        'source_type,target_type,topk,accepted,validated_walks,'
+        'candidates_pulled,expanded_nodes,bound,next_bound,stop_reason,'
+        'certified,scope_bound\nA,C,1000,7,7,900,1200,0.5,0.4,certified,'
+        'True,4\n', encoding='utf-8')
+    (lane / 'route_topk_pairs_diverse.csv').write_text(
+        'source_type,target_type,topk,selected,max_edge_reuse,'
+        'overflow,strength_loss_abs\nA,C,1000,7,50,1,0.01\n',
+        encoding='utf-8')
+    (lane / 'route_paths_type_diverse.csv').write_text(
+        'path\nA->B->C\n', encoding='utf-8')
+    (lane / 'type_nt_consensus.csv').write_text(
+        'type,nt_majority,nt_votes,nt_n,nt_agreement,nt_ambiguous,'
+        'nt_source_column,n_bodies,native_types\n'
+        'A,histamine,"{""histamine"": 3}",3,1.0,False,consensusNt,3,'
+        '"[""A1"", ""A2"", ""A3""]"\n', encoding='utf-8')
+    _relay_header = (
+        'path,weights,ratios,ratios_adj,min_weight,min_ratio,'
+        'min_ratio_adj,length,nt_types,coverage,applied_tau,route_h,'
+        'route_ub,route_floor_h,plan_rank,chain_revisit,pair_weights,'
+        'ratio_adj_complete,type_pruned,clock_sequence,intra_clock_edges,'
+        'first_clock,clock_relay\n')
+    (lane / 'route_paths_type_first_clock.csv').write_text(
+        'path\nA->B\n', encoding='utf-8')
+    (lane / 'route_paths_type_clock_relay.csv').write_text(
+        _relay_header + 'A->B->C,[1],[1],[1],1,1,1,2,"[]","[]",,2,1,,1,'
+        'false,"[]",true,true,B->C,0,B,true\n', encoding='utf-8')
+    (lane / 'route_paths_type_clock_relay_no_intra.csv').write_text(
+        _relay_header, encoding='utf-8')
+    (lane / 'route_paths_type_clock_relay_intra.csv').write_text(
+        _relay_header + 'A->B->C,[1],[1],[1],1,1,1,2,"[]","[]",,2,1,,1,'
+        'false,"[]",true,true,B->C,1,B,true\n', encoding='utf-8')
     return lane
 
 
@@ -1217,6 +1271,15 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     assert 'No bodyId witness enumeration' in text
     assert 'layered_fwd_bwd' in text
     assert 'not requested for this typed lane' in text
+    assert 'Strongest-first top-k' in text
+    assert 'route_topk_pairs.csv' in text
+    assert 'Clock-relay search' in text
+    assert 'route_paths_type_clock_relay.csv' in text
+    assert 'Excluded type pairs' in text
+    assert 'Transmitter metadata' in text
+    assert 'type_nt_consensus.csv' in text
+    assert 'Diverse top-k' in text
+    assert 'route_topk_pairs_diverse.csv' in text
     assert fast_csv.read_bytes() == before
 
     # typed-only: the lane unit falls through to the typed namespace
@@ -1245,6 +1308,8 @@ def test_pair_report_marks_an_incomplete_typed_lane(tmp_path):
     manifest = json.loads(manifest_p.read_text())
     manifest['type_pruned_complete'] = False
     manifest['completeness_reason'] = 'type_walk_cap'
+    manifest['topk_certified'] = False
+    manifest['topk_complete'] = False
     manifest['unverified'] = 3
     manifest_p.write_text(json.dumps(manifest), encoding='utf-8')
     prov_p = run / ppr.TYPED_LANE_DIR / 'route_provenance.json'

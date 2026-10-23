@@ -2106,6 +2106,221 @@ def test_type_pruned_layered_revisit_needs_no_body_simple_witness(tmp_path):
     assert manifest["revisit_semantics"] == "layered_fwd_bwd_superset"
 
 
+def test_corridor_diverse_type_rows_spreads_and_trims_tie_mass():
+    """The corridor/budgeted selector uses type edges, respects the class
+    budget even when cutoff ties emitted more rows, and reports overflow."""
+    from route_plan import _select_diverse_type_rows
+    rows = [{"path": f"A->B->X{i}->C", "min_ratio_adj": 0.08}
+            for i in range(10)]
+    rows += [{"path": f"A->D{i}->C", "min_ratio_adj": 0.06}
+             for i in range(3)]
+    selected, stats = _select_diverse_type_rows(
+        rows, quota=1, clock_types={"C"}, target=6)
+    paths = [r["path"] for r in selected]
+    assert len(paths) == 6
+    assert sum(p.startswith("A->B->") for p in paths) == 3
+    assert sum(p.startswith("A->D") for p in paths) == 3
+    assert stats["overflow"] >= 1
+    assert stats["max_edge_reuse_observed"] >= 2
+    assert stats["clock_edge_quota"] == 1
+    assert stats["max_clock_edge_reuse_observed"] == 0
+
+
+def test_type_pruned_diverse_topk_spreads_a_dominant_edge(tmp_path):
+    """Updated issue 2026-10-23 §2.3: pure top-k fills with the one strong
+    first-hop edge; the diverse output defers/quota-fills across the
+    alternatives and discloses overflow/strength loss. The pure table is
+    unchanged (strength reference)."""
+    edges = [("a1", "b1", 100)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    for i in range(10):
+        x = f"x{i}"
+        types[x] = f"X{i}"
+        edges += [("b1", x, 90), (x, "c1", 80)]
+    for i in range(3):
+        d = f"d{i}"
+        types[d] = f"D{i}"
+        edges += [("a1", d, 70), (d, "c1", 60)]
+    root = _typed_dataset(tmp_path, edges, types)
+    pure_rows, _ = _run_typed(root, tmp_path / "out_pure", type_top_k=6)
+    rows, manifest = _run_typed(
+        root, tmp_path / "out_div", type_top_k=6,
+        type_diversity="edge_quota", type_edge_reuse_fraction=0.1,
+        type_diversity_pool=3.0)
+    pure = set(pure_rows["path"])
+    assert all(p.startswith("A->B->") for p in pure)
+    diverse = pl.read_csv(tmp_path / "out_div" /
+                           "route_paths_type_diverse.csv")
+    dpaths = set(diverse["path"])
+    assert any(p.startswith("A->D") for p in dpaths)
+    assert len(dpaths) == 6
+    div = manifest["diversity"]
+    assert div["mode"] == "edge_quota"
+    assert div["max_edge_reuse"] == 1
+    assert div["overflow_paths"] >= 1
+    assert div["max_edge_reuse_observed"] >= 2
+    assert div["strength_loss_abs_max"] > 0
+    assert div["distinct_edges_per_depth"]
+    assert div["jaccard_basis"] == "bodyId_edges"
+    assert (tmp_path / "out_div" / "route_topk_pairs_diverse.csv").exists()
+    assert manifest["diversity_mode"] == "edge_quota"
+    assert manifest["type_pruned_complete"] is False
+    # The pure table is exactly the no-diversity top-k.
+    assert set(rows["path"]) == pure
+    assert not (tmp_path / "out_div" / "route_paths_bodyId.csv").exists()
+    # Turning diversity off removes stale diverse artifacts in a re-run.
+    _run_typed(root, tmp_path / "out_div", type_top_k=6)
+    assert not (tmp_path / "out_div" /
+                "route_paths_type_diverse.csv").exists()
+
+
+def test_type_pruned_topk_matches_the_sorted_full_set(tmp_path):
+    """Issue 2026-10-23 §4: a top-k run returns exactly the first k rows of
+    the fully sorted exhaustive accepted set, certifies the bound, records
+    the next candidate bound, and writes no witness/envelope artifacts."""
+    edges = []
+    types = {"a1": "A", "c1": "C"}
+    for i, w in enumerate((100, 80, 70)):
+        b = f"b{i}"
+        types[b] = f"B{i}"
+        edges += [("a1", b, w), (b, "c1", w - 5)]
+    root = _typed_dataset(tmp_path, edges, types)
+    full_rows, _ = _run_typed(root, tmp_path / "out_full")
+    full = full_rows.sort(
+        ["min_ratio_adj", "path"], descending=[True, False]).head(2)
+    rows, manifest = _run_typed(
+        root, tmp_path / "out_topk", type_top_k=2)
+    assert rows["path"].to_list() == full["path"].to_list()
+    assert rows["plan_rank"].to_list() == [1, 2]
+    assert manifest["selection_mode"] == "strongest_first"
+    assert manifest["type_top_k"] == 2
+    assert manifest["topk_complete"] is True
+    assert manifest["topk_certified"] is True
+    assert manifest["selection_complete"] is True
+    assert manifest["type_pruned_complete"] is False
+    assert manifest["completeness_reason"] == "topk_certified"
+    assert manifest["topk_bound"] is not None
+    assert manifest["topk_next_bound"] is not None
+    assert manifest["topk_next_bound"] < manifest["topk_bound"]
+    assert manifest["accepted_paths"] == 2
+    assert manifest["candidates_pulled"] >= 2
+    topk_pairs = pl.read_csv(tmp_path / "out_topk" / "route_topk_pairs.csv")
+    assert topk_pairs.height == 1
+    pair = topk_pairs.row(0, named=True)
+    assert pair["accepted"] == 2 and pair["topk"] == 2
+    assert pair["stop_reason"] == "certified"
+    assert pair["next_bound"] == manifest["topk_next_bound"]
+    assert not (tmp_path / "out_topk" / "route_paths_bodyId.csv").exists()
+    for removed in ("realization_envelope", "realization_truncated",
+                    "sampled_support_mass", "realized_paths"):
+        assert removed not in manifest
+        assert removed not in rows.columns
+
+
+def test_clock_relay_exports_both_views_from_one_search(tmp_path):
+    """Issue 2026-10-23 §3: clock types may be intermediates; the first-
+    clock, relay, no-intra and intra views come from one run."""
+    edges = [
+        ("s1", "a1", 100), ("a1", "b1", 90), ("b1", "c1", 80),
+        ("s1", "c1", 70), ("a1", "n1", 60), ("n1", "b1", 50),
+    ]
+    types = {"s1": "S", "a1": "A", "b1": "B", "c1": "C", "n1": "N"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out_relay"
+    rows, manifest = _run_typed(
+        root, out, max_interlayer=4, clock_relay_mode=True,
+        source_types=["S"], target_types=["A", "B", "C"])
+    paths = set(rows["path"])
+    assert "S->A->B->C" in paths
+    relay = pl.read_csv(out / "route_paths_type_clock_relay.csv")
+    row = relay.filter(pl.col("path") == "S->A->B->C").row(0, named=True)
+    assert row["clock_sequence"] == "A,B,C"
+    assert row["intra_clock_edges"] == 2
+    assert row["first_clock"] == "A"
+    assert row["clock_relay"] is True
+    first = pl.read_csv(out / "route_paths_type_first_clock.csv")
+    assert "S->A->B->C" not in set(first["path"])
+    assert set(first["path"]) == {"S->A", "S->C"}
+    no_intra = pl.read_csv(
+        out / "route_paths_type_clock_relay_no_intra.csv")
+    intra = pl.read_csv(out / "route_paths_type_clock_relay_intra.csv")
+    assert "S->A->N->B" in set(no_intra["path"])
+    assert "S->A->B->C" in set(intra["path"])
+    assert "S->A->B->C" not in set(no_intra["path"])
+    assert manifest["clock_relay_mode"] == "all"
+    assert manifest["clock_relay_counts"]["first_clock_paths"] == 2
+    assert manifest["clock_relay_counts"]["relay_paths"] == 4
+    assert manifest["clock_sequence_counts"]["A,B,C"] == 2
+    conn = pl.read_csv(out / "route_connection_type.csv")
+    assert {"intra_clock", "clock_relay"} <= set(conn.columns)
+    ab = conn.filter((pl.col("type_pre") == "A")
+                     & (pl.col("type_post") == "B")).row(0, named=True)
+    assert ab["intra_clock"] is True and ab["clock_relay"] is True
+
+
+def test_clock_relay_first_clock_is_byte_identical_when_off(tmp_path):
+    """The first-clock export is the legacy lane's file, byte-for-byte."""
+    edges = [
+        ("s1", "a1", 100), ("a1", "b1", 90), ("b1", "c1", 80),
+        ("s1", "c1", 70), ("a1", "n1", 60), ("n1", "b1", 50),
+    ]
+    types = {"s1": "S", "a1": "A", "b1": "B", "c1": "C", "n1": "N"}
+    root = _typed_dataset(tmp_path, edges, types)
+    off = tmp_path / "out_off"
+    relay = tmp_path / "out_relay"
+    _run_typed(root, off, max_interlayer=4,
+               source_types=["S"], target_types=["A", "B", "C"])
+    _run_typed(root, relay, max_interlayer=4, clock_relay_mode=True,
+               source_types=["S"], target_types=["A", "B", "C"])
+    assert ((off / "route_paths_type.csv").read_bytes()
+            == (relay / "route_paths_type_first_clock.csv").read_bytes())
+
+
+def test_excluded_pairs_and_clock_clock_switch(tmp_path):
+    """Explicit pair exclusions (including the clock-clock convenience)
+    remove those hops from enumeration and are disclosed in the manifest."""
+    edges = [
+        ("s1", "a1", 100), ("a1", "b1", 90), ("b1", "c1", 80),
+        ("s1", "c1", 70), ("a1", "n1", 60), ("n1", "b1", 50),
+    ]
+    types = {"s1": "S", "a1": "A", "b1": "B", "c1": "C", "n1": "N"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out_excl"
+    rows, manifest = _run_typed(
+        root, out, max_interlayer=4, clock_relay_mode=True,
+        source_types=["S"], target_types=["A", "B", "C"],
+        exclude_pairs="A->B")
+    assert "S->A->B" not in set(rows["path"])
+    assert "S->A->N->B" in set(rows["path"])
+    assert manifest["exclusions"]["applied"] == ["A->B"]
+    out2 = tmp_path / "out_excl_clock"
+    rows2, manifest2 = _run_typed(
+        root, out2, max_interlayer=4, clock_relay_mode=True,
+        source_types=["S"], target_types=["A", "B", "C"],
+        exclude_clock_clock=True)
+    for path in rows2["path"]:
+        hops = set(zip(path.split("->"), path.split("->")[1:]))
+        assert ("A", "B") not in hops and ("B", "C") not in hops
+    assert set(manifest2["exclusions"]["applied"]) == {"A->B", "B->C"}
+    with pytest.raises(CorridorRefusal):
+        _run_typed(root, tmp_path / "out_bad",
+                   source_types=["S"], target_types=["A", "B", "C"],
+                   exclude_pairs="A-B")
+
+
+def test_typed_only_features_refuse_the_fast_lane(tmp_path):
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    with pytest.raises(CorridorRefusal):
+        run_lane(None, asked=1, max_interlayer=2, source_types=["A"],
+                 target_types=["C"],
+                 connections_path=root / "connections.parquet",
+                 neuron_table=root / "neurons.parquet",
+                 out_dir=tmp_path / "out_fast", type_pruned=False,
+                 type_top_k=2)
+
+
 def test_type_pruned_manifest_records_filter_and_label_parity(tmp_path):
     """P1-K/P2-S: the manifest carries the universe's scope, filters, label
     map digest and enrollment, so the walk set can be reproduced."""
@@ -2231,6 +2446,57 @@ def test_typed_knobs_round_trip_from_parameters_txt(tmp_path):
     assert prov["scope_mode"] == "per_pair_shortest_plus_2"
     assert prov["scope_complete"] is True
     assert prov["scope_complete_by_pair"] == {"A->C": "exhausted"}
+
+
+def test_topk_relay_exclusions_round_trip_from_parameters_txt(tmp_path):
+    """The new typed knobs replay from a bare run-folder invocation."""
+    edges = [
+        ("s1", "a1", 100), ("a1", "b1", 90), ("b1", "c1", 80),
+        ("s1", "c1", 70), ("a1", "n1", 60), ("n1", "b1", 50),
+    ]
+    types = {"s1": "S", "a1": "A", "b1": "B", "c1": "C", "n1": "N"}
+    root = _typed_dataset(tmp_path, edges, types)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['S']\n"
+        "target neurons:             ['A', 'B', 'C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             4\n"
+        "dataset:                    synth\n"
+        "path_mode:                  all\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n"
+        "type prune scope:           full_floor\n"
+        "type min ratio adj:         0.0\n"
+        "type min synapse:           1\n"
+        "type min wmax:              0\n"
+        "type walk mode:             complete\n"
+        "type walk cap:              1000\n"
+        "type revisit policy:        simple\n"
+        "type max type visits:       0\n"
+        "type validate work cap:     2000000\n"
+        "type top k:                 2\n"
+        "type diversity:             edge_quota\n"
+        "type edge reuse fraction:   0.5\n"
+        "type diversity pool:        2\n"
+        "clock relay mode:           all\n"
+        "type exclude pairs:         A->B\n",
+        encoding="utf-8")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    lane = run / "route_scope_paths_type_pruned"
+    manifest = json.loads((lane / "type_prune_manifest.json").read_text())
+    assert manifest["selection_mode"] == "strongest_first"
+    assert manifest["type_top_k"] == 2
+    assert manifest["diversity_mode"] == "edge_quota"
+    assert manifest["diversity"]["mode"] == "edge_quota"
+    assert manifest["clock_relay_mode"] == "all"
+    assert manifest["exclusions"]["applied"] == ["A->B"]
+    assert (lane / "route_topk_pairs.csv").exists()
+    assert (lane / "route_paths_type_diverse.csv").exists()
+    assert (lane / "route_paths_type_first_clock.csv").exists()
+    assert (lane / "route_paths_type_clock_relay.csv").exists()
 
 
 def test_fast_lane_does_not_adopt_a_typed_stamp(tmp_path):
@@ -2417,6 +2683,132 @@ def test_type_pruned_nt_is_canonical_lowercase(tmp_path):
     from utils.label_utils import canonical_neurotransmitter
     assert canonical_neurotransmitter("ACH") == "acetylcholine"
     assert canonical_neurotransmitter("GABA") == "gaba"
+
+
+def test_effective_type_metadata_aggregates_group_votes():
+    """Issue 2026-10-23: a LabelMapper group is one effective label; its
+    NT is a deterministic majority over member bodies with votes,
+    agreement, tie/ambiguity and native membership."""
+    import json as _json
+    import pandas as pd
+    from type_level_refill import build_effective_type_metadata
+    frame = pd.DataFrame({
+        "bodyId": ["a1", "a2", "a3", "b1", "b2", "b3", "c1", "c2",
+                   "d1"],
+        "type": ["R7y", "R7p", "R7d", "M1", "M2", "M3", "T1", "T2",
+                 "U1"],
+        "consensusNt": ["histamine", "histamine", "histamine",
+                        "histamine", "histamine", "acetylcholine",
+                        "gaba", "histamine", None],
+    })
+    mapping = {b: "R7" for b in ("a1", "a2", "a3")}
+    mapping.update({"b1": "M", "b2": "M", "b3": "M",
+                    "c1": "T", "c2": "T", "d1": "U"})
+    meta = build_effective_type_metadata(frame, mapping)
+    r7 = meta["R7"]
+    assert r7["nt_majority"] == "histamine"
+    assert r7["nt_votes"] == {"histamine": 3}
+    assert r7["nt_n"] == 3 and r7["nt_agreement"] == 1.0
+    assert r7["nt_ambiguous"] is False
+    assert r7["nt_source_column"] == "consensusNt"
+    assert r7["n_bodies"] == 3
+    assert r7["native_types"] == ["R7d", "R7p", "R7y"]
+    mixed = meta["M"]
+    assert mixed["nt_majority"] == "histamine"
+    assert mixed["nt_votes"] == {"histamine": 2, "acetylcholine": 1}
+    assert abs(mixed["nt_agreement"] - 2 / 3) < 1e-9
+    assert mixed["nt_ambiguous"] is False
+    tie = meta["T"]
+    # Sorted canonical order breaks the tie: gaba < histamine.
+    assert tie["nt_majority"] == "gaba"
+    assert tie["nt_ambiguous"] is True
+    missing = meta["U"]
+    assert missing["nt_majority"] == "unknown"
+    assert missing["nt_votes"] == {} and missing["nt_n"] == 0
+    assert missing["nt_ambiguous"] is True
+    assert missing["native_types"] == ["U1"]
+    # The helper is JSON-safe for the lane's audit table.
+    _json.dumps(meta)
+
+
+def test_type_nt_map_votes_over_the_effective_group():
+    """A custom group's NT is the majority over member bodies, not the
+    native subtype keys (MCNS R7*/R8* -> R7/R8)."""
+    import pandas as pd
+    from route_plan import _type_nt_map
+    frame = pd.DataFrame({
+        "bodyId": ["a1", "a2", "a3", "b1"],
+        "type": ["R7y", "R7p", "R7d", "R8y"],
+        "consensusNt": ["histamine", "histamine", "acetylcholine",
+                        "histamine"],
+    })
+    body2type = {"a1": "R7", "a2": "R7", "a3": "R7", "b1": "R8"}
+    assert _type_nt_map(frame, body2type=body2type) == {
+        "R7": "histamine", "R8": "histamine"}
+    native = _type_nt_map(frame)
+    assert native["R7y"] == "histamine"
+    assert native["R7p"] == "histamine"
+    assert native["R7d"] == "acetylcholine"
+
+
+def test_grouped_source_nt_consensus_end_to_end(tmp_path):
+    """MCNS-like fixture: three native R7 subtypes fold to R7; the source
+    edge carries histamine and the consensus table records 1.0 agreement."""
+    import json as _json
+    import pandas as pd
+    edges = [("a1", "b1", 100), ("a2", "b1", 90), ("a3", "b1", 80),
+             ("b1", "c1", 70)]
+    types = {"a1": "R7y", "a2": "R7p", "a3": "R7d",
+             "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types, name="nt_group")
+    pd.DataFrame({
+        "bodyId": ["a1", "a2", "a3", "b1", "c1"],
+        "type": ["R7y", "R7p", "R7d", "B", "C"],
+        "consensusNt": ["histamine", "histamine", "histamine",
+                        "acetylcholine", "gaba"],
+    }).to_parquet(root / "neurons.parquet", index=False)
+    mapping = {
+        "format": "drocat_custom_groups/v1",
+        "source_mapping": {"custom_label": ["R7"],
+                           "synth": [["R7y", "R7p", "R7d"]]},
+        "target_mapping": {"custom_label": [], "synth": []},
+    }
+    map_path = tmp_path / "nt_mapping.json"
+    map_path.write_text(_json.dumps(mapping), encoding="utf-8")
+    run = tmp_path / "nt_run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "dataset:                    synth\n"
+        "source neurons:             ['R7']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "path_mode:                  all\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n"
+        "type min ratio adj:         0.0\n"
+        "type min synapse:           1\n"
+        f"custom mapping file:        {map_path}\n",
+        encoding="utf-8")
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet")
+    lane = run / "route_scope_paths_type_pruned"
+    conn = pl.read_csv(lane / "route_connection_type.csv")
+    source = conn.filter(pl.col("type_pre") == "R7").row(0, named=True)
+    assert source["nt_type"] == "histamine"
+    assert source["nt_agreement"] == 1.0
+    assert source["nt_n"] == 3
+    assert source["nt_ambiguous"] is False
+    assert json.loads(source["nt_votes"]) == {"histamine": 3}
+    consensus = pl.read_csv(lane / "type_nt_consensus.csv")
+    row = consensus.filter(pl.col("type") == "R7").row(0, named=True)
+    assert row["nt_majority"] == "histamine"
+    assert row["nt_agreement"] == 1.0
+    assert row["n_bodies"] == 3
+    assert _json.loads(row["native_types"]) == ["R7d", "R7p", "R7y"]
+    manifest = json.loads((lane / "type_prune_manifest.json").read_text())
+    assert manifest["nt_consensus_table"] == "type_nt_consensus.csv"
+    assert manifest["nt_consensus_labels"] >= 2
 
 
 def test_type_pruned_synapse_basis_defaults_to_the_asked_floor(tmp_path):

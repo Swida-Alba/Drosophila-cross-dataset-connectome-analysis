@@ -1370,6 +1370,20 @@ _PATHFINDING_FILES = [
                     "scopes: total pair mass/max/pair_count from the run's "
                     "edge universe plus realized_mass/realizing_paths/"
                     "used_by_walks from the kept corridors."},
+    {"pattern": "route_scope_paths/type_nt_consensus.csv",
+     "description": "Effective-label transmitter consensus for the corridor "
+                    "lane (same schema as the typed lane): majority, votes, "
+                    "agreement, ambiguity, source column, member count and "
+                    "native types per label."},
+    {"pattern": "route_scope_paths/route_paths_type_diverse.csv",
+     "description": "Corridor/budgeted diverse path view (--type-diversity "
+                    "edge_quota): type-edge per-depth quota with deferred "
+                    "overflow. The pure route_paths_type.csv is unchanged."},
+    {"pattern": "route_scope_paths/route_diversity_pairs.csv",
+     "description": "Corridor diverse-top-k audit per (source,target,hop "
+                    "length) class: budget, quota, selected/overflow, "
+                    "observed reuse, distinct edges per depth, Jaccard and "
+                    "strength loss."},
     {"pattern": "route_scope_paths/route_provenance.json",
      "description": "Corridor lane provenance: per-(pair,h)-class floors, "
                     "floors_next, stop reasons (budget/probe_cap/exhausted/"
@@ -1397,10 +1411,56 @@ _PATHFINDING_FILES = [
                     "clears the exact realized min_ratio_adj gate. "
                     "Label-revisiting rows carry the disclosed layered-walk "
                     "superset masses; this lane writes no bodyId CSV and "
-                    "has no realization envelope.",
+                    "has no realization envelope. With --allow-clock-relays "
+                    "it also carries clock_sequence, intra_clock_edges, "
+                    "first_clock and clock_relay.",
      "preview": True,
      "preview_title": "Type-pruned walks",
      "columns": ["pair_weights", "ratio_adj_complete", "type_pruned"]},
+    {"pattern": "route_scope_paths_type_pruned/route_topk_pairs.csv",
+     "description": "Strongest-first top-k per source-target pair: topk, "
+                    "accepted, validated_walks, candidates_pulled, "
+                    "expanded_nodes, bound (k-th score), next_bound, "
+                    "stop_reason and certified. Written only with "
+                    "--type-top-k > 0."},
+    {"pattern": "route_scope_paths_type_pruned/route_topk_pairs_diverse.csv",
+     "description": "Diverse top-k audit (--type-diversity edge_quota): "
+                    "per-pair quota, selected/overflow/deferred, observed "
+                    "edge reuse, distinct edges per depth, mean pairwise "
+                    "Jaccard, relay type coverage and strength loss against "
+                    "the pure top-k."},
+    {"pattern": "route_scope_paths_type_pruned/route_paths_type_diverse.csv",
+     "description": "Diverse top-k paths (edge-reuse quota with deferred "
+                    "overflow). The pure route_paths_type.csv remains the "
+                    "strength reference and is never redefined."},
+    {"pattern": "route_scope_paths_type_pruned/route_paths_type_first_clock.csv",
+     "description": "Clock-relay mode only: the first-clock view (exactly "
+                    "one clock token, at the final node). Legacy path-table "
+                    "schema; without relay candidates it is byte-identical "
+                    "to the relay-off route_paths_type.csv."},
+    {"pattern": "route_scope_paths_type_pruned/route_paths_type_clock_relay.csv",
+     "description": "Clock-relay mode only: paths with an earlier clock "
+                    "token (clock_sequence, intra_clock_edges, first_clock, "
+                    "clock_relay). Includes clock-clock edges."},
+    {"pattern": "route_scope_paths_type_pruned/route_paths_type_clock_relay_no_intra.csv",
+     "description": "Clock-relay paths with zero clock-clock hops."},
+    {"pattern": "route_scope_paths_type_pruned/route_paths_type_clock_relay_intra.csv",
+     "description": "Clock-relay paths that use at least one clock-clock "
+                    "hop."},
+    {"pattern": "route_scope_paths_type_pruned/route_connection_type.csv",
+     "description": "Typed lane's kept hop-pair masses. In clock-relay "
+                    "mode each row carries intra_clock (both endpoints are "
+                    "clock types) and clock_relay (the pair occurs on a "
+                    "relay path), so a renderer can draw the non-clock input "
+                    "view and the clock-relay view with intra-clock edges as "
+                    "a separate group without cutting edges."},
+    {"pattern": "route_scope_paths_type_pruned/type_nt_consensus.csv",
+     "description": "Effective-label transmitter consensus: one row per "
+                    "label with nt_majority, nt_votes, nt_n, nt_agreement, "
+                    "nt_ambiguous, nt_source_column, n_bodies and "
+                    "native_types. A custom LabelMapper group is one label; "
+                    "its NT is the deterministic majority over member "
+                    "bodies, never a native subtype row."},
     {"pattern": "route_scope_paths_type_pruned/type_prune_manifest.json",
      "description": "Type-pruned lane contract: prune basis/scope/floors, "
                     "pairs and mass before/after (mass_source=lossless_cone), "
@@ -1408,7 +1468,13 @@ _PATHFINDING_FILES = [
                     "counts, type_pruned_complete + filter_complete + "
                     "completeness_reason, validation_basis=layered_fwd_bwd, "
                     "revisit_semantics, bodyid_export=disabled, revisit "
-                    "policy, label-map hash, "
+                    "policy, label-map hash, selection_mode/type_top_k/"
+                    "topk_complete/topk_certified/topk_bound, "
+                    "clock_relay_mode/clock_relay_counts/clock_token_counts "
+                    "and exclusions, nt_consensus_table/labels/"
+                    "ambiguous_labels, diversity_mode and the diversity "
+                    "block (quota, overflow, observed reuse, Jaccard, "
+                    "strength loss), "
                     "and the requested vs Complete tau. A per-pair run also "
                     "carries scope_mode/scope_lt/scope_pad/scope_hard_cap/"
                     "scope_table_sha, scope_complete_by_pair and the capped/"
