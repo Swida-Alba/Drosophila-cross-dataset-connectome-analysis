@@ -1379,6 +1379,9 @@ _PATHFINDING_FILES = [
      "description": "Corridor/budgeted diverse path view (--type-diversity "
                     "edge_quota): type-edge per-depth quota with deferred "
                     "overflow. The pure route_paths_type.csv is unchanged."},
+    {"pattern": "route_scope_paths/route_connection_type_diverse.csv",
+     "description": "Corridor diverse edge table (type-edge basis) for every "
+                    "hop used by the diverse path view."},
     {"pattern": "route_scope_paths/route_diversity_pairs.csv",
      "description": "Corridor diverse-top-k audit per (source,target,hop "
                     "length) class: budget, quota, selected/overflow, "
@@ -1433,6 +1436,12 @@ _PATHFINDING_FILES = [
      "description": "Diverse top-k paths (edge-reuse quota with deferred "
                     "overflow). The pure route_paths_type.csv remains the "
                     "strength reference and is never redefined."},
+    {"pattern": "route_scope_paths_type_pruned/route_connection_type_diverse.csv",
+     "description": "Diverse top-k edge table (same mirror-column family as "
+                    "route_connection_type.csv): every type hop used by a "
+                    "diverse path, including hops unique to the diverse set, "
+                    "with weight and connection ratios. The pure connection "
+                    "table is unchanged."},
     {"pattern": "route_scope_paths_type_pruned/route_paths_type_first_clock.csv",
      "description": "Clock-relay mode only: the first-clock view (exactly "
                     "one clock token, at the final node). Legacy path-table "
@@ -1447,6 +1456,10 @@ _PATHFINDING_FILES = [
     {"pattern": "route_scope_paths_type_pruned/route_paths_type_clock_relay_intra.csv",
      "description": "Clock-relay paths that use at least one clock-clock "
                     "hop."},
+    {"pattern": "route_scope_paths_type_pruned/route_paths_type_no_intra_clock_edges.csv",
+     "description": "Full no-intra-clock view = first-clock paths + relay "
+                    "paths with zero clock-clock hops (same typed schema, "
+                    "path-level; no edge cutting)."},
     {"pattern": "route_scope_paths_type_pruned/route_connection_type.csv",
      "description": "Typed lane's kept hop-pair masses. In clock-relay "
                     "mode each row carries intra_clock (both endpoints are "
@@ -1473,7 +1486,8 @@ _PATHFINDING_FILES = [
                     "clock_relay_mode/clock_relay_counts/clock_token_counts "
                     "and exclusions, nt_consensus_table/labels/"
                     "ambiguous_labels, diversity_mode and the diversity "
-                    "block (quota, overflow, observed reuse, Jaccard, "
+                    "block (quota/quota_basis, overflow, observed reuse, "
+                    "Jaccard, sum_pair_distinct_edges_per_depth, "
                     "strength loss), "
                     "and the requested vs Complete tau. A per-pair run also "
                     "carries scope_mode/scope_lt/scope_pad/scope_hard_cap/"

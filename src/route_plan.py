@@ -2317,8 +2317,9 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
         retention_k = int(top_k)
         if diversity_on:
             _mult = max(1.0, float(type_diversity_pool or 1.0))
-            retention_k = max(int(top_k) + 1,
-                              int(math.ceil(int(top_k) * _mult)))
+            retention_k = (int(top_k) if _mult <= 1.0 else
+                           max(int(top_k) + 1,
+                               int(math.ceil(int(top_k) * _mult))))
         retention_k = max(1, min(retention_k, int(walk_cap)))
         diversity_rows_local = []
         NEG = float("-inf")
@@ -2451,7 +2452,9 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
                             retained = [
                                 item for item in retained
                                 if item[0] is None or item[0] >= _kth]
-                if node == t and not clock_relay:
+                    # Top-k is per pair: the final target ends this pair's
+                    # search. (Exhaustive relay mode still records at each
+                    # clock and continues; that path is separate.)
                     continue
                 if len(path) - 1 >= int(pair_bound):
                     continue
@@ -3046,6 +3049,7 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
                 "mode": "edge_quota",
                 "max_edge_reuse_fraction": float(
                     type_edge_reuse_fraction),
+                "quota_basis": "layered_chain_union",
                 "max_edge_reuse": (max(_quotas) if _quotas else None),
                 "max_edge_reuse_by_pair": {
                     f"{r['source_type']}->{r['target_type']}":
@@ -3065,8 +3069,9 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
                     [(topk_meta.get(p, {}).get("diversity") or {}).get(
                         "max_clock_edge_reuse_observed", 0)
                      for p in topk_meta], default=0)),
-                "distinct_edges_per_depth": {
+                "sum_pair_distinct_edges_per_depth": {
                     str(k): v for k, v in sorted(_per_depth.items())},
+                "distinct_edges_per_depth_basis": "bodyId_edges",
                 "mean_pairwise_jaccard": (
                     sum(_jac) / len(_jac) if _jac else 0.0),
                 "jaccard_basis": "bodyId_edges",
@@ -3083,6 +3088,8 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
                     sum(_loss_abs) / len(_loss_abs) if _loss_abs else None),
                 "diverse_table": "route_topk_pairs_diverse.csv",
                 "diverse_paths_table": "route_paths_type_diverse.csv",
+                "diverse_connection_table":
+                    "route_connection_type_diverse.csv",
             }
             if out_dir is not None:
                 import pandas as _pd_div
@@ -5186,6 +5193,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "mode": "edge_quota",
             "edge_basis": "type_edges",
             "scope": "post_emitted_class_rows",
+            "quota_basis": "type_edges",
             "max_edge_reuse_fraction": float(type_edge_reuse_fraction),
             "max_edge_reuse": (max(_quotas) if _quotas else None),
             "max_edge_reuse_by_class": {
@@ -5203,8 +5211,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "max_clock_edge_reuse_observed": int(max(
                 [c.get("max_clock_edge_reuse_observed", 0)
                  for c in _div_classes], default=0)),
-            "distinct_edges_per_depth": {
+            "sum_pair_distinct_edges_per_depth": {
                 str(k): v for k, v in sorted(_per_depth.items())},
+            "distinct_edges_per_depth_basis": "type_edges",
             "mean_pairwise_jaccard": (
                 sum(_jac) / len(_jac) if _jac else 0.0),
             "jaccard_basis": "type_edges",
@@ -5220,6 +5229,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 sum(_loss_abs) / len(_loss_abs) if _loss_abs else None),
             "diverse_paths_table": "route_paths_type_diverse.csv",
             "diverse_classes_table": "route_diversity_pairs.csv",
+            "diverse_connection_table":
+                "route_connection_type_diverse.csv",
         }
         import pandas as _pd_div
         _pd_div.DataFrame(_div_classes).to_csv(
@@ -5250,7 +5261,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     out.mkdir(parents=True, exist_ok=True)
     if not type_pruned and str(type_diversity) != "edge_quota":
         for _stale in ("route_paths_type_diverse.csv",
-                       "route_diversity_pairs.csv"):
+                       "route_diversity_pairs.csv",
+                       "route_connection_type_diverse.csv"):
             (out / _stale).unlink(missing_ok=True)
     # Effective-label transmitter consensus (issue 2026-10-23): one audit
     # row per label, so a grouped source (R7*/R8* -> R7/R8) carries its
@@ -5285,9 +5297,14 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         # 2026-10-23). Remove a stale CSV left by an older in-place run so
         # the folder cannot advertise a table this lane no longer produces.
         (out / "route_paths_bodyId.csv").unlink(missing_ok=True)
+        if not clock_relay_mode:
+            (out / "route_paths_type_no_intra_clock_edges.csv").unlink(
+                missing_ok=True)
         if str(type_diversity) != "edge_quota":
             for _stale in ("route_paths_type_diverse.csv",
-                           "route_topk_pairs_diverse.csv"):
+                           "route_topk_pairs_diverse.csv",
+                           "route_connection_type_diverse.csv",
+                           "route_diversity_pairs.csv"):
                 (out / _stale).unlink(missing_ok=True)
         # P2-N: the typed lane's own completeness field and manifest live
         # beside the tables, so no reader has to infer them from `paths_complete`
@@ -5348,6 +5365,18 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                  if int(r.get("intra_clock_edges") or 0) > 0],
                 schema=relay_schema).write_csv(
                 out / "route_paths_type_clock_relay_intra.csv")
+            # Full no-intra view = first-clock + relay paths with zero
+            # clock-clock hops (updated issue follow-up 3). Path-level,
+            # never an edge cut.
+            _no_intra = [
+                r for r in walk_rows if not r.get("clock_relay")]
+            _no_intra += [
+                r for r in _relay_rows
+                if int(r.get("intra_clock_edges") or 0) == 0]
+            _no_intra.sort(key=lambda r: (r["path"], r["route_h"],
+                                          r["plan_rank"]))
+            pl.DataFrame(_no_intra, schema=relay_schema).write_csv(
+                out / "route_paths_type_no_intra_clock_edges.csv")
         else:
             pl.DataFrame(walk_rows, schema=typed_schema).write_csv(
                 out / "route_paths_type.csv")
@@ -5417,8 +5446,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                 _seq = str(_r.get("path") or "").split("->")
                 for _a, _b in zip(_seq, _seq[1:]):
                     relay_edge_pairs.add((_a, _b))
-        for (a, b) in sorted(scope_pairs):
-            rec = scope_pairs[(a, b)]
+
+        def _make_conn_row(a, b, rec, _relay_pairs=None):
             wsum, wmax, n = pair_lookup.get((a, b), (None, None, None))
             realized = round(
                 float(rec.get("mass", sum(rec.get("edges", {}).values()))), 2)
@@ -5433,7 +5462,7 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                            if _sel_ratios else None)
             row = {
                 # _TYPE_MIRROR_COLUMNS family (type_level_refill.py:1758)
-                "type_pre": a, "type_post": b,                "weight": wsum,
+                "type_pre": a, "type_post": b, "weight": wsum,
                 # F-EX-006: `nt_type` is the PRESYNAPTIC type's
                 # transmitter, exactly as `connection_type.csv` publishes it
                 # in this same mirror family. It used to read the POST type,
@@ -5488,10 +5517,46 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             if clock_relay_mode:
                 row["intra_clock"] = bool(
                     a in _clock_types and b in _clock_types)
-                row["clock_relay"] = bool((a, b) in relay_edge_pairs)
-            conn_rows.append(row)
+                row["clock_relay"] = bool(
+                    (a, b) in (_relay_pairs if _relay_pairs is not None
+                               else relay_edge_pairs))
+            return row
+
+        for (a, b) in sorted(scope_pairs):
+            conn_rows.append(_make_conn_row(a, b, scope_pairs[(a, b)]))
         pl.DataFrame(conn_rows).write_csv(
             out / "route_connection_type.csv")
+        # Diverse outputs can use type hops absent from the pure top-k
+        # connection table (updated issue 2026-10-23 follow-up 1). Write
+        # their own edge table with the same mirror-column family.
+        if (str(type_diversity) == "edge_quota" and diverse_rows):
+            _div_recs = {}
+            _div_relay = set()
+            for _r in diverse_rows:
+                _walk = str(_r.get("path") or "").split("->")
+                try:
+                    _weights = json.loads(_r.get("weights") or "[]")
+                except Exception:
+                    _weights = []
+                _body_paths = int(_r.get("realized_paths") or 0)
+                for _i, (_a, _b) in enumerate(zip(_walk, _walk[1:])):
+                    _rec = _div_recs.setdefault(
+                        (_a, _b), {"mass": 0.0, "paths": 0, "walks": 0,
+                                   "bodyid_paths": 0})
+                    if _i < len(_weights):
+                        _rec["mass"] += float(_weights[_i])
+                    _rec["paths"] += 1
+                    _rec["walks"] += 1
+                    _rec["bodyid_paths"] += _body_paths
+                    if _r.get("clock_relay"):
+                        _div_relay.add((_a, _b))
+            _div_conn = [_make_conn_row(a, b, _div_recs[(a, b)], _div_relay)
+                         for (a, b) in sorted(_div_recs)]
+            pl.DataFrame(_div_conn).write_csv(
+                out / "route_connection_type_diverse.csv")
+        elif str(type_diversity) == "edge_quota":
+            (out / "route_connection_type_diverse.csv").unlink(
+                missing_ok=True)
     # The lane's CONDITIONED denominators (>= asked), published beside the
     # pair table so the report's corridor Adj column stays CHAIN-derived
     # (realized hop mass / this file) at the lane's own tier — the same

@@ -2160,9 +2160,27 @@ def test_type_pruned_diverse_topk_spreads_a_dominant_edge(tmp_path):
     assert div["overflow_paths"] >= 1
     assert div["max_edge_reuse_observed"] >= 2
     assert div["strength_loss_abs_max"] > 0
-    assert div["distinct_edges_per_depth"]
+    assert div["sum_pair_distinct_edges_per_depth"]
+    assert div["distinct_edges_per_depth_basis"] == "bodyId_edges"
     assert div["jaccard_basis"] == "bodyId_edges"
+    assert div["quota_basis"] == "layered_chain_union"
     assert (tmp_path / "out_div" / "route_topk_pairs_diverse.csv").exists()
+    conn_div = pl.read_csv(
+        tmp_path / "out_div" / "route_connection_type_diverse.csv")
+    for path in dpaths:
+        nodes = path.split("->")
+        for a, b in zip(nodes, nodes[1:]):
+            row = conn_div.filter(
+                (pl.col("type_pre") == a)
+                & (pl.col("type_post") == b))
+            assert row.height == 1, (path, a, b)
+            rec = row.row(0, named=True)
+            assert rec["weight"] is not None
+            assert rec["connection_ratio"] is not None
+            assert rec["connection_ratio_adj"] is not None
+    assert conn_div.filter(
+        (pl.col("type_pre") == "A")
+        & (pl.col("type_post") == "D0")).height == 1
     assert manifest["diversity_mode"] == "edge_quota"
     assert manifest["type_pruned_complete"] is False
     # The pure table is exactly the no-diversity top-k.
@@ -2172,6 +2190,39 @@ def test_type_pruned_diverse_topk_spreads_a_dominant_edge(tmp_path):
     _run_typed(root, tmp_path / "out_div", type_top_k=6)
     assert not (tmp_path / "out_div" /
                 "route_paths_type_diverse.csv").exists()
+
+
+def test_clock_relay_topk_matches_exhaustive_and_stops_at_target(tmp_path):
+    """Updated issue 2026-10-23 follow-up 2: a per-pair top-k relay search
+    stops at that pair's final target, and with a generous k it matches the
+    exhaustive relay path sets/views."""
+    edges = [
+        ("s1", "a1", 100), ("a1", "b1", 90), ("b1", "c1", 80),
+        ("s1", "c1", 70), ("a1", "n1", 60), ("n1", "b1", 50),
+    ]
+    types = {"s1": "S", "a1": "A", "b1": "B", "c1": "C", "n1": "N"}
+    root = _typed_dataset(tmp_path, edges, types)
+    full = tmp_path / "out_relay_full"
+    top = tmp_path / "out_relay_top"
+    full_rows, _ = _run_typed(
+        root, full, max_interlayer=4, clock_relay_mode=True,
+        source_types=["S"], target_types=["A", "B", "C"])
+    rows, manifest = _run_typed(
+        root, top, max_interlayer=4, clock_relay_mode=True,
+        source_types=["S"], target_types=["A", "B", "C"],
+        type_top_k=100)
+    assert set(rows["path"]) == set(full_rows["path"])
+    assert manifest["topk_complete"] is True
+    assert all(v == "exhausted" for v in
+               manifest["topk_stop_reasons"].values())
+    for name in ("route_paths_type_first_clock.csv",
+                 "route_paths_type_clock_relay.csv",
+                 "route_paths_type_clock_relay_no_intra.csv",
+                 "route_paths_type_clock_relay_intra.csv"):
+        a = pl.read_csv(full / name)
+        b = pl.read_csv(top / name)
+        assert set(a["path"]) == set(b["path"]), name
+    assert not (top / "route_paths_bodyId.csv").exists()
 
 
 def test_type_pruned_topk_matches_the_sorted_full_set(tmp_path):
@@ -2247,6 +2298,10 @@ def test_clock_relay_exports_both_views_from_one_search(tmp_path):
     assert "S->A->N->B" in set(no_intra["path"])
     assert "S->A->B->C" in set(intra["path"])
     assert "S->A->B->C" not in set(no_intra["path"])
+    union = pl.read_csv(out / "route_paths_type_no_intra_clock_edges.csv")
+    assert set(union["path"]) == (set(first["path"])
+                                  | set(no_intra["path"]))
+    assert set(union["intra_clock_edges"]) == {0}
     assert manifest["clock_relay_mode"] == "all"
     assert manifest["clock_relay_counts"]["first_clock_paths"] == 2
     assert manifest["clock_relay_counts"]["relay_paths"] == 4
@@ -2274,6 +2329,7 @@ def test_clock_relay_first_clock_is_byte_identical_when_off(tmp_path):
                source_types=["S"], target_types=["A", "B", "C"])
     assert ((off / "route_paths_type.csv").read_bytes()
             == (relay / "route_paths_type_first_clock.csv").read_bytes())
+    assert not (off / "route_paths_type_no_intra_clock_edges.csv").exists()
 
 
 def test_excluded_pairs_and_clock_clock_switch(tmp_path):

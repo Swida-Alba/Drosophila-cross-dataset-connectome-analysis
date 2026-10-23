@@ -2944,6 +2944,8 @@ def _render_corridor_section(folder: Path, label: str,
                         'incoming (synapse &ge; 1)'),
                        ('route_paths_type_diverse.csv',
                         'diverse path view (edge quota)'),
+                       ('route_connection_type_diverse.csv',
+                        'diverse edge table'),
                        ('route_diversity_pairs.csv',
                         'diverse per-class audit'),
                        ('type_nt_consensus.csv',
@@ -3147,12 +3149,15 @@ def _render_type_pruned_section(folder: Path, label: str,
             ("route_topk_pairs.csv", "top-k per-pair search table"),
             ("route_topk_pairs_diverse.csv", "diverse top-k audit"),
             ("route_paths_type_diverse.csv", "diverse path view"),
+            ("route_connection_type_diverse.csv", "diverse edge table"),
             ("route_paths_type_first_clock.csv", "first-clock paths"),
             ("route_paths_type_clock_relay.csv", "clock-relay paths"),
             ("route_paths_type_clock_relay_no_intra.csv",
              "clock-relay paths (no intra-clock)"),
             ("route_paths_type_clock_relay_intra.csv",
              "clock-relay paths (intra-clock kept)"),
+            ("route_paths_type_no_intra_clock_edges.csv",
+             "no-intra-clock view (first-clock + relay no-intra)"),
             ("route_full_paths_type.csv", "full-scope (synapse &ge; 1) chains"),
             ("route_full_type_pairs.csv", "full-scope pair table"),
             ("type_prune_manifest.json", "type-prune manifest"),
@@ -3251,7 +3256,10 @@ def _render_type_pruned_section(folder: Path, label: str,
             + _esc(str(_dv.get("max_edge_reuse_fraction"))) + ' of the class '
             'budget, ' + _esc(str(_dv.get("diverse_paths")))
             + ' selected, ' + _esc(str(_dv.get("overflow_paths")))
-            + ' overflow; max observed edge reuse '
+            + ' overflow; quota basis '
+            + _esc(str(_dv.get("quota_basis") or "layered_chain_union"))
+            + ' (the layered chain union, not one chosen body path); '
+            'max observed edge reuse '
             + _esc(str(_dv.get("max_edge_reuse_observed")))
             + ', mean pairwise Jaccard '
             + _esc(str(_dv.get("mean_pairwise_jaccard")))
