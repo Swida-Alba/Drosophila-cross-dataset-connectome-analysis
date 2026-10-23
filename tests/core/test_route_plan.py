@@ -2751,6 +2751,23 @@ def test_type_nt_map_votes_over_the_effective_group():
     assert native["R7d"] == "acetylcholine"
 
 
+def test_type_pruned_missing_nt_is_unknown_not_empty(tmp_path):
+    """A label with no NT writes `unknown` in the connection table and the
+    consensus audit, never NaN/empty."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    out = tmp_path / "out_missing_nt"
+    rows, _ = _run_typed(root, out)
+    conn = pl.read_csv(out / "route_connection_type.csv")
+    assert set(conn["nt_type"]) == {"unknown"}
+    consensus = pl.read_csv(out / "type_nt_consensus.csv")
+    assert set(consensus["nt_majority"]) == {"unknown"}
+    assert set(consensus["nt_n"]) == {0}
+    assert not conn["nt_type"].is_null().any()
+    assert json.loads(rows["nt_types"][0]) == ["unknown", "unknown"]
+
+
 def test_grouped_source_nt_consensus_end_to_end(tmp_path):
     """MCNS-like fixture: three native R7 subtypes fold to R7; the source
     edge carries histamine and the consensus table records 1.0 agreement."""

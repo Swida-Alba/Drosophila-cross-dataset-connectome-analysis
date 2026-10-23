@@ -3297,6 +3297,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     if type_top_k < 0:
         _param_error = (f"type top k must be non-negative "
                         f"(got {type_top_k})")
+    elif type_top_k > int(type_walk_cap):
+        _param_error = ("type top k exceeds the type walk cap "
+                        f"({type_top_k} > {int(type_walk_cap)})")
     if ((type_top_k > 0 or clock_relay_mode or _exclude_set
          or exclude_clock_clock) and not type_pruned):
         _param_error = ("--type-top-k, --allow-clock-relays and excluded "
@@ -5101,7 +5104,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     fast_diversity = None
     if (not type_pruned and str(type_diversity) == "edge_quota"
             and walk_rows):
-        out.mkdir(parents=True, exist_ok=True)        # Corridor/budgeted classes: the class budget is route_share (the
+        out.mkdir(parents=True, exist_ok=True)
+        # Corridor/budgeted classes: the class budget is route_share (the
         # same budget the drain fills), and the quota is a fraction of it.
         # Fast rows carry a type path, not one exact bodyId union, so this
         # quota is type-edge based and disclosed as such.
@@ -5353,6 +5357,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             _div_schema = relay_schema if clock_relay_mode else typed_schema
             pl.DataFrame(diverse_rows, schema=_div_schema).write_csv(
                 out / "route_paths_type_diverse.csv")
+        elif str(type_diversity) == "edge_quota":
+            (out / "route_paths_type_diverse.csv").unlink(missing_ok=True)
     else:
         for _row in walk_rows:
             _row.setdefault("gate_min_ratio_adj",

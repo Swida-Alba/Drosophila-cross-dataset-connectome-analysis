@@ -19087,10 +19087,19 @@ class FindNeuronConnection:
     def _type_prune_parameter_lines(self):
         """P2-S: the type-pruned lane's knobs in the run's own
         parameters.txt grammar (spaced keys, parsed by
-        route_plan.read_run_params). Empty when the lane is off, so a
-        pre-typed folder's bytes are unchanged."""
+        route_plan.read_run_params). Empty when the lane and its diversity
+        switch are off, so a pre-typed folder's bytes are unchanged."""
         if not getattr(self, 'type_pruned', False):
-            return []
+            _div = str(getattr(self, 'type_diversity', 'off') or 'off')
+            if _div == 'off':
+                return []
+            return [
+                f'type diversity: {_div}',
+                'type edge reuse fraction: '
+                f'{float(getattr(self, "type_edge_reuse_fraction", 0.05))}',
+                'type diversity pool: '
+                f'{float(getattr(self, "type_diversity_pool", 2.0))}',
+            ]
         lines = [
             f'type_pruned: {bool(self.type_pruned)}',
             f'type prune basis: {getattr(self, "type_prune_basis", "ratio_adj")}',

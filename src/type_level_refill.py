@@ -1042,9 +1042,33 @@ def build_effective_type_metadata(neuron_frame, effective_map=None, *,
         if c in getattr(frame, 'columns', [])]
     has_body = 'bodyId' in getattr(frame, 'columns', [])
     has_type = 'type' in getattr(frame, 'columns', [])
-    body_ids = ([str(b) for b in frame['bodyId']] if has_body
+
+    def _body_id(value):
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+        return str(value)
+
+    body_ids = ([_body_id(b) for b in frame['bodyId']] if has_body
                 else [None] * len(frame))
-    native = ([str(t) if t is not None else '' for t in frame['type']]
+
+    def _native_type(value):
+        if value is None:
+            return ''
+        try:
+            if pd.isna(value):
+                return ''
+        except (TypeError, ValueError):
+            pass
+        text = str(value).strip()
+        return '' if text.lower() in ('', 'nan', 'none', '<na>', 'null') \
+            else text
+
+    native = ([_native_type(t) for t in frame['type']]
               if has_type else [''] * len(frame))
 
     records: dict = {}
