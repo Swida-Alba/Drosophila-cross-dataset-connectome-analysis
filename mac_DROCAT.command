@@ -428,7 +428,7 @@ main() {
     is_drocat_owner() {
         local pid="$1" cmd
         [[ -n "$pid" ]] || return 1
-        cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+        cmd="$(ps -ww -p "$pid" -o command= 2>/dev/null || true)"
         is_drocat_command "$cmd"
     }
 
@@ -437,17 +437,32 @@ main() {
     # lsof is missing the inventory stays empty and the guard keeps its
     # single-port behavior.
     drocat_listeners() {
-        command -v lsof >/dev/null 2>&1 || return 0
         local pid addr port cmd
-        { lsof -nP -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null || true; } \
-            | awk '/^p/ { pid = substr($0, 2) } /^n/ { print pid "\t" substr($0, 2) }' \
-            | while IFS=$'\t' read -r pid addr; do
-                port="${addr##*:}"
-                [[ "$port" =~ ^[0-9]+$ ]] || continue
-                cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-                is_drocat_command "$cmd" || continue
-                printf '%s\t%s\t%s\n' "$port" "$pid" "$cmd"
-            done \
+        {
+            if command -v lsof >/dev/null 2>&1; then
+                { lsof -nP -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null || true; } \
+                    | awk '/^p/ { pid = substr($0, 2) } /^n/ { print pid "\t" substr($0, 2) }'
+            fi
+            # Some Linux images ship no usable lsof; ss reports the same
+            # listening rows with the owning PID.
+            if command -v ss >/dev/null 2>&1; then
+                ss -ltnp 2>/dev/null | awk '
+                    NR > 1 {
+                        pid = ""
+                        if (match($0, /pid=[0-9]+/)) {
+                            pid = substr($0, RSTART + 4, RLENGTH - 4)
+                        }
+                        if (pid == "") next
+                        print pid "\t" $4
+                    }'
+            fi
+        } | while IFS=$'\t' read -r pid addr; do
+            port="${addr##*:}"
+            [[ "$port" =~ ^[0-9]+$ ]] || continue
+            cmd="$(ps -ww -p "$pid" -o command= 2>/dev/null || true)"
+            is_drocat_command "$cmd" || continue
+            printf '%s\t%s\t%s\n' "$port" "$pid" "$cmd"
+        done \
             | awk -F'\t' '!seen[$1 FS $2]++' \
             | sort -n
     }
@@ -529,7 +544,7 @@ main() {
 
     if port_in_use; then
         owner_pid="$(lsof -ti "tcp:$APP_PORT" -sTCP:LISTEN 2>/dev/null | head -1)"
-        owner_cmd="$(ps -p "$owner_pid" -o command= 2>/dev/null || true)"
+        owner_cmd="$(ps -ww -p "$owner_pid" -o command= 2>/dev/null || true)"
         if [[ -t 0 ]]; then
             # Interactive: let the user decide what to do with the busy port.
             while true; do

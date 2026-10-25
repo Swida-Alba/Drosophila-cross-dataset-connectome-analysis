@@ -284,7 +284,10 @@ def _free_port() -> int:
 
 
 @requires_bash
-@pytest.mark.skipif(shutil.which("lsof") is None, reason="lsof not available")
+@pytest.mark.skipif(
+    shutil.which("lsof") is None and shutil.which("ss") is None,
+    reason="lsof/ss not available",
+)
 class TestDrocatPortInventory:
     def _start_listener(self, tmp_path: Path, port: int) -> subprocess.Popen:
         """A listener whose command line looks like a DROCAT UI server."""
@@ -303,6 +306,8 @@ class TestDrocatPortInventory:
         if not _wait_port_open(port):
             proc.kill()
             pytest.fail(f"listener on port {port} never came up")
+        if proc.poll() is not None:
+            pytest.fail(f"listener exited with status {proc.returncode}")
         return proc
 
     def _harness(self, body: str) -> subprocess.CompletedProcess:
@@ -318,9 +323,24 @@ class TestDrocatPortInventory:
         port = _free_port()
         proc = self._start_listener(tmp_path, port)
         body = f"""
-rows="$(drocat_listeners)"
+rows=""
+for _ in 1 2 3 4 5; do
+    rows="$(drocat_listeners)"
+    [[ "$rows" == *"{port}"$'\\t'"{proc.pid}"$'\\t'* ]] && break
+    sleep 0.5
+done
 if [[ "$rows" != *"{port}"$'\\t'"{proc.pid}"$'\\t'* ]]; then
     echo "port {port} / pid {proc.pid} missing from: $rows"
+    echo "DEBUG lsof=$(command -v lsof || printf none) ss=$(command -v ss || printf none)"
+    if command -v lsof >/dev/null 2>&1; then
+        echo "DEBUG lsof rows:"
+        lsof -nP -iTCP -sTCP:LISTEN -Fpcn 2>&1 | head -20
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        echo "DEBUG ss rows:"
+        ss -ltnp 2>&1 | head -20
+    fi
+    echo "DEBUG ps: $(ps -ww -p "{proc.pid}" -o command= 2>&1 || true)"
     exit 1
 fi
 # "lists ONLY drocat listeners": every row the inventory reports must pass the
@@ -378,6 +398,51 @@ echo PASS
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=10)
+
+
+@requires_bash
+def test_port_inventory_reads_the_full_command_line():
+    text = (ROOT / "mac_DROCAT.command").read_text(encoding="utf-8")
+    # Linux `ps -o command=` truncates at ~80 columns; long checkout paths
+    # would hide `ui/app.py` and make every listener look non-DROCAT.
+    assert text.count("ps -ww -p") >= 3
+    assert 'ps -p "$pid" -o command=' not in text
+    assert 'ps -p "$owner_pid" -o command=' not in text
+
+
+@requires_bash
+def test_port_inventory_falls_back_to_ss(tmp_path):
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    lsof = fake / "lsof"
+    lsof.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    lsof.chmod(0o755)
+    ss = fake / "ss"
+    ss.write_text(
+        "#!/bin/sh\n"
+        "cat <<'EOF'\n"
+        "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+        'LISTEN 1 5 127.0.0.1:45678 0.0.0.0:* users:(("python",pid=4242,fd=3))\n'
+        "EOF\n",
+        encoding="utf-8",
+    )
+    ss.chmod(0o755)
+    ps = fake / "ps"
+    ps.write_text(
+        "#!/bin/sh\nprintf '%s\\n' 'python /work/ui/app.py'\n",
+        encoding="utf-8",
+    )
+    ps.chmod(0o755)
+    funcs = _port_guard_source(ROOT / "mac_DROCAT.command")
+    script = (
+        "set -euo pipefail\n"
+        f"PATH='{fake}:/usr/bin:/bin'\n"
+        + funcs
+        + "\ndrocat_listeners\n"
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "45678\t4242\tpython /work/ui/app.py" in result.stdout
 
 
 @requires_bash
