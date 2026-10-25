@@ -22,6 +22,7 @@ symptoms.
 | --- | --- | --- |
 | `git clone` fails with `HTTP2 framing layer` or `Failed to connect to github.com port 443` while other sites load | Transient GitHub-side outage (observed while PyPI/Anaconda stayed reachable). `git` does not retry on its own. | Retry the clone a few times spaced 30-60 s; if it persists, `git config --global http.version HTTP/1.1` or clone over SSH. The repository is ~270 MB. |
 | Miniconda download is very slow or gets interrupted | CDN throttling; a single-shot download restarts from byte 0 on every failure. | The installers download into the gitignored `cache/miniconda/` with automatic retry and resume (`curl -C -` on macOS/Linux, `curl.exe -C -` on Windows). Re-running the installer resumes the partial file; a completed-but-uninstalled file is re-downloaded fresh automatically. |
+| Miniconda checksum mismatch | The cached file is stale/corrupt or the URL moved. | The installer verifies the pinned SHA256 in `archive/install/miniconda_checksums.txt` before executing anything; a mismatch discards the cached file and retries once, then refuses. Update the URL and hash together when bumping Miniconda. |
 | `error: resolution-too-deep` during `[3/5]` | pip resolver backtracking amplified by a truncated metadata response — not a network error. | A warm-cache retry usually succeeds; the installer retries automatically and reports the actual failure class. The `pymupdf` / `python-pptx` / `reportlab` pins are exact, so a persistent failure means the pinned set itself is unsolvable — tighten `requirements.txt`. |
 
 ## Installation environment prerequisites
@@ -124,10 +125,15 @@ symptoms.
 3. Core imports (`numpy`, `pandas`, `polars`, `scipy`, `matplotlib`, `seaborn`,
    `plotly`, `networkx`, `openpyxl`, `xlrd`, `xlsxwriter`, `bokeh`, `requests`,
    `jinja2`, `PIL`, `pydantic`, `neuprint`, `nicegui`, `tqdm`, `cv2`,
-   `reportlab`, `pptx`, `img2pdf`).
+   `reportlab`, `pptx`, `img2pdf`, `pyarrow`, `zstandard`, `boto3`, `xarray`,
+   `coana`, `statvis`, `morphology`, `route_plan`). A required import that
+   resolves to an empty namespace package (for example after a deleted
+   `__init__.py`) is reported as FAIL, so the installer's repair retry runs
+   instead of accepting a partially missing distribution.
 4. Bundled NeuronBridge client import plus optional integrations (warn-only):
    `caveclient`, `cloudvolume`, `navis`, `flybrains`, `selenium`,
-   `webdriver_manager`, `fitz`, `psutil`, `trimesh`.
+   `webdriver_manager`, `fitz`, `psutil`, `trimesh`, `PyQt5`, `kaleido`,
+   `fast_simplification`.
 5. Installed versions against the platform and UI requirement manifests.
 6. `pip check` dependency consistency.
 7. Atomic-write round trip: a real disk write through the shared

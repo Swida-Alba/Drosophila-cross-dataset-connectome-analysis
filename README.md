@@ -80,7 +80,7 @@ installed agent has them — no fetch is required.
 **Manual launch** (after installation) — double-click `mac_DROCAT.command` (macOS / Linux) or `windows_DROCAT.bat` (Windows), or from a terminal:
 
 ```bash
-conda activate drocat-4.5.0 && python ui/app.py
+conda activate drocat-4.5.0 && python ui/app.py   # or the suffixed env the launcher resolves
 ```
 
 Every UI panel links to its own instruction guide (see [docs/ui_guides/README.html](docs/ui_guides/README.html)).

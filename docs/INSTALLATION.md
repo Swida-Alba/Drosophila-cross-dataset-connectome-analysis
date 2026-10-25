@@ -15,17 +15,20 @@ dependencies, `pip check`, and a bundled verifier.
 
 Standalone installers (usually only needed for repairs or scripting): `bash archive/install/install.sh` (macOS/Linux), `powershell -ExecutionPolicy Bypass -File archive/install/install.ps1` (Windows).
 
-The UI opens at <http://127.0.0.1:8080>.
+Miniconda downloads use fixed versioned installers for macOS (arm64 and Intel), Linux (x86_64 and aarch64), and Windows (x86_64 and ARM64), and are verified against `archive/install/miniconda_checksums.txt` before execution. A checksum mismatch is refused; the cached file is discarded and downloaded once more. Windows ARM64 uses the versioned ARM64 Miniconda base, then creates the same Python 3.11 environment.
+
+The UI opens at <http://127.0.0.1:8080>. It binds loopback by default; the UI has no authentication, so setting `DROCAT_UI_HOST` to a non-loopback address requires `DROCAT_ALLOW_REMOTE=1` and is only appropriate on an isolated/trusted network.
 
 The launchers are self-healing: if the environment is missing or inconsistent
-(imports fail or `pip check` reports conflicts), they run the installer
-automatically before starting the UI.
+(imports fail, a required package resolves to an empty namespace package, or
+`pip check` reports conflicts), they run the installer automatically before
+starting the UI.
 
 ## 2. Environment policy
 
 - Preferred env: **`drocat-4.5.0`** (Python 3.11). Re-running the installer
   updates it in place.
-- If that name is taken by a non-3.11 env, it is left untouched and a suffix
+- If that name is taken by an env outside Python 3.10–3.11, it is left untouched and a suffix
   is used: `drocat-4.5.0-2`, `drocat-4.5.0-3`, ... Launchers resolve the same
   way. Legacy `drocat` envs are never modified.
 - **Custom env name (version-specific):** put the env name under the matching
@@ -43,7 +46,7 @@ automatically before starting the UI.
   }
   ```
 
-  If the custom env exists with Python 3.11 it is reused; if it does not
+  If the custom env exists with Python 3.10 or 3.11 it is reused; if it does not
   exist it is created; if it exists with a different Python the installers
   abort with a clear error (never silently switching envs or rewriting the
   config).
@@ -52,9 +55,11 @@ automatically before starting the UI.
   installers and launchers write the environment they actually used back into
   it (never `config.json`), so after the first install the fallback entry holds
   the concrete env name (e.g. `drocat-4.5.0`) and every script resolves it
-  directly - while the `config.json` entry stays empty. The auto-fill only
-  edits an existing file: it never creates `config_local.json` (the UI Settings
-  tab creates it when you save tokens). Editing `config.json` always wins.
+  directly - while the `config.json` entry stays empty. The writeback inserts
+  the `envs` object when the file holds only tokens, and the release entry when
+  `envs` already lists other releases. It only edits an existing file: it never
+  creates `config_local.json` (the UI Settings tab creates it when you save
+  tokens). Editing `config.json` always wins.
 - All installers/launchers set `PYTHONNOUSERSITE=1`, so packages from a
   user-level Python cannot contaminate the environment.
 - Do **not** install `neuronbridge-python` — DROCAT bundles its own client
@@ -71,7 +76,7 @@ automatically before starting the UI.
 
 ```bash
 conda create -n drocat-4.5.0 python=3.11 -y
-conda activate drocat-4.5.0
+conda activate drocat-4.5.0   # or the suffixed env resolved by the launcher
 export PYTHONNOUSERSITE=1                      # PowerShell: $env:PYTHONNOUSERSITE="1"
 
 pip install -r requirements.txt -r ui/requirements.txt            # Windows: requirements-windows.txt

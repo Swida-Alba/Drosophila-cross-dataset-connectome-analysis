@@ -44,6 +44,10 @@ jobs:
         run: python scripts/build_ui_guides.py --check
       - name: Dependency pins agree across packaging files
         run: python scripts/maintenance/check_pin_consistency.py
+      - name: Launcher and installer shell syntax
+        run: |
+          bash -n mac_DROCAT.command
+          bash -n archive/install/install.sh
 
   packaging:
     name: wheel carries every top-level src module
@@ -78,6 +82,57 @@ jobs:
               sys.exit(1)
           print(f'wheel OK: {wheel.name}')
           EOF
+      - name: Install wheel in a clean venv and import core modules
+        # The editable one-click path is exercised by the launcher tests;
+        # this leg proves the built wheel is importable without the source
+        # tree on sys.path (the 2026-09-25 py-modules regression).
+        run: |
+          python -m venv /tmp/drocat-wheel-venv
+          /tmp/drocat-wheel-venv/bin/pip install --quiet --upgrade pip
+          /tmp/drocat-wheel-venv/bin/pip install --quiet -r requirements.txt -r ui/requirements.txt
+          /tmp/drocat-wheel-venv/bin/pip install --quiet --no-deps dist/drocat-*.whl
+          cd /tmp
+          /tmp/drocat-wheel-venv/bin/python - <<'EOF'
+          import coana, statvis, morphology, route_plan
+          print("wheel imports OK")
+          EOF
+
+  one-click-install-smoke:
+    name: one-click install smoke (manual)
+    # The full bootstrap downloads Miniconda and the pinned dependency set.
+    # Keep it opt-in so push/PR runs stay fast and deterministic; trigger it
+    # from the Actions tab when launcher/installer code changes.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install into a disposable HOME
+        env:
+          HOME: ${{ runner.temp }}/drocat-home
+        run: |
+          mkdir -p "$HOME"
+          PATH=/usr/bin:/bin /bin/bash archive/install/install.sh
+      - name: Verify and serve the UI headlessly
+        env:
+          HOME: ${{ runner.temp }}/drocat-home
+        run: |
+          ENV_PY="$HOME/miniconda3/envs/drocat-4.5.0/bin/python"
+          test -x "$ENV_PY" || {
+            echo "expected the installer to create $ENV_PY (a system conda was reused?)"
+            exit 1
+          }
+          "$ENV_PY" skills/drocat-install/scripts/verify_install.py --project .
+          DROCAT_UI_SHOW=0 DROCAT_UI_PORT=8099 "$ENV_PY" ui/app.py > ui.log 2>&1 &
+          UI_PID=$!
+          OK=0
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8099/ | grep -q DROCAT; then OK=1; break; fi
+            sleep 2
+          done
+          kill "$UI_PID" 2>/dev/null || true
+          cat ui.log
+          test "$OK" = 1
 
   tests-sample:
     name: fast test slice (offline fixtures)
@@ -122,5 +177,9 @@ jobs:
           tests/core/test_neuronbridge_finder_coverage.py
           tests/core/test_cached_neuron_search.py
           tests/core/test_search_query_performance.py
+          tests/core/test_launchers.py
+          tests/core/test_installer_audit_fixes.py
+          tests/docs/test_pathfinding_doc_consistency.py
+          tests/test_drocat_usage_skill.py
           tests/vispath
           -q -p no:cacheprovider

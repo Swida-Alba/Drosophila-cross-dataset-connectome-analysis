@@ -18,13 +18,15 @@ Rules:
 
 - The `envs` entry is **version-specific** — it is only consulted for the current
   `APP_VERSION`, so upgrading never reuses an older release's custom environment.
-- If the custom env exists with Python 3.11 it is reused; if missing it is
+- If the custom env exists with Python 3.10 or 3.11 it is reused; if missing it is
   created; if it exists with a different Python the installers abort with a clear
   error (never silently switch envs or rewrite the config).
 - An **empty** `envs."4.5.0"` means "create/use the default versioned env".
   After the environment is selected, the installers **and** launchers write the
   actual env name back into `config_local.json`; the committed `config.json` is
-  never rewritten.
+  never rewritten. The writeback inserts a missing `envs` object and a missing
+  release key (for example when the file holds only tokens or an older
+  release), preserving unrelated entries.
 - The launchers (`mac_DROCAT.command` / `windows_DROCAT.bat`) resolve the same
   override first.
 
@@ -36,7 +38,8 @@ To force a fresh env even when `drocat-4.5.0` exists, set a new custom name in
 Default is Python 3.11 (matplotlib 3.10.0 requires >= 3.10; validated through
 3.11). If you must use a specific interpreter:
 
-- The installer always creates a Python 3.11 env. To pin a different interpreter
+- The installers create a Python 3.11 env by default; an existing custom env
+  with Python 3.10 or 3.11 is reused. To pin a different supported interpreter
   for the UI, run `conda create -n <env> python=<ver>` yourself, install the two
   pinned requirement files plus the project in editable mode, run `pip check`,
   then set `envs."4.5.0"` to that env name.
@@ -77,7 +80,7 @@ When dependencies are already installed, verify and configure tokens without a
 full re-install:
 
 ```bash
-conda activate drocat-4.5.0
+conda activate drocat-4.5.0   # or the suffixed env resolved by the launcher
 python skills/drocat-install/scripts/verify_install.py --project . --require-token
 # then ensure tokens are set in config.json (wins per key) or config_local.json
 ```
@@ -93,10 +96,8 @@ python skills/drocat-install/scripts/verify_install.py --project . --require-tok
 ## Headless / server install
 
 - Launch without a browser: `DROCAT_UI_SHOW=0 python ui/app.py`.
-- Set `DROCAT_UI_HOST` and `DROCAT_UI_PORT` for a non-default bind (port 8080 is
-  default). If the port is busy the launcher lists the running DROCAT instances
-  and offers a new port or stopping them all, or you can set the env var to a
-  free port.
+- Set `DROCAT_UI_PORT` for a non-default port (8080 is default). If the port is busy the launcher lists the running DROCAT instances and offers a new port or stopping them all, or you can set the env var to a free port.
+- `DROCAT_UI_HOST` is refused beyond loopback unless `DROCAT_ALLOW_REMOTE=1` is also set; the UI has no authentication, so use that only on an isolated/trusted network and put a reverse proxy/auth in front if needed.
 - Everything (analysis scripts, caches, tokens) works without the UI; the
   analysis skills (`drocat-usage` Layer 1, `drocat-backend` Layer 2) run in the
   same `drocat-4.5.0` environment.
