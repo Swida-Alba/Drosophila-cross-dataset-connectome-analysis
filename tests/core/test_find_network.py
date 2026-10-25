@@ -306,7 +306,7 @@ def test_the_network_page_is_handed_the_run_refilled_metric(monkeypatch,
     tools."""
     edges = [("S", "A", 10), ("A", "S", 8), ("S", "B", 6), ("A", "B", 7)]
     fc, _fetch, _enrich, viz_calls, _logs = _make_network_fc(
-        monkeypatch, tmp_path, edges, ["S", "A", "B"])
+        monkeypatch, tmp_path, edges, ["S", "A", "B"], skip_bodyId=False)
     # The refill's own inputs (a real run resolves them from the dataset).
     fc._refill_edges_override = list(edges)
     fc._refill_neuron_frame_override = pd.DataFrame({

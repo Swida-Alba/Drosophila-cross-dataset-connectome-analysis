@@ -256,6 +256,11 @@ def test_the_alignment_file_records_the_basis_it_was_measured_in(tmp_path):
         def get_dataset_names(self):
             return ['dsA', 'dsB']
 
+        def get_thresholds_for_dataset(self, dataset):
+            # The writer asks which tiers were materialized; this fixture
+            # tests the basis stamp, not folder provenance.
+            return []
+
     analyzer.parameters = _Params()
     analyzer._log = lambda *_a, **_k: None
     analyzer._suggested_combinations = None

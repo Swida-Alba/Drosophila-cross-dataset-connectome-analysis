@@ -245,7 +245,7 @@ def _json_value_source(path: Path) -> str:
 def _run_json_value(path: Path, section: str, key: str, config: Path) -> str:
     script = f"{_json_value_source(path)}\nprintf '%s' \"$(json_value {section} {key} '{config}')\"\n"
     proc = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, check=True
+        ["bash", "-c", script], capture_output=True, text=True, encoding="utf-8", check=True
     )
     return proc.stdout
 
@@ -317,7 +317,7 @@ class TestDrocatPortInventory:
             "APP_PORT=8080\n"
             f"{body}\n"
         )
-        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, encoding="utf-8")
 
     def test_lists_only_drocat_listeners_and_kills_them(self, tmp_path):
         port = _free_port()
@@ -440,7 +440,7 @@ def test_port_inventory_falls_back_to_ss(tmp_path):
         + funcs
         + "\ndrocat_listeners\n"
     )
-    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert "45678\t4242\tpython /work/ui/app.py" in result.stdout
 

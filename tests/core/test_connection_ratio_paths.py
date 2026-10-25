@@ -716,7 +716,7 @@ def test_cli_run(tmp_path):
          '--sources', 'S1,S2,S3', '--targets', 'T1,T2',
          '--min-ratio', '0.1', '--max-interlayer', '3',
          '--out', str(out)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
         cwd=str(PROJECT_ROOT))
     assert res.returncode == 0, res.stderr
     assert 'status: ok' in res.stdout
@@ -743,7 +743,7 @@ def test_cli_in_run_untouched(tmp_path):
                              'ConnectionRatioPaths.py'),
          '--connections', str(conn), '--in-run', str(run),
          '--min-ratio', '0.1'],
-        capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+        capture_output=True, text=True, encoding="utf-8", cwd=str(PROJECT_ROOT))
     assert res.returncode == 0, res.stderr
     after = {p: p.read_bytes() for p in run.rglob('*') if p.is_file()}
     assert before == after                              # READ-ONLY proof
@@ -759,7 +759,7 @@ def test_cli_refusal_exit_code(tmp_path):
          '--connections', str(conn), '--sources', 'S1', '--targets', 'T1',
          '--min-ratio', '0', '--max-interlayer', '2',
          '--out', str(tmp_path / 'x')],
-        capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+        capture_output=True, text=True, encoding="utf-8", cwd=str(PROJECT_ROOT))
     assert res.returncode == 1
     assert 'REFUSED' in res.stderr
 
@@ -783,7 +783,7 @@ def test_import_without_vispath():
     env['PYTHONPATH'] = os.pathsep.join(
         str(p) for p in (SRC, PROJECT_ROOT))
     res = subprocess.run([sys.executable, '-c', blocker],
-                         capture_output=True, text=True, env=env)
+                         capture_output=True, text=True, encoding="utf-8", env=env)
     assert res.returncode == 0, res.stderr
     assert 'import ok' in res.stdout
 
