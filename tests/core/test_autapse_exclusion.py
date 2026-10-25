@@ -43,13 +43,13 @@ class TestNetworkTab:
         assert list(self_cell['weight']) == [3]
 
         attrs = json.loads(
-            (Path(fc.network_folder) / 'all_attributes.json').read_text())
+            (Path(fc.network_folder) / 'all_attributes.json').read_text(encoding="utf-8"))
         assert attrs['autapses_excluded'] == {'rows': 1, 'synapses': 5}
-        note = (Path(fc.network_folder) / 'user_warning_notes.txt').read_text()
+        note = (Path(fc.network_folder) / 'user_warning_notes.txt').read_text(encoding="utf-8")
         assert '[autapses] exclude_autapses=True (default)' in note
         assert '1 row(s) / 5 synapse(s)' in note
         params_txt = (
-            Path(fc.network_folder) / 'parameters.txt').read_text()
+            Path(fc.network_folder) / 'parameters.txt').read_text(encoding="utf-8")
         param_line = [line for line in params_txt.splitlines()
                       if line.startswith('exclude autapses:')]
         assert param_line and param_line[0].split(':', 1)[1].strip() == 'True'
@@ -62,11 +62,11 @@ class TestNetworkTab:
         assert list(self_cell_off['weight']) == [8]
 
         attrs_off = json.loads(
-            (Path(fc_off.network_folder) / 'all_attributes.json').read_text())
+            (Path(fc_off.network_folder) / 'all_attributes.json').read_text(encoding="utf-8"))
         assert attrs_off['autapses_excluded'] == {'rows': 0, 'synapses': 0}
         assert attrs_off['autapses_found'] == {'rows': 1, 'synapses': 5}
         note_off = (
-            Path(fc_off.network_folder) / 'user_warning_notes.txt').read_text()
+            Path(fc_off.network_folder) / 'user_warning_notes.txt').read_text(encoding="utf-8")
         assert 'exclude_autapses=False' in note_off
         assert '1 row(s) / 5 synapse(s)' in note_off
 
@@ -76,9 +76,9 @@ class TestNetworkTab:
             monkeypatch, tmp_path, [("A", "A", 5)], ["A"])
         fc.FindNetwork()
         attrs = json.loads(
-            (Path(fc.network_folder) / 'all_attributes.json').read_text())
+            (Path(fc.network_folder) / 'all_attributes.json').read_text(encoding="utf-8"))
         assert attrs['autapses_excluded'] == {'rows': 1, 'synapses': 5}
-        note = (Path(fc.network_folder) / 'user_warning_notes.txt').read_text()
+        note = (Path(fc.network_folder) / 'user_warning_notes.txt').read_text(encoding="utf-8")
         assert '[autapses]' in note
 
 
@@ -96,6 +96,7 @@ class TestPathsTab:
         assert out['bodyId_post'].to_list() == ['A2']
         assert fc.autapses_excluded == {'rows': 1, 'synapses': 5}
         assert fc.autapses_found == {'rows': 1, 'synapses': 5}
+        assert fc._autapse_pairs == {('A', 'A'): 5}
 
         fc_off, _ = make_fc(exclude_autapses=False)
         fc_off._reset_autapse_tracking()
@@ -136,7 +137,7 @@ class TestPathsTab:
         run = tmp_path / 'run'
         run.mkdir()
         fc._write_user_warning_notes(str(run))
-        note = (run / 'user_warning_notes.txt').read_text()
+        note = (run / 'user_warning_notes.txt').read_text(encoding="utf-8")
         assert '[autapses]' in note
         assert '1 row(s) / 5 synapse(s)' in note
 
@@ -155,6 +156,22 @@ class TestPathsTab:
         assert on.equals(off)
         assert on.equals(frame)
         assert fc_on.autapses_excluded == {'rows': 0, 'synapses': 0}
+
+    def test_graph_frames_census_is_endpoint_scoped(self):
+        frame = pl.DataFrame({
+            'bodyId_pre': ['A', 'B', 'A'],
+            'bodyId_post': ['A', 'B', 'A2'],
+            'weight': [5, 7, 3],
+        })
+        fc, _ = make_fc(exclude_autapses=True)
+        fc._reset_autapse_tracking()
+        out = fc._graph_edge_frames([frame], ['A'], ['A2'])
+        # Both self-edges are removed, but only the queried endpoint A's
+        # autapse belongs to this query's census (B is a cone intermediate).
+        assert out[0]['bodyId_pre'].to_list() == ['A']
+        assert out[0]['bodyId_post'].to_list() == ['A2']
+        assert fc.autapses_excluded == {'rows': 1, 'synapses': 5}
+        assert fc.autapses_found == {'rows': 1, 'synapses': 5}
 
     def test_per_tier_census_for_replay_slices(self):
         fc, _ = make_fc(exclude_autapses=True, weight_basis='synapse')
@@ -198,15 +215,15 @@ class TestComparisonLane:
 
         analyzer._write_run_manifest(str(tmp_path))
         manifest = json.loads(
-            (tmp_path / 'run_manifest.json').read_text())
+            (tmp_path / 'run_manifest.json').read_text(encoding="utf-8"))
         assert manifest['autapses_excluded']['test:v1@3'] == {
             'rows': 1, 'synapses': 5}
-        note = (tmp_path / 'user_warning_notes.txt').read_text()
+        note = (tmp_path / 'user_warning_notes.txt').read_text(encoding="utf-8")
         assert '[autapses]' in note
         assert 'test:v1@3 1 row(s) / 5 synapse(s)' in note
         # A re-export replaces its own census bullet; it never accumulates.
         analyzer._write_run_manifest(str(tmp_path))
-        note_again = (tmp_path / 'user_warning_notes.txt').read_text()
+        note_again = (tmp_path / 'user_warning_notes.txt').read_text(encoding="utf-8")
         assert note_again.count('[autapses]') == 1
 
     def test_edge_analysis_notes_the_drop_without_export(self, tmp_path,
@@ -239,7 +256,7 @@ class TestComparisonLane:
         note_path = (Path(analyzer.parameters.full_output_path)
                      / 'user_warning_notes.txt')
         assert note_path.exists()
-        note = note_path.read_text()
+        note = note_path.read_text(encoding="utf-8")
         assert '[autapses]' in note
         assert 'banc_v888@3 1 row(s) / 5 synapse(s)' in note
 

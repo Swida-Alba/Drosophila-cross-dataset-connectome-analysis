@@ -2033,7 +2033,8 @@ class FindNeuronConnection:
         return (f'{key}:{" " * max(1, 30 - len(key))}'
                 f'{str(bool(getattr(self, "exclude_autapses", True)))}')
 
-    def _filter_autapses_in_frames(self, frames, weight_col='weight'):
+    def _filter_autapses_in_frames(self, frames, weight_col='weight',
+                                   census_scope=None):
         """Drop bodyId self-edges from graph layers and record their mass.
 
         Runs before graph construction (the path tools) and before the type
@@ -2041,10 +2042,18 @@ class FindNeuronConnection:
         census is pair-keyed so repeated fetch rows count once. ``weight``
         is the physical pair mass by the time a frame reaches here (slice
         collapse happened upstream); a missing weight column counts 0.
+
+        ``census_scope`` restricts the recorded census to self-edges whose
+        bodyId is a queried source/target. The path lanes fetch a wider
+        discovery cone than the query's endpoints; counting that cone made
+        the FindAllPath census (and its note) disagree with the Network
+        lane on the same query. The rows are still removed everywhere.
         """
         import polars as pl
 
         self._autapse_filter_ran = True
+        scope = None if census_scope is None else {
+            str(x) for x in census_scope}
         found = {}
         filtered = []
         for frame in frames:
@@ -2066,9 +2075,11 @@ class FindNeuronConnection:
                     if weight_col in hit.columns:
                         columns.append(weight_col)
                     for row in hit.select(columns).iter_rows(named=True):
-                        found[(str(row['bodyId_pre']),
-                               str(row['bodyId_post']))] = self._autapse_weight(
-                                   row.get(weight_col, 0))
+                        pre_id = str(row['bodyId_pre'])
+                        if scope is not None and pre_id not in scope:
+                            continue
+                        found[(pre_id, str(row['bodyId_post']))] = (
+                            self._autapse_weight(row.get(weight_col, 0)))
                 if getattr(self, 'exclude_autapses', True) and hit.height:
                     frame = frame.filter(
                         pl.col('bodyId_pre').cast(pl.Utf8)
@@ -2086,7 +2097,10 @@ class FindNeuronConnection:
                                               index=frame.index[mask]))
                     for pre_id, weight in zip(
                             pre[mask].tolist(), weights.tolist()):
-                        found[(pre_id, pre_id)] = self._autapse_weight(weight)
+                        if scope is not None and str(pre_id) not in scope:
+                            continue
+                        found[(str(pre_id), str(pre_id))] = (
+                            self._autapse_weight(weight))
                 if getattr(self, 'exclude_autapses', True) and mask.any():
                     frame = frame.loc[~mask].copy()
             filtered.append(frame)
@@ -15500,7 +15514,10 @@ class FindNeuronConnection:
         # discovered membership/layers are unaffected. The gate runs on
         # cached and harness graphs too (the prune/ratio gates below take
         # the same second-pass route).
-        conn_layers = self._filter_autapses_in_frames(conn_layers)
+        autapse_scope = {str(x) for x in (list(sources or []) +
+                                          list(targets or []))}
+        conn_layers = self._filter_autapses_in_frames(
+            conn_layers, census_scope=autapse_scope or None)
         # Round-13 AND mode under the synapse basis: the ratio
         # co-threshold gates the GRAPH FRAMES too. The live fetch already
         # applies it; this second gate keeps stubbed/harness fetches and
