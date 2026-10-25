@@ -470,7 +470,7 @@ def test_simulated_clean_install_retries_conda_create(tmp_path):
         "FAKE_CREATE_FAILS": "2", "FAKE_CREATE_MARK": mark.as_posix(),
     }
     result = subprocess.run(
-        ["bash", str(repo / "archive/install/install.sh")],
+        ["bash", (repo / "archive/install/install.sh").as_posix()],
         cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     lines = log.read_text(encoding="utf-8").splitlines()
@@ -499,7 +499,7 @@ def test_simulated_clean_install_reaches_verifier_and_retries_pip_check(tmp_path
         "HOME": root.as_posix(), "FAKE_LOG": log.as_posix(),
     }
     result = subprocess.run(
-        ["bash", str(repo / "archive/install/install.sh")],
+        ["bash", (repo / "archive/install/install.sh").as_posix()],
         cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     lines = log.read_text(encoding="utf-8").splitlines()
@@ -508,7 +508,7 @@ def test_simulated_clean_install_reaches_verifier_and_retries_pip_check(tmp_path
     log.write_text("")
     env["PIP_CHECK_RC"] = "1"
     result = subprocess.run(
-        ["bash", str(repo / "archive/install/install.sh")],
+        ["bash", (repo / "archive/install/install.sh").as_posix()],
         cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 1
     lines = log.read_text(encoding="utf-8").splitlines()
@@ -528,7 +528,7 @@ def test_simulated_clean_install_recovers_after_pip_check_failure(tmp_path):
         "PIP_CHECK_MARK": str(root / "pip-check-failed"),
     }
     result = subprocess.run(
-        ["bash", str(repo / "archive/install/install.sh")],
+        ["bash", (repo / "archive/install/install.sh").as_posix()],
         cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     lines = log.read_text(encoding="utf-8").splitlines()
