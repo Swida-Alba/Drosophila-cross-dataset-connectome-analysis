@@ -224,6 +224,21 @@ miniconda_install_dir() {
     fi
 }
 
+prepare_installer_cache() {
+    # $1 = installer, $2 = sidecar, $3 = URL. A file is resumable only when
+    # this downloader wrote a matching sidecar; an arbitrary file carrying
+    # the expected name is discarded before curl can append a payload onto it.
+    local installer="$1" sidecar="$2" url="$3" discarded=0
+    if [[ -f "$installer" ]] \
+        && { [[ ! -f "$sidecar" ]] \
+             || ! grep -Fq "\"url\": \"$url\"" "$sidecar" 2>/dev/null; }; then
+        rm -f "$installer" "$sidecar"
+        discarded=1
+    fi
+    printf '{"url": "%s"}\n' "$url" > "$sidecar"
+    return "$discarded"
+}
+
 install_miniconda() {
     local os arch url installer flags install_dir
     os="$(uname -s)"
@@ -246,7 +261,11 @@ install_miniconda() {
     # 'drocat-miniconda.XXXXXX.sh' template would create a literal 'XXXXXX'
     # filename; the deterministic cache path needs no template at all.
     installer="$PROJECT_ROOT/cache/miniconda/$(basename "$url")"
+    local installer_sidecar="$installer.part.json"
     mkdir -p "$(dirname "$installer")"
+    if ! prepare_installer_cache "$installer" "$installer_sidecar" "$url"; then
+        printf "%bDiscarding an unverified cached installer and downloading fresh...%b\n" "$YELLOW" "$NC"
+    fi
     printf '%s\n' "Downloading Miniconda (resumable)..."
     local progress attempt
     progress=(-sS)
@@ -299,7 +318,7 @@ install_miniconda() {
         # A stale cached file may be a valid older download under the same
         # name.  Discard it and make one unverified-cache-free attempt.
         printf "%bDiscarding cached installer and downloading fresh...%b\n" "$YELLOW" "$NC"
-        rm -f "$installer"
+        rm -f "$installer" "$installer_sidecar"
         if command_exists curl; then
             curl -fL --retry 5 --retry-delay 3 "${progress[@]}" "$url" -o "$installer" || \
                 { printf "%bERROR: Miniconda download failed (%s).%b\n" "$RED" "$url" "$NC" >&2; exit 1; }
@@ -321,7 +340,7 @@ install_miniconda() {
         printf "%bERROR: Miniconda installation did not produce conda.%b\n" "$RED" "$NC" >&2
         exit 1
     }
-    rm -f "$installer"
+    rm -f "$installer" "$installer_sidecar"
     CONDA_BIN="$install_dir/bin/conda"
 }
 
@@ -336,6 +355,24 @@ printf "%b✓ Using %s%b\n" "$GREEN" "$CONDA_BIN" "$NC"
 env_exists() {
     "$CONDA_BIN" env list | awk 'NF && $1 !~ /^#/ {print $1}' | grep -Fxq "$1" \
         || [[ -d "$(dirname "$(dirname "$CONDA_BIN")")/envs/$1" ]]
+}
+
+create_env_retry() {
+    # $1 = env name. Transient conda-forge failures on a fresh profile are
+    # common (HTTP 000 / package fetch); retry the create before giving up.
+    local env_name="$1" attempt
+    for attempt in 1 2 3; do
+        if "$CONDA_BIN" create -n "$env_name" -c conda-forge \
+            --override-channels "python=$PYTHON_VERSION" -y; then
+            return 0
+        fi
+        if (( attempt < 3 )); then
+            printf "%bconda create failed (attempt %s of 3); retrying in %s seconds...%b\n" \
+                "$YELLOW" "$attempt" "$((attempt * 20))" "$NC"
+            sleep "$((attempt * 20))"
+        fi
+    done
+    return 1
 }
 
 env_usable() {
@@ -381,7 +418,11 @@ if [[ -n "$ENV_OVERRIDE" ]]; then
         # default (repo.anaconda.com) channels until the Anaconda Terms of
         # Service are accepted (CondaToSNonInteractiveError). conda-forge
         # requires no such acceptance; post-creation deps are pip-installed.
-        "$CONDA_BIN" create -n "$ENV_NAME" -c conda-forge --override-channels "python=$PYTHON_VERSION" -y
+        if ! create_env_retry "$ENV_NAME"; then
+            printf "%bERROR: could not create %s after 3 attempts.%b\n" \
+                "$RED" "$ENV_NAME" "$NC" >&2
+            exit 1
+        fi
     fi
 fi
 if [[ -z "$ENV_NAME" ]]; then
@@ -405,7 +446,11 @@ if [[ -z "$ENV_NAME" ]]; then
         printf '%s\n' "Creating $ENV_NAME..."
         # See the custom-env branch above: conda-forge + --override-channels
         # sidesteps the Anaconda ToS gate on fresh Miniconda 26.x installs.
-        "$CONDA_BIN" create -n "$ENV_NAME" -c conda-forge --override-channels "python=$PYTHON_VERSION" -y
+        if ! create_env_retry "$ENV_NAME"; then
+            printf "%bERROR: could not create %s after 3 attempts.%b\n" \
+                "$RED" "$ENV_NAME" "$NC" >&2
+            exit 1
+        fi
         break
     done
 fi

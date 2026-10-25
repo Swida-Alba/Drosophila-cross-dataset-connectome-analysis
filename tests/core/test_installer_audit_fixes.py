@@ -103,7 +103,7 @@ def test_shell_config_autofill_adds_a_missing_envs_object(tmp_path, rel):
     script = (
         "set -euo pipefail\n"
         + func
-        + f"\nupdate_config_env 4.5.0 drocat-4.5.0 '{config}'\n"
+        + f"\nupdate_config_env 4.5.0 drocat-4.5.0 '{config.as_posix()}'\n"
     )
     subprocess.run(["bash", "-c", script], check=True)
     data = json.loads(config.read_text(encoding="utf-8"))
@@ -133,7 +133,7 @@ def test_shell_config_autofill_handles_an_existing_envs_object(
     script = (
         "set -euo pipefail\n"
         + func
-        + f"\nupdate_config_env 4.5.0 drocat-4.5.0 '{config}'\n"
+        + f"\nupdate_config_env 4.5.0 drocat-4.5.0 '{config.as_posix()}'\n"
     )
     subprocess.run(["bash", "-c", script], check=True)
     data = json.loads(config.read_text(encoding="utf-8"))
@@ -150,7 +150,7 @@ def test_shell_config_autofill_leaves_a_compact_file_unchanged(tmp_path):
     script = (
         "set -euo pipefail\n"
         + func
-        + f"\nupdate_config_env 4.5.0 drocat-4.5.0 '{config}'\n"
+        + f"\nupdate_config_env 4.5.0 drocat-4.5.0 '{config.as_posix()}'\n"
     )
     subprocess.run(["bash", "-c", script], check=True)
     assert config.read_text(encoding="utf-8") == body
@@ -169,7 +169,7 @@ def test_shell_config_autofill_only_edits_the_envs_object(tmp_path, rel):
     script = (
         "set -euo pipefail\n"
         + func
-        + f"\nupdate_config_env 4.5.0 drocat-4.5.0 '{config}'\n"
+        + f"\nupdate_config_env 4.5.0 drocat-4.5.0 '{config.as_posix()}'\n"
     )
     subprocess.run(["bash", "-c", script], check=True)
     data = json.loads(config.read_text(encoding="utf-8"))
@@ -303,24 +303,24 @@ def test_miniconda_install_dir_avoids_a_broken_prefix(tmp_path):
     def resolve():
         script = (
             "set -euo pipefail\n"
-            f"HOME='{home}'\n"
+            f"HOME='{home.as_posix()}'\n"
             + func
             + "\nminiconda_install_dir\n"
         )
         return subprocess.run(
             ["bash", "-c", script], check=True,
-            capture_output=True, text=True).stdout.strip()
+            capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
-    assert resolve() == str(home / "miniconda3")
+    assert resolve() == f"{home.as_posix()}/miniconda3"
     (home / "miniconda3").mkdir()
-    assert resolve() == str(home / "miniconda3-drocat")
+    assert resolve() == f"{home.as_posix()}/miniconda3-drocat"
     (home / "miniconda3" / "bin").mkdir()
     conda = home / "miniconda3" / "bin" / "conda"
     conda.write_text("#!/bin/sh\n")
     conda.chmod(0o755)
-    assert resolve() == str(home / "miniconda3")
+    assert resolve() == f"{home.as_posix()}/miniconda3"
     conda.unlink()
-    assert resolve() == str(home / "miniconda3-drocat")
+    assert resolve() == f"{home.as_posix()}/miniconda3-drocat"
 
 
 @requires_bash
@@ -339,13 +339,13 @@ def test_miniconda_checksum_helper_rejects_wrong_bytes(tmp_path):
     script = (
         "set -euo pipefail\n"
         "RED=; NC=; command_exists() { command -v \"$1\" >/dev/null 2>&1; }\n"
-        f"MINICONDA_CHECKSUMS='{manifest}'\n"
+        f"MINICONDA_CHECKSUMS='{manifest.as_posix()}'\n"
         + helper + "\n" + sha + "\n" + verify + "\n"
-        f"verify_miniconda_download '{installer}' Miniconda3-test.sh\n"
+        f"verify_miniconda_download '{installer.as_posix()}' Miniconda3-test.sh\n"
     )
     subprocess.run(["bash", "-c", script], check=True)
     installer.write_bytes(b"tampered\n")
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, encoding="utf-8")
     assert proc.returncode != 0
     assert "checksum mismatch" in (proc.stdout + proc.stderr)
 
@@ -381,7 +381,18 @@ if [ "$1" = "run" ]; then
   while [ "$#" -gt 0 ]; do case "$1" in -n) shift 2;; --no-capture-output) shift;; *) break;; esac; done
   exec "$@"
 fi
-if [ "$1" = "create" ]; then echo "CREATE $*" >> "$FAKE_LOG"; exit 0; fi
+if [ "$1" = "create" ]; then
+  echo "CREATE $*" >> "$FAKE_LOG"
+  if [ -n "$FAKE_CREATE_FAILS" ]; then
+    count=0
+    if [ -f "$FAKE_CREATE_MARK" ]; then count=$(cat "$FAKE_CREATE_MARK"); fi
+    if [ "$count" -lt "$FAKE_CREATE_FAILS" ]; then
+      echo $((count + 1)) > "$FAKE_CREATE_MARK"
+      exit 1
+    fi
+  fi
+  exit 0
+fi
 if [ "$1" = "info" ]; then echo "/base"; exit 0; fi
 exit 2
 ''')
@@ -400,9 +411,82 @@ fi
 if [ "$1" = "-c" ]; then exec /usr/bin/env python3 "$@"; fi
 echo "VERIFY $*" >> "$FAKE_LOG"; exit 0
 ''')
+    (root / "bin/sleep").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     (root / "bin/conda").chmod(0o755)
     (root / "bin/python").chmod(0o755)
+    (root / "bin/sleep").chmod(0o755)
     return root, repo
+
+
+@requires_bash
+def test_prepare_installer_cache_gates_resume(tmp_path):
+    func = _shell_function(ROOT / "archive/install/install.sh",
+                           "prepare_installer_cache")
+    installer = tmp_path / "Miniconda3-test.sh"
+    sidecar = tmp_path / "Miniconda3-test.sh.part.json"
+    url = "https://example.invalid/Miniconda3-test.sh"
+
+    def run():
+        script = (
+            "set -euo pipefail\n"
+            + func
+            + f"\nprepare_installer_cache '{installer.as_posix()}' "
+              f"'{sidecar.as_posix()}' '{url}'\n"
+        )
+        return subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True,
+            encoding="utf-8")
+
+    installer.write_bytes(b"not a partial from us")
+    proc = run()
+    assert proc.returncode == 1
+    assert not installer.exists()
+    assert url in sidecar.read_text(encoding="utf-8")
+
+    installer.write_bytes(b"our partial")
+    proc = run()
+    assert proc.returncode == 0
+    assert installer.read_bytes() == b"our partial"
+
+    sidecar.write_text('{"url": "https://example.invalid/other.sh"}\n',
+                       encoding="utf-8")
+    proc = run()
+    assert proc.returncode == 1
+    assert not installer.exists()
+    assert url in sidecar.read_text(encoding="utf-8")
+
+
+@requires_bash
+def test_simulated_clean_install_retries_conda_create(tmp_path):
+    root, repo = _fake_installer_repo(tmp_path)
+    import shutil
+    shutil.rmtree(root / "envs" / "drocat-4.5.0")
+    log = root / "log"
+    mark = root / "create.mark"
+    env = {
+        **__import__("os").environ,
+        "PATH": f"{(root / 'bin').as_posix()}:{__import__('os').environ['PATH']}",
+        "HOME": root.as_posix(), "FAKE_LOG": log.as_posix(),
+        "FAKE_CREATE_FAILS": "2", "FAKE_CREATE_MARK": mark.as_posix(),
+    }
+    result = subprocess.run(
+        ["bash", str(repo / "archive/install/install.sh")],
+        cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert sum(line.startswith("CREATE") for line in lines) == 3
+    assert any(line.startswith("VERIFY ") for line in lines)
+
+
+def test_installers_retry_conda_create_and_gate_the_resume_cache():
+    sh = _text("archive/install/install.sh")
+    ps1 = _text("archive/install/install.ps1")
+    assert sh.count('create_env_retry "$ENV_NAME"') == 2
+    assert "prepare_installer_cache" in sh
+    assert 'installer.part.json' in sh
+    assert ps1.count("New-DrocatCondaEnvironment -Name") == 2
+    assert "Sidecar" in ps1 and ".part.json" in ps1
+    assert "unverified cached installer" in ps1
 
 
 @requires_bash
@@ -411,23 +495,23 @@ def test_simulated_clean_install_reaches_verifier_and_retries_pip_check(tmp_path
     log = root / "log"
     env = {
         **__import__("os").environ,
-        "PATH": f"{root / 'bin'}:{__import__('os').environ['PATH']}",
-        "HOME": str(root), "FAKE_LOG": str(log),
+        "PATH": f"{(root / 'bin').as_posix()}:{__import__('os').environ['PATH']}",
+        "HOME": root.as_posix(), "FAKE_LOG": log.as_posix(),
     }
     result = subprocess.run(
         ["bash", str(repo / "archive/install/install.sh")],
-        cwd=repo, env=env, capture_output=True, text=True)
+        cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
-    lines = log.read_text().splitlines()
+    lines = log.read_text(encoding="utf-8").splitlines()
     assert "PIP_CHECK" in lines
     assert any(line.startswith("VERIFY ") for line in lines)
     log.write_text("")
     env["PIP_CHECK_RC"] = "1"
     result = subprocess.run(
         ["bash", str(repo / "archive/install/install.sh")],
-        cwd=repo, env=env, capture_output=True, text=True)
+        cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 1
-    lines = log.read_text().splitlines()
+    lines = log.read_text(encoding="utf-8").splitlines()
     assert "--force-reinstall" in "\n".join(lines)
     assert "Verification failed" in result.stdout
 
@@ -438,16 +522,16 @@ def test_simulated_clean_install_recovers_after_pip_check_failure(tmp_path):
     log = root / "log"
     env = {
         **__import__("os").environ,
-        "PATH": f"{root / 'bin'}:{__import__('os').environ['PATH']}",
-        "HOME": str(root), "FAKE_LOG": str(log),
+        "PATH": f"{(root / 'bin').as_posix()}:{__import__('os').environ['PATH']}",
+        "HOME": root.as_posix(), "FAKE_LOG": log.as_posix(),
         "PIP_CHECK_FAIL_FIRST": "1",
         "PIP_CHECK_MARK": str(root / "pip-check-failed"),
     }
     result = subprocess.run(
         ["bash", str(repo / "archive/install/install.sh")],
-        cwd=repo, env=env, capture_output=True, text=True)
+        cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
-    lines = log.read_text().splitlines()
+    lines = log.read_text(encoding="utf-8").splitlines()
     assert lines.count("PIP_CHECK") == 2
     assert "--force-reinstall" in "\n".join(lines)
     assert any(line.startswith("VERIFY ") for line in lines)

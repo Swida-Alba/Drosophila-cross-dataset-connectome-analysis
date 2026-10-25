@@ -107,6 +107,28 @@ function Find-Conda {
     return $null
 }
 
+function New-DrocatCondaEnvironment([string]$Name) {
+    # Fresh profiles intermittently fail a conda-forge package fetch
+    # (HTTP 000); a single retry recovers the whole install.
+    for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+        $CreateExit = 1
+        $PreviousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & $script:CondaPath create -n $Name -c conda-forge --override-channels "python=$PythonVersion" -y
+            $CreateExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+        }
+        if ($CreateExit -eq 0) { return }
+        if ($Attempt -lt 3) {
+            Write-Host "conda create failed (attempt $Attempt of 3); retrying in $($Attempt * 20) s..." -ForegroundColor Yellow
+            Start-Sleep -Seconds ($Attempt * 20)
+        }
+    }
+    throw "Could not create $Name after 3 attempts."
+}
+
 function Install-Miniconda {
     $ChecksumFile = Join-Path $ScriptDir "miniconda_checksums.txt"
     $Arch = $env:PROCESSOR_ARCHITECTURE
@@ -125,12 +147,29 @@ function Install-Miniconda {
     # is absent.
     $CacheDir = Join-Path $ProjectRoot "cache\miniconda"
     $Installer = Join-Path $CacheDir (Split-Path -Leaf $Url)
+    $Sidecar = "$Installer.part.json"
+    New-Item -ItemType Directory -Force -Path $CacheDir -ErrorAction Stop | Out-Null
+    if (Test-Path $Installer) {
+        $Resumable = $false
+        if (Test-Path $Sidecar) {
+            try {
+                $SidecarInfo = Get-Content $Sidecar -Raw | ConvertFrom-Json
+                $Resumable = ($SidecarInfo.url -eq $Url)
+            } catch {
+                $Resumable = $false
+            }
+        }
+        if (-not $Resumable) {
+            Write-Host "Discarding an unverified cached installer and downloading fresh..." -ForegroundColor Yellow
+            Remove-Item $Installer, $Sidecar -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Set-Content -LiteralPath $Sidecar -Value ("{`"url`": `"$Url`"}") -Encoding ASCII
     $InstallDir = "$env:USERPROFILE\miniconda3"
     if ((Test-Path $InstallDir) -and -not (Test-Path "$InstallDir\Scripts\conda.exe")) {
         $InstallDir = "$env:USERPROFILE\miniconda3-drocat"
     }
     $Downloaded = $false
-    New-Item -ItemType Directory -Force -Path $CacheDir -ErrorAction Stop | Out-Null
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
         Write-Host "Downloading Miniconda (resumable)..."
@@ -195,7 +234,7 @@ function Install-Miniconda {
     $ActualHash = (Get-FileHash -Path $Installer -Algorithm SHA256).Hash.ToLower()
     if ($ActualHash -ne $ExpectedHash) {
         Write-Host "Checksum mismatch for $Leaf; discarding the cached installer and downloading fresh..." -ForegroundColor Yellow
-        Remove-Item $Installer -Force -ErrorAction SilentlyContinue
+        Remove-Item $Installer, $Sidecar -Force -ErrorAction SilentlyContinue
         Invoke-WebRequest -Uri $Url -OutFile $Installer -UseBasicParsing
         $ActualHash = (Get-FileHash -Path $Installer -Algorithm SHA256).Hash.ToLower()
         if ($ActualHash -ne $ExpectedHash) {
@@ -209,7 +248,7 @@ function Install-Miniconda {
         # re-downloading.
         throw "Miniconda installation failed (exit $($Process.ExitCode))."
     }
-    Remove-Item $Installer -Force -ErrorAction SilentlyContinue
+    Remove-Item $Installer, $Sidecar -Force -ErrorAction SilentlyContinue
     return "$InstallDir\Scripts\conda.exe"
 }
 
@@ -334,19 +373,10 @@ if ($EnvOverride) {
     } else {
         $script:EnvName = $EnvOverride
         Write-Host "Creating $EnvOverride (custom env from config.json)..."
-        $PreviousErrorActionPreference = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            # Create against conda-forge with --override-channels: a fresh
-            # Miniconda 26.x blocks non-interactive `conda create` against the
-            # default (repo.anaconda.com) channels until the Anaconda Terms of
-            # Service are accepted (CondaToSNonInteractiveError). conda-forge
-            # requires no such acceptance; post-creation deps are pip-installed.
-            & $script:CondaPath create -n $EnvOverride -c conda-forge --override-channels "python=$PythonVersion" -y
-        } finally {
-            $ErrorActionPreference = $PreviousErrorActionPreference
-        }
-        if ($LASTEXITCODE -ne 0) { throw "Could not create $EnvOverride." }
+        # conda-forge + --override-channels sidesteps the Anaconda ToS gate
+        # on fresh Miniconda 26.x installs; the helper retries transient
+        # package-fetch failures.
+        New-DrocatCondaEnvironment -Name $EnvOverride
     }
 }
 if (-not $script:EnvName) {
@@ -363,16 +393,8 @@ if (-not $script:EnvName) {
         }
         $script:EnvName = $Candidate
         Write-Host "Creating $Candidate..."
-        $PreviousErrorActionPreference = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            # See the custom-env branch above: conda-forge + --override-channels
-            # sidesteps the Anaconda ToS gate on fresh Miniconda 26.x installs.
-            & $script:CondaPath create -n $Candidate -c conda-forge --override-channels "python=$PythonVersion" -y
-        } finally {
-            $ErrorActionPreference = $PreviousErrorActionPreference
-        }
-        if ($LASTEXITCODE -ne 0) { throw "Could not create $Candidate." }
+        # See the custom-env branch above; retry transient fetch failures.
+        New-DrocatCondaEnvironment -Name $Candidate
         break
     }
 }
