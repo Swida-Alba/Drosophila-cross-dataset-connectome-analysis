@@ -48,6 +48,25 @@ def test_windows_installer_accepts_the_documented_python_window():
     assert "not Python 3.10/3.11" in text
 
 
+def test_shell_installer_reports_the_supported_python_window():
+    text = _text("archive/install/install.sh")
+    assert "not Python 3.10/3.11" in text
+    assert "not Python %s" not in text
+
+
+def test_windows_installer_verifies_before_execution_and_removes_the_cache():
+    text = _text("archive/install/install.ps1")
+    assert text.index("Get-FileHash") < text.index("Start-Process")
+    after_start = text[text.index("Start-Process"):]
+    assert "Remove-Item $Installer" in after_start
+
+
+def test_app_startup_tip_uses_the_bound_host_helper():
+    text = _text("ui/app.py")
+    assert "ui_browser_url(host, port)" in text
+    assert 'f"http://127.0.0.1:{port}' not in text
+
+
 def test_miniconda_downloads_are_pinned_and_verified():
     manifest = _text("archive/install/miniconda_checksums.txt")
     entries = {
