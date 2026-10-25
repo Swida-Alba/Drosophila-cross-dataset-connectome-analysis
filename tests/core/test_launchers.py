@@ -22,6 +22,28 @@ requires_bash = pytest.mark.skipif(
 )
 
 
+def _git_bash_path(path: Path) -> str:
+    """A PATH spelling Git-Bash resolves in an inline assignment.
+
+    Git-Bash does not resolve ``C:\\...`` entries inside an inline
+    ``PATH=...``; ``cygpath -u`` yields the ``/c/...`` form. POSIX hosts
+    and the fallback use the normal string form.
+    """
+    if sys.platform != "win32":
+        return str(path)
+    cygpath = shutil.which("cygpath")
+    if cygpath:
+        try:
+            converted = subprocess.run(
+                [cygpath, "-u", str(path)], capture_output=True, text=True,
+                encoding="utf-8", check=True).stdout.strip()
+            if converted:
+                return converted
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    return path.as_posix()
+
+
 class TestRunDrocatLaunchers:
     def test_macos_launcher_is_self_healing(self):
         text = (ROOT / "mac_DROCAT.command").read_text(encoding="utf-8")
@@ -436,7 +458,7 @@ def test_port_inventory_falls_back_to_ss(tmp_path):
     funcs = _port_guard_source(ROOT / "mac_DROCAT.command")
     script = (
         "set -euo pipefail\n"
-        f"PATH='{fake}:/usr/bin:/bin'\n"
+        f"PATH='{_git_bash_path(fake)}:/usr/bin:/bin'\n"
         + funcs
         + "\ndrocat_listeners\n"
     )
