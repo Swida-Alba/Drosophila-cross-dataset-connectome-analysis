@@ -42,10 +42,13 @@ def fake_net(monkeypatch):
     calls = []
 
     def _install(responses):
-        def fake_get(url, timeout=120, attempts=3, note=""):
+        def fake_get(url, timeout=120, attempts=3, note="",
+                     progress_callback=None):
             calls.append(url)
             for pattern, payload in responses.items():
                 if pattern in url:
+                    if progress_callback is not None and payload is not None:
+                        progress_callback(len(payload), len(payload))
                     return payload
             return None
         monkeypatch.setattr(bpd, "http_get", fake_get)
@@ -203,7 +206,8 @@ class TestUnifiedChainIgnoresResolution:
         # Source selection is removed: once an L2 entry is cached, even a
         # 'full' request is served from it (the chain is always
         # L2 -> full -> pcg; 'resolution' is accepted and ignored).
-        def fake_get(url, timeout=120, attempts=3, note=""):
+        def fake_get(url, timeout=120, attempts=3, note="",
+                     progress_callback=None):
             if url.endswith("_l2.swc"):
                 return LSWC
             if url.endswith("_skeleton.swc"):
@@ -338,7 +342,8 @@ class TestMetaFeatherMapping:
         touched = {}
         monkeypatch.setattr(
             mod, "download_meta_feather",
-            lambda dataset, project_root=None, force=False:
+            lambda dataset, project_root=None, force=False,
+            progress_callback=None:
             touched.__setitem__("root", str(project_root)) or None)
         monkeypatch.setattr(
             mod, "download_connections_product", lambda *a, **k: None)

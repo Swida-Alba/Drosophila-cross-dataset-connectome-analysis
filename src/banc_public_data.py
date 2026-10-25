@@ -222,8 +222,27 @@ def _is_v626_release(dataset) -> bool:
 # every fetch retries before giving up)
 # ---------------------------------------------------------------------------
 
+def _response_total_size(response, received_len: int) -> int:
+    """Full body size from Content-Range/Content-Length, or 0."""
+    headers = getattr(response, 'headers', None)
+    if not headers:
+        return 0
+    try:
+        content_range = headers.get('Content-Range')
+        if content_range and '/' in content_range:
+            tail = content_range.rsplit('/', 1)[-1].strip()
+            if tail.isdigit():
+                return int(tail)
+        length = headers.get('Content-Length')
+        if length is not None and str(length).strip().isdigit():
+            return received_len + int(length)
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return 0
+
+
 def http_get(url: str, timeout: float = 120, attempts: int = 3,
-             note: str = "") -> Optional[bytes]:
+             note: str = "", progress_callback=None) -> Optional[bytes]:
     """GET *url* with retries and byte-range RESUME.  Returns None on HTTP
     404, bytes on success.
 
@@ -233,6 +252,10 @@ def http_get(url: str, timeout: float = 120, attempts: int = 3,
     dropped read is now kept and the next attempt continues it with a
     ``Range: bytes=<n>-`` request; a server that answers 200 instead of
     206 (range ignored) restarts cleanly from zero.
+
+    ``progress_callback(received, total)`` runs while the body is read so
+    the BANC card can show bytes and a no-progress heartbeat; total is 0
+    when the server does not advertise a length.
     """
     last_error = None
     received = bytearray()
@@ -244,16 +267,30 @@ def http_get(url: str, timeout: float = 120, attempts: int = 3,
             request = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 status = getattr(response, 'status', 200)
-                if received and status == 206:
-                    received.extend(response.read())  # continuation
-                else:
+                if not (received and status == 206):
                     # Full restart: the reassignment must happen BEFORE
                     # any read — if this read raises IncompleteRead, the
                     # handler below would otherwise append the restart's
                     # partial bytes (offset-0 content) onto the OLD
                     # prefix, silently corrupting the blob.
                     received = bytearray()
-                    received.extend(response.read())
+                total = _response_total_size(response, len(received))
+                while True:
+                    chunk = response.read(1 << 20)
+                    if not chunk:
+                        break
+                    received.extend(chunk)
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(len(received), total)
+                        except Exception:
+                            pass
+                if total and len(received) < total:
+                    # A chunked read can end at a clean EOF when the peer
+                    # closes early; treat it as an incomplete body so the
+                    # next attempt resumes instead of accepting a prefix.
+                    raise http.client.IncompleteRead(
+                        b"", total - len(received))
                 return bytes(received)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -935,7 +972,8 @@ def _validate_connections_product(path: Path) -> None:
 
 
 def download_meta_feather(dataset, project_root=None,
-                          force: bool = False) -> Optional[Path]:
+                          force: bool = False,
+                          progress_callback=None) -> Optional[Path]:
     """Download the release meta feather into the dataset downloads dir."""
     local = meta_feather_path(dataset, project_root)
     if local.exists() and not force:
@@ -945,7 +983,9 @@ def download_meta_feather(dataset, project_root=None,
         except Exception:
             _quarantine_product(local)
     url = f"{BUCKET_HTTP_BASE}/{META_FEATHER_PATH}"
-    blob = http_get(url, timeout=300, attempts=3, note="banc_888_meta.feather")
+    blob = http_get(url, timeout=120, attempts=3,
+                    note="banc_888_meta.feather",
+                    progress_callback=progress_callback)
     if blob is None:
         return None
     local.parent.mkdir(parents=True, exist_ok=True)
@@ -964,7 +1004,8 @@ def download_meta_feather(dataset, project_root=None,
 
 
 def download_connections_product(dataset, project_root=None,
-                                 force: bool = False) -> Optional[Path]:
+                                 force: bool = False,
+                                 progress_callback=None) -> Optional[Path]:
     """Download the release connection-count product (thresholds baked in)."""
     local = connections_product_path(dataset, project_root)
     if local.exists() and not force:
@@ -975,7 +1016,8 @@ def download_connections_product(dataset, project_root=None,
             _quarantine_product(local)
     product = CONNECTION_PRODUCTS[_connection_version(dataset)]
     url = f"{BUCKET_HTTP_BASE}/{product}"
-    blob = http_get(url, timeout=600, attempts=3, note=product)
+    blob = http_get(url, timeout=120, attempts=3, note=product,
+                    progress_callback=progress_callback)
     if blob is None:
         return None
     local.parent.mkdir(parents=True, exist_ok=True)
@@ -1059,7 +1101,8 @@ def build_neurons_dataframe(meta_feather: Path, version: str):
 
 
 def prepare_dataset_tables(dataset_name, dataset_dir,
-                           project_root=None) -> bool:
+                           project_root=None,
+                           progress_callback=None) -> bool:
     """Prepare neuron + connection tables from the public bucket products.
 
     The meta feather stays in ``<dataset_dir>/downloads/`` (it is read at
@@ -1086,7 +1129,19 @@ def prepare_dataset_tables(dataset_name, dataset_dir,
     # temporary/test dataset directories stay fully isolated.
     project_root = str(Path(dataset_dir).parent.parent)
 
-    meta_local = download_meta_feather(dataset_name, project_root)
+    def _emit(current, total, info):
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(current, total, info)
+        except Exception:
+            pass
+
+    _emit(0, 0, "Downloading BANC metadata...")
+    meta_local = download_meta_feather(
+        dataset_name, project_root,
+        progress_callback=lambda pos, total: _emit(
+            pos, total, "Downloading BANC metadata..."))
     if meta_local is None:
         return False
 
@@ -1099,14 +1154,20 @@ def prepare_dataset_tables(dataset_name, dataset_dir,
 
     ok = True
     if not parquet_is_reusable(neuron_pq):
+        _emit(0, 0, "Converting BANC neuron table...")
         neurons = build_neurons_dataframe(meta_local, version)
         ok = process_neurons_dataframe(neurons, neuron_pq,
                                        save_csv_path=neuron_csv) and ok
     if not parquet_is_reusable(conn_pq):
         # The connections product has no consumer beyond this derivation;
         # skip the 76 MB download entirely while the merged table exists.
-        conn_local = download_connections_product(dataset_name, project_root)
+        _emit(0, 0, "Downloading BANC connections...")
+        conn_local = download_connections_product(
+            dataset_name, project_root,
+            progress_callback=lambda pos, total: _emit(
+                pos, total, "Downloading BANC connections..."))
         if conn_local is None:
             return False
+        _emit(0, 0, "Converting BANC connections table...")
         ok = process_connections_dataframe(conn_local, conn_pq) and ok
     return ok

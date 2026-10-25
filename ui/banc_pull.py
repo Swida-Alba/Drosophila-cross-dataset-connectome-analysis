@@ -35,6 +35,7 @@ class BancPuller:
             "summary": None,
             "started_at": None,
             "fetch_started_at": None,
+            "last_update_at": None,
         }
 
     @property
@@ -71,6 +72,7 @@ class BancPuller:
                 "summary": None,
                 "started_at": time.time(),
                 "fetch_started_at": None,
+                "last_update_at": time.time(),
             }
             self._cancel_event.clear()
         self._thread = threading.Thread(
@@ -95,6 +97,7 @@ class BancPuller:
                 self._state["info"] = info
             if self._state["fetch_started_at"] is None and total:
                 self._state["fetch_started_at"] = time.time()
+            self._state["last_update_at"] = time.time()
 
     def _phase(self, name: str, msg: str) -> None:
         with self._lock:
@@ -103,6 +106,7 @@ class BancPuller:
             self._state["current"] = 0
             self._state["total"] = 0
             self._state["fetch_started_at"] = None
+            self._state["last_update_at"] = time.time()
 
     def _finish(self, cancelled: bool = False, error: str = None,
                 summary: Dict = None) -> None:
@@ -133,7 +137,12 @@ class BancPuller:
                             "Preparing BANC metadata + connections "
                             "(public bucket)...")
                 from banc_public_data import prepare_dataset_tables
-                if not prepare_dataset_tables(dataset, dataset_dir):
+                if not prepare_dataset_tables(
+                        dataset, dataset_dir,
+                        progress_callback=lambda pos, total, info=None: (
+                            self._progress(pos, total,
+                                           info or "Preparing BANC "
+                                           "metadata + connections..."))):
                     raise RuntimeError(
                         "BANC table preparation did not complete "
                         f"for {dataset}")
@@ -180,6 +189,24 @@ class BancPuller:
 
 
 LEVEL_NECESSARY = "necessary"
+BANC_STALL_SECONDS = 30
+
+
+def banc_stall_note(state: Dict, now: float = None) -> Optional[str]:
+    """A no-progress warning for a running BANC pull, or None."""
+    if not state.get("running") or state.get("cancel_requested"):
+        return None
+    last = state.get("last_update_at") or state.get("started_at")
+    if not last:
+        return None
+    idle = (now if now is not None else time.time()) - last
+    if idle < BANC_STALL_SECONDS:
+        return None
+    return (
+        f"No new progress for {int(idle)} s — the bucket may be stalled; "
+        "Cancel to stop and retry.")
+
+
 LEVEL_SYNAPSE = "synapses"
 LEVEL_SKELETONS = "skeletons"
 LEVEL_ORDER = (LEVEL_NECESSARY, LEVEL_SYNAPSE, LEVEL_SKELETONS)

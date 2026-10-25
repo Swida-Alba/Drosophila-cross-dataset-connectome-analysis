@@ -281,13 +281,18 @@ class TestF1RefusalCleansRunFolder:
 # ---------------------------------------------------------------------------
 
 class _FakeResponse:
-    def __init__(self, payload=None, exc=None):
+    def __init__(self, payload=None, exc=None, headers=None):
         self._payload = payload
         self._exc = exc
+        self.headers = headers or {}
+        self._sent = False
 
-    def read(self):
+    def read(self, size=-1):
         if self._exc is not None:
             raise self._exc
+        if self._sent or self._payload is None:
+            return b""
+        self._sent = True
         return self._payload
 
     def __enter__(self):
@@ -295,6 +300,24 @@ class _FakeResponse:
 
     def __exit__(self, *args):
         return False
+
+
+class TestHttpGetProgress:
+    def test_reports_received_and_total(self, monkeypatch):
+        payload = b"abcdef"
+        seen = []
+
+        def fake_urlopen(request, timeout=None):
+            return _FakeResponse(
+                payload=payload,
+                headers={"Content-Length": str(len(payload))})
+
+        monkeypatch.setattr(bpd.urllib.request, 'urlopen', fake_urlopen)
+        assert bpd.http_get(
+            'https://example.invalid/product',
+            progress_callback=lambda pos, total: seen.append((pos, total))
+        ) == payload
+        assert seen[-1] == (len(payload), len(payload))
 
 
 class TestF3IncompleteRead:

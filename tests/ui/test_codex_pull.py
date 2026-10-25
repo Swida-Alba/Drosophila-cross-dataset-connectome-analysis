@@ -176,8 +176,11 @@ def test_banc_puller_levels_and_cancel(monkeypatch, tmp_path):
 
     calls = []
 
-    def fake_prepare(dataset_name, dataset_dir, project_root=None):
+    def fake_prepare(dataset_name, dataset_dir, project_root=None,
+                     progress_callback=None):
         calls.append(("prepare", dataset_name))
+        if progress_callback is not None:
+            progress_callback(0, 0, "Preparing BANC metadata + connections...")
         return True
 
     def fake_synapse(dataset, project_root=None, force=False,
@@ -212,6 +215,28 @@ def test_banc_puller_levels_and_cancel(monkeypatch, tmp_path):
     puller2._thread.join(timeout=10)
     state2 = puller2.state
     assert state2["error"] and "did not complete" in state2["error"]
+
+
+def test_banc_card_shows_the_stall_note():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[2] / "ui/tabs/settings.py").read_text(
+        encoding="utf-8")
+    assert "banc_stall_note" in text
+    assert "No new progress" not in text  # wording lives in banc_pull.py
+
+
+def test_banc_stall_note():
+    from ui.banc_pull import banc_stall_note
+
+    assert banc_stall_note({"running": True, "last_update_at": 990},
+                           now=1000) is None
+    note = banc_stall_note({"running": True, "last_update_at": 960},
+                           now=1000)
+    assert note and "No new progress" in note and "Cancel" in note
+    assert banc_stall_note({"running": False, "last_update_at": 1},
+                           now=1000) is None
+    assert banc_stall_note({"running": True, "cancel_requested": True,
+                            "last_update_at": 1}, now=1000) is None
 
 
 def test_banc_level_status(tmp_path):

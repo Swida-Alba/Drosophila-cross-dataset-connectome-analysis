@@ -388,7 +388,8 @@ def create_settings_tab():
         # BANC dataset downloads (public bucket, no token)
         from ..banc_pull import (BANC_SYNAPSE_TABLE_BYTES, BancPuller,
                                  LEVEL_NECESSARY, LEVEL_ORDER, LEVEL_SKELETONS,
-                                 LEVEL_SYNAPSE, banc_level_status)
+                                 LEVEL_SYNAPSE, banc_level_status,
+                                 banc_stall_note)
         with ui.card().classes("w-full drocat-card"):
             section_header("BANC Dataset Downloads (public bucket)", "cloud_download")
             banc_puller = BancPuller()
@@ -523,6 +524,10 @@ def create_settings_tab():
                         banc_progress.props(add="indeterminate")
                         banc_progress_label.text = ""
                         banc_status_label.text = st["info"]
+                    note = banc_stall_note(st)
+                    if note:
+                        banc_status_label.text = (
+                            f"{banc_status_label.text} | {note}")
                     return
                 if not st["done"]:
                     return
