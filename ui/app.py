@@ -27,7 +27,10 @@ from nicegui import ui, app
 # open the local instruction files instead of GitHub.
 app.add_static_files("/docs", PROJECT_ROOT / "docs")
 
-from ui.config import APP_TITLE, APP_VERSION, APP_PORT, APP_HOST
+from ui.config import (
+    APP_TITLE, APP_VERSION, is_loopback_host, resolve_ui_host,
+    resolve_ui_port, ui_browser_url,
+)
 from ui.components.banner import create_banner_stack
 from ui.run_state import ACTIVE_STATUSES, RUN_MANAGER
 
@@ -3221,8 +3224,21 @@ def main_page():
 
 def main():
     """Entry point for the DROCAT UI application."""
-    host = os.environ.get("DROCAT_UI_HOST", APP_HOST)
-    port = int(os.environ.get("DROCAT_UI_PORT", APP_PORT))
+    allow_remote = os.environ.get("DROCAT_ALLOW_REMOTE", "").strip().lower() \
+        in {"1", "true", "yes", "on"}
+    try:
+        host = resolve_ui_host(
+            os.environ.get("DROCAT_UI_HOST"), allow_remote=allow_remote)
+        port = resolve_ui_port(os.environ.get("DROCAT_UI_PORT"))
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    if not is_loopback_host(host):
+        print(
+            f"WARNING: DROCAT UI is binding to {host} without "
+            "authentication. Expose it only on an isolated/trusted network.",
+            file=sys.stderr,
+        )
     show = os.environ.get("DROCAT_UI_SHOW", "1").strip().lower() not in {
         "0",
         "false",
@@ -3242,7 +3258,7 @@ def main():
     app.on_startup(
         lambda: print(
             f"Tip: If the browser did not open automatically, copy and open "
-            f"http://127.0.0.1:{port} in your browser.",
+            f"{ui_browser_url(host, port)} in your browser.",
             flush=True,
         )
     )

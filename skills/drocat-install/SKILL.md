@@ -57,9 +57,10 @@ Call the bundled installer and let it build the environment. Do not recreate its
 steps manually.
 
 - **macOS / Linux:** `bash archive/install/install.sh`
-  (creates/reuses `drocat-4.5.0` Python 3.11, installs both pinned requirement
-  files, installs DROCAT in editable mode, runs `pip check`, runs the bundled
-  verifier, and asks for NeuPrint/CAVE tokens on interactive terminals).
+  (creates/reuses a versioned Python 3.10/3.11 environment, 3.11 preferred,
+  installs both pinned requirement files, installs DROCAT in editable mode,
+  runs `pip check`, runs the bundled verifier, and prints the token setup
+  notice; it does NOT prompt for tokens).
 - **Windows:** `powershell -ExecutionPolicy Bypass -File archive/install/install.ps1`
   or `archive/install/install.bat`.
 - **Self-healing launcher (any platform):** `./mac_DROCAT.command` (macOS/Linux)
@@ -76,24 +77,28 @@ with a partially inconsistent environment.
 Run the bundled verifier with the environment Python:
 
 ```bash
-conda activate drocat-4.5.0
+conda activate drocat-4.5.0   # or the suffixed env resolved by the launcher
 python skills/drocat-install/scripts/verify_install.py --project /path/to/repo
 ```
 
 Required checks: Python 3.10-3.11, project layout, every installed version
 against the pinned manifests, dependency metadata (`pip check`), core imports
-(including the bundled `neuronbridge_client`), and UI import. Token configuration
+(including the bundled `neuronbridge_client`), and UI import. Required imports
+must resolve to real module files, not empty namespace packages, so a
+partially deleted distribution is treated as unhealthy. Token configuration
 is advisory during installation; use `--require-token` when validating a
 configured workstation. The verifier needs no network.
 
 ### 4. Launch the UI
 
 - `./mac_DROCAT.command` (macOS/Linux) or `windows_DROCAT.bat` (Windows), or
-  `conda activate drocat-4.5.0 && python ui/app.py`.
+  `conda activate <resolved-env> && python ui/app.py` (the launcher may create a
+  suffixed `drocat-4.5.0-2`/`-3` env when the default name is occupied).
 - Confirm the server responds: `curl -s http://127.0.0.1:8080/` should contain
   `DROCAT`.
-- Override the host/port with `DROCAT_UI_HOST`, `DROCAT_UI_PORT`, or
-  `DROCAT_UI_SHOW=0` for a headless launch. First run: datasets auto-download on
+- Override the port with `DROCAT_UI_PORT`, or `DROCAT_UI_SHOW=0` for a headless
+  launch. `DROCAT_UI_HOST` beyond loopback is refused unless
+  `DROCAT_ALLOW_REMOTE=1` is set (no UI authentication). First run: datasets auto-download on
   first query (requires token + network). FlyWire FAFB data files download
   automatically from the Settings tab once a FlyWire Codex token is saved
   (Settings → FAFB Dataset Downloads; skeletons also fetch lazily per neuron);

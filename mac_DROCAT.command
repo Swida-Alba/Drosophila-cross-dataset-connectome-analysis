@@ -104,22 +104,70 @@ main() {
     # runs (it only applies while the config.json entry stays empty). The
     # committed config.json is never rewritten.
     update_config_env() {
-        # $1 = version, $2 = env name, $3 = file
+        # $1 = version, $2 = env name, $3 = file.  Replace an existing
+        # version entry; when the file has no envs object, insert one before
+        # the root close; when the envs object exists without this version,
+        # insert the entry inside it.  This keeps a tokens-only or
+        # cross-version config_local.json writable without touching
+        # unrelated keys.  A single-line envs object is left unchanged
+        # rather than risking a malformed rewrite.
         [[ -f "$3" ]] || return 0
         local tmp
         tmp="$(mktemp "${TMPDIR:-/tmp}/drocat-config.XXXXXX")"
         awk -v version="$1" -v envname="$2" '
-            BEGIN { in_envs = 0; done = 0 }
-            {
-                line = $0
-                if (!done && line ~ /"envs"/) { in_envs = 1 }
+            { lines[NR] = $0; if (!found && $0 ~ /"envs"[[:space:]]*:/) found = 1 }
+            END {
                 pattern = "\"" version "\"[[:space:]]*:[[:space:]]*\"[^\"]*\""
-                if (in_envs && !done && line ~ pattern) {
-                    sub(pattern, "\"" version "\": \"" envname "\"", line)
-                    done = 1
-                    in_envs = 0
+                if (!found) {
+                    last = 0
+                    for (i = NR; i >= 1; i--) {
+                        if (lines[i] ~ /^[[:space:]]*}[[:space:]]*$/) { last = i; break }
+                    }
+                    if (!last) { for (i = 1; i <= NR; i++) print lines[i]; exit 0 }
+                    prev = 0
+                    for (i = last - 1; i >= 1; i--) {
+                        if (lines[i] !~ /^[[:space:]]*$/) { prev = i; break }
+                    }
+                    if (prev && lines[prev] !~ /,[[:space:]]*$/) lines[prev] = lines[prev] ","
+                    for (i = 1; i < last; i++) print lines[i]
+                    print "  \"envs\": {"
+                    print "    \"" version "\": \"" envname "\""
+                    print "  }"
+                    print lines[last]
+                    exit 0
                 }
-                print line
+                start = 0; endline = 0; done = 0
+                for (i = 1; i <= NR; i++) {
+                    line = lines[i]
+                    if (!start && line ~ /"envs"[[:space:]]*:/) {
+                        if (line ~ /\{[[:space:]]*\}[[:space:]]*,?[[:space:]]*$/) start = -1
+                        else start = i
+                    }
+                    if (start > 0 && !endline && i > start && line ~ /^[[:space:]]*}/) endline = i
+                    if (start > 0 && !done && (!endline || i <= endline) && line ~ pattern) {
+                        sub(pattern, "\"" version "\": \"" envname "\"", line)
+                        lines[i] = line
+                        done = 1
+                    }
+                }
+                if (done || start <= 0 || !endline) {
+                    for (i = 1; i <= NR; i++) print lines[i]
+                    exit 0
+                }
+                prev = 0
+                for (i = endline - 1; i >= start; i--) {
+                    if (lines[i] !~ /^[[:space:]]*$/) { prev = i; break }
+                }
+                if (prev == start && lines[start] ~ /\{[[:space:]]*$/) {
+                    # empty multi-line object: first entry needs no leading comma
+                    for (i = 1; i < endline; i++) print lines[i]
+                    print "    \"" version "\": \"" envname "\""
+                } else {
+                    if (prev && lines[prev] !~ /,[[:space:]]*$/) lines[prev] = lines[prev] ","
+                    for (i = 1; i < endline; i++) print lines[i]
+                    print "    \"" version "\": \"" envname "\""
+                }
+                for (i = endline; i <= NR; i++) print lines[i]
             }
         ' "$3" > "$tmp" && mv "$tmp" "$3"
         chmod 600 "$3"
@@ -160,6 +208,7 @@ main() {
         local candidate
         for candidate in \
             "$HOME/miniconda3/bin/conda" \
+            "$HOME/miniconda3-drocat/bin/conda" \
             "$HOME/anaconda3/bin/conda" \
             "$HOME/miniforge3/bin/conda" \
             "/opt/miniconda3/bin/conda" \
@@ -206,7 +255,7 @@ main() {
         if [[ -n "$ENV_OVERRIDE" ]]; then
             py="$(env_bin_python "$ENV_OVERRIDE")"
             if [[ -n "$py" ]] && "$py" -c \
-                'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)' \
+                'import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 10), (3, 11)) else 1)' \
                 >/dev/null 2>&1; then
                 ENV_NAME="$ENV_OVERRIDE"
                 printf 'Using custom environment %s (set in %s).\n' "$ENV_NAME" "$ENV_SOURCE"
@@ -218,7 +267,7 @@ main() {
                 return 0
             fi
             if env_exists "$ENV_OVERRIDE"; then
-                printf '%s\n' "ERROR: environment '$ENV_OVERRIDE' (custom env from $ENV_SOURCE) exists but is not Python 3.11." >&2
+                printf '%s\n' "ERROR: environment '$ENV_OVERRIDE' (custom env from $ENV_SOURCE) exists but is not Python 3.10/3.11." >&2
                 printf '%s\n' "Fix it, remove it, or clear the envs.$DROCAT_VERSION entry; DROCAT never silently switches environments." >&2
                 return 1
             fi
@@ -234,7 +283,7 @@ main() {
             fi
             py="$(env_bin_python "$candidate")"
             if [[ -n "$py" ]] && "$py" -c \
-                'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)' \
+                'import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 10), (3, 11)) else 1)' \
                 >/dev/null 2>&1; then
                 ENV_NAME="$candidate"
                 printf 'Using environment %s (auto-detected).\n' "$ENV_NAME"
@@ -272,15 +321,25 @@ main() {
         update_config_env "$DROCAT_VERSION" "$ENV_NAME" "$CONFIG_LOCAL"
     fi
 
-    local py
-    py="$(env_bin_python "$ENV_NAME")"
-    if [[ -z "$py" ]] \
-        || ! "$py" -c \
-            'import nicegui, numpy, pandas, neuprint, neuronbridge_client' >/dev/null 2>&1 \
-        || ! "$py" -m pip check >/dev/null 2>&1; then
+    env_healthy() {
+        local py
+        py="$(env_bin_python "$ENV_NAME")"
+        [[ -n "$py" ]] \
+            && "$py" -c \
+                'import importlib; mods=[importlib.import_module(n.strip()) for n in "nicegui, numpy, pandas, neuprint, neuronbridge_client, coana, statvis, morphology, route_plan, pyarrow, zstandard, boto3, xarray".split(",")]; raise SystemExit(0 if all(getattr(m, "__file__", None) for m in mods) else 1)' \
+                >/dev/null 2>&1 \
+            && "$py" -m pip check >/dev/null 2>&1
+    }
+
+    if ! env_healthy; then
         printf '%s\n' "Repairing dependencies in $ENV_NAME..."
         "$INSTALLER"
         resolve_env || return 1
+        if ! env_healthy; then
+            printf '%s\n' "ERROR: $ENV_NAME is still unhealthy after the repair installer." >&2
+            printf '%s\n' "Run the installer again or inspect the verifier output; the UI was not started." >&2
+            return 1
+        fi
     fi
 
     # --- Token hint -----------------------------------------------------
@@ -326,24 +385,44 @@ main() {
     # hint.
     APP_PORT="${DROCAT_UI_PORT:-$(sed -n 's/^APP_PORT = \([0-9][0-9]*\)/\1/p' "$SCRIPT_DIR/ui/config.py" | head -1)}"
     APP_PORT="${APP_PORT:-8080}"
+    if ! [[ "$APP_PORT" =~ ^[1-9][0-9]*$ ]] \
+        || (( 10#$APP_PORT > 65535 )); then
+        printf '%s\n' "ERROR: DROCAT_UI_PORT must be an integer from 1 to 65535 (got '$APP_PORT')." >&2
+        return 1
+    fi
+
+    # Browser/probe address for the configured bind.  Wildcard binds are
+    # reachable via loopback; IPv6 literals need brackets in URLs.
+    UI_BIND_HOST="${DROCAT_UI_HOST:-127.0.0.1}"
+    case "$UI_BIND_HOST" in
+        0.0.0.0) UI_BIND_HOST="127.0.0.1" ;;
+        ::) UI_BIND_HOST="::1" ;;
+    esac
+    UI_HOST="$UI_BIND_HOST"
+    if [[ "$UI_HOST" == *:* && "$UI_HOST" != \[* ]]; then
+        UI_HOST="[$UI_HOST]"
+    fi
+    UI_URL="http://$UI_HOST:$APP_PORT"
 
     port_in_use() {
         local port="${1:-$APP_PORT}"
         if command -v lsof >/dev/null 2>&1; then
             lsof -ti "tcp:$port" -sTCP:LISTEN >/dev/null 2>&1
         elif command -v nc >/dev/null 2>&1; then
-            nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+            nc -z "$UI_BIND_HOST" "$port" >/dev/null 2>&1
         else
-            (exec 3<>"/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1
+            (exec 3<>"/dev/tcp/$UI_BIND_HOST/$port") >/dev/null 2>&1
         fi
     }
 
-    # A process is a DROCAT instance when its command line runs the UI entry
-    # point (`ui/app.py`) or lives in a drocat conda env.  Run backends are
-    # spawned as `python -u /tmp/...py` and never listen on a port, so the
-    # inventory below cannot pick one up.
+    # A process is a DROCAT instance only when its command line invokes the
+    # UI entry point (`ui/app.py`).  Do not match a bare "drocat" substring:
+    # a non-DROCAT listener started from a checkout directory named `drocat`
+    # would otherwise be listed and offered to the kill-all menu.  Run
+    # backends are spawned as `python -u /tmp/...py` and never listen on a
+    # port, so the inventory below cannot pick one up.
     is_drocat_command() {
-        printf '%s' "${1:-}" | grep -qE "ui/app\.py|drocat"
+        printf '%s' "${1:-}" | grep -qE 'ui[\\/]app\.py'
     }
 
     is_drocat_owner() {
@@ -437,7 +516,7 @@ main() {
 
     launch_ui() {
         local port="${1:-$APP_PORT}" py
-        printf 'Starting DROCAT v%s in %s at http://127.0.0.1:%s...\n' "$DROCAT_VERSION" "$ENV_NAME" "$port"
+        printf 'Starting DROCAT v%s in %s at http://%s:%s...\n' "$DROCAT_VERSION" "$ENV_NAME" "$UI_HOST" "$port"
         py="$(env_bin_python "$ENV_NAME")"
         if [[ -z "$py" ]]; then
             printf '%s\n' "ERROR: Python not found in environment '$ENV_NAME'." >&2
@@ -502,19 +581,19 @@ main() {
         else
             # Non-interactive (agent, CI): previous automatic behavior.
             if is_drocat_owner "$owner_pid"; then
-                printf 'DROCAT is already running at http://127.0.0.1:%s\n' "$APP_PORT"
+                printf 'DROCAT is already running at %s\n' "$UI_URL"
                 printf 'Opening it in your browser...\n'
                 if command -v open >/dev/null 2>&1; then
-                    open "http://127.0.0.1:$APP_PORT"
+                    open "$UI_URL"
                 fi
                 return 0
             fi
             # Otherwise probe the page to rule out a non-DROCAT server on the port.
-            if curl -s --max-time 2 "http://127.0.0.1:$APP_PORT/" 2>/dev/null | grep -q "drocat-cobalt"; then
-                printf 'DROCAT is already running at http://127.0.0.1:%s\n' "$APP_PORT"
+            if curl -s --max-time 2 "$UI_URL/" 2>/dev/null | grep -q "drocat-cobalt"; then
+                printf 'DROCAT is already running at %s\n' "$UI_URL"
                 printf 'Opening it in your browser...\n'
                 if command -v open >/dev/null 2>&1; then
-                    open "http://127.0.0.1:$APP_PORT"
+                    open "$UI_URL"
                 fi
                 return 0
             fi

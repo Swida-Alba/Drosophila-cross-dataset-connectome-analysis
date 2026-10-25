@@ -43,6 +43,17 @@ CORE_IMPORTS = [
     "pptx",
     "img2pdf",
     "neuronbridge_client",
+    "pyarrow",
+    "zstandard",
+    "boto3",
+    "xarray",
+    # Core analysis entry points: importing ui.app does not import these
+    # because the tabs load them lazily, so a broken coana/route_plan could
+    # otherwise pass as a healthy installation.
+    "coana",
+    "statvis",
+    "morphology",
+    "route_plan",
 ]
 
 OPTIONAL_IMPORTS = [
@@ -55,6 +66,9 @@ OPTIONAL_IMPORTS = [
     "fitz",
     "psutil",
     "trimesh",
+    "PyQt5",
+    "kaleido",
+    "fast_simplification",
 ]
 
 IMPORT_PROBE = """
@@ -63,7 +77,9 @@ mods = json.loads('__MODS_JSON__')
 out = {}
 for name in mods:
     try:
-        importlib.import_module(name)
+        module = importlib.import_module(name)
+        if getattr(module, "__file__", None) is None:
+            raise ImportError("resolved to a namespace package (files missing)")
         out[name] = "ok"
     except Exception as exc:
         out[name] = "%s: %s" % (type(exc).__name__, exc)
@@ -242,6 +258,7 @@ def main() -> int:
         "archive/install/install.sh",
         "archive/install/install.ps1",
         "archive/install/install.bat",
+        "archive/install/miniconda_checksums.txt",
         "requirements.txt",
         "ui/requirements.txt",
         "ui/app.py",

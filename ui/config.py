@@ -1301,6 +1301,61 @@ APP_VERSION = "4.5.0"
 APP_PORT = 8080
 APP_HOST = "127.0.0.1"
 
+_LOOPBACK_HOSTS = frozenset({
+    "127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1",
+})
+
+
+def resolve_ui_host(host: str | None = None, allow_remote: bool = False) -> str:
+    """Return the bind host, refusing unauthenticated non-loopback exposure.
+
+    The UI has no authentication.  Binding it to a LAN/interface address is
+    an explicit operator decision, so it requires DROCAT_ALLOW_REMOTE.
+    """
+    value = (host or APP_HOST).strip() or APP_HOST
+    if is_loopback_host(value):
+        return value
+    if allow_remote:
+        return value
+    raise ValueError(
+        f"DROCAT_UI_HOST={value!r} binds the unauthenticated UI beyond "
+        "loopback. Set DROCAT_ALLOW_REMOTE=1 only on an isolated/trusted "
+        "network, or keep the default 127.0.0.1.")
+
+
+def is_loopback_host(host: str) -> bool:
+    """Return True for the loopback spellings DROCAT accepts."""
+    return host in _LOOPBACK_HOSTS
+
+
+def ui_browser_url(host: str, port: int) -> str:
+    """Return a browser URL for the bound host.
+
+    Wildcard binds are reachable locally, so they report loopback; IPv6
+    literals are bracketed.
+    """
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}"
+
+
+def resolve_ui_port(value=None, default: int = APP_PORT) -> int:
+    """Parse and validate the UI port (1..65535) with a clear error."""
+    raw = default if value is None or str(value).strip() == "" else value
+    try:
+        port = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"DROCAT_UI_PORT must be an integer from 1 to 65535 (got {raw!r}).")
+    if not 1 <= port <= 65535:
+        raise ValueError(
+            f"DROCAT_UI_PORT must be an integer from 1 to 65535 (got {port}).")
+    return port
+
 # Keep external project links aligned with the checkout that is running the
 # UI. Deployments without a .git directory fall back to the matching version
 # branch, so a release build never links back to an unrelated `main` page.

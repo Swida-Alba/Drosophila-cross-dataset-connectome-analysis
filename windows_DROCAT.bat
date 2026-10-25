@@ -23,6 +23,7 @@ REM found), so every health check would fail and the launcher would loop
 REM through :repair forever.
 where conda >nul 2>nul && for /f "delims=" %%c in ('where conda') do if not defined CONDA_BIN set "CONDA_BIN=%%c"
 if not defined CONDA_BIN if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" set "CONDA_BIN=%USERPROFILE%\miniconda3\Scripts\conda.exe"
+if not defined CONDA_BIN if exist "%USERPROFILE%\miniconda3-drocat\Scripts\conda.exe" set "CONDA_BIN=%USERPROFILE%\miniconda3-drocat\Scripts\conda.exe"
 if not defined CONDA_BIN if exist "%USERPROFILE%\anaconda3\Scripts\conda.exe" set "CONDA_BIN=%USERPROFILE%\anaconda3\Scripts\conda.exe"
 if not defined CONDA_BIN if exist "%USERPROFILE%\miniforge3\Scripts\conda.exe" set "CONDA_BIN=%USERPROFILE%\miniforge3\Scripts\conda.exe"
 if not defined CONDA_BIN if exist "%ProgramData%\miniconda3\Scripts\conda.exe" set "CONDA_BIN=%ProgramData%\miniconda3\Scripts\conda.exe"
@@ -56,17 +57,17 @@ if !N! EQU 0 (
     set "CAND=!ENV_BASE!-!SUFFIX!"
 )
 if defined CONDA_BIN (
-    call "!CONDA_BIN!" run -n "!CAND!" python -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" >nul 2>nul
+    call "!CONDA_BIN!" run -n "!CAND!" python -c "import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 10), (3, 11)) else 1)" >nul 2>nul
     if not errorlevel 1 (
         set "ENV_NAME=!CAND!"
         goto env_found
     )
 )
 REM A configured custom env must be the env used: never silently switch to a
-REM default name. If it is missing or not Python 3.11, the installer is the
-REM only path that can create or repair it.
+REM default name. If it is missing or not Python 3.10/3.11, the installer is
+REM the only path that can create or repair it.
 if !N! EQU 0 if defined ENV_OVERRIDE (
-    echo Environment "!ENV_OVERRIDE!" ^(from envs.!DROCAT_VERSION!^) is missing or is not Python 3.11.
+    echo Environment "!ENV_OVERRIDE!" ^(from envs.!DROCAT_VERSION!^) is missing or is not Python 3.10/3.11.
     echo Running the installer to create or repair it...
     goto repair
 )
@@ -75,7 +76,7 @@ if !N! LEQ 20 goto resolve
 goto repair
 
 :env_found
-call "!CONDA_BIN!" run -n "!ENV_NAME!" python -c "import nicegui,numpy,pandas,neuprint,neuronbridge_client" >nul 2>nul
+call "!CONDA_BIN!" run -n "!ENV_NAME!" python -c "import importlib; mods=[importlib.import_module(n) for n in 'nicegui,numpy,pandas,neuprint,neuronbridge_client,coana,statvis,morphology,route_plan,pyarrow,zstandard,boto3,xarray'.split(',')]; raise SystemExit(0 if all(getattr(m,'__file__',None) for m in mods) else 1)" >nul 2>nul
 if errorlevel 1 goto repair
 call "!CONDA_BIN!" run -n "!ENV_NAME!" python -m pip check >nul 2>nul
 if errorlevel 1 goto repair
@@ -114,6 +115,7 @@ REM Re-detect conda the same way (full path) after the installer may have
 REM installed Miniconda or changed the PATH.
 where conda >nul 2>nul && for /f "delims=" %%c in ('where conda') do if not defined CONDA_BIN set "CONDA_BIN=%%c"
 if not defined CONDA_BIN if exist "%USERPROFILE%\miniconda3\Scripts\conda.exe" set "CONDA_BIN=%USERPROFILE%\miniconda3\Scripts\conda.exe"
+if not defined CONDA_BIN if exist "%USERPROFILE%\miniconda3-drocat\Scripts\conda.exe" set "CONDA_BIN=%USERPROFILE%\miniconda3-drocat\Scripts\conda.exe"
 if not defined CONDA_BIN if exist "%USERPROFILE%\anaconda3\Scripts\conda.exe" set "CONDA_BIN=%USERPROFILE%\anaconda3\Scripts\conda.exe"
 if not defined CONDA_BIN if exist "%USERPROFILE%\miniforge3\Scripts\conda.exe" set "CONDA_BIN=%USERPROFILE%\miniforge3\Scripts\conda.exe"
 if not defined CONDA_BIN if exist "%ProgramData%\miniconda3\Scripts\conda.exe" set "CONDA_BIN=%ProgramData%\miniconda3\Scripts\conda.exe"
@@ -131,6 +133,15 @@ set "APP_PORT="
 for /f "tokens=3" %%p in ('findstr /C:"APP_PORT =" "%SCRIPT_DIR%ui\config.py"') do set "APP_PORT=%%p"
 if not defined APP_PORT set "APP_PORT=8080"
 if defined DROCAT_UI_PORT set "APP_PORT=!DROCAT_UI_PORT!"
+echo(!APP_PORT!| findstr /R /C:"^[1-9][0-9]*$" >nul || goto bad_port
+if !APP_PORT! GTR 65535 goto bad_port
+
+set "UI_HOST=%DROCAT_UI_HOST%"
+if not defined UI_HOST set "UI_HOST=127.0.0.1"
+if "!UI_HOST!"=="0.0.0.0" set "UI_HOST=127.0.0.1"
+if "!UI_HOST!"=="::" set "UI_HOST=::1"
+REM IPv6 literals need brackets in a browser URL.
+echo !UI_HOST!| findstr /C:":" >nul && if not "!UI_HOST:~0,1!"=="[" set "UI_HOST=[!UI_HOST!]"
 
 set "OWNER_PID="
 set "OWNER_IS_DROCAT=0"
@@ -144,11 +155,9 @@ set "OWNER_CMD="
 for /f "delims=" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=!OWNER_PID!' -ErrorAction SilentlyContinue).CommandLine"') do set "OWNER_CMD=%%c"
 REM System-owned ports (PID 4) cannot be inspected; show a fallback label.
 if not defined OWNER_CMD set "OWNER_CMD=PID !OWNER_PID! (command line unavailable)"
-REM /C: x2: literal alternatives, NOT regex. The bare form ran findstr in
-REM regex mode where ui\app.py never matches the literal text (round-6
-REM finding F-P1: kill-all and EOF-open were dead on Windows), and under
-REM conda run the command line carries no "drocat" substring to rescue it.
-echo !OWNER_CMD! | findstr /I /C:"ui\app.py" /C:"drocat" >nul
+REM Exact UI entry point only. A bare "drocat" substring would classify a
+REM non-DROCAT server started from a checkout directory named drocat.
+powershell -NoProfile -Command "try { $c=(Get-CimInstance Win32_Process -Filter 'ProcessId=!OWNER_PID!' -ErrorAction Stop).CommandLine; if ($c -match 'ui[\\/]app\.py') { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>nul
 if not errorlevel 1 set "OWNER_IS_DROCAT=1"
 
 echo.
@@ -176,8 +185,8 @@ if not defined CHOICE if "!OWNER_IS_DROCAT!"=="1" goto open_existing
 goto conflict_abort
 
 :open_existing
-echo Opening the running DROCAT at http://127.0.0.1:!APP_PORT!/ ...
-start "" "http://127.0.0.1:!APP_PORT!/"
+echo Opening the running DROCAT at http://!UI_HOST!:!APP_PORT!/ ...
+start "" "http://!UI_HOST!:!APP_PORT!/"
 exit /b 0
 
 :other_instances
@@ -249,16 +258,16 @@ if !WAIT! GEQ 20 (
 ping -n 2 127.0.0.1 >nul
 goto wait_port_free_loop
 
-REM Lists every listening TCP port owned by a DROCAT process (command line
-REM runs ui\app.py or a drocat env): prints the table, fills DROCAT_PIDS
-REM with the PIDs and DROCAT_COUNT with the row count. Get-NetTCPConnection
-REM needs the NetTCPIP module; where it is unavailable the listing is empty
-REM and the guard keeps its single-port behavior.
+REM Lists every listening TCP port whose command line invokes the DROCAT UI
+REM entry point (ui\app.py): prints the table, fills DROCAT_PIDS with the
+REM PIDs and DROCAT_COUNT with the row count. Get-NetTCPConnection needs
+REM the NetTCPIP module; where it is unavailable the listing is empty and
+REM the guard keeps its single-port behavior.
 :scan_drocat_instances
 set "DROCAT_COUNT=0"
 set "DROCAT_PIDS="
 set "DROCAT_LIST_FILE=%TEMP%\drocat-listeners-%RANDOM%%RANDOM%.txt"
-powershell -NoProfile -Command "$procs=@{}; Get-CimInstance Win32_Process | ForEach-Object { $procs[[int]$_.ProcessId] = $_.CommandLine }; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $cl = $procs[[int]$_.OwningProcess]; if ($cl -and ($cl -match 'ui[\\/]app\.py' -or $cl -match 'drocat')) { @($_.LocalPort, $_.OwningProcess, $cl) -join '|' } } | Sort-Object -Unique" > "!DROCAT_LIST_FILE!" 2>nul
+powershell -NoProfile -Command "$procs=@{}; Get-CimInstance Win32_Process | ForEach-Object { $procs[[int]$_.ProcessId] = $_.CommandLine }; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $cl = $procs[[int]$_.OwningProcess]; if ($cl -and ($cl -match 'ui[\\/]app\.py')) { @($_.LocalPort, $_.OwningProcess, $cl) -join '|' } } | Sort-Object -Unique" > "!DROCAT_LIST_FILE!" 2>nul
 for /f "usebackq tokens=1,2* delims=|" %%a in ("!DROCAT_LIST_FILE!") do set /a DROCAT_COUNT+=1
 if !DROCAT_COUNT! GTR 0 (
     echo.
@@ -283,11 +292,9 @@ REM shutdown hook stop the run backends this instance owns), wait up to
 REM 10 s, then force. (Untestable from macOS; kept structurally simple.)
 :stop_one_pid
 set "STOP_PID=%~1"
-set "STOP_CMD="
-for /f "delims=" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=!STOP_PID!' -ErrorAction SilentlyContinue).CommandLine"') do set "STOP_CMD=%%c"
-if not defined STOP_CMD goto :eof
-REM /C: x2 for the same reason as the owner classification above (F-P1).
-echo !STOP_CMD! | findstr /I /C:"ui\app.py" /C:"drocat" >nul
+REM Re-check exact UI entry-point ownership immediately before killing; a
+REM bare "drocat" substring is never sufficient (F-I07-001).
+powershell -NoProfile -Command "try { $c=(Get-CimInstance Win32_Process -Filter 'ProcessId=!STOP_PID!' -ErrorAction Stop).CommandLine; if ($c -match 'ui[\\/]app\.py') { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>nul
 if errorlevel 1 goto :eof
 echo Stopping DROCAT PID !STOP_PID!...
 taskkill /PID !STOP_PID! >nul 2>nul
@@ -306,7 +313,7 @@ taskkill /PID !STOP_PID! /F >nul 2>nul
 goto :eof
 
 :start_ui
-echo Starting DROCAT v!DROCAT_VERSION! in !ENV_NAME! at http://127.0.0.1:!APP_PORT!...
+echo Starting DROCAT v!DROCAT_VERSION! in !ENV_NAME! at http://!UI_HOST!:!APP_PORT!...
 cd /d "%SCRIPT_DIR%"
 set "DROCAT_UI_PORT=!APP_PORT!"
 call "!CONDA_BIN!" run -n "!ENV_NAME!" --no-capture-output python ui\app.py
@@ -316,6 +323,11 @@ exit /b 0
 :launch_failed
 echo.
 echo DROCAT could not start. Review the messages above.
+pause
+exit /b 1
+
+:bad_port
+echo ERROR: DROCAT_UI_PORT must be an integer from 1 to 65535 ^(got "!APP_PORT!"^).
 pause
 exit /b 1
 

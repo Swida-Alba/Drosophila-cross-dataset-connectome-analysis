@@ -95,6 +95,7 @@ function Find-Conda {
     }
     $Candidates = @(
         "$env:USERPROFILE\miniconda3\Scripts\conda.exe",
+        "$env:USERPROFILE\miniconda3-drocat\Scripts\conda.exe",
         "$env:USERPROFILE\anaconda3\Scripts\conda.exe",
         "$env:USERPROFILE\miniforge3\Scripts\conda.exe",
         "C:\ProgramData\miniconda3\Scripts\conda.exe",
@@ -107,7 +108,16 @@ function Find-Conda {
 }
 
 function Install-Miniconda {
-    $Url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe"
+    $ChecksumFile = Join-Path $ScriptDir "miniconda_checksums.txt"
+    $Arch = $env:PROCESSOR_ARCHITECTURE
+    if ($env:PROCESSOR_ARCHITEW6432) { $Arch = $env:PROCESSOR_ARCHITEW6432 }
+    if ($Arch -eq "ARM64") {
+        # Versioned ARM64 base (Python 3.12); the installer still creates the
+        # project's Python 3.11 environment via conda-forge.
+        $Url = "https://repo.anaconda.com/miniconda/Miniconda3-py312_26.9.4-0-Windows-arm64.exe"
+    } else {
+        $Url = "https://repo.anaconda.com/miniconda/Miniconda3-py311_26.9.4-0-Windows-x86_64.exe"
+    }
     # Download into the project-local cache (gitignored) so an interrupted
     # transfer resumes instead of restarting the installer executable from
     # byte 0. curl.exe (bundled since Windows 10 1803) supports resumable
@@ -171,6 +181,27 @@ function Install-Miniconda {
             }
         }
     }
+    $Leaf = Split-Path -Leaf $Url
+    if (-not (Test-Path $ChecksumFile)) {
+        throw "Miniconda checksum manifest is missing: $ChecksumFile"
+    }
+    $ChecksumLine = Select-String -Path $ChecksumFile `
+        -Pattern ("^" + [regex]::Escape($Leaf) + "\s+([0-9a-fA-F]{64})\s*$") |
+        Select-Object -First 1
+    if (-not $ChecksumLine) {
+        throw "No SHA256 pin for $Leaf in $ChecksumFile."
+    }
+    $ExpectedHash = $ChecksumLine.Matches[0].Groups[1].Value.ToLower()
+    $ActualHash = (Get-FileHash -Path $Installer -Algorithm SHA256).Hash.ToLower()
+    if ($ActualHash -ne $ExpectedHash) {
+        Write-Host "Checksum mismatch for $Leaf; discarding the cached installer and downloading fresh..." -ForegroundColor Yellow
+        Remove-Item $Installer -Force -ErrorAction SilentlyContinue
+        Invoke-WebRequest -Uri $Url -OutFile $Installer -UseBasicParsing
+        $ActualHash = (Get-FileHash -Path $Installer -Algorithm SHA256).Hash.ToLower()
+        if ($ActualHash -ne $ExpectedHash) {
+            throw "Miniconda checksum verification failed for $Leaf (expected $ExpectedHash, got $ActualHash). Refusing to execute it."
+        }
+    }
     Write-Host "Installing Miniconda..."
     $Process = Start-Process -FilePath $Installer -ArgumentList "/InstallationType=JustMe", "/RegisterPython=0", "/S", "/D=$InstallDir" -Wait -PassThru
     if ($Process.ExitCode -ne 0 -or -not (Test-Path "$InstallDir\Scripts\conda.exe")) {
@@ -202,7 +233,7 @@ function Test-EnvironmentPython([string]$Name) {
     $PreviousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        & $script:CondaPath run -n $Name python -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" 2>$null | Out-Null
+        & $script:CondaPath run -n $Name python -c "import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 10), (3, 11)) else 1)" 2>$null | Out-Null
         return ($LASTEXITCODE -eq 0)
     }
     finally {
@@ -298,7 +329,7 @@ if ($EnvOverride) {
         } else {
             # A configured custom env must be the env used: never silently
             # switch to a default name and clobber the config entry.
-            throw "$EnvOverride (custom env from config.json) exists but is not Python $PythonVersion. Fix or remove it, or clear the envs entry."
+            throw "$EnvOverride (custom env from config.json) exists but is not Python 3.10/3.11. Fix or remove it, or clear the envs entry."
         }
     } else {
         $script:EnvName = $EnvOverride
@@ -327,7 +358,7 @@ if (-not $script:EnvName) {
                 Write-Host "Reusing $Candidate" -ForegroundColor Green
                 break
             }
-            Write-Host "Skipping $Candidate because it is not Python $PythonVersion." -ForegroundColor Yellow
+            Write-Host "Skipping $Candidate because it is not Python 3.10/3.11." -ForegroundColor Yellow
             continue
         }
         $script:EnvName = $Candidate
@@ -376,20 +407,22 @@ Write-Step "4/5" "Installing DROCAT"
 Invoke-PipWithRetry @("python", "-m", "pip", "install", "--retries", "5", "--timeout", "60", "-e", ".", "--no-deps")
 
 Write-Step "5/5" "Verifying the environment"
-Invoke-InEnvironment @("python", "-m", "pip", "check")
 # pip can silently install a metadata-only wheel when a PEP 517 sdist build
 # is corrupted mid-build on a flaky network (observed with img2pdf and
-# asciitree: "Successfully installed" but the modules are missing). The
-# bundled verifier catches it; before aborting, clear the pip wheel cache
-# (which would otherwise re-serve the bad wheels) and rebuild once.
+# asciitree: "Successfully installed" but the modules are missing). Both
+# pip check and the verifier are part of ONE verification attempt; the retry
+# clears the wheel cache and FORCE-reinstalls the pinned set, because
+# --upgrade alone does not replace a same-version distribution with missing
+# module files.
 $Verified = $false
 for ($Attempt = 1; $Attempt -le 2 -and -not $Verified; $Attempt++) {
     if ($Attempt -eq 2) {
         Write-Host "Verification failed; clearing the pip wheel cache and rebuilding dependencies once." -ForegroundColor Yellow
         Remove-Item (Join-Path $PipCacheDir "wheels") -Recurse -Force -ErrorAction SilentlyContinue
-        Invoke-PipWithRetry @("python", "-m", "pip", "install", "--upgrade", "--retries", "5", "--timeout", "60", "-r", "requirements-windows.txt", "-r", "ui\requirements.txt")
+        Invoke-PipWithRetry @("python", "-m", "pip", "install", "--upgrade", "--force-reinstall", "--retries", "5", "--timeout", "60", "-r", "requirements-windows.txt", "-r", "ui\requirements.txt")
     }
     try {
+        Invoke-InEnvironment @("python", "-m", "pip", "check")
         Invoke-InEnvironment @("python", "skills\drocat-install\scripts\verify_install.py", "--project", $ProjectRoot)
         $Verified = $true
     } catch {

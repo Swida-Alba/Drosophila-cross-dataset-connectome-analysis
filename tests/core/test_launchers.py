@@ -347,6 +347,10 @@ if is_drocat_command "python -u /tmp/run-4711.py"; then
     echo "run backend accepted as a DROCAT server"
     exit 1
 fi
+if is_drocat_command "python /tmp/drocat-fake/server.py 8099"; then
+    echo "non-DROCAT listener from a drocat-named path accepted"
+    exit 1
+fi
 # an empty inventory is not killable, so the guard refuses
 if kill_all_drocat ""; then
     echo "empty kill list accepted"
@@ -465,33 +469,24 @@ class TestVerifyInstallConfigRead:
 
 
 class TestWindowsFindstrPredicates:
-    """Round-6 finding F-P1: the batch's DROCAT-ownership predicates ran
-    findstr in REGEX mode ('ui\\app.py' never matched the literal text), so
-    kill-all, the EOF auto-open and the [2] menu wording were all dead on
-    Windows. These tests pin the literal /C: form at both sites so a bare
-    pattern cannot come back."""
+    """Every Windows DROCAT-ownership check must use the exact UI entry
+    point, never a bare "drocat" substring (F-I07-001)."""
 
     def _bat(self):
         return (ROOT / "windows_DROCAT.bat").read_text(encoding="utf-8")
 
-    def test_both_predicates_use_literal_slash_C(self):
+    def test_all_predicates_use_the_ui_entrypoint(self):
         text = self._bat()
-        literal = 'findstr /I /C:"ui\\app.py" /C:"drocat"'
-        assert text.count(literal) == 2, (
-            "expected the owner-classification and :stop_one_pid "
-            "predicates both in literal /C: form")
+        # owner classification, listener scan, and pre-kill recheck
+        assert text.count("ui[\\\\/]app\\.py") == 3
+        assert "-match 'drocat'" not in text
+        assert 'findstr /I /C:"ui\\app.py" /C:"drocat"' not in text
 
-    def test_no_bare_regex_predicate_remains(self):
+    def test_no_bare_drocat_predicate_remains(self):
         text = self._bat()
-        assert 'findstr /I "ui\\app.py drocat"' not in text, (
-            "the bare form is a regex split into alternatives - "
-            "ui\\app.py never matches; see round-6 F-P1")
+        assert "ui\\app.py drocat" not in text
+        assert "ui/app.py drocat" not in text
 
-    def test_scan_predicate_agrees_with_classification(self):
-        """The listing (:scan_drocat_instances, PowerShell -match) and the
-        ownership checks must not disagree by construction - the round-6
-        report showed a correct listing beside a dead kill switch."""
+    def test_scan_and_classification_agree(self):
         text = self._bat()
-        assert "ui[\\\\/]app\\.py" in text  # the PowerShell listing pattern
-        # and every listed PID passes the same literal classification
-        assert text.count('findstr /I /C:"ui\\app.py" /C:"drocat"') == 2
+        assert text.count("ui[\\\\/]app\\.py") == 3

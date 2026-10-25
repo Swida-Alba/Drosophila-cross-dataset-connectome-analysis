@@ -13,6 +13,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The installer lives in archive/install; the repository root is two levels up.
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+MINICONDA_CHECKSUMS="$SCRIPT_DIR/miniconda_checksums.txt"
 PYTHON_VERSION="3.11"
 DROCAT_VERSION=""
 if [[ -f "$PROJECT_ROOT/ui/config.py" ]]; then
@@ -70,22 +71,70 @@ json_value() {
 # environment actually used, so an empty entry is filled with the
 # auto-created name. The committed config.json is never rewritten.
 update_config_env() {
-    # $1 = version, $2 = env name, $3 = file
+    # $1 = version, $2 = env name, $3 = file.  Replace an existing version
+    # entry; when the file has no envs object, insert one before the root
+    # close; when the envs object exists without this version, insert the
+    # entry inside it.  This keeps a tokens-only or cross-version
+    # config_local.json writable without touching unrelated keys.  A
+    # single-line envs object is left unchanged rather than risking a
+    # malformed rewrite.
     [[ -f "$3" ]] || return 0
     local tmp
     tmp="$(mktemp "${TMPDIR:-/tmp}/drocat-config.XXXXXX")"
     awk -v version="$1" -v envname="$2" '
-        BEGIN { in_envs = 0; done = 0 }
-        {
-            line = $0
-            if (!done && line ~ /"envs"/) { in_envs = 1 }
+        { lines[NR] = $0; if (!found && $0 ~ /"envs"[[:space:]]*:/) found = 1 }
+        END {
             pattern = "\"" version "\"[[:space:]]*:[[:space:]]*\"[^\"]*\""
-            if (in_envs && !done && line ~ pattern) {
-                sub(pattern, "\"" version "\": \"" envname "\"", line)
-                done = 1
-                in_envs = 0
+            if (!found) {
+                last = 0
+                for (i = NR; i >= 1; i--) {
+                    if (lines[i] ~ /^[[:space:]]*}[[:space:]]*$/) { last = i; break }
+                }
+                if (!last) { for (i = 1; i <= NR; i++) print lines[i]; exit 0 }
+                prev = 0
+                for (i = last - 1; i >= 1; i--) {
+                    if (lines[i] !~ /^[[:space:]]*$/) { prev = i; break }
+                }
+                if (prev && lines[prev] !~ /,[[:space:]]*$/) lines[prev] = lines[prev] ","
+                for (i = 1; i < last; i++) print lines[i]
+                print "  \"envs\": {"
+                print "    \"" version "\": \"" envname "\""
+                print "  }"
+                print lines[last]
+                exit 0
             }
-            print line
+            start = 0; endline = 0; done = 0
+            for (i = 1; i <= NR; i++) {
+                line = lines[i]
+                if (!start && line ~ /"envs"[[:space:]]*:/) {
+                    if (line ~ /\{[[:space:]]*\}[[:space:]]*,?[[:space:]]*$/) start = -1
+                    else start = i
+                }
+                if (start > 0 && !endline && i > start && line ~ /^[[:space:]]*}/) endline = i
+                if (start > 0 && !done && (!endline || i <= endline) && line ~ pattern) {
+                    sub(pattern, "\"" version "\": \"" envname "\"", line)
+                    lines[i] = line
+                    done = 1
+                }
+            }
+            if (done || start <= 0 || !endline) {
+                for (i = 1; i <= NR; i++) print lines[i]
+                exit 0
+            }
+            prev = 0
+            for (i = endline - 1; i >= start; i--) {
+                if (lines[i] !~ /^[[:space:]]*$/) { prev = i; break }
+            }
+            if (prev == start && lines[start] ~ /\{[[:space:]]*$/) {
+                # empty multi-line object: first entry needs no leading comma
+                for (i = 1; i < endline; i++) print lines[i]
+                print "    \"" version "\": \"" envname "\""
+            } else {
+                if (prev && lines[prev] !~ /,[[:space:]]*$/) lines[prev] = lines[prev] ","
+                for (i = 1; i < endline; i++) print lines[i]
+                print "    \"" version "\": \"" envname "\""
+            }
+            for (i = endline; i <= NR; i++) print lines[i]
         }
     ' "$3" > "$tmp" && mv "$tmp" "$3"
     chmod 600 "$3"
@@ -108,6 +157,7 @@ find_conda() {
     local candidate
     for candidate in \
         "$HOME/miniconda3/bin/conda" \
+        "$HOME/miniconda3-drocat/bin/conda" \
         "$HOME/anaconda3/bin/conda" \
         "$HOME/miniforge3/bin/conda" \
         "/opt/miniconda3/bin/conda" \
@@ -121,21 +171,77 @@ find_conda() {
     done
 }
 
+miniconda_checksum() {
+    # $1 = installer basename; prints the pinned SHA256.
+    awk -v name="$1" '$1 == name { print $2; exit }' "$MINICONDA_CHECKSUMS" 2>/dev/null
+}
+
+sha256_file() {
+    if command_exists shasum; then
+        shasum -a 256 "$1" | awk '{ print $1 }'
+    elif command_exists sha256sum; then
+        sha256sum "$1" | awk '{ print $1 }'
+    else
+        return 1
+    fi
+}
+
+verify_miniconda_download() {
+    # $1 = installer path, $2 = signed filename in the manifest.
+    local expected actual
+    [[ -f "$MINICONDA_CHECKSUMS" ]] || {
+        printf "%bERROR: Miniconda checksum manifest is missing: %s%b\n" \
+            "$RED" "$MINICONDA_CHECKSUMS" "$NC" >&2
+        return 1
+    }
+    expected="$(miniconda_checksum "$2")"
+    [[ -n "$expected" ]] || {
+        printf "%bERROR: no SHA256 pin for %s in %s.%b\n" \
+            "$RED" "$2" "$MINICONDA_CHECKSUMS" "$NC" >&2
+        return 1
+    }
+    actual="$(sha256_file "$1" || true)"
+    [[ -n "$actual" ]] || {
+        printf "%bERROR: no SHA256 tool (shasum/sha256sum) available.%b\n" \
+            "$RED" "$NC" >&2
+        return 1
+    }
+    if [[ "$actual" != "$expected" ]]; then
+        printf "%bERROR: Miniconda checksum mismatch for %s (expected %s, got %s).%b\n" \
+            "$RED" "$2" "$expected" "$actual" "$NC" >&2
+        return 1
+    fi
+    return 0
+}
+
+miniconda_install_dir() {
+    # Never delete or overwrite an existing (broken) prefix; use the same
+    # alternate-prefix strategy the Windows installer uses.
+    if [[ -d "$HOME/miniconda3" && ! -x "$HOME/miniconda3/bin/conda" ]]; then
+        printf '%s\n' "$HOME/miniconda3-drocat"
+    else
+        printf '%s\n' "$HOME/miniconda3"
+    fi
+}
+
 install_miniconda() {
-    local os arch url installer flags
+    local os arch url installer flags install_dir
     os="$(uname -s)"
     arch="$(uname -m)"
     case "$os:$arch" in
-        Darwin:arm64) url="https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh" ;;
-        Darwin:*) url="https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh" ;;
-        Linux:aarch64|Linux:arm64) url="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh" ;;
-        Linux:*) url="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh" ;;
+        Darwin:arm64) url="https://repo.anaconda.com/miniconda/Miniconda3-py311_26.9.4-0-MacOSX-arm64.sh" ;;
+        # 26.x has no Intel-Mac build; 25.7.0-2 is the newest versioned one.
+        # Never pin a "latest" URL: its bytes change when Anaconda ships a
+        # new release, which would fail the checksum and block installation.
+        Darwin:*) url="https://repo.anaconda.com/miniconda/Miniconda3-py311_25.7.0-2-MacOSX-x86_64.sh" ;;
+        Linux:aarch64|Linux:arm64) url="https://repo.anaconda.com/miniconda/Miniconda3-py311_26.9.4-0-Linux-aarch64.sh" ;;
+        Linux:x86_64|Linux:*) url="https://repo.anaconda.com/miniconda/Miniconda3-py311_26.9.4-0-Linux-x86_64.sh" ;;
         *) printf "%bUnsupported operating system: %s%b\n" "$RED" "$os" "$NC" >&2; exit 1 ;;
     esac
 
     # Download into a project-local cache (gitignored) so an interrupted
-    # transfer resumes instead of restarting the ~150 MB file from byte 0 -
-    # on a throttled CDN a single-shot download can take an hour or die
+    # transfer resumes instead of restarting the ~150-210 MB file from byte
+    # 0 - on a throttled CDN a single-shot download can take an hour or die
     # outright. BSD mktemp only replaces a trailing X run, so a
     # 'drocat-miniconda.XXXXXX.sh' template would create a literal 'XXXXXX'
     # filename; the deterministic cache path needs no template at all.
@@ -148,8 +254,7 @@ install_miniconda() {
     if command_exists curl; then
         # The shell-level loop covers failures curl's own --retry will not
         # touch, without depending on --retry-all-errors (curl >= 7.71).
-        # -C - resumes the partial file across attempts and installer
-        # re-runs.
+        # -C - resumes the partial file across attempts and installer re-runs.
         for attempt in 1 2 3 4 5; do
             if curl -fL --retry 5 --retry-delay 3 -C - "${progress[@]}" "$url" -o "$installer"; then
                 break
@@ -174,6 +279,11 @@ install_miniconda() {
                 break
             fi
             if [[ "$attempt" -eq 5 ]]; then
+                printf "%bResuming failed; retrying the download from scratch...%b\n" "$YELLOW" "$NC"
+                rm -f "$installer"
+                if wget -q "$url" -O "$installer"; then
+                    break
+                fi
                 printf "%bERROR: Miniconda download failed (%s).%b\n" "$RED" "$url" "$NC" >&2
                 exit 1
             fi
@@ -185,15 +295,34 @@ install_miniconda() {
         printf "%bERROR: curl or wget is required to download Miniconda.%b\n" "$RED" "$NC" >&2
         exit 1
     fi
-    flags=(-b -p "$HOME/miniconda3")
-    [[ -d "$HOME/miniconda3" ]] && flags=(-b -u -p "$HOME/miniconda3")
+    if ! verify_miniconda_download "$installer" "$(basename "$url")"; then
+        # A stale cached file may be a valid older download under the same
+        # name.  Discard it and make one unverified-cache-free attempt.
+        printf "%bDiscarding cached installer and downloading fresh...%b\n" "$YELLOW" "$NC"
+        rm -f "$installer"
+        if command_exists curl; then
+            curl -fL --retry 5 --retry-delay 3 "${progress[@]}" "$url" -o "$installer" || \
+                { printf "%bERROR: Miniconda download failed (%s).%b\n" "$RED" "$url" "$NC" >&2; exit 1; }
+        else
+            wget -q "$url" -O "$installer" || \
+                { printf "%bERROR: Miniconda download failed (%s).%b\n" "$RED" "$url" "$NC" >&2; exit 1; }
+        fi
+        verify_miniconda_download "$installer" "$(basename "$url")" || {
+            printf "%bERROR: Miniconda verification failed; refusing to execute the installer.%b\n" \
+                "$RED" "$NC" >&2
+            exit 1
+        }
+    fi
+    install_dir="$(miniconda_install_dir)"
+    flags=(-b -p "$install_dir")
+    [[ -d "$install_dir" ]] && flags=(-b -u -p "$install_dir")
     bash "$installer" "${flags[@]}"
-    [[ -x "$HOME/miniconda3/bin/conda" ]] || {
+    [[ -x "$install_dir/bin/conda" ]] || {
         printf "%bERROR: Miniconda installation did not produce conda.%b\n" "$RED" "$NC" >&2
         exit 1
     }
     rm -f "$installer"
-    CONDA_BIN="$HOME/miniconda3/bin/conda"
+    CONDA_BIN="$install_dir/bin/conda"
 }
 
 printf "%b[1/5] Checking for Conda...%b\n" "$BLUE" "$NC"
@@ -211,7 +340,7 @@ env_exists() {
 
 env_usable() {
     "$CONDA_BIN" run -n "$1" python -c \
-        'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)' \
+        'import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 10), (3, 11)) else 1)' \
         >/dev/null 2>&1
 }
 
@@ -241,8 +370,8 @@ if [[ -n "$ENV_OVERRIDE" ]]; then
         else
             # A configured custom env must be the env used: never silently
             # switch to a default name and clobber the config entry.
-            printf "%bERROR: %s (custom env from %s) exists but is not Python %s. Fix or remove it, or clear the envs entry.%b\n" \
-                "$RED" "$ENV_OVERRIDE" "$ENV_SOURCE" "$PYTHON_VERSION" "$NC" >&2
+            printf "%bERROR: %s (custom env from %s) exists but is not Python 3.10/3.11. Fix or remove it, or clear the envs entry.%b\n" \
+                "$RED" "$ENV_OVERRIDE" "$ENV_SOURCE" "$NC" >&2
             exit 1
         fi
     else
@@ -268,8 +397,8 @@ if [[ -z "$ENV_NAME" ]]; then
                 printf "%b✓ Reusing %s%b\n" "$GREEN" "$ENV_NAME" "$NC"
                 break
             fi
-            printf "%bSkipping %s because it is not Python %s.%b\n" \
-                "$YELLOW" "$candidate" "$PYTHON_VERSION" "$NC"
+            printf "%bSkipping %s because it is not Python 3.10/3.11.%b\n" \
+                "$YELLOW" "$candidate" "$NC"
             continue
         fi
         ENV_NAME="$candidate"
@@ -360,12 +489,13 @@ printf "\n%b[4/5] Installing DROCAT...%b\n" "$BLUE" "$NC"
 run_in_env_pip_retry -e . --no-deps
 
 printf "\n%b[5/5] Verifying the environment...%b\n" "$BLUE" "$NC"
-run_in_env python -m pip check
 # pip can silently install a metadata-only wheel when a PEP 517 sdist build
 # is corrupted mid-build on a flaky network (observed with img2pdf and
-# asciitree: "Successfully installed" but the modules are missing). The
-# bundled verifier catches it; before aborting, clear the pip wheel cache
-# (which would otherwise re-serve the bad wheels) and rebuild once.
+# asciitree: "Successfully installed" but the modules are missing). Both
+# pip check and the verifier are part of ONE verification attempt; the
+# retry clears the wheel cache and FORCE-reinstalls the pinned set, because
+# --upgrade alone does not replace a same-version distribution with missing
+# module files.
 VERIFY_OK=""
 for attempt in 1 2; do
     if [[ "$attempt" -eq 2 ]]; then
@@ -379,9 +509,10 @@ for attempt in 1 2; do
             fi
         fi
         rm -rf "$pip_cache_dir/wheels"
-        run_in_env_pip_retry --upgrade -r requirements.txt -r ui/requirements.txt
+        run_in_env_pip_retry --upgrade --force-reinstall -r requirements.txt -r ui/requirements.txt
     fi
-    if run_in_env python skills/drocat-install/scripts/verify_install.py --project "$PROJECT_ROOT"; then
+    if run_in_env python -m pip check \
+        && run_in_env python skills/drocat-install/scripts/verify_install.py --project "$PROJECT_ROOT"; then
         VERIFY_OK=1
         break
     fi
