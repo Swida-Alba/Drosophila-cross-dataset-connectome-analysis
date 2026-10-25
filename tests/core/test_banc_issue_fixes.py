@@ -25,6 +25,27 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import BANC_file_converter as bfc  # noqa: E402
 import banc_public_data as bpd  # noqa: E402
+from coana import FindNeuronConnection  # noqa: E402
+
+
+def test_banc_product_floor_is_applied_and_disclosed():
+    obj = FindNeuronConnection.__new__(FindNeuronConnection)
+    obj.dataset = "banc_v888"
+    obj.min_synapse_num = 1
+    obj.weight_basis = "synapse"
+    obj._warn_notes = []
+    obj._apply_banc_product_floor()
+    assert obj.min_synapse_num == 3
+    assert any("BANC product floor" in note for note in obj._warn_notes)
+
+    ratio = FindNeuronConnection.__new__(FindNeuronConnection)
+    ratio.dataset = "banc_v888"
+    ratio.min_synapse_num = 3
+    ratio.weight_basis = "connection_ratio"
+    ratio._warn_notes = []
+    ratio._apply_banc_product_floor()
+    assert ratio.min_synapse_num == 3
+    assert any("connection_ratio" in note for note in ratio._warn_notes)
 
 
 # ---------------------------------------------------------------------------

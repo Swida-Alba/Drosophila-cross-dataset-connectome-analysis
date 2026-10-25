@@ -1690,10 +1690,20 @@ class FlyLightDownloader:
         import ssl
         
         local_path.parent.mkdir(parents=True, exist_ok=True)
+        part_path = local_path.with_name(local_path.name + ".part")
+
+        def _cleanup_part():
+            try:
+                part_path.unlink()
+            except OSError:
+                pass
         
         for attempt in range(max_retries):
             try:
-                urllib.request.urlretrieve(file.url, str(local_path))
+                urllib.request.urlretrieve(file.url, str(part_path))
+                if not part_path.exists() or part_path.stat().st_size == 0:
+                    raise OSError("download produced no bytes")
+                os.replace(part_path, local_path)
                 return True
             except ssl.SSLError as e:
                 # SSL errors (e.g., UNEXPECTED_EOF_WHILE_READING) - retry with backoff
@@ -1703,6 +1713,7 @@ class FlyLightDownloader:
                     time.sleep(wait_time)
                 else:
                     self._log(f"❌ SSL error downloading {file.filename} after {max_retries} attempts: {e}")
+                    _cleanup_part()
                     return False
             except urllib.error.URLError as e:
                 # Network errors - retry with backoff
@@ -1712,21 +1723,33 @@ class FlyLightDownloader:
                     time.sleep(wait_time)
                 else:
                     self._log(f"❌ Network error downloading {file.filename} after {max_retries} attempts: {e}")
+                    _cleanup_part()
                     return False
             except Exception as e:
                 # Other errors - don't retry
                 self._log(f"❌ Error downloading {file.filename}: {e}")
+                _cleanup_part()
                 return False
         
+        _cleanup_part()
         return False
     
     def _download_file_boto3(self, file: FlyLightFile, local_path: Path) -> bool:
         """Download a file using boto3."""
+        part_path = local_path.with_name(local_path.name + ".part")
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            self._s3_client.download_file(FLYLIGHT_BUCKET, file.key, str(local_path))
+            self._s3_client.download_file(
+                FLYLIGHT_BUCKET, file.key, str(part_path))
+            if not part_path.exists() or part_path.stat().st_size == 0:
+                raise OSError("download produced no bytes")
+            os.replace(part_path, local_path)
             return True
         except Exception as e:
+            try:
+                part_path.unlink()
+            except OSError:
+                pass
             self._log(f"❌ Error downloading {file.filename}: {e}")
             return False
     
@@ -1819,6 +1842,15 @@ class FlyLightDownloader:
         else:
             line_names = line_name
         
+        _formats = [str(f).lower() for f in (
+            self.formats if isinstance(self.formats, (list, tuple))
+            else [self.formats])]
+        if ('lsm' in _formats or 'all' in _formats) and any(
+                str(name).upper().startswith('VT') for name in line_names):
+            self._log("⚠️  VT lines do not expose LSM confocal stacks "
+                      "through this downloader; other requested formats "
+                      "continue.")
+
         # Create combined name for folder if multiple lines
         # Use _etc{N} format if more than 3 lines to avoid long names
         if len(line_names) == 1:

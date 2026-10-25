@@ -99,6 +99,18 @@ def test_build_cache_without_types_and_import_error(monkeypatch, fake_connection
     assert "Neuron types: ALL" in capsys.readouterr().out
 
 
+def test_complete_neuron_count_requires_the_recorded_row_count():
+    index_df = pd.DataFrame({
+        "bodyId": ["1", "2", "3", "4"],
+        "downstream_complete": [True, True, True, False],
+        "connection_count": [10, 1, 0, 5],
+    })
+    conn_df = pd.DataFrame({"bodyId_pre": ["1", "2", "4"]})
+    # 1: 1/10 rows -> incomplete; 2: 1/1 -> complete; 3: zero flagged ->
+    # complete; 4: flag false and 1/5 -> incomplete.
+    assert bcc.complete_neuron_count(index_df, conn_df) == 2
+
+
 def test_show_stats_full(tmp_path, monkeypatch, capsys):
     _redirect_module_paths(monkeypatch, bcc, tmp_path)
     safe = "hemibrain_v1_2_1"

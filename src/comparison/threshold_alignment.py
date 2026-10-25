@@ -236,6 +236,7 @@ def suggest_combination_rows(
     reference_dataset: str,
     dataset_order: List[str],
     tolerance: float = ALIGNMENT_TOLERANCE,
+    minimums: Optional[Dict[str, float]] = None,
 ) -> List[Dict]:
     """Turn an alignment best-match frame into threshold-combination rows.
 
@@ -243,6 +244,13 @@ def suggest_combination_rows(
     query row ``{ref: anchor_t, target: best_t, ...}`` when every target is
     within ``tolerance`` (or the row is flagged). Output rows use the
     ``threshold_combinations`` shape consumed by ``ComparisonParameters``.
+
+    ``minimums`` clamps a suggested target threshold up to the dataset's
+    lowest materialized threshold. A source extract is fetched at that
+    floor, so the prober reports the same count for every t below it; a
+    fresh run at the lower t would fetch edges the probe never saw. The
+    clamp is count-preserving on the analyzed extract and keeps a
+    recommendation executable under the same density contract.
     """
     if best_matches_df is None or getattr(best_matches_df, 'empty', True):
         return []
@@ -271,7 +279,11 @@ def suggest_combination_rows(
         for _, r in sub.iterrows():
             target = r.get('target_dataset')
             if target in dataset_order and target not in cell:
-                cell[target] = _thr(r['best_t'])
+                target_t = _thr(r['best_t'])
+                floor = (minimums or {}).get(target)
+                if floor is not None:
+                    target_t = max(target_t, _thr(floor))
+                cell[target] = target_t
                 if r.get('count_distance') is not None:
                     distances.append(float(r['count_distance']))
         if set(cell.keys()) != set(dataset_order):

@@ -48,7 +48,7 @@ The <b>Source Neurons</b> and <b>Target Neurons</b> boxes accept one query per c
   <tr><th>Example</th><th>Behavior</th></tr>
   <tr><td>Datasets: male-cns:v0.9, hemibrain:v1.2.1</td><td>Two datasets compared using their automatic display names</td></tr>
   <tr><td>Thresholds: <code>3, 5, 10</code></td><td>Separate analyses per threshold</td></tr>
-  <tr><td style="white-space:nowrap">Rough equivalence</td><td>Whole-dataset hint, <b>typed-searched basis</b> (distinct typed&harr;typed pairs with weight ≥ t &divide; typed neurons, measured 2026-09-25 from the cached tables — BANC v888 188.5k typed, FAFB v783 139.3k, male-cns v1.0 164.5k; this is the universe the searched graph actually scores): BANC ≥ 3 ≈ 19 pairs/neuron ≈ FAFB ≥ ~8 ≈ male-cns ≥ ~9; BANC ≥ 5 ≈ 10 ≈ FAFB ≥ ~11 ≈ male-cns ≥ ~15; at τ ≥ 5, FAFB ≈ 2.7x BANC and male-cns ≈ 3.8x BANC. The 2026-09-07 reference table in the Cross-Dataset guide uses a different basis — <i>all</i> table pairs (unfiltered endpoints, weight = max over ROI rows) &divide; all neuron-table rows — under which BANC @3 = 46.1 lands at parity with FAFB 47.3; BANC's untyped-endpoint pairs are what drive the difference. Thresholds are empirical calibrations, not interchangeable by rule — per-query alignment differs. The <code>threshold_alignment_*.csv</code> files are raw-run density diagnostics (and are marked as such in combination mode); actual advanced comparisons use the query manifest.</td></tr>
+  <tr><td style="white-space:nowrap">Rough equivalence</td><td>Whole-dataset hint, <b>typed-searched basis</b> (distinct typed&harr;typed pairs with weight ≥ t &divide; typed neurons, measured 2026-09-25 from the cached tables — BANC v888 188.5k typed, FAFB v783 139.3k, male-cns v1.0 164.5k; this is the universe the searched graph actually scores): BANC ≥ 3 ≈ 19 pairs/neuron ≈ FAFB ≥ ~8 ≈ male-cns ≥ ~9; BANC ≥ 5 ≈ 10 ≈ FAFB ≥ ~11 ≈ male-cns ≥ ~15; at τ ≥ 5, FAFB ≈ 2.7x BANC and male-cns ≈ 3.8x BANC. The 2026-09-07 reference table in the Cross-Dataset guide uses a different basis — <i>all</i> table pairs (unfiltered endpoints, weight = max over ROI rows) &divide; all neuron-table rows — under which BANC @3 = 46.1 lands at parity with FAFB 47.3; BANC's untyped-endpoint pairs are what drive the difference. Thresholds are empirical calibrations, not interchangeable by rule — per-query alignment differs. The <code>threshold_alignment_*.csv</code> files are raw-run density diagnostics (marked as such in combination mode) counted on <b>canonical mapped</b> type pairs; actual advanced comparisons use the query manifest.</td></tr>
   <tr><td>Mode: <code>edge</code></td><td>Edges compared by weight only</td></tr>
   <tr><td>Mode: <code>path</code> (default)</td><td>Edges discovered through paths</td></tr>
   <tr><td>Path Enumeration: <code>shortest</code></td><td>Per-dataset runs keep only per-pair minimum-hop paths (all ties)</td></tr>
@@ -306,6 +306,26 @@ dataset_data/{dataset_folder}/minsyn_*/...      # per-dataset FindAllPath
                                                # hemisphere_symmetry/
                                                # and find_reciprocal/
                                                # when enabled</code></pre>
+
+<div class="callout info">
+  <b>Edge-mode counts have two labelled bases.</b>
+  <code>unified_summary.csv</code>, <code>path_count_comparison.csv</code>,
+  <code>threshold_sensitivity.csv</code>, <code>motif_analysis.csv</code> and
+  <code>edge_mode_data/{dataset}/connections_edge_N.csv</code> count the run's
+  <b>native type labels</b> (<code>count_basis=native_type_pairs_raw_run</code>).
+  The cross-dataset tables — <code>edge_presence_matrix.csv</code>,
+  <code>unique_to_*.csv</code>, <code>edge_count_data.csv</code>, and the
+  threshold-alignment/density files — use the <b>canonical mapped</b> merge
+  keys (<code>type_key_space=canonical_aligned</code>). With auto type mapping
+  on, the two can differ (e.g. 380 raw vs 360 canonical pairs); compare like
+  with like. A below-range alignment target reports an empty <code>best_t</code>
+  with <code>target_density_below_range</code> and
+  <code>within_tolerance=false</code>, and the exported
+  <code>best_t</code>/<code>best_t_range</code> plus suggested combinations are
+  clamped up to each dataset's lowest materialized threshold.
+  <code>traversal_probability</code> is suspended (2026-10-06, unverifiable
+  fidelity) and is not exported or used for ranking.
+</div>
 
 <div class="callout tip">
   <b>Deprecated datasets</b> (e.g. male-cns:v0.9) may no longer answer

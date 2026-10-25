@@ -712,6 +712,33 @@ def test_fafb_connections_invalid_input(tmp_path):
     ) is False
 
 
+def test_fafb_v783_synapse_finder_rejects_other_releases(tmp_path):
+    other = tmp_path / "synapse_other_release.csv.gz"
+    _write_gz(other, "pre_root_id,post_root_id\n1,2\n")
+    assert fafb._find_fafb_synapse_csv(tmp_path, "flywire_FAFB_v783") is None
+
+    exact = tmp_path / "fafb_v783_princeton_synapse_table.csv.gz"
+    _write_gz(exact, "pre_root_id,post_root_id\n1,2\n")
+    assert fafb._find_fafb_synapse_csv(
+        tmp_path, "flywire_FAFB_v783") == str(exact)
+
+
+def test_fafb_skeleton_zip_validation(tmp_path):
+    good = tmp_path / "sk_lod1_783_healed.zip"
+    with zipfile.ZipFile(good, "w") as archive:
+        archive.writestr("720575940000000001.swc", "1 0 0 0 0 1 -1\n")
+    assert fafb._valid_skeleton_zip(str(good)) is True
+
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"PK truncated")
+    assert fafb._valid_skeleton_zip(str(bad)) is False
+
+    no_swc = tmp_path / "no_swc.zip"
+    with zipfile.ZipFile(no_swc, "w") as archive:
+        archive.writestr("readme.txt", "not a skeleton")
+    assert fafb._valid_skeleton_zip(str(no_swc)) is False
+
+
 # ===========================================================================
 # FAFB: process_synapse_table_to_parquet
 # ===========================================================================
@@ -1038,7 +1065,7 @@ def test_fafb_ensure_data_minimal_with_fallbacks(tmp_path, capsys):
     # and a synapse table under a non-standard name (discovery loop).
     _write_gz(downloads / "classification.csv.gz", FAFB_CLASSIFICATION)
     _write_gz(downloads / "connections.csv.gz", _fafb_connections_rows())
-    _write_gz(downloads / "custom_synapse_export.csv.gz",
+    _write_gz(downloads / "custom_synapse_v999_export.csv.gz",
               "pre_root_id,post_root_id\n720575940368841570,720575940368841571\n")
     with zipfile.ZipFile(downloads / "my_skeletons.zip", "w") as handle:
         handle.writestr("1.swc", "1 0 0 0 0 1 -1\n")

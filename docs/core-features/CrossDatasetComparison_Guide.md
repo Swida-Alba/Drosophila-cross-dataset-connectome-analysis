@@ -680,7 +680,7 @@ comparison_results_20251127_155513/
 │   ├── similarity_heatmap_cosine.png
 │   ├── by_ratio/
 │   │   └── ratio_heatmap_*.png
-│   ├── by_probability/
+│   ├── by_probability/               # SUSPENDED (2026-10-06) — not emitted
 │   │   └── traversal_prob_heatmap_*.png
 │   ├── edge_heatmap_query_<query_id>.png  # Custom combination rows
 │   ├── path_heatmap_query_<query_id>.png
@@ -963,6 +963,24 @@ describes the side-effect path runs, not the edge data: the edge comparison
 itself is exactly `weight >= requested`, so `effective_thresholds.json`
 reports `applied_threshold = requested` for every dataset (tau/budget fields
 null; the side-run numbers live in each row's `side_path_run` block).
+
+**Edge-mode counting has two disclosed layers.** The run's own native-label
+pair count is in `unified_summary.csv`, `path_count_comparison.csv`,
+`threshold_sensitivity.csv`, `motif_analysis.csv`, and
+`edge_mode_data/{dataset}/connections_edge_N.csv`; each carries or is
+documented as `count_basis=native_type_pairs_raw_run`. The cross-dataset
+tables — `edge_presence_matrix.csv`, `unique_to_*.csv`, the report headline,
+`edge_count_data.csv`, and the threshold-alignment/density files — use the
+**canonical mapped** merge keys (`type_key_space=canonical_aligned`). With auto
+type mapping enabled these can legitimately differ (e.g. 380 raw pairs vs 360
+canonical pairs), so compare like with like. Threshold alignment counts
+distinct canonical type pairs with at least one bodyId edge at or above the
+threshold; a target whose maximum density is below the anchor's reports an
+empty `best_t` / `target_density_below_range` and `within_tolerance=false`,
+and any suggested combination is clamped up to each dataset's lowest
+materialized threshold. `traversal_probability` is **suspended** (2026-10-06,
+unverifiable fidelity): neither the edge export nor the path exports compute
+or rank by it.
 
 In Custom combination mode, `threshold_combinations.csv` is the
 canonical query/dataset join: it adds `query_id`, the requested cell, and the
@@ -1308,19 +1326,23 @@ holds under τ = 3.
 ### Where the per-query alignment comes from
 
 Every cross-dataset run exports threshold-alignment files (spec Feature C).
-They describe the typed/raw threshold grid used for density diagnostics. In
-Custom combination mode they are explicitly marked with
-`threshold_scope=raw_run_schedule_diagnostic`; use the query manifest for
-the actual comparison rows:
+They describe the threshold grid used for density diagnostics, counted on
+**canonical mapped** type pairs (`type_key_space=canonical_aligned`) with at
+least one bodyId edge at or above the threshold. In Custom combination mode
+they are explicitly marked with `threshold_scope=raw_run_schedule_diagnostic`;
+use the query manifest for the actual comparison rows:
 
 - `comparison_results/threshold_alignment_best_matches.csv` — a bisection
   prober over each dataset's lowest-threshold extract finds the
   best-matching density threshold in every other dataset (extended range,
   not limited to the typed thresholds). Primary metric:
   edge-count distance `|n_a − n_b| / max(n_a, n_b, 1)`; tolerance ≤ 0.10.
+  `best_t`/`best_t_range` are clamped to the dataset's lowest **materialized**
+  threshold; a below-range target reports an empty `best_t`,
+  `target_density_below_range` and `within_tolerance=false`.
 - `comparison_results/threshold_alignment_matrix.csv` (+ heatmap) —
-  pairwise metrics over the typed/raw thresholds only; it is not a substitute
-  for the per-row advanced query map.
+  pairwise metrics over the materialized thresholds only; it is not a
+  substitute for the per-row advanced query map.
 - `comparison_results/edge_density_per_threshold.csv` and
   `comparison_visualizations/edge_density_threshold_curves.png` — the
   density curves behind the matching (absolute + per-neuron).

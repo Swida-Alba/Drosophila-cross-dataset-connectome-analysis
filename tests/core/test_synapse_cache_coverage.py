@@ -187,6 +187,16 @@ def test_read_manifest_valid_existing(tmp_path):
     assert "1\t2" in manifest["pairs"]
 
 
+def test_two_instances_merge_instead_of_overwriting_manifest(tmp_path):
+    first = sc.SynapseCache(DATASET, str(tmp_path))
+    second = sc.SynapseCache(DATASET, str(tmp_path))
+    first.save_pairs(_pair_frame("1", "2"), [("1", "2")])
+    second.save_pairs(_pair_frame("3", "4"), [("3", "4")])
+    manifest = sc.SynapseCache(DATASET, str(tmp_path))._read_manifest()
+    assert "1\t2" in manifest["pairs"]
+    assert "3\t4" in manifest["pairs"]
+
+
 def test_read_manifest_wrong_schema_resets(tmp_path):
     cache = sc.SynapseCache(DATASET, str(tmp_path))
     cache.manifest_path.parent.mkdir(parents=True, exist_ok=True)

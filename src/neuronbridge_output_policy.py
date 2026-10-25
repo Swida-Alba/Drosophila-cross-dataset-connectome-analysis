@@ -389,6 +389,9 @@ def enforce_match_table_retention(
                 "removed": [], "bytes_reclaimed": 0}
 
     root = Path(output_dir)
+    if not root.is_dir():
+        return {"kept_window": 0, "pruned_runs": [],
+                "removed": [], "bytes_reclaimed": 0}
     runs = [
         d for d in root.iterdir()
         if d.is_dir() and d.name.startswith(RUN_FOLDER_PREFIX)

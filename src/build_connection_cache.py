@@ -126,6 +126,37 @@ def build_cache(
     return result
 
 
+def complete_neuron_count(index_df, conn_df) -> int:
+    """Neurons whose cached rows cover their recorded ``connection_count``.
+
+    A neuron with one cached row out of ten must not count as fully cached;
+    the old union of "has any row" + zero-outdegree flags hid exactly that
+    truncation. Zero-outdegree neurons are complete only when the flag says
+    so.
+    """
+    if 'downstream_complete' not in index_df.columns:
+        return 0
+    flagged_zero = set(
+        index_df.loc[index_df['downstream_complete'], 'bodyId'].astype(str)
+    )
+    if 'connection_count' in index_df.columns and conn_df is not None \
+            and 'bodyId_pre' in conn_df.columns:
+        counts = conn_df['bodyId_pre'].astype(str).value_counts().to_dict()
+        complete = 0
+        for bid, want in zip(index_df['bodyId'].astype(str),
+                             index_df['connection_count'].fillna(0)):
+            want = int(want)
+            if want <= 0:
+                complete += int(bid in flagged_zero)
+            elif counts.get(bid, 0) >= want:
+                complete += 1
+        return complete
+    rows_pre = set()
+    if conn_df is not None and 'bodyId_pre' in getattr(conn_df, 'columns', ()):
+        rows_pre = set(conn_df['bodyId_pre'].astype(str))
+    return len(rows_pre | flagged_zero)
+
+
 def show_stats(dataset: str) -> None:
     """Show cache statistics for a dataset."""
     import pandas as pd
@@ -173,28 +204,8 @@ def show_stats(dataset: str) -> None:
             print(f"  File size: {index_file.stat().st_size / (1024*1024):.2f} MB")
             print(f"  Total neurons indexed: {len(index_df):,}")
             if 'downstream_complete' in index_df.columns:
-                # Rows in the cache prove completeness for neurons with
-                # connections (verified against the server); the flag only
-                # marks the zero-outdegree case.
-                rows_pre = set()
-                try:
-                    rows_pre = set(conn_df['bodyId_pre'].astype(str))
-                except (NameError, KeyError):
-                    pass
-                if 'connection_count' in index_df.columns:
-                    flagged_zero = set(
-                        index_df.loc[
-                            index_df['downstream_complete'] & (index_df['connection_count'] == 0),
-                            'bodyId',
-                        ].astype(str)
-                    )
-                else:
-                    # Older indexes predate connection_count; fall back to the
-                    # zero-outdegree flag alone (it already proves completeness).
-                    flagged_zero = set(
-                        index_df.loc[index_df['downstream_complete'], 'bodyId'].astype(str)
-                    )
-                complete = len(rows_pre | flagged_zero)
+                complete = complete_neuron_count(
+                    index_df, locals().get('conn_df'))
                 print(f"  Fully cached neurons: {complete:,} ({100*complete/len(index_df):.1f}%)")
         except Exception as e:
             print(f"[WARNING] Could not read neuron index: {e}")

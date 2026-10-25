@@ -12,7 +12,9 @@ except ImportError:
 if ensure_utf8_stdio is not None:
     ensure_utf8_stdio()
 import os
+import re
 import shutil
+import time
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -86,6 +88,51 @@ try:
     from .flywire_ids import canonicalize_flywire_id_expr, normalize_flywire_id_columns
 except ImportError:
     from flywire_ids import canonicalize_flywire_id_expr, normalize_flywire_id_columns
+
+
+def _find_fafb_synapse_csv(downloads_dir, dataset_name):
+    """Return the dataset-version synapse CSV, or None.
+
+    A fallback used to convert the first ``*synapse*.csv.gz`` it found,
+    including another release's table, under the v783 dataset name. Require
+    the dataset's version token in the filename; an unrecognized file is
+    refused rather than mislabeled.
+    """
+    match = re.search(r"v(\d+)", str(dataset_name))
+    token = f"v{match.group(1)}" if match else "v783"
+    # The v783 table is the only released FAFB synapse table; accept its
+    # canonical name for any FAFB dataset spelling, plus a file carrying the
+    # requested dataset's version token.
+    for name in (f"fafb_{token}_princeton_synapse_table.csv.gz",
+                 "fafb_v783_princeton_synapse_table.csv.gz"):
+        exact = os.path.join(downloads_dir, name)
+        if os.path.exists(exact):
+            return exact
+    try:
+        candidates = sorted(
+            name for name in os.listdir(downloads_dir)
+            if "synapse" in name.lower() and name.endswith(".csv.gz"))
+    except OSError:
+        return None
+    for name in candidates:
+        if token.lower() in name.lower():
+            return os.path.join(downloads_dir, name)
+    if candidates:
+        print(f"  ⚠️  Ignoring synapse table(s) without the {token} token: "
+              + ", ".join(candidates[:3]))
+    return None
+
+
+def _valid_skeleton_zip(path):
+    """True when *path* is a readable ZIP with at least one SWC member."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return any(
+        name.lower().endswith(".swc") or ".swc." in name.lower()
+        for name in names)
 
 try:
     from .utils.flywire_readiness import print_download_instructions as _print_flywire_download_instructions
@@ -824,12 +871,7 @@ def ensure_flywire_data(dataset_name, dataset_dir):
                 os.remove(syn_pq)
             except OSError:
                 pass
-        syn_raw = os.path.join(downloads_dir, "fafb_v783_princeton_synapse_table.csv.gz")
-        if not os.path.exists(syn_raw):
-            for f in os.listdir(downloads_dir):
-                if 'synapse' in f and f.endswith('.csv.gz'):
-                    syn_raw = os.path.join(downloads_dir, f)
-                    break
+        syn_raw = _find_fafb_synapse_csv(downloads_dir, dataset_name)
 
         if syn_raw and os.path.exists(syn_raw):
             process_synapse_table_to_parquet(syn_raw, syn_pq)
@@ -837,9 +879,17 @@ def ensure_flywire_data(dataset_name, dataset_dir):
             print("  ℹ️  Synapse table source not found (optional).")
 
     # --- 4. Skeletons (Optional) ---
-    if os.path.exists(sk_zip_dst):
+    if os.path.exists(sk_zip_dst) and _valid_skeleton_zip(sk_zip_dst):
         print(f"  ✓ Found existing skeletons: {os.path.basename(sk_zip_dst)}")
     else:
+        if os.path.exists(sk_zip_dst):
+            print("  ⚠️  Existing skeleton ZIP is unreadable; quarantining it "
+                  "and re-checking the raw download.")
+            try:
+                os.replace(sk_zip_dst,
+                           f"{sk_zip_dst}.corrupt-{int(time.time_ns())}")
+            except OSError:
+                pass
         sk_raw = os.path.join(downloads_dir, "sk_lod1_783_healed.zip")
         if not os.path.exists(sk_raw):
             for f in os.listdir(downloads_dir):
@@ -847,10 +897,12 @@ def ensure_flywire_data(dataset_name, dataset_dir):
                     sk_raw = os.path.join(downloads_dir, f)
                     break
 
-        if sk_raw and os.path.exists(sk_raw):
+        if sk_raw and os.path.exists(sk_raw) and _valid_skeleton_zip(sk_raw):
             print(f"  Moving {os.path.basename(sk_raw)} -> {os.path.basename(sk_zip_dst)}...")
             shutil.move(sk_raw, sk_zip_dst)
         else:
+            if sk_raw and os.path.exists(sk_raw):
+                print("  ⚠️  Skeleton ZIP is unreadable; not promoting it.")
             print("  ℹ️  Skeletons zip not found (optional).")
 
     # --- Post Counts Update ---

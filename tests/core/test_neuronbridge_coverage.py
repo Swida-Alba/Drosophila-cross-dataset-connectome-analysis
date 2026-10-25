@@ -175,6 +175,18 @@ class TestProbeCoverage:
         verdict = nbc.probe_coverage("male-cns:v0.9", ["1", "2"], client)
         assert verdict.status == nbc.STATUS_UNKNOWN
 
+    def test_miss_plus_server_error_is_unknown_not_unavailable(self):
+        behavior = {
+            "1": _http_style_error(404),
+            "2": _http_style_error(500),
+        }
+        def _raise(url):
+            raise behavior[url.rsplit("/", 1)[1].split(".")[0]]
+
+        client = StubClient(_raise)
+        verdict = nbc.probe_coverage("male-cns:v1.0", ["1", "2"], client)
+        assert verdict.status == nbc.STATUS_UNKNOWN
+
     def test_mixed_errors_and_misses_still_classify(self):
         behavior = {
             "1": _http_style_error(404),

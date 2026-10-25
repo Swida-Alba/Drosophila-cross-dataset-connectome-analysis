@@ -21,12 +21,12 @@ from morphology import MorphologyComparer
 
 comparer = MorphologyComparer(
     dataset="male-cns:v0.9",
-    level="type",                        # query level
+    level="auto",                        # query level (UI default)
     method="vector_v2",                  # "vector_v2" (default) | "nblast"
     candidate_cap=500,
     candidate_source="auto",             # "auto" | "profile" | "combined" | "cache" | "roi"
     roi_filter=None,                     # or ["EB", "LH", "AL"]
-    visualize_top_n=0,                   # >0 to render top-N skeletons
+    visualize_top_n=10,                  # UI default; 0 disables rendering
     visualize_by="bodyId",
     visualization_settings={},           # skeleton settings when visualizing
     output_dir="/absolute/output/similar_morph",

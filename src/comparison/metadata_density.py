@@ -107,6 +107,7 @@ def compute_synapse_density(
         if pre_col else None
 
     pre_source = 'neuron_table'
+    derived_total = None
     if pre is None:
         # No per-neuron pre in the table: derive from the connections file
         # when the dataset is a local FAFB/BANC release download.
@@ -118,6 +119,7 @@ def compute_synapse_density(
         if derived is not None:
             ids = neuron_df['bodyId'].astype(str)
             pre = ids.map(derived).fillna(0).astype(float)
+            derived_total = float(derived.sum())
             pre_source = 'derived_from_connections'
         else:
             pre = pd.Series(0.0, index=neuron_df.index)
@@ -129,6 +131,17 @@ def compute_synapse_density(
         'per_neuron_mean': float(total.mean()) if n_neurons else 0.0,
         'per_neuron_median_post': float(np.median(post)) if n_neurons else 0.0,
         'per_neuron_median_pre': float(np.median(pre)) if n_neurons else 0.0,
+        # Dataset totals, so a source table without a native `pre` column
+        # does not report total_presynaptic=0 while its density block says
+        # pre was derived from connections.
+        # The derived pre total counts every connection row (including a
+        # pre bodyId absent from the neuron table); the per-neuron join
+        # above cannot. Both totals are the same on a complete table.
+        'total_pre': float(pre.sum() if derived_total is None
+                           else derived_total),
+        'total_post': float(post.sum()),
+        'total': float((pre.sum() if derived_total is None
+                        else derived_total) + post.sum()),
         'neuron_universe': 'all_neurons',
         'pre_source': pre_source,
     }

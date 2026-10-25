@@ -470,8 +470,18 @@ def test_resolve_token(monkeypatch):
     p = _basic(token='abc')
     assert p.resolve_token() == 'abc'
     p2 = _basic()
+    monkeypatch.delenv('NEUPRINT_APPLICATION_TOKEN', raising=False)
+    monkeypatch.delenv('NEUPRINT_APPLICATION_CREDENTIALS', raising=False)
     monkeypatch.setenv('NEUPRINT_APPLICATION_TOKEN', 'envtok')
     assert p2.resolve_token() == 'envtok'
+
+
+def test_resolve_token_canonical_env(monkeypatch):
+    """The canonical neuprint-python variable must not be ignored."""
+    monkeypatch.delenv('NEUPRINT_APPLICATION_TOKEN', raising=False)
+    monkeypatch.setenv('NEUPRINT_APPLICATION_CREDENTIALS', 'canonical-token')
+    p = _basic()
+    assert p.resolve_token() == 'canonical-token'
 
 
 def test_auto_mapping_workspace_missing(monkeypatch):

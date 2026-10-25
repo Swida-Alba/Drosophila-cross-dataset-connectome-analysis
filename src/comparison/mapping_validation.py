@@ -6026,8 +6026,10 @@ class MappingValidator:
             tgt_type = str(disc.get('target') or '')
             if not tgt_type:
                 continue
-            vkey = (str(self._current_query or src_type), str(src_type),
-                    tgt_type)
+            # Verification is type-level; keying it by the first query in a
+            # multi-query source group left the other queries' disclosure
+            # rows empty. The row's own query is stamped at write time.
+            vkey = (str(src_type), tgt_type)
             if vkey in self._disclosure_verification:
                 continue
             tgt_pool = self._bodyids_for(tgt_type, cfg.target_dataset)
@@ -6944,8 +6946,7 @@ class MappingValidator:
             _disc_ver = getattr(self, '_disclosure_verification',
                                 None) or {}
             for row in _disc_rows:
-                v = _disc_ver.get((str(row.get('query')),
-                                   str(row.get('source_type')),
+                v = _disc_ver.get((str(row.get('source_type')),
                                    str(row.get('target_type')))) or {}
                 row['verdict'] = v.get('verdict', '')
                 row['rank_union'] = v.get('rank_union', '')

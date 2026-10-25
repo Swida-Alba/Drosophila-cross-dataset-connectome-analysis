@@ -22044,8 +22044,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     colorscale: currentColorscale,
                     fontSize: currentFontSize,
                     useAutoRange: useAutoRange,
-                    zminSlider: document.getElementById('zminSlider')?.value,
-                    zmaxSlider: document.getElementById('zmaxSlider')?.value,
+                    customColorRange: window.customColorRange || null,
                     // Custom colorscale settings
                     customColorScale: customColorScale,
                     use3PointScale: use3PointScale,
@@ -22285,10 +22284,15 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     currentYLabels = settings.currentYLabels.slice();
                 }}{cell_style_settings_load}
                 
-                if (!useAutoRange && settings.zminSlider && settings.zmaxSlider) {{
-                    document.getElementById('zminSlider').value = settings.zminSlider;
-                    document.getElementById('zmaxSlider').value = settings.zmaxSlider;
-                    updateColorbarRange();
+                if (settings.customColorRange
+                        && Number.isFinite(Number(settings.customColorRange.min))
+                        && Number.isFinite(Number(settings.customColorRange.max))) {{
+                    window.customColorRange = {{
+                        min: Number(settings.customColorRange.min),
+                        max: Number(settings.customColorRange.max)
+                    }};
+                }} else {{
+                    window.customColorRange = null;
                 }}
                 
                     createHeatmap();

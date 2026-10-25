@@ -867,6 +867,77 @@ class ComparisonMetrics:
                 'pairwise_similarities', pd.DataFrame())
         return summary
     
+    def canonical_type_map(
+        self,
+        dataset: str,
+        types,
+        label_mapper: Optional[Any] = None,
+        type_mapper: Optional[Any] = None,
+        merge_policy: Optional[Any] = None,
+        hemi_aware: bool = False,
+    ) -> Dict[str, str]:
+        """Resolve native type names to the alignment lane's merge keys.
+
+        One implementation shared by the edge alignment and the threshold
+        prober: a prober that counted canonical keys with a different rule
+        made the density/alignment exports disagree with the presence and
+        overlap exports on real FAFB x MCNS runs (2026-10-25).
+        """
+        from .type_resolver import canonical_merge_key
+
+        merge_cache: dict = {}
+        fallback_target = (
+            merge_policy.anchor_ds
+            if merge_policy is not None else None)
+        _is_user_label = getattr(label_mapper, 'is_user_label', None)
+        _family_resolver = getattr(self, '_family_resolver', None)
+
+        def _is_identity(name):
+            if _is_user_label is not None and _is_user_label(name):
+                return True
+            return is_residual_key(name)
+
+        canonical_map: Dict[str, str] = {}
+        for t in sorted({str(value) for value in types}):
+            if _is_identity(t):
+                canonical_map[t] = t
+                continue
+            key = (
+                merge_policy.key_for(dataset, t)
+                if merge_policy is not None else None
+            )
+            suffix = ''
+            lookup_t = t
+            if hemi_aware and key is None:
+                lookup_t, suffix = split_hemi_suffix(t)
+                if suffix:
+                    key = (
+                        merge_policy.key_for(dataset, lookup_t)
+                        if merge_policy is not None else None
+                    )
+            # A key_for hit is final only for a TRUE cross-dataset family
+            # (members in >= 2 datasets); singleton per-chip groups must
+            # reach the family/canonical tiers below.
+            if key is not None and _family_resolver is not None:
+                group = (
+                    merge_policy.group_by_label(key)
+                    if merge_policy is not None else None)
+                if group is None or len(
+                        getattr(group, 'members', {}) or {}) < 2:
+                    key = None
+            if key is None and _family_resolver is not None:
+                family_key = _family_resolver(dataset, lookup_t)
+                if family_key:
+                    key = (f'{family_key}{suffix}' if suffix
+                           else family_key)
+            if key is None:
+                resolved_key = canonical_merge_key(
+                    type_mapper, lookup_t, dataset, fallback_target,
+                    cache=merge_cache).key
+                key = f'{resolved_key}{suffix}' if suffix else resolved_key
+            canonical_map[t] = key
+        return canonical_map
+
     def _align_results_at_threshold(
         self,
         results: Dict[str, Dict[int, pd.DataFrame]],
@@ -995,92 +1066,13 @@ class ComparisonMetrics:
                 unique_post = original_post_series.unique()
                 all_unique_types = set(unique_pre) | set(unique_post)
 
-                # Create mapping dict for this dataset.  Routed through the
-                # shared validity resolver (``canonical_merge_key``): licensed
-                # renames map to their canonical target, while a CONFLICTED
-                # type keeps a dataset-scoped key (``dataset:raw``) so two
-                # datasets' same-named conflicted rows can never merge.
-                # With a query-anchored MergePolicy (plan:
-                # plan-query-anchored-cross-dataset-analysis.md) the policy's
-                # group labels take precedence; types it does not govern
-                # fall back to canonical_merge_key toward the policy's
-                # anchor namespace (B3), which is byte-identical to the
-                # historical male-cns default when no policy exists.
-                from .type_resolver import canonical_merge_key
-                merge_cache: dict = {}
-                fallback_target = (
-                    merge_policy.anchor_ds
-                    if merge_policy is not None else None)
-                canonical_map = {}
-                # User-first type resolution (Phase A): the alignment-lane
-                # mapper may carry the run's USER label mapper, whose
-                # labels are the comparison identity already.
-                _is_user_label = getattr(label_mapper, 'is_user_label', None)
-                # Phase R1: the analyzer owns the symmetric mapper-decision
-                # family map; the edge lane must converge split families
-                # the same way the path lane does.
-                _family_resolver = getattr(self, '_family_resolver', None)
-                # Residual keys (`T*`, the type resolver's terminal rename
-                # for label-mapper collided native types) are comparison
-                # identities too — never re-resolved.
-                def _is_identity(name):
-                    if _is_user_label is not None and _is_user_label(name):
-                        return True
-                    return is_residual_key(name)
-                # Hemisphere-suffix awareness (plan R1-b): with
-                # separate_hemispheres, frame types can carry _L/_R/_U
-                # suffixes while key_map/mapper relations key base names.
-                # Strip the suffix for the lookup and re-apply it to the
-                # canonical key so L and R stay DISTINCT rows that still
-                # merge across datasets.
-                for t in all_unique_types:
-                    # A name that IS a comparison identity (user label or
-                    # star-tagged residual) is never re-resolved through
-                    # the policy/canonical machinery (that re-resolution
-                    # manufactured family compounds like `X(Y/Z)` and
-                    # dataset-qualified keys out of settled labels).
-                    if _is_identity(t):
-                        canonical_map[t] = t
-                        continue
-                    key = (
-                        merge_policy.key_for(dataset, t)
-                        if merge_policy is not None else None
-                    )
-                    suffix = ''
-                    lookup_t = t
-                    if hemi_aware and key is None:
-                        lookup_t, suffix = split_hemi_suffix(t)
-                        if suffix:
-                            key = (
-                                merge_policy.key_for(dataset, lookup_t)
-                                if merge_policy is not None else None
-                            )
-                    # A key_for hit is final only for a TRUE cross-dataset
-                    # family (members in >= 2 datasets). Singleton per-chip
-                    # groups must not short-circuit the family tier below —
-                    # they are exactly the rows that left FAFB R8 and the
-                    # MCNS R8p/R8y/R8d/R8_unclear branches on separate
-                    # rows. Demoted only when a family resolver exists, so
-                    # policy-only callers keep today's behavior.
-                    if key is not None and _family_resolver is not None:
-                        group = (
-                            merge_policy.group_by_label(key)
-                            if merge_policy is not None else None)
-                        if group is None or len(
-                                getattr(group, 'members', {}) or {}) < 2:
-                            key = None
-                    if key is None and _family_resolver is not None:
-                        family_key = _family_resolver(dataset, lookup_t)
-                        if family_key:
-                            key = (f'{family_key}{suffix}' if suffix
-                                   else family_key)
-                    if key is None:
-                        resolved_key = canonical_merge_key(
-                            type_mapper, lookup_t, dataset, fallback_target,
-                            cache=merge_cache).key
-                        key = f'{resolved_key}{suffix}' if suffix else resolved_key
-                    canonical_map[t] = key
-                
+                # One resolver for the edge alignment and the threshold
+                # prober; see canonical_type_map for the tiering rules.
+                canonical_map = self.canonical_type_map(
+                    dataset, all_unique_types, label_mapper=label_mapper,
+                    type_mapper=type_mapper, merge_policy=merge_policy,
+                    hemi_aware=hemi_aware)
+
                 # Apply mapping vectorized
                 agg_df['canonical_pre'] = original_pre_series.map(canonical_map)
                 agg_df['canonical_post'] = original_post_series.map(canonical_map)

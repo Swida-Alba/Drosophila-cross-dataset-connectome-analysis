@@ -121,8 +121,10 @@ class ComparisonParameters:
         saveas (str, optional): Custom folder name for output. If None, generates
             timestamped name like 'comparison_results_20251127_120000'.
             
-        token (str): NeuPrint authentication token. Empty string loads from
-            NEUPRINT_APPLICATION_TOKEN environment variable.
+        token (str): NeuPrint authentication token. Empty string resolves
+            through the shared DROCAT chain: NEUPRINT_APPLICATION_TOKEN,
+            the canonical NEUPRINT_APPLICATION_CREDENTIALS, then
+            config.json -> config_local.json.
             
         allow_single_dataset (bool): Allow single dataset mode for threshold
             sensitivity analysis. Default: True.
@@ -551,7 +553,7 @@ class ComparisonParameters:
     
     # Authentication
     token: str = ''
-    """NeuPrint token. Empty string = load from NEUPRINT_APPLICATION_TOKEN env var"""
+    """NeuPrint token. Empty string = shared env/config token chain."""
     
     # Internal fixed settings (NOT user-configurable for comparison consistency)
     _use_cache: bool = field(default=True, repr=False)
@@ -2090,15 +2092,37 @@ class ComparisonParameters:
         os.makedirs(self.visualizations_path, exist_ok=True)
     
     def resolve_token(self) -> str:
-        """
-        Resolve authentication token.
-        
+        """Resolve the NeuPrint token through the shared DROCAT chain.
+
+        Precedence mirrors :class:`utils.token_manager.TokenManager`: an
+        explicit ``token`` argument first, then the environment
+        (``NEUPRINT_APPLICATION_TOKEN`` and the canonical
+        ``NEUPRINT_APPLICATION_CREDENTIALS`` that neuprint-python reads),
+        then config.json -> config_local.json. Reading only the legacy env
+        var made edge-mode comparisons fail on a machine whose token lives
+        in the config files, even though every other dataset reader worked.
+
         Returns:
-            Token from parameter, or from NEUPRINT_APPLICATION_TOKEN env var
+            The resolved token, or '' when no candidate exists.
         """
         if self.token:
             return self.token
-        return os.environ.get('NEUPRINT_APPLICATION_TOKEN', '')
+        for env_name in ('NEUPRINT_APPLICATION_TOKEN',
+                         'NEUPRINT_APPLICATION_CREDENTIALS'):
+            value = os.environ.get(env_name)
+            if value and value.strip():
+                return value.strip()
+        try:
+            from utils.token_manager import token_manager
+        except ImportError:
+            try:
+                from ..utils.token_manager import token_manager
+            except Exception:
+                return ''
+        try:
+            return token_manager.get_neuprint_token() or ''
+        except Exception:
+            return ''
     
     def to_dict(self) -> dict:
         """

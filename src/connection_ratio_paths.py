@@ -822,6 +822,11 @@ def compute_connection_ratio_paths(*, connections, sources, targets,
     given), run :func:`find_ratio_paths`, and (by default) write the
     §6 outputs. ``run_dir`` (the ``--in-run`` mode) is READ-ONLY — the
     outputs go to ``out_dir`` or a SIBLING folder, never into the run."""
+    if hemi_filter in ('left', 'right') and not separate_hemispheres:
+        raise ConnectionRatioPathError(
+            "hemi_filter='left'/'right' requires separate_hemispheres=True: "
+            "without _L/_R label suffixes the side filter cannot identify "
+            "an edge side and would silently keep both hemispheres.")
     type_map = None
     if neuron_frame is not None:
         type_map = build_effective_type_map(

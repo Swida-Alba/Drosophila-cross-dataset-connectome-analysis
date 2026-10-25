@@ -92,6 +92,8 @@ vispath = [
 ]
 
 dev = [
+    "nicegui==3.15.0",
+    "markdown",
     "pytest==7.0.0",
     "pytest-cov==3.0.0",
     "tomli>=2.0.0,<3; python_version < '3.11'",
@@ -214,13 +216,15 @@ extend-exclude = '''
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Live-network e2e tests are opt-in: run `pytest -m e2e` explicitly.
+addopts = "-m 'not e2e'"
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 pythonpath = ["src"]
 markers = [
     "e2e: live-network end-to-end tests (real servers; run explicitly)",
-    "requires_data: needs real dataset tables (local datasets/ files or a pullable NeuPrint token); skips when neither is available",
+    "requires_data: needs local dataset tables under datasets/; skips when absent (a token alone does not satisfy it)",
     "requires_token: needs a configured NeuPrint token (config.json, config_local.json, or the NEUPRINT_APPLICATION_CREDENTIALS/NEUPRINT_TOKEN env var); skips when absent",
     "requires_chrome: drives a real headless Chrome over the DevTools protocol; skips when Chrome or a websocket client is unavailable",
 ]

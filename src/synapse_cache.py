@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -161,6 +162,7 @@ class SynapseCache:
         self._query_frames: dict[str, pd.DataFrame] = {}
         self._pair_frames: dict[str, pd.DataFrame] = {}
         self._manifest_cache = None
+        self._manifest_lock = threading.Lock()
 
     @staticmethod
     def _now() -> str:
@@ -336,8 +338,15 @@ class SynapseCache:
 
     def save_pairs(self, frame: pd.DataFrame | None,
                    attempted_pairs: Iterable[tuple] | None = None) -> None:
-        """Persist non-empty pair rows and index empty attempted pairs."""
+        """Persist pairs under a process-local merge lock."""
+        with self._manifest_lock:
+            # Re-read at save time so two cache instances do not write back
+            # their own stale snapshots and drop each other's pair entries.
+            self._manifest_cache = None
+            return self._save_pairs_locked(frame, attempted_pairs)
 
+    def _save_pairs_locked(self, frame: pd.DataFrame | None,
+                           attempted_pairs: Iterable[tuple] | None = None) -> None:
         if not self.enabled:
             return
         manifest = self._read_manifest()

@@ -4616,7 +4616,7 @@ class HomologFinder:
                 shuffle_stats=shuffle_stats,
                 visualize_skeleton=visualize_skeleton,
                 visualize_top_n=visualize_top_n,
-                similarity_metric=self.similarity_metric
+                similarity_metric=metric
             )
         else:
             # Always save - use default output_dir
@@ -4646,7 +4646,7 @@ class HomologFinder:
                 shuffle_stats=shuffle_stats,
                 visualize_skeleton=visualize_skeleton,
                 visualize_top_n=visualize_top_n,
-                similarity_metric=self.similarity_metric,
+                similarity_metric=metric,
                 type_level_df=type_level_df,
                 top_n=top_n
             )
@@ -5309,6 +5309,16 @@ class HomologFinder:
             target_status_map[bid] = status
 
         all_results = []
+        _metric_key = {
+            'rank_corr': 'rank', 'rank': 'rank',
+            'rank_union': 'rank_union', 'jaccard': 'jaccard',
+            'cosine': 'cosine', 'weighted_jaccard': 'weighted_jaccard',
+        }.get(str(similarity_metric), str(similarity_metric))
+
+        def _metric_score(score_map):
+            value = score_map.get(_metric_key)
+            return np.nan if value is None else value
+
         skipped_sources: Dict[str, List[int]] = {'none': []}
         warned_sources: Dict[str, List[int]] = {'rare_or_uni': []}
         # Per-run standardized profile caches for the mapping-aware vector
@@ -5462,8 +5472,11 @@ class HomologFinder:
                     rank_corr_value = score_dict['rank']
                     rank_union_raw = score_dict['rank_union']
 
-                    # Optional score filter
-                    if min_score is not None and (pd.isna(rank_corr_value) or rank_corr_value < min_score):
+                    # Optional score filter, on the run's SELECTED metric.
+                    _filter_value = _metric_score(score_dict)
+                    if min_score is not None and (
+                            pd.isna(_filter_value)
+                            or _filter_value < min_score):
                         continue
 
                     all_results.append({
@@ -5503,7 +5516,10 @@ class HomologFinder:
                     rank_corr_value = scores['rank']
                     rank_union_raw = scores.get('rank_union', np.nan)
 
-                    if min_score is not None and (pd.isna(rank_corr_value) or rank_corr_value < min_score):
+                    _filter_value = _metric_score(scores)
+                    if min_score is not None and (
+                            pd.isna(_filter_value)
+                            or _filter_value < min_score):
                         continue
 
                     target_type_str = target_type_lookup.get(target_bid, '')
@@ -6623,6 +6639,14 @@ class HomologFinder:
             except Exception as e:
                 self._log(f"Type-level results skipped: {e}")
 
+            shuffle_stats = None
+            if run_shuffle_test:
+                shuffle_stats = self._run_shuffle_control(
+                    query=query, source_dataset=source_dataset,
+                    target_dataset=target_dataset, results_df=results_df,
+                    n_shuffles=n_shuffles, shuffle_seed=shuffle_seed,
+                    top_n=top_n, show_progress=show_progress)
+
             self._progress(6, 6, "Saving results")
             self._save_homolog_results_internal(
                 results_df=results_df,
@@ -6645,14 +6669,17 @@ class HomologFinder:
                     'source_bodyids_count': len(source_bodyids),
                     'profile_method': '1-hop/2-hop hybrid via ConnectivityProfiler',
                     'type_level': 'pooled all-adjacency type profiles',
+                    'run_shuffle_test': run_shuffle_test,
+                    'n_shuffles': n_shuffles if run_shuffle_test else None,
                     **(extra_readme_params or {}),
                 },
+                shuffle_stats=shuffle_stats,
                 visualize_skeleton=visualize_skeleton,
                 visualize_top_n=visualize_top_n,
                 type_level_df=type_level_df,
                 top_n=top_n,
                 intra_type_df=intra_type_df,  # Pass intra-type results for saving
-                similarity_metric=self.similarity_metric,
+                similarity_metric=similarity_metric,
                 source_status_summary=source_status_summary
             )
             
@@ -6922,35 +6949,11 @@ class HomologFinder:
         # Run shuffle test if requested (before saving so we include results)
         shuffle_stats = None
         if run_shuffle_test:
-            self._log(f"Running shuffle control test with {n_shuffles} iterations...")
-
-            query_profile = self.profiler.get_profile(
-                query,
-                source_dataset
-            )
-
-            if query_profile is None:
-                self._log("Warning: Could not get query profile for shuffle test")
-            else:
-                shuffle_stats = self.run_random_control_test(
-                    source=query,
-                    source_dataset=source_dataset,
-                    target_dataset=target_dataset,
-                    n_shuffles=n_shuffles,
-                    top_n=top_n,
-                    seed=shuffle_seed,
-                    show_progress=show_progress
-                )
-
-                if shuffle_stats and 'p_value' in shuffle_stats:
-                    results_df['shuffle_p_value'] = shuffle_stats['p_value']
-                    results_df['shuffle_z_score'] = shuffle_stats['z_score']
-                    results_df['shuffle_effect_size'] = shuffle_stats['effect_size']
-                    results_df['shuffle_significant'] = shuffle_stats.get('is_significant', 
-                                                                         shuffle_stats['p_value'] < 0.05)
-
-                self._log(f"Shuffle test: p={shuffle_stats['p_value']:.4f}, "
-                         f"z={shuffle_stats['z_score']:.2f}, d={shuffle_stats['effect_size']:.2f}")
+            shuffle_stats = self._run_shuffle_control(
+                query=query, source_dataset=source_dataset,
+                target_dataset=target_dataset, results_df=results_df,
+                n_shuffles=n_shuffles, shuffle_seed=shuffle_seed,
+                top_n=top_n, show_progress=show_progress)
 
         # Save results - always save (use default output_dir if not specified)
         save_output_dir = output_dir if output_dir is not None else self.output_dir
@@ -7022,7 +7025,7 @@ class HomologFinder:
             shuffle_stats=shuffle_stats,
             visualize_skeleton=visualize_skeleton,
             visualize_top_n=visualize_top_n,
-            similarity_metric=self.similarity_metric,
+            similarity_metric=similarity_metric,
             type_level_df=type_level_df,
             top_n=top_n,
             intra_type_df=intra_type_df,
@@ -7605,20 +7608,20 @@ class HomologFinder:
         _drop_rank_cols(bodyid_df).to_csv(results_dir / 'bodyid_results.csv', index=False)
 
         # 3) type_summary.csv aggregated per (query_type, source_type, target_type).
-        valid = (
-            rounded[rounded['rank_corr'].notna()].copy()
-            if 'rank_corr' in rounded.columns else rounded.copy()
-        )
+        # Do not drop rows with NaN rank_corr: Jaccard/cosine remain valid for
+        # short partner lists, and the type summary must not lose them.
+        valid = rounded.copy()
+        valid['_rows'] = 1
         type_summary = pd.DataFrame()
         if not valid.empty and {'query_type', 'source_type'} <= set(valid.columns):
             target_col = 'target_type' if 'target_type' in valid.columns else 'target'
-            agg_dict = {}
+            agg_dict = {'_rows': ['sum']}
             if 'rank_corr' in valid.columns:
-                agg_dict['rank_corr'] = ['mean', 'count']
+                agg_dict['rank_corr'] = ['mean']
             for m in ['rank_union', 'jaccard', 'cosine', 'adjacency_score',
                       'shared_type_count', 'union_type_count']:
                 if m in valid.columns:
-                    agg_dict[m] = 'mean'
+                    agg_dict[m] = ['mean']
             group_cols = ['query_type', 'source_type', target_col]
             type_summary = valid.groupby(group_cols).agg(agg_dict).round(4)
             type_summary.columns = [
@@ -7628,7 +7631,7 @@ class HomologFinder:
             type_summary = type_summary.reset_index()
             rename_map = {
                 'rank_corr_mean': 'avg_rank_corr',
-                'rank_corr_count': 'n_bodyid_comparisons',
+                '_rows_sum': 'n_bodyid_comparisons',
                 'jaccard_mean': 'avg_jaccard',
                 'rank_union_mean': 'avg_rank_union',
                 'cosine_mean': 'avg_cosine',
@@ -7738,6 +7741,39 @@ class HomologFinder:
             top_n=top_n,
             show_progress=show_progress
         )
+
+    def _run_shuffle_control(self, *, query, source_dataset,
+                             target_dataset, results_df, n_shuffles,
+                             shuffle_seed, top_n, show_progress):
+        """Run the random-control test and attach its columns to *results_df*.
+
+        Shared by both fast-search branches; the type-query branch used to
+        return before the old inline block, so requesting a shuffle there
+        silently did nothing.
+        """
+        self._log(f"Running shuffle control test with {n_shuffles} iterations...")
+        try:
+            query_profile = self.profiler.get_profile(query, source_dataset)
+        except Exception:
+            query_profile = None
+        if query_profile is None:
+            self._log("Warning: Could not get query profile for shuffle test")
+            return None
+        stats = self.run_random_control_test(
+            source=query, source_dataset=source_dataset,
+            target_dataset=target_dataset, n_shuffles=n_shuffles,
+            top_n=top_n, seed=shuffle_seed,
+            show_progress=show_progress)
+        if stats and 'p_value' in stats:
+            results_df['shuffle_p_value'] = stats['p_value']
+            results_df['shuffle_z_score'] = stats['z_score']
+            results_df['shuffle_effect_size'] = stats['effect_size']
+            results_df['shuffle_significant'] = stats.get(
+                'is_significant', stats['p_value'] < 0.05)
+            self._log(f"Shuffle test: p={stats['p_value']:.4f}, "
+                      f"z={stats['z_score']:.2f}, "
+                      f"d={stats['effect_size']:.2f}")
+        return stats
 
     def _save_homolog_results_internal(
         self,
@@ -9680,11 +9716,32 @@ class HomologFinder:
         # Try to get types from the profiler's connection cache
         dataset_key = canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
         
-        # Check profiler cache first
+        # Check profiler cache first.  The connection cache usually stores
+        # only ``conn_df``; derive the pool from its type columns instead of
+        # returning an empty list and silently turning every shuffle into a
+        # p=0 result.
         from .connectivity_profiler import _PROFILER_CONN_CACHE
         if dataset_key in _PROFILER_CONN_CACHE:
-            type_lookup = _PROFILER_CONN_CACHE[dataset_key].get('type_lookup', {})
-            return list(set(type_lookup.values()))
+            entry = _PROFILER_CONN_CACHE[dataset_key]
+            type_lookup = entry.get('type_lookup') or {}
+            types = {
+                str(value) for value in type_lookup.values()
+                if value is not None and str(value).strip()
+            }
+            conn_df = entry.get('conn_df')
+            if not types and conn_df is not None:
+                for column in ('type_pre', 'type_post'):
+                    if column not in getattr(conn_df, 'columns', ()):
+                        continue
+                    series = conn_df[column]
+                    if hasattr(series, 'to_pandas'):
+                        series = series.to_pandas()
+                    for value in pd.Series(series).dropna().unique():
+                        text = str(value).strip()
+                        if text and text.lower() not in ('nan', 'none'):
+                            types.add(text)
+            if types:
+                return sorted(types)
         
         # Try neuron index from the profiler
         try:
@@ -9822,6 +9879,23 @@ class HomologFinder:
                 'effect_size': 0.0,
                 'is_significant': False,
                 'summary': "No homologs found with real profile."
+            }
+
+        if not self._get_type_pool(target_dataset):
+            # An empty pool makes every shuffle an empty frame; p would be
+            # 0 by construction. Fail closed instead of declaring a result
+            # significant when no control was actually run.
+            return {
+                'real_results': real_results,
+                'shuffled_results': [],
+                'real_mean_score': 0.0,
+                'shuffled_mean_scores': [],
+                'p_value': 1.0,
+                'z_score': 0.0,
+                'effect_size': 0.0,
+                'is_significant': False,
+                'summary': ("No target type pool for the shuffle control; "
+                            "the control test cannot be evaluated."),
             }
         
         # Get mean rank_corr from real results (use normalized version)
@@ -13209,8 +13283,9 @@ class ConnectivityProfileComparer:
         if agg_results_dir is not None:
             layout.append((f'{agg_dir_name}/results/',
                            f'{agg_csv_stem}_{{metric}}_{{direction}}.csv'))
-            layout.append((f'{agg_dir_name}/visualization/',
-                           f'heatmap_{agg_prefix}_{{direction}}_{{metric}}.html'))
+            if self.generate_heatmaps:
+                layout.append((f'{agg_dir_name}/visualization/',
+                               f'heatmap_{agg_prefix}_{{direction}}_{{metric}}.html'))
         if bodyid_results_dir is not None:
             if bodyid_matrices:
                 layout.append(('bodyid_level/results/',
@@ -13218,10 +13293,14 @@ class ConnectivityProfileComparer:
             if type_avg_matrices:
                 layout.append(('bodyid_level/results/',
                                'type_avg_bodyid_similarity_{metric}_{direction}.csv'))
-            layout.append(('bodyid_level/visualization/',
-                           'heatmap_bodyid_* / heatmap_type_avg_{direction}_{metric}.html'))
+            if self.generate_heatmaps:
+                layout.append(('bodyid_level/visualization/',
+                               'heatmap_bodyid_* / heatmap_type_avg_{direction}_{metric}.html'))
 
         notes = []
+        if not self.generate_heatmaps:
+            notes.append('- generate_heatmaps=False: no visualization/ '
+                         'heatmap pages were written by this run')
         if type_matrices:
             notes.append(
                 f'- {agg_dir_name}: Compares aggregated (mean-pooled) '
@@ -13268,7 +13347,9 @@ class ConnectivityProfileComparer:
             f"  keyed by their group ('{{member}}_{{group}}'), so a member named",
             "  as a type contributes that type's pooled profile rather than one",
             "  row per neuron",
-            "- report.html: Overall report linking every metric and heatmap",
+            ("- report.html: Overall report linking every metric and heatmap"
+             if self.generate_heatmaps else
+             "- report.html: Overall report of every metric (heatmaps disabled)"),
             # The census `_label_for_type_via_mapper` records, published: which
             # partner types stayed raw because the mapper governs them only
             # partly, so the reader can see the unfolded mass instead of

@@ -3,6 +3,7 @@
 from io import BytesIO
 
 from PIL import Image
+import pytest
 
 from neuronbridge_client import Client
 
@@ -213,6 +214,24 @@ def test_line_stats_sorted_by_coverage_ratio_for_completeness():
     assert line_stats["line"].tolist() == ["A", "B"]
     c = dict(zip(line_stats["line"], line_stats["coverage_ratio"]))
     assert c["A"] > c["B"]
+
+
+def test_coverage_ratio_uses_resolved_query_set():
+    import pandas as pd
+    from neuronbridge_finder import NeuronBridgeFinder
+
+    finder = object.__new__(NeuronBridgeFinder)
+    finder.separate_splitgal4 = False
+    finder._vprint = lambda *a, **k: None
+    df = pd.DataFrame({
+        "line": ["A", "A"],
+        "score": [0.6, 0.6],
+        "source_bodyId": ["q1", "q2"],
+    })
+    _, stats = finder._aggregate_results_polars(
+        df, "cds", False, "completeness",
+        query_bodyids={"q1", "q2", "q3"})
+    assert stats.iloc[0]["coverage_ratio"] == pytest.approx(2 / 3)
 
 
 def test_parse_region_from_filename_flweb_tags():

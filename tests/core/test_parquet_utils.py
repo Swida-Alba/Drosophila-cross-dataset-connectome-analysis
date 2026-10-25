@@ -19,6 +19,7 @@ from utils.parquet_utils import (
     LOSSLESS_MARKER_VALUE,
     atomic_replace,
     parquet_lossless_marker,
+    parquet_is_reusable,
     parquet_readable,
     reencode_parquet_lossless,
     remove_stale_temp_files,
@@ -383,6 +384,33 @@ class TestParquetReadable:
         assert parquet_readable(str(corrupt)) is True
         with pytest.raises(Exception):
             pq.ParquetFile(str(corrupt)).read_row_group(0)
+
+
+class TestParquetIsReusable:
+    def test_transient_read_failure_leaves_valid_file(self, tmp_path, monkeypatch):
+        good = tmp_path / "good.parquet"
+        pq.write_table(pa.table({"v": [1]}), good)
+
+        class Boom:
+            def __init__(self, *args, **kwargs):
+                raise PermissionError("file is locked")
+
+        monkeypatch.setattr(pq, "ParquetFile", Boom)
+        assert parquet_is_reusable(str(good)) is False
+        assert good.exists(), "a transient lock must not delete the table"
+
+    def test_positive_corruption_is_quarantined_not_deleted(self, tmp_path):
+        bad = tmp_path / "bad.parquet"
+        bad.write_bytes(b"not a parquet file")
+        assert parquet_is_reusable(str(bad)) is False
+        assert not bad.exists()
+        quarantined = list(tmp_path.glob("bad.parquet.corrupt-*"))
+        assert len(quarantined) == 1
+
+    def test_readable_file_is_reused(self, tmp_path):
+        good = tmp_path / "good.parquet"
+        pq.write_table(pa.table({"v": [1]}), good)
+        assert parquet_is_reusable(str(good)) is True
 
 
 class TestReencodeParquetLossless:

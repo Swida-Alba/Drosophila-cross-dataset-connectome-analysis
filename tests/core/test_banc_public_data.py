@@ -351,6 +351,49 @@ class TestMetaFeatherMapping:
         assert touched["root"] == str(tmp_path)
 
 
+class TestProductValidation:
+    def test_bad_existing_meta_is_quarantined_and_refetched(
+            self, tmp_path, fake_net, meta_frame):
+        local = bpd.meta_feather_path("banc_v888", tmp_path)
+        local.parent.mkdir(parents=True)
+        local.write_bytes(b"truncated")
+        fake_net({bpd.META_FEATHER_PATH: meta_frame_to_bytes(meta_frame)})
+
+        result = bpd.download_meta_feather("banc_v888", tmp_path)
+
+        assert result == local
+        assert pd.read_feather(local).shape[0] == len(meta_frame)
+        assert list(local.parent.glob("banc_888_meta.feather.corrupt-*"))
+
+    def test_bad_existing_connections_product_is_quarantined_and_refetched(
+            self, tmp_path, fake_net):
+        import polars as pl
+
+        conn = pl.DataFrame({
+            "pre_root_id": [ID888],
+            "post_root_id": [ID626],
+            "num_synapses": [3],
+            "neuropil": ["ME_L"],
+        })
+        buffer = io.BytesIO()
+        conn.write_parquet(buffer)
+        local = bpd.connections_product_path("banc_v888", tmp_path)
+        local.parent.mkdir(parents=True)
+        local.write_bytes(b"truncated")
+        fake_net({"connectioncountsperneuropil": buffer.getvalue()})
+
+        result = bpd.download_connections_product("banc_v888", tmp_path)
+
+        assert result == local
+        assert pl.read_parquet(local).height == 1
+        assert list(local.parent.glob("connections_v888.parquet.corrupt-*"))
+
+    def test_invalid_download_is_not_promoted(self, tmp_path, fake_net):
+        fake_net({bpd.META_FEATHER_PATH: b"not a feather"})
+        assert bpd.download_meta_feather("banc_v888", tmp_path) is None
+        assert not bpd.meta_feather_path("banc_v888", tmp_path).exists()
+
+
 def meta_frame_to_bytes(frame):
     buffer = io.BytesIO()
     frame.to_feather(buffer)

@@ -147,7 +147,12 @@ def create_connectivity_tab():
                 with ui.row().classes("gap-4"):
                     use_fast = checkbox_input("Fast Search", get_user_default("fast_search"), hint="Use adjacency expansion for faster candidate discovery.")
                     vector_prefilter = checkbox_input("Vector Pre-filtering", get_user_default("vector_prefilter"), hint="Pre-filter candidates using vector cosine similarity.")
-                    expand_2hop = checkbox_input("2-Hop Expansion", get_user_default("expand_2hop"), hint="Include 2-hop typed partners for untyped 1-hop neurons.")
+                    expand_2hop = checkbox_input(
+                        "Include Untyped Partners",
+                        get_user_default("expand_2hop"),
+                        hint="Include partners without type annotations; "
+                             "the profiler's 2-hop typed expansion is "
+                             "applied separately and is on by default.")
                 with param_grid(3):
                     min_synapse_threshold = number_input(
                         "Min Synapse Threshold", get_user_default("min_synapse_num"), 1, 100,

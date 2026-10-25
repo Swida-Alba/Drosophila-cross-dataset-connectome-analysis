@@ -911,7 +911,8 @@ class MorphologyProfileComparer:
             try:
                 if _neuron_rep(neuron) != "skeleton":
                     continue
-                _, vec = cache._vectorize_neuron(neuron)
+                _, vec = cache._vectorize_neuron(
+                    neuron, body_id=self._body_id(bid))
                 rows.append((self._body_id(bid), vec, "skeleton"))
             except Exception as exc:
                 # Glitchy fetches (empty/partial SWC) are skipped from the

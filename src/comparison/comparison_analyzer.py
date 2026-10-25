@@ -769,6 +769,12 @@ class ComparisonAnalyzer:
                 'graph_pruning_record': {},
                 'edge_budget': None,
                 'edge_budget_landing': None,
+                # Edge aggregation computes every requested threshold
+                # independently; a path-side tau collapse must not alias or
+                # drop a threshold that the edge data did materialize.
+                'skipped': False,
+                'duplicate_of': None,
+                'applied_folder': t,
             })
             self._path_run_meta[(ds_name, t)] = meta
 
@@ -1777,7 +1783,9 @@ class ComparisonAnalyzer:
         return sorted(owned)
 
     def _replace_state_notes(self, blocks: List[str],
-                             out_dir: Optional[str] = None) -> List[str]:
+                             out_dir: Optional[str] = None,
+                             owned_tags: Optional[List[str]] = None,
+                             ) -> List[str]:
         """Drop prior copies of THIS writer's notes from
         ``user_warning_notes.txt`` so a re-export neither accumulates
         contradictory counts nor erases another writer's disclosure.
@@ -1787,7 +1795,10 @@ class ComparisonAnalyzer:
         family (so multi-line bullet lists are removed whole, never left
         orphaned). *out_dir* names the folder whose notes file is pruned — it
         must be the same folder the caller then appends to, or the replace pass
-        would prune one run folder and grow another.
+        would prune one run folder and grow another. ``owned_tags`` lets a
+        writer prune its family even when THIS run emitted no block: a stale
+        comparability warning otherwise survived every clean re-export
+        (real edge-mode re-export, 2026-10-25).
         """
         note_path = os.path.join(
             out_dir or self.parameters.full_output_path,
@@ -1799,7 +1810,8 @@ class ComparisonAnalyzer:
                 lines = f.read().splitlines()
         except OSError:
             return blocks
-        owned = self._owned_note_tags(blocks)
+        owned = (sorted(set(owned_tags)) if owned_tags is not None
+                 else self._owned_note_tags(blocks))
         kept: List[str] = []
         skipping = False
         for ln in lines:
@@ -4157,14 +4169,53 @@ class ComparisonAnalyzer:
         v = float(folder)
         return int(v) if v.is_integer() else v
 
+    def _threshold_has_materialized_rows(self, dataset: str,
+                                         applied: Union[int, float]) -> bool:
+        """True when the applied folder actually contains result rows.
+
+        ``get_applied_folder`` can fall back to the requested threshold even
+        when a dataset was refused/empty, so metadata alone must not make a
+        threshold "materialized". Test doubles without a real output path
+        keep the view-model behavior (no filesystem probe).
+        """
+        getter = getattr(self.parameters, 'get_dataset_output_path', None)
+        if not callable(getter):
+            return True
+        try:
+            folder = Path(getter(dataset, applied))
+        except Exception:
+            return True
+        if not folder.is_dir():
+            # A view-model/test double has no folder to inspect; do not
+            # turn "not materialized on this machine" into "not requested".
+            return True
+        candidates = (
+            folder / 'data_details' / 'connection_info_bodyId.csv',
+            folder / 'data_details' / 'connection_type.csv',
+            folder / 'connections_edge.csv',
+            folder / 'paths.csv',
+        )
+        for path in candidates:
+            if not path.is_file() or path.stat().st_size == 0:
+                continue
+            try:
+                if not pd.read_csv(path, nrows=1).empty:
+                    return True
+            except Exception:
+                continue
+        return False
+
     def get_applied_thresholds(self, dataset: str) -> List[Union[int, float]]:
         """Distinct materialized (applied) thresholds for one dataset."""
         applied = []
         for t in self.parameters.get_thresholds_for_dataset(dataset):
             value = self.get_applied_folder(dataset, t)
-            if value is not None:
-                v = float(value)
-                applied.append(int(v) if v.is_integer() else v)
+            if value is None:
+                continue
+            if not self._threshold_has_materialized_rows(dataset, value):
+                continue
+            v = float(value)
+            applied.append(int(v) if v.is_integer() else v)
         return sorted(set(applied))
 
     def get_threshold_view(self, dataset: str,
@@ -4274,13 +4325,17 @@ class ComparisonAnalyzer:
                 'threshold mix different applied thresholds; adjust the '
                 'threshold list or query and rerun, or use the '
                 'density-aligned comparison.')
-        elif requested and len(common) < 2:
+        elif len(set(requested)) > 1 and len(common) < len(set(requested)):
+            # A single requested threshold is fully comparable by
+            # construction; warning about "lower requested thresholds"
+            # there described a cross-threshold comparison the run never
+            # made (real edge-mode run, 2026-10-25).
             level = 'warning'
             warnings.append(
                 f"Only threshold {common[0]} is comparable across all "
-                'datasets after budget pruning; lower requested thresholds '
-                'compare different applied cutoffs and should not be read '
-                'as like-for-like.')
+                'datasets after budget pruning; the other requested '
+                'thresholds compare different applied cutoffs and should '
+                'not be read as like-for-like.')
         if requested and skipped_fraction >= 0.5:
             level = level if level != 'none' else 'warning'
             warnings.append(
@@ -4514,16 +4569,19 @@ class ComparisonAnalyzer:
             self._log('THRESHOLD COMPARABILITY: ' + warnings[0])
         elif level == 'warning':
             self._log('Threshold comparability warning: ' + warnings[0])
-        if warnings and out_dir:
+        if out_dir:
             # State-owned family: a re-export replaces THIS run's warnings
             # (N in, N out) instead of appending another copy beside the old
             # one, and never has its count decided by which `[STATE]` block
-            # happened to be written before it.
+            # happened to be written before it. Run even with no warning so
+            # a clean rerun removes the previous run's comparability line.
+            blocks = [f"- [threshold comparability] {warning}"
+                      for warning in warnings]
             self._append_user_warning_notes(
                 out_dir,
                 self._replace_state_notes(
-                    [f"- [threshold comparability] {warning}"
-                     for warning in warnings], out_dir))
+                    blocks, out_dir,
+                    owned_tags=['[threshold comparability]']))
 
     def _is_untyped_type_value(self, value) -> bool:
         """True when a type label means 'untyped': empty, an explicit
@@ -4597,7 +4655,8 @@ class ComparisonAnalyzer:
 
 
     def _drop_untyped_neurons(self, dataset_name: str, threshold: int,
-                              df: pd.DataFrame) -> pd.DataFrame:
+                              df: pd.DataFrame,
+                              record: bool = True) -> pd.DataFrame:
         """Drop edges touching untyped neurons (drop_untyped=True).
 
         A neuron is untyped when its resolved type label is empty / an
@@ -4607,6 +4666,10 @@ class ComparisonAnalyzer:
         are removed from the cross-dataset results by default. The
         dropped rows are kept for the explicit records export and the
         dropped-neuron counts are appended to user_warning_notes.
+
+        ``record=False`` applies the same predicate without registering a
+        second census; the threshold-alignment probe re-reads the bodyId
+        extract after the aggregation lane already recorded the drop.
         """
         if df is None or df.empty:
             return df
@@ -4621,6 +4684,8 @@ class ComparisonAnalyzer:
         drop_mask = untyped_pre | untyped_post
         if not drop_mask.any():
             return df
+        if not record:
+            return df[~drop_mask].copy()
         dropped = df[drop_mask].copy()
         # Side flag shared with the pathfinding records
         # (data_details/untyped_dropped_records.csv) so both file formats
@@ -5777,13 +5842,13 @@ class ComparisonAnalyzer:
             edge_df['total_post'] = edge_df['type_post'].map(total_post_map)
             edge_df['connection_ratio'] = edge_df['weight'] / edge_df['total_post'].fillna(1)
         
-        # Compute traversal probability if possible
-        # traversal_prob = weight / sum(all outgoing weights from pre)
-        outgoing_weights = edge_df.groupby('type_pre')['weight'].sum().to_dict()
-        edge_df['traversal_probability'] = edge_df.apply(
-            lambda r: r['weight'] / outgoing_weights.get(r['type_pre'], 1), axis=1
-        )
-        
+        # traversal_probability is SUSPENDED (2026-10-06, unverifiable
+        # fidelity): it was never a full-connectome probability on this
+        # subset, and the pathfinding exports stopped emitting it. Do not
+        # reintroduce the column here under an old readout name.
+        edge_df.drop(
+            columns=['traversal_probability'], inplace=True, errors='ignore')
+
         # Add conn_layer info based on path structure
         # This requires knowing which types are in which layer
         # For now, infer from source/target membership
@@ -6050,6 +6115,15 @@ class ComparisonAnalyzer:
             if density:
                 metadata['synapse_density'] = density
                 metadata['density_generated_at'] = datetime.now().isoformat()
+                # Local FAFB/BANC tables carry post only; the derived
+                # per-neuron pre makes the dataset-level presynaptic total
+                # available even though the neuron table has no `pre`.
+                if (pre_col is None
+                        and density.get('pre_source')
+                        == 'derived_from_connections'):
+                    total_pre = int(round(float(density.get('total_pre', 0))))
+                    metadata['synapse_counts']['total_presynaptic'] = total_pre
+                    metadata['synapse_counts']['total'] = total_pre + total_post
         except Exception as density_exc:
             self._log(f"Note: synapse density not computed for {dataset_name}: "
                       f"{density_exc}", level='debug')
@@ -6092,6 +6166,17 @@ class ComparisonAnalyzer:
                 return note
         return "Coverage information not available."
     
+    @staticmethod
+    def _metadata_pre_totals_stale(metadata: Dict) -> bool:
+        """A local sidecar that predates the derived presynaptic total."""
+        if not isinstance(metadata, dict):
+            return False
+        synapse_counts = metadata.get('synapse_counts') or {}
+        density = metadata.get('synapse_density') or {}
+        return (int(synapse_counts.get('total_presynaptic') or 0) == 0
+                and density.get('pre_source') in
+                (None, 'derived_from_connections'))
+
     def collect_dataset_metadata(self, force_refresh: bool = False) -> Dict[str, Dict]:
         """
         Collect metadata for all datasets.
@@ -6116,9 +6201,19 @@ class ComparisonAnalyzer:
             if not force_refresh:
                 cached = self._load_cached_metadata(dataset_name)
                 if cached and cached.get('source') != 'error':
-                    self._log(f"Loaded cached metadata for {dataset_name}")
-                    all_metadata[dataset_name] = cached
-                    continue
+                    if (is_local_connectome_dataset(dataset_name)
+                            and self._metadata_pre_totals_stale(cached)):
+                        # Pre-fix local metadata recorded 0 presynaptic
+                        # synapses for post-only release tables while its
+                        # density block said pre was derived from the
+                        # connections file. Recompute once instead of
+                        # serving the contradictory sidecar forever.
+                        self._log(f"Refreshing cached metadata for "
+                                  f"{dataset_name} (presynaptic totals)")
+                    else:
+                        self._log(f"Loaded cached metadata for {dataset_name}")
+                        all_metadata[dataset_name] = cached
+                        continue
                 if cached:
                     self._log(f"Ignoring cached error metadata for "
                               f"{dataset_name} (retrying the fetch)")
@@ -6256,9 +6351,9 @@ class ComparisonAnalyzer:
             verdict = self._cached_result_matches_query(output_dir)
             if verdict is None:
                 # Unreadable sidecar: a cache miss with an unknown verdict.
-                # Never delete on it — re-derivation will rewrite both
-                # halves when it completes.
-                pass
+                # Never delete on it, but never fall through to the
+                # unfingerprinted legacy files either; derive freshly.
+                return None
             elif not verdict:
                 self._log(
                     f"Cached {dataset_name} @ {threshold} was written for a "
@@ -8246,6 +8341,7 @@ class ComparisonAnalyzer:
                     'connection_count': count,
                     'total_weight': total_weight,
                     'avg_weight': total_weight / count if count else 0,
+                    'count_basis': 'native_type_pairs_raw_run',
                     **provenance,
                 }
                 path_counts.append(row)
@@ -8262,6 +8358,7 @@ class ComparisonAnalyzer:
                         float(df['weight'].mean())
                         if not df.empty and 'weight' in df.columns else 0
                     ),
+                    'count_basis': 'native_type_pairs_raw_run',
                     **provenance,
                 })
 
@@ -8426,7 +8523,12 @@ class ComparisonAnalyzer:
                     'threshold': threshold,
                     'connection_count': count,
                     'total_weight': total_weight,
-                    'avg_weight': total_weight / count if count > 0 else 0
+                    'avg_weight': total_weight / count if count > 0 else 0,
+                    # The run's native labels, not the canonical aligned
+                    # keys the presence/overlap exports use. Stated per row
+                    # so 380 (raw) and 360 (aligned) cannot be mistaken for
+                    # the same edge universe.
+                    'count_basis': 'native_type_pairs_raw_run',
                 })
         
         if path_counts:
@@ -8681,6 +8783,10 @@ class ComparisonAnalyzer:
                 row = dict(provenance_row)
                 # Retain the old column name used by downstream notebooks.
                 row['strongest_dropped'] = dropped
+                # edge_count below is the raw run's native-label pair count,
+                # not the canonical aligned count used by the presence and
+                # overlap exports.
+                row['count_basis'] = 'native_type_pairs_raw_run'
                 # Untyped-neuron drop (default on).
                 row['untyped_dropped_rows'] = drop_stats.get('rows', 0)
                 row['untyped_dropped_neurons'] = drop_stats.get('neurons', 0)
@@ -8809,28 +8915,85 @@ class ComparisonAnalyzer:
     # Feature C: query-specific threshold alignment (alignment spec §6)
     # ------------------------------------------------------------------
 
+    def _canonical_alignment_extract(
+            self, dataset_name: str, threshold, extract: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Put a bodyId extract on the comparison's canonical type keys.
+
+        The prober's contract is "distinct mapped type pairs with at least
+        one edge of weight >= t". A bodyId frame carries native type names;
+        counting those made the density/alignment lane disagree with every
+        mapped export (presence, unique edges, overlap) on real FAFB x MCNS
+        runs. Reuse the exact predicate and canonical merge key the aligned
+        exports use, without re-recording the untyped census.
+        """
+        extract = self._drop_untyped_neurons(
+            dataset_name, threshold, extract, record=False)
+        if extract is None or extract.empty:
+            return extract
+        if not {'type_pre', 'type_post'} <= set(extract.columns):
+            return extract
+        native_types = set(extract['type_pre'].dropna().astype(str)) | set(
+            extract['type_post'].dropna().astype(str))
+        canonical_map = self.metrics.canonical_type_map(
+            dataset_name, native_types,
+            label_mapper=self._policy_label_mapper(),
+            type_mapper=(self.parameters._auto_type_mapper
+                         if self.parameters.auto_type_mapping else None),
+            merge_policy=self._merge_policy_or_none(),
+            hemi_aware=self.parameters.separate_hemispheres)
+        extract = extract.copy()
+        for col in ('type_pre', 'type_post'):
+            extract[col] = extract[col].astype(str).map(canonical_map)
+        return extract
+
     def _alignment_extract_for_dataset(self, dataset_name: str):
         """Lowest-threshold extract feeding the prober (spec §6.1).
 
-        Prefers the run's mapped lowest-threshold frame (in memory, both
-        modes, type-mapped); falls back to the persisted bodyId CSV /
-        direct query used by edge mode.
+        Edge mode prefers the persisted bodyId CSV / direct query; path
+        mode prefers its raw path-edge frame. Both are canonicalized and
+        untyped-filtered so their pair counts live in the same type space
+        as the presence/overlap exports; a mapped frame is only a last
+        fallback (its keys are not the policy/family merge keys).
         """
-        mapped = self.get_mapped_results()
         thresholds_ds = self.parameters.get_thresholds_for_dataset(dataset_name)
         lowest = thresholds_ds[0] if thresholds_ds else None
+        if getattr(self.parameters, 'comparison_mode', 'path') == 'edge':
+            # Edge mode must use per-bodyId edges: the mapped frame is
+            # type-aggregated, and max-ing summed pair weight overstates how
+            # many type pairs have an edge at threshold t.
+            bodyid_df, _ = self._get_bodyid_connections_for_dataset(
+                dataset_name, lowest, skip_existing=True)
+            if (isinstance(bodyid_df, pd.DataFrame) and not bodyid_df.empty
+                    and {'type_pre', 'type_post', 'weight'}
+                    <= set(bodyid_df.columns)):
+                return self._canonical_alignment_extract(
+                    dataset_name, lowest, bodyid_df)
+        # Path mode: raw_results is the materialized path-edge frame. Feed
+        # it through the SAME canonical map the aligned exports use; the
+        # old get_mapped_results() fallback used _get_canonical_type(), whose
+        # keys are not policy/family merge keys (real path-mode run showed
+        # 781/579 probe vs 746/576 aligned counts, 2026-10-25).
+        raw = (self.raw_results.get(dataset_name, {}).get(lowest)
+               if lowest is not None else None)
+        if isinstance(raw, pd.DataFrame) and not raw.empty \
+                and {'type_pre', 'type_post', 'weight'} <= set(raw.columns):
+            return self._canonical_alignment_extract(
+                dataset_name, lowest, raw)
+        mapped = self.get_mapped_results()
         df = mapped.get(dataset_name, {}).get(lowest) if lowest is not None else None
         if isinstance(df, pd.DataFrame) and not df.empty \
                 and {'type_pre', 'type_post', 'weight'} <= set(df.columns):
             return df
         # Fallback: bodyId-level extract (path mode at the lowest threshold
-        # or the edge-mode direct query). Type names there are unmapped —
-        # consistent per dataset, still valid for edge-count matching.
+        # or the edge-mode direct query). Canonicalize it for the same
+        # reason as the edge-mode branch above.
         bodyid_df, _ = self._get_bodyid_connections_for_dataset(
             dataset_name, lowest, skip_existing=True)
         if isinstance(bodyid_df, pd.DataFrame) and not bodyid_df.empty \
                 and {'type_pre', 'type_post', 'weight'} <= set(bodyid_df.columns):
-            return bodyid_df
+            return self._canonical_alignment_extract(
+                dataset_name, lowest, bodyid_df)
         return None
 
     def _read_applied_folder_provenance(self, dataset: str,
@@ -8965,6 +9128,7 @@ class ComparisonAnalyzer:
                     'pairs_per_neuron': round(count / denom, 4)
                         if denom else None,
                     'basis': 'type_pairs',
+                    'type_key_space': 'canonical_aligned',
                     'denominator_scope': denom_scope,
                     'is_typed_threshold': t in typed_set[ds],
                 })
@@ -9034,6 +9198,19 @@ class ComparisonAnalyzer:
                         n_a, cap=dataset_caps.get(other_ds, cap))
                     best_t = match.get('best_t')
                     inter = match.get('best_t_range')
+                    # The prober's extract starts at the dataset's lowest
+                    # materialized threshold, so a plateau below that floor
+                    # reports e.g. best_t=1 for a run that only ever fetched
+                    # >=3 edges. Clamp the EXPORTED recommendation up to the
+                    # floor (the count is identical on the analyzed extract);
+                    # a fresh run at the lower t would fetch a different set.
+                    floor = (min(anchor_map.get(other_ds) or [])
+                             if anchor_map.get(other_ds) else None)
+                    if (best_t is not None and floor is not None
+                            and best_t < floor):
+                        best_t = float(floor)
+                        if inter:
+                            inter = (max(inter[0], floor), inter[1])
                     if best_t is None:
                         # Out-of-range: still report the shortfall honestly.
                         if match.get('match_status') != \
@@ -9062,7 +9239,12 @@ class ComparisonAnalyzer:
                         'count_distance': round(match['count_distance'], 4),
                         'match_status': match.get(
                             'match_status', 'outside_tolerance'),
-                        'within_tolerance': match['count_distance'] <= ALIGNMENT_TOLERANCE,
+                        # A below-range target has no threshold to compare
+                        # at; the closest density may be numerically within
+                        # tolerance but no alignment row can be formed.
+                        'within_tolerance': bool(
+                            best_t is not None
+                            and match['count_distance'] <= ALIGNMENT_TOLERANCE),
                         'jaccard_at_best': round(jac, 4) if jac is not None else None,
                         'rank_similarity_at_best': round(rank, 4) if rank is not None else None,
                         'anchor_tau': applied_meta.get('tau'),
@@ -9112,7 +9294,9 @@ class ComparisonAnalyzer:
                 for r in anchor_rows:
                     if r['reference_dataset'] == first_ds \
                             and r['anchor_threshold'] == anchor_t:
-                        segs.append(f"{r['target_dataset']}@{r['best_t']} "
+                        target_t = (r['best_t'] if r['best_t'] is not None
+                                    else r['match_status'])
+                        segs.append(f"{r['target_dataset']}@{target_t} "
                                     f"(d={r['count_distance']:.2f})")
                 if segs:
                     parts.append(f"{first_ds}@{anchor_t} aligns best with "
@@ -9978,10 +10162,16 @@ class ComparisonAnalyzer:
         reference = reference_dataset or (datasets[0] if datasets else None)
         if reference is None:
             return []
+        minimums = {}
+        for dataset in datasets:
+            applied = self.get_applied_thresholds(dataset)
+            if applied:
+                minimums[dataset] = min(applied)
         return suggest_combination_rows(
             df, reference, datasets,
             tolerance=(ALIGNMENT_TOLERANCE if tolerance is None
-                       else float(tolerance)))
+                       else float(tolerance)),
+            minimums=minimums)
 
     def _suggest_and_export_combinations(self, best_df, dataset_order,
                                          comparison_results_dir) -> None:
@@ -9997,15 +10187,34 @@ class ComparisonAnalyzer:
         reference = datasets[0] if datasets else None
         if reference is None:
             return
+        minimums = {}
+        for dataset in datasets:
+            applied = self.get_applied_thresholds(dataset)
+            if applied:
+                minimums[dataset] = min(applied)
         rows = suggest_combination_rows(
-            best_df, reference, datasets, tolerance=ALIGNMENT_TOLERANCE)
+            best_df, reference, datasets, tolerance=ALIGNMENT_TOLERANCE,
+            minimums=minimums)
+        out_path = os.path.join(comparison_results_dir,
+                                'suggested_threshold_combinations.json')
         if not rows:
+            # A reused run folder must not keep a previous run's suggestion:
+            # after the alignment changes, that file can contradict the
+            # current best-match table it was derived from.
+            self._suggested_combinations = []
+            try:
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+                    self._log("Removed stale: "
+                              "suggested_threshold_combinations.json "
+                              "(no aligned query row this run)")
+            except OSError as e:
+                self._log("Warning: could not remove stale "
+                          f"suggested_threshold_combinations.json: {e}")
             return
         self._suggested_combinations = rows
         try:
             import json as _json
-            out_path = os.path.join(comparison_results_dir,
-                                    'suggested_threshold_combinations.json')
             with open(out_path, 'w', encoding='utf-8') as f:
                 _json.dump({
                     'reference_dataset': reference,
@@ -10186,6 +10395,7 @@ class ComparisonAnalyzer:
         # Save unified out-degree data (renamed from out_degree_distribution.csv)
         if all_out_degree:
             unified_out = pd.concat(all_out_degree, ignore_index=True)
+            unified_out['count_basis'] = 'native_type_pairs_raw_run'
             # Reorder columns: threshold first
             cols = ['threshold'] + [c for c in unified_out.columns if c != 'threshold']
             unified_out = unified_out[cols]
@@ -10195,6 +10405,7 @@ class ComparisonAnalyzer:
         # Save unified in-degree data (renamed from in_degree_distribution.csv)
         if all_in_degree:
             unified_in = pd.concat(all_in_degree, ignore_index=True)
+            unified_in['count_basis'] = 'native_type_pairs_raw_run'
             # Reorder columns: threshold first
             cols = ['threshold'] + [c for c in unified_in.columns if c != 'threshold']
             unified_in = unified_in[cols]
@@ -10219,6 +10430,7 @@ class ComparisonAnalyzer:
         
         if all_degree_stats:
             unified_stats = pd.concat(all_degree_stats, ignore_index=True)
+            unified_stats['count_basis'] = 'native_type_pairs_raw_run'
             # Reorder columns: threshold first
             cols = ['threshold'] + [c for c in unified_stats.columns if c != 'threshold']
             unified_stats = unified_stats[cols]
@@ -10328,6 +10540,7 @@ class ComparisonAnalyzer:
                         'mean_weight': 0,
                         'unique_sources': 0,
                         'unique_targets': 0,
+                        'count_basis': 'native_type_pairs_raw_run',
                     })
                     continue
                 
@@ -10360,6 +10573,7 @@ class ComparisonAnalyzer:
                     'mean_weight': round(mean_weight, 2),
                     'unique_sources': sources,
                     'unique_targets': targets,
+                    'count_basis': 'native_type_pairs_raw_run',
                 })
         
         if summary_data:
@@ -12049,6 +12263,7 @@ class ComparisonAnalyzer:
                 } if query else {}),
                 'total_nodes': len(nodes),
                 'total_edges': len(edge_set),
+                'count_basis': 'native_type_pairs_raw_run',
                 'feedforward_loops': feedforward_loops,
                 'feedback_loops': feedback_loops,
                 'reciprocal_connections': reciprocal_connections,

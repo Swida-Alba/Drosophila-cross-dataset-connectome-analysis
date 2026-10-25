@@ -506,6 +506,24 @@ def _is_untyped_node(name: str) -> bool:
     return s.isdigit()
 
 
+def folder_drop_untyped(folder) -> bool:
+    """Read the run's own ``drop untyped`` setting (default True)."""
+    path = Path(folder) / 'parameters.txt'
+    try:
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return True
+    for line in lines:
+        if ':' not in line:
+            continue
+        key, value = line.split(':', 1)
+        if key.strip().lower() != 'drop untyped':
+            continue
+        return str(value).strip().lower() not in {
+            'false', '0', 'no', 'off', 'none', ''}
+    return True
+
+
 def load_unit_paths(csv_path: Path, drop_untyped: bool = True) -> pd.DataFrame:
     """Load one paths CSV and derive the pair columns the report needs.
 
@@ -5978,7 +5996,8 @@ def generate_paths_pair_report(
     unit_in_conditioned: Dict[str, Dict[str, float]] = {}
 
     for unit in units:
-        frame = load_unit_paths(unit.csv_path)
+        frame = load_unit_paths(unit.csv_path,
+                                drop_untyped=folder_drop_untyped(unit.folder))
         frames[unit.unit_id] = frame
         source_cov, target_cov = _load_enrollment_coverage(unit.folder)
         unit_source_cov[unit.unit_id] = source_cov
@@ -6093,7 +6112,8 @@ def generate_paths_pair_report(
             if not csv_path.exists():
                 continue
             try:
-                rframe = load_unit_paths(csv_path)
+                rframe = load_unit_paths(
+                    csv_path, drop_untyped=folder_drop_untyped(csv_path.parent))
             except Exception as exc:  # noqa: BLE001 - refill is additive
                 say(f'  ! {kind} paths for {unit.label} unreadable: {exc}')
                 continue

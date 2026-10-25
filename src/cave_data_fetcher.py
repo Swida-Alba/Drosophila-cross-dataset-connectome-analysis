@@ -167,12 +167,21 @@ class CAVEDataFetcher:
         # an API-cache tree just by constructing the fetcher.
     
     def _load_token(self, token_name: str) -> Optional[str]:
-        """Load token from config.json, then the environment."""
+        """Load a token through the same chain as the UI/token manager."""
+        try:
+            try:
+                from .utils.token_manager import TokenManager
+            except ImportError:  # pragma: no cover - src laid bare on sys.path
+                from utils.token_manager import TokenManager
+            token = TokenManager(project_root=self.project_root, include_cwd=False).get_token(
+                token_name)
+            if token:
+                return token
+        except Exception:
+            pass
         token = self._load_token_from_config(token_name)
         if token:
             return token
-        # Direct environment configuration is supported by the shared token
-        # manager as well; keep CAVE fetches consistent with that behavior.
         token = os.environ.get(token_name, '').strip()
         if token and not token.startswith('YOUR_'):
             return token

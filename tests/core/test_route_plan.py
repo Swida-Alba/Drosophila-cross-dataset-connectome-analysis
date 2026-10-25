@@ -13,6 +13,7 @@ if str(_VP) not in _sys.path:
     _sys.path.insert(0, str(_VP))
 
 from route_plan import (ClassBudget, CorridorDrain, CorridorRefusal,
+                        _record_scope_pair_mass,
                         build_type_pairs, realize_count, run_lane,
                         validate_and_fill, widest_to_targets, wmax_map)
 
@@ -27,6 +28,20 @@ def tmap(m):
     return pl.DataFrame({"bid": [k for k in m], "t": [m[k] for k in m]})
 
 A = {"a1": "A", "a2": "A", "a3": "A", "b1": "B", "b2": "B", "c1": "C"}
+
+
+def test_scope_pair_mass_counts_shared_edges_once():
+    scope = {}
+    hop_ab = {("a1", "b1"): 20.0}
+    hop_bc = {("b1", "c1"): 5.0}
+    hop_bd = {("b1", "d1"): 7.0}
+    _record_scope_pair_mass(scope, ["A", "B", "C"], [hop_ab, hop_bc])
+    _record_scope_pair_mass(scope, ["A", "B", "D"], [hop_ab, hop_bd])
+
+    assert scope[("A", "B")]["mass"] == 20.0
+    assert scope[("A", "B")]["walks"] == 2
+    assert scope[("B", "C")]["mass"] == 5.0
+    assert scope[("B", "D")]["mass"] == 7.0
 
 
 def test_mass_conservation():

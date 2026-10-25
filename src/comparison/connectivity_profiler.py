@@ -461,10 +461,12 @@ class ConnectivityProfile:
         if up_count < self.MIN_PARTNERS_THRESHOLD or down_count < self.MIN_PARTNERS_THRESHOLD:
             return ConnectivityStatus.RARE
         
-        # Level 3: Check for INCOMPLETE (< top_k partners)
-        # We check against actual_upstream/downstream_count vs the target top_k
-        top_k_target = self.top_k_bodyid_used  # This is the actual K used
-        if up_count < top_k_target or down_count < top_k_target:
+        # Level 3: Check for INCOMPLETE (< the REQUESTED top_k partners).
+        # ``top_k_bodyid_used`` is the expanded k; comparing against it made
+        # a 10-partner profile look incomplete merely because expansion
+        # raised K to 25.
+        if (up_count < self.upstream_top_k
+                or down_count < self.downstream_top_k):
             return ConnectivityStatus.INCOMPLETE
         
         # Level 4: Check for INCOMPLETE_EXPANSION (< top_m unique types)
@@ -1511,13 +1513,27 @@ class ConnectivityProfiler:
         """Get hash of current configuration for cache invalidation."""
         config_dict = {
             'top_k_bodyid': self.config.top_k_bodyid,
+            'top_m_type': self.config.top_m_type,
             'min_synapse_threshold': self.config.min_synapse_threshold,
             'include_untyped_partners': self.config.include_untyped_partners,
             'normalize_method': self.config.normalize_method,
+            'dynamic_expansion': self.config.dynamic_expansion,
+            'max_expansion_factor': self.config.max_expansion_factor,
+            'expand_untyped_2hop': self.config.expand_untyped_2hop,
+            'top_k_2hop': self.config.top_k_2hop,
             'fuzzy_enabled': self.config.fuzzy_match.enabled,
             'fuzzy_strip_lr': self.config.fuzzy_match.strip_lr_suffix,
             'fuzzy_strip_numeric': self.config.fuzzy_match.strip_numeric_suffix,
         }
+        # A rebuilt/extended connection cache changes the profiles too; bind
+        # the profile cache to the cache files it was built from.
+        try:
+            config_dict['connection_cache'] = [
+                (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+                for path in sorted(self.cache_dir.glob('*/connections.parquet'))
+            ]
+        except Exception:
+            config_dict['connection_cache'] = None
         return hashlib.md5(
             json.dumps(config_dict, sort_keys=True).encode()
         ).hexdigest()[:8]
@@ -2102,15 +2118,15 @@ class ConnectivityProfiler:
             partner_type_mapping_downstream=parse_int_key_mapping(row.get('partner_type_mapping_downstream')),
             top_k_bodyid_used=int(row.get('top_k_bodyid_used', 20)),
             top_m_type_target=int(row.get('top_m_type_target', 5)),
-            untyped_upstream_bodyids=parse_json(row.get('untyped_upstream_bodyids')),
-            untyped_downstream_bodyids=parse_json(row.get('untyped_downstream_bodyids')),
-            untyped_upstream_2hop=parse_json(row.get('untyped_upstream_2hop')),
-            untyped_downstream_2hop=parse_json(row.get('untyped_downstream_2hop')),
-            untyped_upstream_2hop_ranks=parse_json(row.get('untyped_upstream_2hop_ranks')),
-            untyped_downstream_2hop_ranks=parse_json(row.get('untyped_downstream_2hop_ranks')),
+            untyped_upstream_bodyids=parse_int_key_mapping(row.get('untyped_upstream_bodyids')),
+            untyped_downstream_bodyids=parse_int_key_mapping(row.get('untyped_downstream_bodyids')),
+            untyped_upstream_2hop=parse_int_key_mapping(row.get('untyped_upstream_2hop')),
+            untyped_downstream_2hop=parse_int_key_mapping(row.get('untyped_downstream_2hop')),
+            untyped_upstream_2hop_ranks=parse_int_key_mapping(row.get('untyped_upstream_2hop_ranks')),
+            untyped_downstream_2hop_ranks=parse_int_key_mapping(row.get('untyped_downstream_2hop_ranks')),
             # Round 7: typed bodyId-level data
-            typed_upstream_bodyids=parse_json(row.get('typed_upstream_bodyids')),
-            typed_downstream_bodyids=parse_json(row.get('typed_downstream_bodyids')),
+            typed_upstream_bodyids=parse_int_key_mapping(row.get('typed_upstream_bodyids')),
+            typed_downstream_bodyids=parse_int_key_mapping(row.get('typed_downstream_bodyids')),
         )
     
     def _profile_to_row(self, profile: ConnectivityProfile) -> dict:
@@ -3759,8 +3775,10 @@ class ConnectivityProfiler:
                 .sort('weight', descending=True)
             )
             
-            actual_count = len(aggregated_pl)
-            unique_types = actual_count
+            unique_types = len(aggregated_pl)
+            actual_count = (
+                int(conn_df['partner_bodyId'].nunique())
+                if 'partner_bodyId' in conn_df.columns else unique_types)
             
             # Convert to dict directly (faster than iterrows)
             partners_dict = dict(zip(
@@ -3774,8 +3792,10 @@ class ConnectivityProfiler:
                 'weight': 'sum'
             }).reset_index()
             
-            actual_count = len(aggregated)
-            unique_types = actual_count
+            unique_types = len(aggregated)
+            actual_count = (
+                int(conn_df['partner_bodyId'].nunique())
+                if 'partner_bodyId' in conn_df.columns else unique_types)
             
             # Sort by weight
             aggregated = aggregated.sort_values('weight', ascending=False)

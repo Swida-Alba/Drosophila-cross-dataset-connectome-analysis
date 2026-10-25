@@ -295,6 +295,21 @@ def test_retry_with_backoff_retryable_succeeds(finder, monkeypatch):
     assert sleeps == [0.5, 1.0]
 
 
+def test_retry_with_backoff_retries_http_503(finder, monkeypatch):
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("503 Server Error: Service Unavailable")
+        return "ok"
+
+    monkeypatch.setattr("neuronbridge_finder.time.sleep", lambda *_: None)
+    assert finder._retry_with_backoff(
+        flaky, max_retries=5, initial_delay=0.1) == "ok"
+    assert len(calls) == 3
+
+
 def test_retry_with_backoff_non_retryable_raises_immediately(finder, monkeypatch):
     sleeps = []
     monkeypatch.setattr(nbf_mod.time, "sleep", lambda d: sleeps.append(d))
@@ -874,6 +889,18 @@ def test_sort_matches_by_rank(finder):
     assert by_line["A"]["match_type"] == "both"
     assert by_line["B"]["pppm_rank"] == 3  # missing pppm -> max+1
     assert result[0]["line"] == "A"
+
+    # Same bodyId in two dataset namespaces must not collapse into one row.
+    colliding = [
+        {"bodyId": 111, "dataset": "manc:v1.2.1", "score": 0.9,
+         "match_type": "cds"},
+        {"bodyId": 111, "dataset": "optic-lobe:v1.1", "score": 0.8,
+         "match_type": "pppm"},
+    ]
+    merged = finder._sort_matches_by_rank(colliding, key_field="bodyId")
+    assert len(merged) == 2
+    assert {row["dataset"] for row in merged} == {
+        "manc:v1.2.1", "optic-lobe:v1.1"}
 
 
 # ---------------------------------------------------------------------------

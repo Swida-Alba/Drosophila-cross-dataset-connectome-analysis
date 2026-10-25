@@ -2012,6 +2012,7 @@ class ComparisonVisualizer:
                     'dataset': dataset,
                     'threshold': point_threshold_value(threshold),
                     'count': count,
+                    'count_basis': 'native_type_rows_raw_run',
                 }, threshold))
         pd.DataFrame(path_counts_data).to_csv(os.path.join(vis_data_dir, "path_counts.csv"), index=False)
         
@@ -2334,7 +2335,8 @@ class ComparisonVisualizer:
                             add_point_fields(path_export, threshold)
                         path_export.to_csv(os.path.join(
                             vis_data_dir,
-                            f"path_heatmap_{point_stem(threshold)}.csv"))
+                            f"path_heatmap_{point_stem(threshold)}.csv"),
+                            index_label='path_key')
                 
                 # All thresholds path heatmap.  Skipped for Custom
                 # combinations: the per-query heatmaps above are the

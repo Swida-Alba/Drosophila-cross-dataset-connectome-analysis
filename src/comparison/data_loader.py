@@ -327,8 +327,8 @@ class DataLoader:
     # =========================================================================
     
     def _sanitize_name(self, name: str) -> str:
-        """Convert name to filesystem-safe format."""
-        return canonical_dataset_name(name).replace(':', '_').replace('.', '_').replace('-', '_')
+        """Convert name to the writer's filesystem-safe format."""
+        return canonical_dataset_name(name).replace(':', '_').replace('.', '_')
     
     def list_available_datasets(self) -> List[str]:
         """

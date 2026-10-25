@@ -55,6 +55,11 @@ def test_flywire_pre_derived_from_connections(tmp_path):
     assert density["per_neuron_median_post"] == pytest.approx(5.0)
     assert density["neuron_universe"] == "all_neurons"
     assert density["per_neuron_mean"] == pytest.approx((16 + 7 + 6) / 3)
+    # The dataset-level presynaptic total is the derived connection mass
+    # (4+2+7+1), not a literal 0 from the absent `pre` column.
+    assert density["total_pre"] == pytest.approx(14.0)
+    assert density["total_post"] == pytest.approx(15.0)
+    assert density["total"] == pytest.approx(29.0)
 
 
 def test_neuron_table_pre_post(tmp_path):

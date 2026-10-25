@@ -841,7 +841,13 @@ class NeuronBridgeFinder:
                     'connection' in error_str and 'broken' in error_str,
                     'max retries exceeded' in error_str,
                     'connection reset' in error_str,
-                    'timeout' in error_str
+                    'timeout' in error_str,
+                    # The client surfaces HTTP failures as RuntimeError text
+                    # ("503 Server Error"); retry transient statuses.
+                    '429' in error_str, '500' in error_str,
+                    '502' in error_str, '503' in error_str,
+                    '504' in error_str, 'server error' in error_str,
+                    'too many requests' in error_str,
                 ])
                 
                 if not is_retryable or attempt >= max_retries - 1:
@@ -1150,7 +1156,8 @@ class NeuronBridgeFinder:
         combined_df: pd.DataFrame,
         match_type: str,
         is_multi_dataset: bool,
-        sort_by: str
+        sort_by: str,
+        query_bodyids: Optional[set] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Aggregate results using Polars for fast processing of large datasets.
@@ -1208,9 +1215,13 @@ class NeuronBridgeFinder:
         # Convert to polars for fast aggregation
         pl_df = pl.from_pandas(combined_df)
         
-        # Calculate total unique query neurons
+        # Calculate total unique query neurons. The match frame omits
+        # zero-match queries, so prefer the resolved query set.
         total_query_neurons = 0
-        if 'source_bodyId' in pl_df.columns:
+        if query_bodyids:
+            total_query_neurons = len(
+                {str(value) for value in query_bodyids})
+        elif 'source_bodyId' in pl_df.columns:
             total_query_neurons = pl_df.select(
                 pl.col('source_bodyId').cast(pl.Utf8).drop_nulls().n_unique()
             ).item()
@@ -1386,7 +1397,8 @@ class NeuronBridgeFinder:
         combined_df: pd.DataFrame,
         match_type: str,
         is_multi_dataset: bool,
-        sort_by: str
+        sort_by: str,
+        query_bodyids: Optional[set] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Aggregate results using pandas (original implementation).
@@ -1409,9 +1421,13 @@ class NeuronBridgeFinder:
         tuple
             (combined_df, line_stats) - processed DataFrames.
         """
-        # Calculate total unique query neurons
+        # Calculate total unique query neurons. The match frame omits
+        # zero-match queries, so prefer the resolved query set.
         total_query_neurons = 0
-        if 'source_bodyId' in combined_df.columns:
+        if query_bodyids:
+            total_query_neurons = len(
+                {str(value) for value in query_bodyids})
+        elif 'source_bodyId' in combined_df.columns:
             total_query_neurons = len(set(str(v) for v in combined_df['source_bodyId'].dropna().unique()))
         
         # Add line_type classification if separate_splitgal4 is enabled
@@ -5091,7 +5107,14 @@ class NeuronBridgeFinder:
         # Separate CDS and PPPM matches
         cds_matches = [m for m in matches if m.get('match_type') == 'cds']
         pppm_matches = [m for m in matches if m.get('match_type') == 'pppm']
-        
+
+        def _match_key(match):
+            key = match.get(key_field)
+            if key_field == 'bodyId' and match.get('dataset'):
+                # BodyIds are only unique within a dataset namespace.
+                return (str(key), str(match.get('dataset')))
+            return key
+
         # Sort each by score descending and assign ranks
         cds_matches.sort(key=lambda x: x.get('score', 0), reverse=True)
         pppm_matches.sort(key=lambda x: x.get('score', 0), reverse=True)
@@ -5099,13 +5122,13 @@ class NeuronBridgeFinder:
         # Build rank dictionaries (key -> rank)
         cds_ranks = {}
         for rank, m in enumerate(cds_matches, 1):
-            key = m.get(key_field)
+            key = _match_key(m)
             if key and key not in cds_ranks:
                 cds_ranks[key] = rank
         
         pppm_ranks = {}
         for rank, m in enumerate(pppm_matches, 1):
-            key = m.get(key_field)
+            key = _match_key(m)
             if key and key not in pppm_ranks:
                 pppm_ranks[key] = rank
         
@@ -5116,13 +5139,13 @@ class NeuronBridgeFinder:
         # Combine matches by key, keeping best score per match_type
         combined = {}
         for m in matches:
-            key = m.get(key_field)
+            key = _match_key(m)
             if not key:
                 continue
             
             if key not in combined:
                 combined[key] = {
-                    key_field: key,
+                    key_field: m.get(key_field),
                     'library': m.get('library', ''),
                     'image_id': m.get('image_id', ''),
                     'cds_score': 0,
@@ -9078,6 +9101,24 @@ class NeuronBridgeFinder:
         
         # Validate and normalize sort_by
         sort_by = self._validate_sort_by(sort_by)
+
+        # Resolve the query set before fetching: coverage_ratio must divide
+        # by every queried bodyId, including those that return no match.
+        query_bodyids = set()
+        for query in query_list:
+            try:
+                query_bodyids.add(str(int(query)))
+                continue
+            except (TypeError, ValueError):
+                pass
+            try:
+                infos = self._find_bodyIds_by_query(query, dataset)
+            except Exception:
+                infos = []
+            for info in infos or []:
+                body_id = info.get('bodyId') if isinstance(info, dict) else None
+                if body_id is not None:
+                    query_bodyids.add(str(body_id))
         
         if not query_list:
             self._vprint("❌ No queries provided")
@@ -9351,7 +9392,8 @@ class NeuronBridgeFinder:
                     combined_df, 
                     match_type=match_type,
                     is_multi_dataset=is_multi_dataset,
-                    sort_by=sort_by
+                    sort_by=sort_by,
+                    query_bodyids=query_bodyids,
                 )
             else:
                 # Original pandas-based processing for smaller datasets
@@ -9359,7 +9401,8 @@ class NeuronBridgeFinder:
                     combined_df,
                     match_type=match_type,
                     is_multi_dataset=is_multi_dataset,
-                    sort_by=sort_by
+                    sort_by=sort_by,
+                    query_bodyids=query_bodyids,
                 )
             
             # Save results: only the compact line-level summaries are written

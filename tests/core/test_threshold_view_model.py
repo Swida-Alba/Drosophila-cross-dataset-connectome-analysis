@@ -121,6 +121,19 @@ def test_comparability_critical_when_disjoint():
     assert report['warning_level'] == 'critical'
 
 
+def test_comparability_single_threshold_is_not_a_warning():
+    """One requested threshold is fully comparable; no 'lower thresholds'
+    warning may be emitted for a comparison that has no cross-threshold
+    rows at all (real edge-mode run, 2026-10-25)."""
+    datasets = ['a', 'b']
+    by_ds = {'a': [3], 'b': [3]}
+    a = _analyzer(datasets, by_ds, {}, thresholds=[3])
+    report = a.comparability_report()
+    assert report['common_materialized'] == [3]
+    assert report['warning_level'] == 'none'
+    assert report['warnings'] == []
+
+
 def test_comparability_no_warning_when_aligned():
     datasets = ['a', 'b']
     by_ds = {'a': [3, 5], 'b': [3, 5]}

@@ -1610,6 +1610,7 @@ class CrossDatasetMorphComparer:
                  fetch_online: bool = True,
                  token: str = '',
                  use_auto_type_mapping: bool = True,
+                 custom_mapping_file: Optional[str] = None,
                  label_mapping_file: Optional[str] = None,
                  members_override: Optional[Dict[str, Dict[str, List[int]]]] = None,
                  use_cache: bool = True,
@@ -1635,6 +1636,7 @@ class CrossDatasetMorphComparer:
         # axes to '{bodyId}_{label}({native})' and adding a label-aligned
         # type view BESIDE the native-keyed morph_type_matrix.csv — the
         # native outputs stay untouched (compatibility gate).
+        self.custom_mapping_file = str(custom_mapping_file or '').strip()
         self.label_mapping_file = str(label_mapping_file or '').strip()
         # A caller that already resolved the shared comparison population
         # (the multi-dataset suite resolves once so the intra and cross
@@ -1781,13 +1783,14 @@ class CrossDatasetMorphComparer:
         preset-free run byte-identical.
         """
         key = str(dataset)
+        preset_file = self.custom_mapping_file or self.label_mapping_file
         if key not in self._preset_label_cache:
-            if not self.label_mapping_file:
+            if not preset_file:
                 self._preset_label_cache[key] = ({}, set())
             else:
                 try:
                     groups, names, side = load_labelmapper_source_groups(
-                        self.label_mapping_file, dataset, log=self._log)
+                        preset_file, dataset, log=self._log)
                     labels = {str(x) for x in (
                         (side or {}).get('custom_label')
                         or (side or {}).get('std_label') or [])}
@@ -1800,7 +1803,8 @@ class CrossDatasetMorphComparer:
         return self._preset_label_cache[key]
 
     def _preset_group_ids(self, text: str,
-                          dataset: str) -> Optional[List[int]]:
+                          dataset: str,
+                          frame=None) -> Optional[List[int]]:
         """The preset's group *text* as bodyIds in *dataset*.
 
         ``None`` means *text* is not one of the preset's labels, so the token
@@ -1814,8 +1818,23 @@ class CrossDatasetMorphComparer:
         for value in members.get(text, []):
             try:
                 out.append(int(value))
-            except (TypeError, ValueError):
                 continue
+            except (TypeError, ValueError):
+                pass
+            # A custom group may list type names, mirroring the
+            # single-dataset comparer; resolve them against this dataset.
+            if frame is not None:
+                try:
+                    from neuron_search import resolve_dataframe_query
+                    hits, _info = resolve_dataframe_query(
+                        frame, str(value), search_columns='auto')
+                    for hit in hits or []:
+                        try:
+                            out.append(int(hit))
+                        except (TypeError, ValueError):
+                            continue
+                except Exception:
+                    continue
         return sorted(dict.fromkeys(out))
 
     def _resolve_members(self, tokens: Sequence[str],
@@ -1868,7 +1887,7 @@ class CrossDatasetMorphComparer:
             text = str(token or '').strip()
             if not text:
                 continue
-            preset_ids = self._preset_group_ids(text, dataset)
+            preset_ids = self._preset_group_ids(text, dataset, frame)
             token_body_ids: List[int] = []
             label_default = text
             if preset_ids is not None:

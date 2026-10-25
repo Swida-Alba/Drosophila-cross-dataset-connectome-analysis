@@ -148,16 +148,18 @@ def _canonical_digits(digits: str) -> str:
 def _complete_short_id(text: str) -> str:
     """Complete a 9-digit FlyWire short id to its full ``720575940`` + id form.
 
-    Ids are exact decimal strings; a 9-digit value is the short-form suffix of
-    a FlyWire body id, so the fixed namespace prefix is prepended.  Longer ids
-    (already full) are returned unchanged after canonicalization.  This unifies
-    the short-form handling used by the FAFB synapse and BANC connection
-    converters with the canonical ``normalize_flywire_body_id`` path.
+    Canonicalize first: ``"000123456789"`` and ``"123456789.0"`` both denote
+    the same 9-digit short id and must receive the namespace prefix just like
+    ``"123456789"``.  Longer (already full) ids are returned unchanged after
+    canonicalization.  This unifies the short-form handling used by the FAFB
+    synapse and BANC connection converters with the canonical
+    ``normalize_flywire_body_id`` path.
     """
 
-    if _DIGITS.fullmatch(text) and len(text) == SHORT_ID_DIGITS:
-        return FLYWIRE_SHORT_ID_PREFIX + text
-    return _canonical_digits(text)
+    canonical = _canonical_digits(text)
+    if len(canonical) == SHORT_ID_DIGITS:
+        return FLYWIRE_SHORT_ID_PREFIX + canonical
+    return canonical
 
 
 def normalize_flywire_body_id(value: Any, *, field: str = "bodyId") -> str:
@@ -186,7 +188,7 @@ def normalize_flywire_body_id(value: Any, *, field: str = "bodyId") -> str:
                     f"{field} looks like a rounded float ({value!r}); "
                     "the exact FlyWire ID cannot be recovered"
                 )
-            return digits
+            return _complete_short_id(digits)
         raise FlyWireBodyIdError(
             f"{field} must be an exact decimal integer string: {value!r}"
         )
@@ -269,14 +271,13 @@ def canonicalize_flywire_id_expr(column: str):
 
     import polars as pl
 
-    # Strip FIRST (a padded '123456789 ' must not miss the completion,
-    # an embedded-space ' 12345678' must not become an invalid id), and
-    # gate the short-id completion on pure digits — mirroring
-    # normalize_flywire_body_id's strip-then-fullmatch order.
+    # Strip, drop an integral ``.0``, and strip leading zeros BEFORE the
+    # 9-digit completion — ``"000123456789"`` and ``"123456789.0"`` are the
+    # same short id as ``"123456789"`` and must receive the prefix.
     s = pl.col(column).cast(pl.Utf8).str.strip_chars()
+    s = s.str.replace(r"^([0-9]+)\.0+$", "${1}")
+    s = s.str.strip_chars_start("0")
     s = pl.when(s.str.contains(r"^[0-9]+$") & (s.str.len_chars() == SHORT_ID_DIGITS)).then(
         pl.concat_str(pl.lit(FLYWIRE_SHORT_ID_PREFIX), s)
     ).otherwise(s)
-    s = s.str.replace(r"^([0-9]+)\.0+$", "${1}")
-    s = s.str.strip_chars_start("0")
     return pl.when(s.str.len_chars() == 0).then(pl.lit("0")).otherwise(s)

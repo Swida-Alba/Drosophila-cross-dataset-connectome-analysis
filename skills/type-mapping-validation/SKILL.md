@@ -65,7 +65,7 @@ $PY scripts/RunMappingValidation.py \
   `--no-backward-evidence` to skip it when the **fill** is not the
   question (§3): it
   runs the homolog finding in reverse over the `candidates` / `family` /
-  `relative` members. Advisory only, connectivity only, default OFF.
+  `relative` members. Advisory only, connectivity only, default ON.
 - Floors-v3 knobs: `--morph-track-a-offset` (Δ, default 0.05 — candidate
   bar = branch Track-A pool baseline − Δ; suspicious bar = baseline − k·Δ),
   `--morph-suspicious-level` (k, default 3, aggressive deep window),

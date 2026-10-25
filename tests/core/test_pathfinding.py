@@ -25,8 +25,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "vispath-subproject" / "src"))
 
 from coana import (  # noqa: E402
+    FindNeuronConnection,
     _FINDALLPATH_CACHE_MAX,
     _FINDALLPATH_GRAPH_CACHE,
+    _apply_path_keywords,
     _findallpath_cache_key,
     _findallpath_cache_put,
     _match_path_edges_to_layers,
@@ -79,6 +81,17 @@ class TestFindAllPathCacheKey:
         ):
             assert _findallpath_cache_key(**_base_cache_kwargs(**override)) != base_key
 
+    def test_key_differs_when_mapping_or_soma_identity_changes(self):
+        base = _base_cache_kwargs()
+        base_key = _findallpath_cache_key(**base)
+        assert _findallpath_cache_key(
+            **_base_cache_kwargs(label_mapper_digest="m1")) != base_key
+        assert _findallpath_cache_key(
+            **_base_cache_kwargs(soma_side_override_digest="s1")) != base_key
+        assert _findallpath_cache_key(
+            **_base_cache_kwargs(label_mapper_digest="m1",
+                                 soma_side_override_digest="s1")) != base_key
+
     def test_threshold_is_not_part_of_the_key(self):
         # min_synapse_num is deliberately excluded: the cached graph is
         # filtered up to the requested threshold at reuse time.
@@ -97,6 +110,44 @@ class TestFindAllPathCacheKey:
             _findallpath_cache_key(**_base_cache_kwargs(target_ID=["other"]))
             != base_key
         )
+
+
+def test_apply_path_keywords_filters_both_frame_engines():
+    import pandas as pd
+    import polars as pl
+
+    rows = {"path": ["A->B", "A->None->B"], "weight": [1, 2]}
+    pandas_out = _apply_path_keywords(pd.DataFrame(rows), ["None"])
+    polars_out = _apply_path_keywords(pl.DataFrame(rows), ["None"])
+    assert pandas_out["path"].tolist() == ["A->B"]
+    assert polars_out["path"].to_list() == ["A->B"]
+
+    # BodyId paths carry no type labels in `path`; the lookup is required.
+    body_rows = {"path": ["1->2", "1->3"], "weight": [1, 2]}
+    lookup = {"1": "aMe12", "2": "KCg-d", "3": "PPL101"}
+    body_out = _apply_path_keywords(
+        pd.DataFrame(body_rows), ["KCg-d"], label_lookup=lookup)
+    assert body_out["path"].tolist() == ["1->3"]
+
+
+def test_reused_saveas_folder_clears_stale_path_outputs(tmp_path):
+    (tmp_path / "a_to_b_allpaths_type.csv").write_text("path\nA->B\n")
+    (tmp_path / "a_to_b_allpaths_bodyId_paths.csv").write_text("path\n")
+    (tmp_path / "path_report.html").write_text("<html>old</html>")
+    (tmp_path / "paths_pair_breakdown").mkdir()
+    (tmp_path / "paths_pair_breakdown" / "old.csv").write_text("old")
+    (tmp_path / "data_details").mkdir()
+    (tmp_path / "data_details" / "a_to_b_allpaths_type_excluded.csv").write_text("old")
+    (tmp_path / "keep_me.txt").write_text("user file")
+
+    obj = FindNeuronConnection.__new__(FindNeuronConnection)
+    obj._clear_reused_saveas_path_outputs(str(tmp_path))
+
+    assert not list(tmp_path.glob("*_allpaths_*"))
+    assert not (tmp_path / "path_report.html").exists()
+    assert not (tmp_path / "paths_pair_breakdown").exists()
+    assert not (tmp_path / "data_details" / "a_to_b_allpaths_type_excluded.csv").exists()
+    assert (tmp_path / "keep_me.txt").exists()
 
 
 class TestFindAllPathCacheBound:

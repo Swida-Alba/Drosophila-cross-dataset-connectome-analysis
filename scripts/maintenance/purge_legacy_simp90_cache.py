@@ -110,7 +110,13 @@ def main() -> int:
             # store folder): find_skeleton_file rglobs subdirectories of the
             # store when any exist, so an in-store quarantine folder would
             # keep the files discoverable (and re-seed simp90 into loads).
-            quarantine = path.parents[1] / "_legacy_simp90"
+            skeletons_dir = next(
+                (parent for parent in path.parents
+                 if parent.name == "skeletons"), None)
+            if skeletons_dir is None:
+                print(f"  [skip] {path}: no skeletons/ ancestor")
+                continue
+            quarantine = skeletons_dir.parent / "_legacy_simp90"
             quarantine.mkdir(parents=True, exist_ok=True)
             shutil.move(str(path), str(quarantine / path.name))
 

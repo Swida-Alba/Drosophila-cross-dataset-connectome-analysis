@@ -620,9 +620,11 @@ def create_type_validation_tab():
             "output_dir": output_dir.value,
             "run_label": (run_label.value or "").strip() or None,
             "verbose": True,
-            "top_k": int(_setting("top_k", 25) or 25),
-            "top_m": int(_setting("top_m", 5) or 5),
-            "min_synapse_threshold": int(_setting("min_synapse_num", 3) or 3),
+            # These are TM VEV constants, not global pathfinding Settings:
+            # follow the dataclass defaults unless Advanced exposes them.
+            "top_k": int(_default("top_k")),
+            "top_m": int(_default("top_m")),
+            "min_synapse_threshold": int(_default("min_synapse_threshold")),
         }
         if morph_enabled.value:
             cp["morph_auc_floor"] = float(morph_auc_floor.value)

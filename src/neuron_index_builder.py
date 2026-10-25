@@ -437,9 +437,19 @@ def build_search_cache_frame(frame, columns: Optional[Iterable[str]] = None):
     return result.sort(["search_priority", "search_value"])
 
 
+try:
+    from .flywire_ids import dataset_folder as _canonical_dataset_folder
+except ImportError:  # pragma: no cover - src laid bare on sys.path
+    from flywire_ids import dataset_folder as _canonical_dataset_folder
+
+
 def dataset_folder(dataset: str) -> str:
-    """Return the repository-safe folder name for a dataset identifier."""
-    return str(dataset or "").strip().replace(":", "_").replace(".", "_")
+    """Return the repository-safe folder name for a dataset identifier.
+
+    Delegates to the canonicalizer so legacy aliases (``flywire_BANC_v888``)
+    resolve to the same folder as seeds/caches/converter tables.
+    """
+    return _canonical_dataset_folder(dataset)
 
 
 def metadata_candidates(dataset: str, datasets_dir: Path) -> List[Path]:

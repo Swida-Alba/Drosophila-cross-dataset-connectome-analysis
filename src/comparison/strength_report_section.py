@@ -35,7 +35,9 @@ def _dataset_strength(base: Path, top_k: int):
     agg_cols = {"weight": "sum"}
     for c in ("connection_ratio", "connection_ratio_adj"):
         if c in df.columns:
-            agg_cols[c] = "mean"
+            # Per-conn-layer shares share one denominator; the pair's share
+            # is their sum, not the mean (which understated multi-layer pairs).
+            agg_cols[c] = "sum"
     df = df.groupby(["type_pre", "type_post"], dropna=False).agg(
         agg_cols).reset_index()
     available = ["weight"]

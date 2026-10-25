@@ -37,7 +37,7 @@ class _FakeCache:
     def _default_basis(self):
         return "simp90"
 
-    def _vectorize_neuron(self, neuron):
+    def _vectorize_neuron(self, neuron, body_id=None):
         vec = getattr(neuron, "_vector", None)
         if vec is None:
             raise ValueError("glitchy skeleton")
@@ -699,7 +699,7 @@ def test_banc_missing_vectors_route_to_public_swc_chain(monkeypatch):
         _log=lambda *a, **k: None,
     )
     cache = SimpleNamespace(
-        _vectorize_neuron=lambda neuron: ("raw", np.zeros(DIM)),
+        _vectorize_neuron=lambda neuron, body_id=None: ("raw", np.zeros(DIM)),
         _default_basis=lambda: "raw",
         append_vectors=lambda rows, vector_basis=None: calls.update(
             rows=len(rows)),

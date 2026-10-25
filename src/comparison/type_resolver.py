@@ -1135,10 +1135,11 @@ def expand_profile_types(
                 # a single-end `bridged` partner carries FULL weight to its
                 # one bridge end (a fan-out would be valid_split_evidence)
                 _add(prefix + str(tgt), weight, status)
+                status_counts[status] += 1
             else:
                 _add(prefix + base_key, weight, STATUS_UNMAPPED)
                 fallback_used = True
-            status_counts[status] += 1
+                status_counts[STATUS_UNMAPPED] += 1
         elif status == STATUS_VALID_SPLIT:
             tgts = [str(t) for t in (d.get('target_types') or ())
                     if t]

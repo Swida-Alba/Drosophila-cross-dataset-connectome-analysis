@@ -332,7 +332,10 @@ def generate_corridor_section(analyzer, dataset_names, thresholds,
             base = Path(analyzer.parameters.get_dataset_output_path(ds, t))
         except Exception:
             continue
-        ref_csv = base / 'type_level_refill' / 'refill_connection_type.csv'
+        # The pair table carries refilled_total; the connection mirror is
+        # refill-only (its `weight` has no emitted mass and no total column).
+        ref_csv = (base / 'data_details' / 'type_level_refill'
+                   / 'refill_type_pairs.csv')
         if not ref_csv.exists():
             continue
         try:

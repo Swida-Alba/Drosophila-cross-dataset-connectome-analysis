@@ -894,12 +894,56 @@ def connections_product_path(dataset, project_root=None) -> Path:
             / f"connections_{version}.parquet")
 
 
+def _quarantine_product(path: Path) -> None:
+    """Move a bad release product aside for inspection, never delete it."""
+    try:
+        os.replace(path, f"{path}.corrupt-{time.time_ns()}")
+    except OSError:
+        pass
+
+
+def _validate_meta_feather(path: Path) -> None:
+    """Raise when *path* is not a usable BANC metadata product.
+
+    The converter needs a non-empty table with a release id column and the
+    ``cell_type`` column; a truncated download must never be accepted just
+    because the filename exists.
+    """
+    import pyarrow.feather as feather
+
+    table = feather.read_table(str(path))
+    if table.num_rows <= 0:
+        raise ValueError("BANC metadata product is empty")
+    columns = set(table.column_names)
+    if not ({"root_888", "root_626"} & columns):
+        raise ValueError("BANC metadata product lacks a release id column")
+    if "cell_type" not in columns:
+        raise ValueError("BANC metadata product lacks cell_type")
+
+
+def _validate_connections_product(path: Path) -> None:
+    """Raise when *path* is not a usable BANC connection product."""
+    if not parquet_readable(str(path)):
+        raise ValueError("BANC connection product is unreadable")
+    import pyarrow.parquet as pq
+
+    columns = set(pq.ParquetFile(str(path)).schema_arrow.names)
+    if not {"pre_root_id", "post_root_id"} <= columns:
+        raise ValueError("BANC connection product lacks id columns")
+    if not ({"syn_count", "num_synapses"} & columns):
+        raise ValueError("BANC connection product lacks a synapse count")
+
+
 def download_meta_feather(dataset, project_root=None,
                           force: bool = False) -> Optional[Path]:
     """Download the release meta feather into the dataset downloads dir."""
     local = meta_feather_path(dataset, project_root)
     if local.exists() and not force:
-        return local
+        try:
+            _validate_meta_feather(local)
+            return local
+        except Exception:
+            _quarantine_product(local)
     url = f"{BUCKET_HTTP_BASE}/{META_FEATHER_PATH}"
     blob = http_get(url, timeout=300, attempts=3, note="banc_888_meta.feather")
     if blob is None:
@@ -907,6 +951,14 @@ def download_meta_feather(dataset, project_root=None,
     local.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(temp_sibling(str(local), "product-download"))
     temp.write_bytes(blob)
+    try:
+        _validate_meta_feather(temp)
+    except Exception:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        return None
     os.replace(temp, local)
     return local
 
@@ -916,7 +968,11 @@ def download_connections_product(dataset, project_root=None,
     """Download the release connection-count product (thresholds baked in)."""
     local = connections_product_path(dataset, project_root)
     if local.exists() and not force:
-        return local
+        try:
+            _validate_connections_product(local)
+            return local
+        except Exception:
+            _quarantine_product(local)
     product = CONNECTION_PRODUCTS[_connection_version(dataset)]
     url = f"{BUCKET_HTTP_BASE}/{product}"
     blob = http_get(url, timeout=600, attempts=3, note=product)
@@ -925,6 +981,14 @@ def download_connections_product(dataset, project_root=None,
     local.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(temp_sibling(str(local), "product-download"))
     temp.write_bytes(blob)
+    try:
+        _validate_connections_product(temp)
+    except Exception:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        return None
     os.replace(temp, local)
     return local
 

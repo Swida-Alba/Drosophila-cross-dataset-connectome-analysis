@@ -288,7 +288,20 @@ writes both files.
 - `edge_density_per_threshold.csv`, `threshold_alignment_matrix.csv`, and
   `threshold_alignment_best_matches.csv` are raw-run schedule diagnostics
   (`threshold_scope=raw_run_schedule_diagnostic` in combination mode); use
-  `threshold_combinations.csv` for the actual query rows.
+  `threshold_combinations.csv` for the actual query rows. Their counts are
+  distinct **canonical mapped** type pairs with at least one bodyId edge at or
+  above the threshold (`type_key_space=canonical_aligned`), matching the
+  presence/overlap exports. A below-range target reports an empty `best_t`
+  with `target_density_below_range` and `within_tolerance=false`; the
+  exported `best_t`/`best_t_range` and any suggested combination are clamped
+  to the dataset's lowest materialized threshold.
+- Edge-mode counts are labelled: `unified_summary.csv`,
+  `path_count_comparison.csv`, `threshold_sensitivity.csv`,
+  `motif_analysis.csv`, and the degree files carry
+  `count_basis=native_type_pairs_raw_run`, while the aligned presence,
+  unique, overlap, `edge_count_data.csv`, and alignment tables use canonical
+  merge keys. `traversal_probability` is suspended (2026-10-06) and is not
+  exported in either lane.
 - **Density curves** (every pathfinding mode):
   `comparison_results/density_curves.csv` and `density_windows.csv` give
   each queried dataset a cone-scoped curve over its own window

@@ -2336,6 +2336,15 @@ def test_get_type_pool_variants(finder):
     finally:
         cp_module._PROFILER_CONN_CACHE.pop(SAFE_A, None)
 
+    # branch 1b: production-shaped cache (conn_df only, no type_lookup)
+    cp_module._PROFILER_CONN_CACHE[SAFE_A] = {
+        'conn_df': pd.DataFrame({'type_pre': ['T1', None],
+                                 'type_post': ['T2', 'T2']})}
+    try:
+        assert set(finder._get_type_pool(DS_A)) == {'T1', 'T2'}
+    finally:
+        cp_module._PROFILER_CONN_CACHE.pop(SAFE_A, None)
+
     # branch 2: profiler neuron index
     fake = _FakeProfilerForFinder(available={})
     fake._load_neuron_index = lambda dataset: pd.DataFrame(
@@ -2382,6 +2391,16 @@ def test_run_random_control_test(finder, monkeypatch, tmp_path):
         n_shuffles=2, show_progress=False)
     assert res_empty['p_value'] == 1.0
     assert not res_empty['is_significant']
+
+    # empty shuffle pool -> fail closed, never p=0 by construction
+    monkeypatch.setattr(finder, 'find_homologs_fast',
+                        lambda **kw: real_df.copy())
+    monkeypatch.setattr(finder, '_get_type_pool', lambda dataset: [])
+    res_no_pool = finder.run_random_control_test(
+        source='Q', source_dataset=DS_A, target_dataset=DS_B,
+        n_shuffles=2, show_progress=False)
+    assert res_no_pool['p_value'] == 1.0
+    assert not res_no_pool['is_significant']
 
     # profiler raises -> error dict
     class _RaisingProfiler:

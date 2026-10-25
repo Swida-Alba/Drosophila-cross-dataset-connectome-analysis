@@ -846,7 +846,14 @@ COLUMN_GLOSSARY = {
     "total_edges": (
         "Unified summary: unique (source, target) type pairs at this "
         "threshold (per-layer occurrences of the same pair are not "
-        "double-counted).", "integer"),
+        "double-counted), on the run's native labels — see count_basis.",
+        "integer"),
+    "count_basis": (
+        "Which type space an edge/count column uses: "
+        "native_type_pairs_raw_run (the run's own labels) or "
+        "canonical_aligned (mapped merge keys, the presence/overlap/report "
+        "universe). The two can differ when auto type mapping merges labels.",
+        "text"),
     "total_layer_rows": (
         "Unified summary: raw connection rows including per-layer "
         "occurrences of the same pair.", "integer"),
@@ -988,6 +995,12 @@ _NEURON_TABLE_NOTE = (
 _PATH_COLUMNS = [
     "path", "weights", "ratios", "min_weight",
     "min_ratio", "length", "nt_types", "coverage",
+]
+# The bodyId builder emits only these columns; `coverage`/`nt_types` are
+# type-level extras (nt_types appears only when the connection frame carries it).
+_BODYID_PATH_COLUMNS = [
+    "path", "weights", "ratios", "min_weight",
+    "min_ratio", "length",
 ]
 
 _CONNECTION_TYPE_COLUMNS = [
@@ -1348,7 +1361,7 @@ _PATHFINDING_FILES = [
                     "off). Same score columns plus bodyId-level endpoints.",
      "preview": True,
      "preview_title": "Path table (bodyId-level)",
-     "columns": _PATH_COLUMNS},
+     "columns": _BODYID_PATH_COLUMNS},
     {"pattern": "route_scope_paths/route_paths_type.csv",
      "description": "Fast mode (deep runs, Fast Mode != complete): one "
                     "row per validated top-M* corridor walk with emitted "
@@ -3152,7 +3165,10 @@ TOOL_GUIDE_SPECS = {
                             "source_status_<dataset>/target_status_<dataset> "
                             "columns carry the union type-resolution verdict "
                             "for each endpoint type in that dataset (present, "
-                            "below_threshold, not_in_dataset, unmapped, ...).",
+                            "below_threshold, not_in_dataset, unmapped, ...). "
+                            "Legacy applied_<dataset>_t<N>/pruned_<dataset>_t<N> "
+                            "columns are the applied cutoff (a threshold "
+                            "value) and a 0/1 pruned flag, not edge counts.",
              "columns": ["edge_key", "source", "target", "conserved_at_lowest"]},
             {"pattern": "comparison_results/edge_weight_comparison.csv",
              "description": "Edge weights compared across all datasets. "
@@ -3191,7 +3207,13 @@ TOOL_GUIDE_SPECS = {
                          "present", "resolved_type", "resolution_status",
                          "detail"]},
             {"pattern": "comparison_results/unified_summary.csv",
-             "description": "Run summary of the unified comparison.",
+             "description": "Run summary of the unified comparison. "
+                            "total_edges is the run's NATIVE-label pair "
+                            "count (count_basis=native_type_pairs_raw_run); "
+                            "the aligned presence/unique/overlap tables and "
+                            "the report headline use canonical merge keys, "
+                            "so with auto mapping on the two totals can "
+                            "legitimately differ.",
              "preview": True,
              "preview_title": "Unified comparison summary",
              "columns": ["query_id", "query_label", "dataset", "threshold",
@@ -3203,7 +3225,8 @@ TOOL_GUIDE_SPECS = {
                          "edge_budget_landing", "edge_weight_floor",
                          "strongest_retained_bottleneck", "paths_complete",
                          "total_edges", "total_layer_rows", "total_weight",
-                         "mean_weight", "unique_sources", "unique_targets"]},
+                         "mean_weight", "unique_sources", "unique_targets",
+                         "count_basis"]},
             {"pattern": "comparison_results/unique_to_*.csv",
              "description": "Edges unique to one dataset. Standard mode "
                             "only: combination runs omit these files instead "
@@ -3215,7 +3238,9 @@ TOOL_GUIDE_SPECS = {
              "description": "Overlap of the top edges across datasets. "
                             "Standard mode only."},
             {"pattern": "comparison_results/degree_*.csv",
-             "description": "Degree analysis by type (in/out/statistics). "
+             "description": "Degree analysis by type (in/out/statistics), on "
+                            "the run's native labels "
+                            "(count_basis=native_type_pairs_raw_run). "
                             "Standard mode only; combination runs omit "
                             "these files."},
             {"pattern": "comparison_results/neuron_counts_*.csv",
@@ -3225,13 +3250,18 @@ TOOL_GUIDE_SPECS = {
                             "dataset with total/typed/untyped neuron counts, "
                             "type coverage percentage, pre/post-synaptic and "
                             "total synapse counts, ROI count and coverage "
-                            "notes."},
+                            "notes. A local post-only release (FAFB/BANC) "
+                            "derives total_presynaptic from its merged "
+                            "connections file."},
             {"pattern": "comparison_results/motif_analysis.csv",
-             "description": "Network motif analysis."},
+             "description": "Network motif analysis on the run's native "
+                            "labels (count_basis=native_type_pairs_raw_run)."},
             {"pattern": "comparison_results/threshold_sensitivity.csv",
              "description": "Per-dataset edge counts per threshold with "
                             "retention vs the previous threshold (unique "
-                            "source-target pairs). Includes the complete "
+                            "source-target pairs on the run's native labels, "
+                            "count_basis=native_type_pairs_raw_run). Includes "
+                            "the complete "
                             "requested/applied threshold provenance: the "
                             "StrongestFirst budget and bite, tau, tau_canonical, "
                             "w2, the Edge Budget/w0/w1 state, W*, "
@@ -3250,7 +3280,7 @@ TOOL_GUIDE_SPECS = {
                          "edge_weight_floor",
                          "strongest_retained_bottleneck", "paths_complete",
                          "edge_count", "edges_retained_from_prev",
-                         "retention_rate", "edges_lost",
+                         "retention_rate", "edges_lost", "count_basis",
                          "skipped", "duplicate_of", "drop_untyped",
                          "untyped_dropped_rows", "untyped_dropped_neurons"]},
             {"pattern": "comparison_results/pathfinding_provenance.csv",
@@ -3304,38 +3334,49 @@ TOOL_GUIDE_SPECS = {
             {"pattern": "comparison_results/threshold_alignment_best_matches.csv",
              "description": "Feature C: per (dataset pair, anchor threshold) the "
                              "best-matching threshold in the other dataset, found by a "
-                             "bisection prober over the whole-dataset edge-density curve "
-                             "(edge-count distance is primary; Jaccard/rank similarity "
-                             "at the matched point). Includes a global-best row. "
-                             "In combination mode this is a raw-run schedule "
-                             "diagnostic; use threshold_combinations.csv for "
-                             "query comparisons."},
+                             "bisection prober over distinct CANONICAL mapped type "
+                             "pairs with at least one bodyId edge at or above the "
+                             "threshold (edge-count distance is primary; "
+                             "Jaccard/rank similarity at the matched point). "
+                             "best_t/best_t_range are clamped to the dataset's "
+                             "lowest materialized threshold. A target whose density "
+                             "is below the anchor's reports an empty best_t with "
+                             "target_density_below_range and within_tolerance=false. "
+                             "Includes a global-best row. In combination mode this is "
+                             "a raw-run schedule diagnostic; use "
+                             "threshold_combinations.csv for query comparisons."},
             {"pattern": "comparison_results/threshold_alignment_matrix.csv",
-             "description": "Feature C: pairwise alignment metrics over the TYPED "
-                             "threshold grid points only (edge-count distance, Jaccard, "
-                             "rank similarity per dataset-pair/threshold-pair). "
-                             "Combination-mode rows are explicitly diagnostic, "
-                             "not scalar comparison identities."},
+             "description": "Feature C: pairwise alignment metrics over the "
+                             "MATERIALIZED threshold grid points only, counted on "
+                             "canonical mapped type pairs (edge-count distance, "
+                             "Jaccard, rank similarity per dataset-pair/threshold-"
+                             "pair). Combination-mode rows are explicitly "
+                             "diagnostic, not scalar comparison identities."},
             {"pattern": "comparison_results/suggested_threshold_combinations.json",
              "description": "The alignment suggestion in the shape the "
                             "Cross-Dataset tab's Custom combination board "
                             "consumes: reference_dataset, tolerance and one "
                             "row per anchor with each dataset's matched "
-                            "threshold. `weight_basis` records what those "
-                            "thresholds ARE — synapse counts on the synapse "
-                            "basis, raw ratio fractions on the connection-"
-                            "ratio basis, because they were read off the "
-                            "executed minsyn_/minratio_ folders. 'Suggest "
-                            "from alignment' honours that key and moves the "
-                            "Threshold Basis selector with it, so a "
-                            "suggestion is never re-read in the other "
-                            "unit."},
+                            "threshold, clamped up to each dataset's lowest "
+                            "materialized threshold. `weight_basis` records "
+                            "what those thresholds ARE — synapse counts on "
+                            "the synapse basis, raw ratio fractions on the "
+                            "connection-ratio basis, because they were read "
+                            "off the executed minsyn_/minratio_ folders. "
+                            "'Suggest from alignment' honours that key and "
+                            "moves the Threshold Basis selector with it, so a "
+                            "suggestion is never re-read in the other unit. "
+                            "A run with no aligned row removes a previous "
+                            "run's file rather than leaving it stale."},
             {"pattern": "comparison_results/edge_density_per_threshold.csv",
-             "description": "Feature D data: per dataset, distinct connection-pair "
-                             "counts (absolute and per-neuron) over the extended "
-                             "threshold grid used by the prober; typed thresholds are "
-                             "flagged. In combination mode, threshold_scope marks "
-                             "this as a raw-run schedule diagnostic. Rendered as "
+             "description": "Feature D data: per dataset, distinct "
+                             "CANONICAL mapped connection-pair counts "
+                             "(absolute and per-neuron; "
+                             "type_key_space=canonical_aligned) over the "
+                             "extended threshold grid used by the prober; "
+                             "materialized thresholds are flagged. In "
+                             "combination mode, threshold_scope marks this as "
+                             "a raw-run schedule diagnostic. Rendered as "
                              "edge_density_threshold_curves.png."},
             {"pattern": "comparison_results/density_curves.csv",
              "description": "Per-dataset query-scoped density curves for "
@@ -3393,7 +3434,9 @@ TOOL_GUIDE_SPECS = {
                             "dataset, referenced by each minsyn_* folder's "
                             "density_meta.json)."},
             {"pattern": "comparison_results/path_count_comparison.csv",
-             "description": "Path-count comparison across datasets. "
+             "description": "Path-count comparison across datasets on the "
+                            "run's native labels "
+                            "(count_basis=native_type_pairs_raw_run). "
                             "Combination rows carry query_id/query_label and "
                             "one requested threshold per dataset."},
             {"pattern": "comparison_visualizations/*.png",

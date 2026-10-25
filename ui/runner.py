@@ -199,7 +199,7 @@ TOOL_REGISTRY: Dict[str, dict] = {
         "var": "analyzer",
         "init_method": None,
         "methods": {
-            "run": "analyzer.run()",
+            "run": "analyzer.run_comparison()",
         },
         "wrapper": True,  # Needs special wrapper for ComparisonParameters
     },
@@ -551,6 +551,10 @@ class ScriptRunner:
                 cwd=str(PROJECT_ROOT),
                 env=env,
             )
+            if self._cancelled:
+                # Cancel arrived during spawn: terminate now instead of
+                # running the whole tool and reporting a false cancel.
+                await self._terminate_child()
 
             # Stream output
             await self._stream_output(_log)
@@ -632,6 +636,7 @@ class ScriptRunner:
 
         except Exception as e:
             _log(f"[DROCAT] Error: {str(e)}", "error")
+            await self._terminate_child()
             return {
                 "returncode": -1,
                 "files": [],
@@ -641,6 +646,7 @@ class ScriptRunner:
                 "neuron_match": self._neuron_match,
             }
         finally:
+            await self._terminate_child()
             self.is_running = False
             self.process = None
             # Clean up temp file
@@ -1277,6 +1283,23 @@ print("[DROCAT] Done.")
                 return candidate
             return None
         return candidates[-1]
+
+    async def _terminate_child(self):
+        """Terminate and reap the child if it is still alive."""
+        process = self.process
+        if process is None or process.returncode is not None:
+            return
+        try:
+            process.terminate()
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except Exception:
+            try:
+                process.kill()
+            except (ProcessLookupError, OSError):
+                pass
 
     def cancel(self):
         """Cancel the running process."""

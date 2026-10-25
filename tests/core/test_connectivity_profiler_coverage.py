@@ -411,7 +411,9 @@ def test_process_connections_typed(profiler):
     assert ranks['A'] == 1 and ranks['B'] == 2 and ranks['C'] == 3
     assert untyped_count == 0 and untyped_frac == 0.0
     assert total == pytest.approx(21.0)
-    assert actual == 3 and unique == 3
+    # Four partner bodyIds, three aggregated types: status
+    # thresholds must count partners, not type names.
+    assert actual == 4 and unique == 3
     assert mapping[2] == 'B'
     assert tb[1] == pytest.approx(10.0)
     assert ub == {}
@@ -563,14 +565,19 @@ def test_deferred_cache_writes_and_flush(profiler, tmp_path):
 def test_profile_row_roundtrip(profiler):
     p = _profile(555, upstream={'A': 3.0},
                  partner_type_mapping_upstream={1: 'A'},
-                 typed_upstream_bodyids={1: 3.0})
+                 typed_upstream_bodyids={1: 3.0},
+                 untyped_upstream_bodyids={2: 4.0},
+                 untyped_upstream_2hop={2: {'A': 1.0}})
     row = profiler._profile_to_row(p)
     assert isinstance(row['upstream_partners'], str)
     restored = profiler._row_to_profile(pd.Series(row))
     assert restored.upstream_partners == {'A': 3.0}
-    # Fixed: mapping keys are restored to ints after the JSON round-trip,
-    # matching from_dict()'s contract.
+    # All bodyId maps use integer keys after the JSON round-trip, matching
+    # fresh profiles; otherwise Jaccard/rank compare string keys to ints.
     assert restored.partner_type_mapping_upstream == {1: 'A'}
+    assert restored.typed_upstream_bodyids == {1: 3.0}
+    assert restored.untyped_upstream_bodyids == {2: 4.0}
+    assert restored.untyped_upstream_2hop == {2: {'A': 1.0}}
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +651,21 @@ def test_config_hash_and_cache_paths(profiler, tmp_path):
     h1 = profiler._get_config_hash()
     h2 = profiler._get_config_hash()
     assert isinstance(h1, str) and h1 == h2
+    cfg = profiler.config
+    original = (cfg.top_m_type, cfg.dynamic_expansion,
+                cfg.max_expansion_factor, cfg.expand_untyped_2hop,
+                cfg.top_k_2hop)
+    try:
+        assert profiler._get_config_hash() == h1
+        cfg.top_m_type = original[0] + 1
+        assert profiler._get_config_hash() != h1
+        cfg.top_m_type = original[0]
+        cfg.expand_untyped_2hop = not original[3]
+        assert profiler._get_config_hash() != h1
+    finally:
+        (cfg.top_m_type, cfg.dynamic_expansion,
+         cfg.max_expansion_factor, cfg.expand_untyped_2hop,
+         cfg.top_k_2hop) = original
     parquet_path = profiler._get_cache_parquet_path(DS)
     assert str(parquet_path).startswith(str(tmp_path))
     assert str(parquet_path).endswith('.parquet')

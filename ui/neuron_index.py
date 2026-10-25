@@ -3621,20 +3621,20 @@ def build_reverse_type_contexts(
 
 
 def _load_alias_index(dataset: str) -> Optional["CachedNeuronIndex"]:
-    """Load (and memoize) the cached index used for alias counting."""
+    """Load the cached index used for alias counting.
+
+    Delegates to ``load_cached_neuron_index`` so the alias lane shares its
+    metadata/state/search-cache invalidation signature; the former outer
+    cache keyed only on the index parquet mtime and could serve stale types
+    after a metadata-sidecar update.
+    """
     path = neuron_index_path(dataset)
     if not path.is_file():
         return None
-    with _INDEX_LOAD_LOCK:
-        key = (dataset, path.stat().st_mtime_ns)
-        cached = _ALIAS_INDEX_CACHE.get(key)
-        if cached is None:
-            try:
-                cached = load_cached_neuron_index(dataset)
-            except Exception:
-                return None
-            _ALIAS_INDEX_CACHE[key] = cached
-        return cached
+    try:
+        return load_cached_neuron_index(dataset)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

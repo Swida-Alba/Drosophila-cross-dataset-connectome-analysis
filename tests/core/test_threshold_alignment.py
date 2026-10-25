@@ -230,7 +230,9 @@ def test_export_threshold_alignment_outputs(tmp_path):
                   & (anchors.target_dataset == ds_b)].iloc[0]
     assert int(row["count_at_best_t"]) == 10
     assert float(row["count_distance"]) == 0.0
-    assert 1 <= int(row["best_t"]) <= 9
+    # The prober's plateau starts below the fetch floor; the exported
+    # recommendation can never be below the lowest materialized threshold.
+    assert 3 <= int(row["best_t"]) <= 9
 
     matrix = pd.read_csv(out / "threshold_alignment_matrix.csv")
     # typed grid: 2 datasets x 3 thresholds = 6 points -> C(6,2) = 15 pairs
@@ -242,6 +244,68 @@ def test_export_threshold_alignment_outputs(tmp_path):
                                     "is_typed_threshold"}
     # extended grid: cap = max(3*10, 30) = 30 points per dataset
     assert len(density[density.dataset == ds_a]) == 30
+
+
+def test_alignment_extract_uses_canonical_mapped_types(tmp_path, monkeypatch):
+    """The prober must count the same mapped type pairs the exports show."""
+    an = _make_analyzer(tmp_path)
+    an.parameters.auto_type_mapping = True
+    an.parameters._auto_type_mapper = object()
+    monkeypatch.setattr(
+        an.metrics, "canonical_type_map",
+        lambda dataset, types, **kwargs: {
+            t: {"FA": "canon", "MC": "canon"}.get(t, t) for t in types})
+    frame = pd.DataFrame([
+        ("FA", "MC", 5),
+        ("FA", "MC", 9),
+        ("FA", "Unknown", 9),
+    ], columns=["type_pre", "type_post", "weight"])
+    out = an._canonical_alignment_extract("ds", 3, frame)
+    assert set(zip(out["type_pre"], out["type_post"])) == {("canon", "canon")}
+    # The probe copy must not add a second untyped census.
+    assert an._untyped_drop_stats == {}
+
+
+def test_alignment_export_clamps_plateau_to_materialized_floor(tmp_path):
+    """A 1-3 plateau in a run that only fetched >=3 must not export
+    best_t=1: a fresh run at 1 would fetch edges this probe never saw."""
+    an = _make_analyzer(tmp_path)
+    ds_a, ds_b = "male-cns:v1.0", "flywire_FAFB_v783"
+    an.raw_results = {
+        ds_a: {3: _frame([(f"a{i}", f"b{i}", 5) for i in range(10)])},
+        ds_b: {3: _frame([(f"a{i}", f"b{i}", 3) for i in range(10)])},
+    }
+    out = tmp_path / "comparison_results"
+    out.mkdir()
+    an._export_threshold_alignment(str(out))
+    best = pd.read_csv(out / "threshold_alignment_best_matches.csv")
+    row = best[(best.reference_dataset == ds_a)
+               & (best.anchor_threshold == 3)
+               & (best.target_dataset == ds_b)].iloc[0]
+    assert int(row["best_t"]) == 3
+    assert row["best_t_range"] == "3-3"
+    assert int(row["count_at_best_t"]) == 10
+
+
+def test_alignment_below_range_is_not_within_tolerance(tmp_path):
+    """No threshold can reach the anchor's density: 'within_tolerance'
+    must be false even when the shortfall is numerically small."""
+    an = _make_analyzer(tmp_path)
+    ds_a, ds_b = "male-cns:v1.0", "flywire_FAFB_v783"
+    an.raw_results = {
+        ds_a: {3: _frame([(f"a{i}", f"b{i}", 5) for i in range(10)])},
+        ds_b: {3: _frame([(f"a{i}", f"b{i}", 5) for i in range(9)])},
+    }
+    out = tmp_path / "comparison_results"
+    out.mkdir()
+    an._export_threshold_alignment(str(out))
+    best = pd.read_csv(out / "threshold_alignment_best_matches.csv")
+    row = best[(best.reference_dataset == ds_a)
+               & (best.anchor_threshold == 3)
+               & (best.target_dataset == ds_b)].iloc[0]
+    assert pd.isna(row["best_t"])
+    assert row["match_status"] == "target_density_below_range"
+    assert row["within_tolerance"] == False  # noqa: E712 — CSV bool
 
 
 def test_alignment_log_line_emitted(tmp_path, monkeypatch):
@@ -360,6 +424,40 @@ def test_suggest_combination_rows_builds_aligned_query_rows():
     assert rows[0]['thresholds'] == {'mcns': 19, 'banc': 6, 'fafb': 17}
     assert rows[1]['thresholds'] == {'mcns': 30, 'banc': 10, 'fafb': 30}
     assert all(r['aligned_within_tolerance'] for r in rows)
+
+
+def test_suggest_combination_rows_clamps_to_materialized_floor():
+    """A plateau below the fetch floor must not recommend a lower t: a
+    fresh run at that t would fetch edges the prober never saw."""
+    from comparison.threshold_alignment import suggest_combination_rows
+
+    best = pd.DataFrame([
+        {'reference_dataset': 'fafb', 'anchor_threshold': 3,
+         'target_dataset': 'mcns', 'best_t': 1, 'count_distance': 0.04,
+         'match_kind': 'anchor'},
+    ])
+    rows = suggest_combination_rows(
+        best, 'fafb', ['fafb', 'mcns'],
+        minimums={'fafb': 3, 'mcns': 3})
+    assert rows[0]['thresholds'] == {'fafb': 3, 'mcns': 3}
+
+
+def test_stale_suggested_combinations_are_removed(tmp_path):
+    """No aligned row this run must clear a previous run's suggestion."""
+    an = _make_analyzer(tmp_path)
+    out = tmp_path / "comparison_results"
+    out.mkdir()
+    stale = out / "suggested_threshold_combinations.json"
+    stale.write_text('{"combinations": [{"id": "old"}]}', encoding="utf-8")
+    best = pd.DataFrame([
+        {'reference_dataset': 'male-cns:v1.0', 'anchor_threshold': 3,
+         'target_dataset': 'flywire_FAFB_v783', 'best_t': None,
+         'count_distance': 0.05, 'match_kind': 'anchor'},
+    ])
+    an._suggest_and_export_combinations(
+        best, dataset_order=['male-cns:v1.0', 'flywire_FAFB_v783'],
+        comparison_results_dir=str(out))
+    assert not stale.exists()
 
 
 def test_suggest_combination_rows_skips_incomplete():

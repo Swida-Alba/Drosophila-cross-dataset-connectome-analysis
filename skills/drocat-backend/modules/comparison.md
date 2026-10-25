@@ -452,7 +452,17 @@ Budget is ignored and `edge_weight_floor` remains empty.
   combination mode every row carries
   `threshold_scope=raw_run_schedule_diagnostic`; never present these files as
   the Custom query comparison axis — join `threshold_combinations.csv`
-  instead.
+  instead. Counts are canonical mapped type pairs
+  (`type_key_space=canonical_aligned`). A below-range target has an empty
+  `best_t` (`target_density_below_range`, `within_tolerance=false`); exported
+  best thresholds and suggested combinations never fall below the dataset's
+  lowest materialized threshold.
+- Raw-run count artifacts (`unified_summary.csv`,
+  `path_count_comparison.csv`, `threshold_sensitivity.csv`,
+  `motif_analysis.csv`, degree files, `edge_mode_data/`) carry
+  `count_basis=native_type_pairs_raw_run`; do not compare those totals with
+  the canonical aligned presence/unique/overlap counts. Probability lanes are
+  suspended (2026-10-06), including `traversal_probability` in edge exports.
 - **Density curves** (every pathfinding mode):
   `comparison_results/density_curves.csv` + `density_windows.csv` give each
   queried dataset a cone-scoped curve over `[w_start, w_star_measured]`

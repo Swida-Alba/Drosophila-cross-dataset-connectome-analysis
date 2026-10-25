@@ -445,6 +445,7 @@ def probe_coverage(
     )
     all_records: List[Any] = []
     verdict: Optional[DatasetCoverage] = None
+    saw_non_miss_error = False
 
     for round_ids in rounds:
         if not round_ids:
@@ -464,6 +465,7 @@ def probe_coverage(
                         round_misses += 1
                     else:
                         round_errors += 1
+                        saw_non_miss_error = True
                 elif body_records:
                     round_records.extend(body_records)
                 else:
@@ -481,6 +483,12 @@ def probe_coverage(
 
     if verdict is not None:
         return verdict
+    if saw_non_miss_error and not all_records:
+        # Definitive 404s plus a 500/network error is not proof of absence;
+        # persisting `unavailable` would suppress this dataset for a week.
+        return DatasetCoverage(
+            dataset=dataset, status=STATUS_UNKNOWN, checked_at=_now()
+        )
     return DatasetCoverage(
         dataset=dataset, status=STATUS_UNAVAILABLE, checked_at=_now()
     )

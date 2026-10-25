@@ -30,6 +30,7 @@ from paths_pair_report import (  # noqa: E402
     build_unit_breakdown,
     build_viz,
     discover_units,
+    folder_drop_untyped,
     generate_paths_pair_report,
     load_unit_paths,
     run_kind,
@@ -253,6 +254,16 @@ def test_cap_math_top10_per_length(single_run):
     # cap note numbers
     shown = sum(len(g["rows"]) for g in groups)
     assert shown < pair["paths_total"] == 90
+
+
+def test_folder_drop_untyped_reads_run_parameter(tmp_path):
+    assert folder_drop_untyped(tmp_path) is True
+    (tmp_path / "parameters.txt").write_text(
+        "min synapse number: 3\ndrop untyped: False\n", encoding="utf-8")
+    assert folder_drop_untyped(tmp_path) is False
+    (tmp_path / "parameters.txt").write_text(
+        "drop untyped: True\n", encoding="utf-8")
+    assert folder_drop_untyped(tmp_path) is True
 
 
 def test_shared_unique_classification(tmp_path):

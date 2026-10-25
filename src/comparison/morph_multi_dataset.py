@@ -196,6 +196,7 @@ class MultiDatasetMorphComparer:
             visualize=False, generate_heatmaps=False,
             fetch_online=self.fetch_online,
             use_auto_type_mapping=self.use_auto_type_mapping,
+            custom_mapping_file=self.custom_mapping_file or None,
             label_mapping_file=self.label_mapping_file or None,
             use_cache=self.use_cache, verbose=False,
             n_workers=self.n_workers, project_root=self.project_root)

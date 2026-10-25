@@ -169,36 +169,53 @@ def _configured_token_from_config(project_root: Path, key: str) -> Optional[str]
 
 
 def _configured_cave_token(project_root: Path) -> Optional[str]:
-    """Read a CAVE token without ever returning it to a caller-facing log.
+    """Read a CAVE token through the shared token-manager chain.
 
-    config.json (project config) is checked first; the environment is the
-    fallback, matching the project's token manager.  A ``YOUR_*`` placeholder
-    is treated as unconfigured.
+    Keeping this reader on ``TokenManager`` makes readiness, the CAVE
+    fetcher, and the UI agree on config.json -> config_local.json -> env
+    instead of each implementing its own precedence.
     """
 
-    config_value = _configured_token_from_config(project_root, "cave")
-    if config_value:
-        return config_value
-    environment_value = os.environ.get("CAVE_TOKEN", "").strip()
-    return (
-        environment_value
-        if environment_value and not environment_value.startswith("YOUR_")
-        else None
-    )
+    try:
+        try:
+            from .token_manager import TokenManager
+        except ImportError:  # pragma: no cover - src laid bare on sys.path
+            from utils.token_manager import TokenManager
+        return TokenManager(project_root=str(project_root), include_cwd=False).get_token(
+            "CAVE_TOKEN")
+    except Exception:
+        config_value = _configured_token_from_config(project_root, "cave")
+        if config_value:
+            return config_value
+        environment_value = os.environ.get("CAVE_TOKEN", "").strip()
+        return (
+            environment_value
+            if environment_value and not environment_value.startswith("YOUR_")
+            else None
+        )
 
 
 def _configured_codex_token(project_root: Path) -> Optional[str]:
-    """Read the FlyWire Codex token (automatic FAFB downloads, lazy fetch)."""
+    """Read the FlyWire Codex token through the shared token-manager chain."""
 
-    config_value = _configured_token_from_config(project_root, "flywire_codex")
-    if config_value:
-        return config_value
-    environment_value = os.environ.get("FLYWIRE_CODEX_TOKEN", "").strip()
-    return (
-        environment_value
-        if environment_value and not environment_value.startswith("YOUR_")
-        else None
-    )
+    try:
+        try:
+            from .token_manager import TokenManager
+        except ImportError:  # pragma: no cover - src laid bare on sys.path
+            from utils.token_manager import TokenManager
+        return TokenManager(project_root=str(project_root), include_cwd=False).get_token(
+            "FLYWIRE_CODEX_TOKEN")
+    except Exception:
+        config_value = _configured_token_from_config(
+            project_root, "flywire_codex")
+        if config_value:
+            return config_value
+        environment_value = os.environ.get("FLYWIRE_CODEX_TOKEN", "").strip()
+        return (
+            environment_value
+            if environment_value and not environment_value.startswith("YOUR_")
+            else None
+        )
 
 
 def _first_existing(paths: list[Path]) -> Optional[Path]:

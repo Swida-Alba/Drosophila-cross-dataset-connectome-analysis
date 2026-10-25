@@ -7234,6 +7234,9 @@ def Vis3S(data_df,**kwargs):
     fig_sup, axes = plt.subplots(nrows=rowN,ncols=colN,sharex=True,sharey=True,dpi=op.dpi,subplot_kw={'aspect': 'equal'})
     np.vectorize(lambda axes:axes.axis('off'))(axes)
     fig_sup.suptitle(op.title+'_subplots')
+    if classN > 1:
+        fig_sup.legend(handles=legend_handles, loc='upper right',
+                       fontsize='small', frameon=False)
     
     ellipses = []
     skeletons = []
@@ -7367,7 +7370,7 @@ def Vis3S(data_df,**kwargs):
                     
     # Save
     if op.save_path:
-        plt.savefig(op.save_path + op.save_format)
+        fig_sup.savefig(op.save_path + op.save_format)
         print(f"Saved figure to {op.save_path + op.save_format}")
         
     if op.showfig:

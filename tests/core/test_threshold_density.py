@@ -282,7 +282,7 @@ def test_find_paths_core_reset_block_resets_wstar():
     src = inspect.getsource(coana.FindNeuronConnection._find_paths_core)
     assert 'self.strongest_retained_bottleneck = None' in src
     # P1: the measured value is set from path_bottlenecks.
-    assert 'max(path_bottlenecks) if path_bottlenecks else None' in src
+    assert 'max(_finite_bottlenecks) if _finite_bottlenecks else None' in src
 
 
 def test_no_dead_widest_path_backward_call_in_core():

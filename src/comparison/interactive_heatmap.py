@@ -1,3 +1,4 @@
+import html
 import os
 import json
 import numpy as np
@@ -139,7 +140,7 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
 <html>
 <head>
     <meta charset="utf-8">
-    <title>{title}</title>
+    <title>{html.escape(str(title))}</title>
     {_inline_plotly()}
     <style>
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }}
@@ -270,7 +271,7 @@ def generate_interactive_heatmap(matrices_dict, filename, title='', showfig=True
             }};
             
             const layout = {{
-                title: '{title}',
+                title: {json.dumps(str(title))},
                 font: {{ size: currentFontSize }},
                 xaxis: {{
                     title: 'Target',

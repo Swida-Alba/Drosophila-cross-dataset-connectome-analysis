@@ -89,7 +89,7 @@ class DatasetConfig:
         Returns:
             Sanitized name (e.g., 'hemibrain_v1_2_1')
         """
-        return canonical_dataset_name(dataset).replace(':', '_').replace('.', '_').replace('-', '_')
+        return canonical_dataset_name(dataset).replace(':', '_').replace('.', '_')
     
     @property
     def safe_name(self) -> str:

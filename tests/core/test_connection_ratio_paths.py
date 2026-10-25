@@ -488,6 +488,19 @@ def test_exclude_intra_type():
     assert rec2['discovery']['dropped_intra_type'] == 0
 
 
+def test_hemi_filter_requires_separate_hemispheres():
+    with pytest.raises(ConnectionRatioPathError,
+                       match='separate_hemispheres'):
+        compute_connection_ratio_paths(
+            connections=FRAC_EDGES, sources=FRAC_SOURCES,
+            targets=FRAC_TARGETS, min_ratio=0.1,
+            max_interlayer=FRAC_BOUND,
+            neuron_frame=pd.DataFrame({
+                'bodyId': list(FRAC_TYPED_MAP),
+                'type': list(FRAC_TYPED_MAP.values())}),
+            hemi_filter='left', separate_hemispheres=False)
+
+
 def test_hemi_guard_matches_reference_implementation():
     frame, _t = _frame(FRAC_EDGES)
     qual = frame.filter(pl.col('ratio') >= 0.0)

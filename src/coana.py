@@ -646,6 +646,87 @@ def _id_set_digest(ids) -> str:
     return hashlib.md5(joined.encode("utf-8", "surrogatepass")).hexdigest()[:24]
 
 
+def _apply_path_keywords(frame, keywords, label_lookup=None):
+    """Drop path rows containing any keyword, for pandas or polars frames.
+
+    ``label_lookup`` maps path nodes (bodyIds) to their effective type labels;
+    when given, the keyword is matched against the label for each node as well
+    as the raw path string. A bodyId path is numeric, so a type-name keyword
+    can only be enforced through this lookup.
+    """
+    if not keywords or frame is None:
+        return frame
+    if label_lookup is None:
+        if isinstance(frame, pl.DataFrame):
+            if 'path' not in frame.columns:
+                return frame
+            mask = None
+            for keyword in keywords:
+                term = pl.col('path').cast(pl.Utf8).str.contains(
+                    keyword, literal=True)
+                mask = term if mask is None else (mask | term)
+            return frame.filter(~mask) if mask is not None else frame
+        try:
+            return sv.path_filter(frame, keywords)[0]
+        except Exception:
+            return frame
+
+    def _matches(value) -> bool:
+        text = str(value)
+        if any(keyword in text for keyword in keywords):
+            return True
+        try:
+            nodes = ast.literal_eval(text) if text.strip().startswith('[') else text.split('->')
+        except Exception:
+            nodes = text.split('->')
+        labels = []
+        for node in nodes:
+            key = str(node).strip()
+            label = label_lookup.get(key)
+            if label is None:
+                try:
+                    label = label_lookup.get(int(key))
+                except (TypeError, ValueError):
+                    label = None
+            labels.append(str(label if label is not None else key))
+        return any(keyword in label for label in labels for keyword in keywords)
+
+    if isinstance(frame, pl.DataFrame):
+        if 'path' not in frame.columns:
+            return frame
+        keep = [not _matches(value) for value in frame['path'].to_list()]
+        return frame.filter(pl.Series(keep, dtype=pl.Boolean))
+    mask = frame['path'].map(_matches) if 'path' in frame.columns else None
+    return frame[~mask] if mask is not None else frame
+
+
+def _label_mapper_digest(mapper) -> str:
+    """Stable digest of a LabelMapper's effective preset, or '' when empty."""
+    if mapper is None or getattr(mapper, "is_empty", True):
+        return ""
+    try:
+        import hashlib
+        import json
+        payload = json.dumps(mapper.to_dict(), sort_keys=True,
+                             default=str, separators=(",", ":"))
+        return hashlib.md5(payload.encode("utf-8", "surrogatepass")).hexdigest()[:24]
+    except Exception:
+        # The mapper is only a cache identity here; a content hash is
+        # preferable, but object identity is still safer than omitting it.
+        return f"obj-{id(mapper):x}"
+
+
+def _soma_side_override_digest(overrides) -> str:
+    """Stable digest of a bodyId -> side override map."""
+    if not overrides:
+        return ""
+    import hashlib
+    import json
+    payload = json.dumps({str(k): str(v) for k, v in overrides.items()},
+                         sort_keys=True, separators=(",", ":"))
+    return hashlib.md5(payload.encode("utf-8", "surrogatepass")).hexdigest()[:24]
+
+
 def _parse_path_nodes(path_str_val):
     """Parse a path-column value into its node sequence.
 
@@ -690,6 +771,8 @@ def _findallpath_cache_key(
     drop_untyped: bool = True,
     hemisphere_filter: str = 'both',
     weight_basis: str = 'synapse',
+    label_mapper_digest: str = '',
+    soma_side_override_digest: str = '',
 ) -> str:
     """
     Build the FindAllPath graph-cache key.
@@ -719,7 +802,8 @@ def _findallpath_cache_key(
     filters = (
         f"{filter_by}|{min_ratio}|{min_traversal_probability}|"
         f"{int(bool(exclude_intra_type_connections))}|"
-        f"{int(bool(drop_untyped))}|basis-{weight_basis}"
+        f"{int(bool(drop_untyped))}|basis-{weight_basis}|"
+        f"mapper-{label_mapper_digest}|soma-{soma_side_override_digest}"
     )
     depth_part = f"{max_interlayer}_" if max_interlayer is not None else ""
     return (
@@ -2571,6 +2655,27 @@ class FindNeuronConnection:
                 if df.is_empty() or 'weight' not in df.columns:
                     return df
                 if _copy_plain and 'connection_ratio' in df.columns:
+                    # The copied plain column carries no denominator; recover
+                    # it from weight / ratio so the chain patch can divide by
+                    # the same per-type mass the pair table used.
+                    try:
+                        if 'type_post' in df.columns and 'weight' in df.columns:
+                            valid = df.filter(
+                                pl.col('connection_ratio').is_not_null()
+                                & (pl.col('connection_ratio') > 0)
+                                & pl.col('weight').is_not_null())
+                            if not valid.is_empty():
+                                denom = (
+                                    valid.with_columns(
+                                        (pl.col('weight')
+                                         / pl.col('connection_ratio'))
+                                        .alias('_denom'))
+                                    .group_by('type_post')
+                                    .agg(pl.col('_denom').median()))
+                                self._remember_type_incoming_conditioned(
+                                    denom['type_post'], denom['_denom'], thr)
+                    except Exception:
+                        pass
                     return df.with_columns(
                         pl.col('connection_ratio')
                         .cast(pl.Float64)
@@ -2651,6 +2756,20 @@ class FindNeuronConnection:
             return df
         if _copy_plain and 'connection_ratio' in df.columns:
             df = df.copy()
+            try:
+                if 'type_post' in df.columns:
+                    valid = df[
+                        df['connection_ratio'].notna()
+                        & (df['connection_ratio'] > 0)
+                        & df['weight'].notna()]
+                    if not valid.empty:
+                        denom = (
+                            valid['weight'] / valid['connection_ratio']
+                        ).groupby(valid['type_post']).median()
+                        self._remember_type_incoming_conditioned(
+                            denom.index, denom.values, thr)
+            except Exception:
+                pass
             df['connection_ratio_adj'] = pd.to_numeric(
                 df['connection_ratio'], errors='coerce')
             return df
@@ -2705,10 +2824,10 @@ class FindNeuronConnection:
         rather than by hope.
 
         At Min Synapse Count 1 the conditioned total IS the all-inputs total,
-        so adj == plain there (gate L1). Absent on ratio-basis runs at
-        Min Synapse Count 1, where `_attach_ratio_adj_columns` copies the
-        plain column without fetching — and the report renders no adjusted
-        column for those runs anyway. Recorded from values already in hand:
+        so adj == plain there (gate L1). The ratio-basis copy path recovers
+        the per-type denominator from ``weight / connection_ratio`` instead
+        of leaving the store empty; the report always has a denominator.
+        Recorded from values already in hand:
         `_fetch_total_incoming_weight_by_type` is deliberately unmemoized
         (test_denominator_completeness pins the zero-memoization), so the
         export must never re-scan the cache for it."""
@@ -5517,7 +5636,9 @@ class FindNeuronConnection:
         if not getattr(self, 'use_cache', False):
             return ('api',)
         try:
-            return ('disk',) + tuple(self._connection_cache_signature())
+            return (('disk',)
+                    + tuple(self._connection_cache_signature())
+                    + (('neuron',) + tuple(self._neuron_index_signature()),))
         except Exception:
             return ('disk', None)
 
@@ -9960,6 +10081,7 @@ class FindNeuronConnection:
                     # incoming-complete and persist the rows.
                     self._save_incoming_cache(api_raw, pending_posts)
             except Exception as exc:
+                self._shortest_incoming_fetch_failed = True
                 self._vprint(
                     f'  ⚠️ Incoming target lookup failed: {exc}',
                     level='always',
@@ -13613,7 +13735,30 @@ class FindNeuronConnection:
                              level='full')
 
 
+    def _apply_banc_product_floor(self):
+        """Disclose and enforce the standalone BANC product's threshold floor."""
+        if not is_banc_dataset(self.dataset):
+            return
+        requested = int(getattr(self, 'min_synapse_num', 1) or 1)
+        if requested < 3:
+            self.min_synapse_num = 3
+            self._warn_notes.append(
+                '- [BANC product floor] the standalone BANC connection '
+                f'product bakes in synapse size >= 3 and count >= 3; '
+                f'requested Min Synapse Count {requested} was raised to 3. '
+                'Edges below that floor are not present in this dataset.')
+        elif getattr(self, 'weight_basis', 'synapse') == 'connection_ratio':
+            self._warn_notes.append(
+                '- [BANC product floor] connection_ratio is computed over the '
+                'BANC product that omits edges below 3 synapses; ratio '
+                'denominators reflect that product floor.')
+
     def InitializeNeuronInfo(self):
+        self._apply_banc_product_floor()
+        # The conditioned type denominator is per-query state; reset it at
+        # initialization (not after a caller may have pinned a fixture).
+        self._type_incoming_conditioned = {}
+        self._type_incoming_conditioned_threshold = None
         # Ensure neuprint Client is set for the CORRECT dataset
         if self.client_type not in ('flywire', 'banc'):
             self._ensure_neuprint_client()
@@ -13886,6 +14031,7 @@ class FindNeuronConnection:
             'min traversal probability': str(self.min_traversal_probability),
             'aggregate method': self.aggregate_method,
             'filter by': self.filter_by,
+            'drop untyped': str(bool(getattr(self, 'drop_untyped', True))),
             'exclude intra-type connections': str(self.exclude_intra_type_connections),
             'max interlayer': str(self.max_interlayer),
             'shortest source coverage': _coverage_label(
@@ -15841,6 +15987,8 @@ class FindNeuronConnection:
                 sorted(frontier_posts),
                 source_bodyIds=source_ID,
             )
+            if getattr(self, '_shortest_incoming_fetch_failed', False):
+                discovery_complete = False
 
             if conn_df is None or conn_df.empty:
                 all_connections.append(pl.DataFrame())
@@ -18034,10 +18182,10 @@ class FindNeuronConnection:
         exact same pipeline (discovery, enrichment, outputs, visualization).
         What filters the graph depends on ``weight_basis``: under the default
         'synapse' basis the Min Synapse Count thresholds it and
-        connection_ratio / traversal_probability are readout columns; under
-        'connection_ratio' the ratio IS the threshold (the synapse floor drops
-        to 1 unless Combine Thresholds = AND keeps both). See
-        docs/core-features/ConnectionRatioPaths.md.
+        connection_ratio is a readout column; under 'connection_ratio' the
+        ratio IS the threshold (the synapse floor drops to 1 unless Combine
+        Thresholds = AND keeps both). traversal_probability is suspended
+        (2026-10-06). See docs/core-features/ConnectionRatioPaths.md.
         '''
         return self._find_paths_core(
             path_mode='all',
@@ -19423,10 +19571,17 @@ class FindNeuronConnection:
             # Persist for any later all_attributes re-write in this run.
             self._refill_status_block = block
             data['type_level_refill'] = block
-            tmp = attrs + '.tmp'
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, default=str)
-            os.replace(tmp, attrs)
+            try:
+                from .utils.parquet_utils import write_file_atomic
+            except ImportError:
+                from utils.parquet_utils import write_file_atomic
+
+            def _write_refill_status(tmp_path):
+                with open(tmp_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, default=str)
+
+            write_file_atomic(attrs, _write_refill_status,
+                              kind='refill-status')
         except Exception:  # noqa: BLE001 — provenance additive
             pass
 
@@ -19794,6 +19949,34 @@ class FindNeuronConnection:
                                       '.provenance_incomplete')
                 with open(marker, 'w', encoding='utf-8') as mf:
                     mf.write(f'metadata re-stamp failed: {exc!r}\n')
+            except OSError:
+                pass
+
+    def _clear_reused_saveas_path_outputs(self, folder):
+        """Remove a reused Save-As folder's own stale path artifacts."""
+        base = Path(folder)
+        patterns = (
+            '*_allpaths_type.csv', '*_allpaths_type_excluded.csv',
+            '*_allpaths_bodyId_paths.csv', '*_allpaths_group.csv',
+            '*_allpaths_group_excluded.csv', '*_allpaths_info.xlsx',
+            '*_allpaths_bodyId_data.xlsx',
+        )
+        for root in (base, base / 'data_details'):
+            if not root.is_dir():
+                continue
+            for pattern in patterns:
+                for path in root.glob(pattern):
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+        for name in ('path_report.html', 'paths_pair_breakdown'):
+            target = base / name
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                elif target.exists():
+                    target.unlink()
             except OSError:
                 pass
 
@@ -20344,6 +20527,10 @@ class FindNeuronConnection:
         # Untyped-neuron drop accumulators (drop_untyped) reset per run so
         # sequential calls never mix records across runs.
         self._reset_untyped_drop_tracking()
+        # Pruning/refill provenance is per-run too; a later run without a
+        # budget/refill must not republish the previous run's record.
+        self.graph_pruning_record = {}
+        self._refill_status_block = {}
         # The refill hook's once-per-folder guard is per RUN too: a second
         # FindAllPath into the SAME folder must re-run the round against the
         # new path tables instead of inheriting the previous enumeration's
@@ -20360,12 +20547,13 @@ class FindNeuronConnection:
             'rows_from_cache': 0, 'rows_from_legacy_index': 0,
             'rows_online': 0, 'online_calls': 0,
         }
+        self._shortest_incoming_fetch_failed = False
         self.shortest_discovery_diagnostics = {}
-        # F9: ratio/probability thresholds are DISABLED —
-        # connection_ratio and traversal_probability are readout columns
-        # computed against the all-post denominator, not filter knobs.
-        # Zeroing them (a) skips every legacy filter branch and (b) keeps
-        # the graph-cache key stable regardless of saved user values.
+        # F9: the probability threshold is DISABLED and the probability
+        # column is suspended (2026-10-06). connection_ratio is a readout
+        # column computed against the all-post denominator; zeroing the
+        # probability knob (a) skips every legacy filter branch and (b)
+        # keeps the graph-cache key stable regardless of saved user values.
         # Phase-2 ratio lane (§16.2): under weight_basis='connection_ratio'
         # min_ratio IS the threshold and is NOT zeroed; only the probability
         # knob stays neutered.
@@ -20480,17 +20668,18 @@ class FindNeuronConnection:
             _rd_note = (
                 '- [ratio definition] connection_ratio = weight / ALL-POST '
                 'incoming weight of the target (threshold-free, all sources '
-                'in the dataset); traversal_probability = ratio / 0.3 '
-                '(capped at 1). '
+                'in the dataset). '
                 + ('This run co-thresholds with the ratio: every retained edge '
                    f'clears connection_ratio >= {float(self.min_ratio or 0):g} '
-                   'as well as the synapse count — traversal_probability '
-                   'remains a readout column.'
+                   'as well as the synapse count.'
                    if _keep_ratio else
-                   'Ratio and probability are readout columns here — they do '
-                   'not filter the pathfinding graph (Threshold Basis = '
-                   'Connection ratio, or Combine Thresholds = Both (AND) with '
-                   'a ratio above 0, makes the ratio a live threshold).')
+                   'The ratio is a readout column here — it does not filter '
+                   'the pathfinding graph (Threshold Basis = Connection ratio, '
+                   'or Combine Thresholds = Both (AND) with a ratio above 0, '
+                   'makes the ratio a live threshold).')
+                + ' traversal_probability is SUSPENDED (2026-10-06, '
+                  'unverifiable fidelity): it is not computed, exported, or '
+                  'used for ranking.'
             )
             if int(getattr(self, 'min_synapse_num', 1) or 1) > 1:
                 _rd_note += (
@@ -20602,6 +20791,14 @@ class FindNeuronConnection:
         if self.saveas:
             # If saveas is set, use save_folder directly
             self.allpath_folder = self.save_folder
+            # A reused Save-As folder must not republish an earlier query's
+            # tables. Clear only DROCAT's own path outputs, once per folder
+            # per instance (multi-threshold runs share the folder).
+            cleared = getattr(self, '_saveas_cleared_path_folders', set())
+            if self.allpath_folder not in cleared:
+                self._clear_reused_saveas_path_outputs(self.allpath_folder)
+                cleared.add(self.allpath_folder)
+                self._saveas_cleared_path_folders = cleared
         else:
             # Unified per-run folder: {tool}_{dataset}_{src}_to_{tgt}{params}_{ts}
             self.allpath_folder = os.path.join(
@@ -20733,6 +20930,10 @@ class FindNeuronConnection:
             hemisphere_filter=str(getattr(self, 'hemisphere_filter', 'both')
                                   or 'both'),
             weight_basis=str(getattr(self, 'weight_basis', 'synapse')),
+            label_mapper_digest=_label_mapper_digest(
+                getattr(self, 'label_mapper', None)),
+            soma_side_override_digest=_soma_side_override_digest(
+                getattr(self, 'soma_side_overrides', None)),
         )
         
         # Shortest mode now owns a target-rooted discovery direction.  Do not
@@ -21786,38 +21987,35 @@ class FindNeuronConnection:
             # Feature G/F: per-path bottleneck (min edge weight) annotated
             # while the graph is still alive — the natural tau for complete
             # runs (G §13.5 item 4) and the replay filter key (F §9.3).
-            path_bottlenecks = [] if path_mode == 'all' else None
+            path_bottlenecks = []
             for p in all_paths:
                 s = p[0]
                 t = p[-1]
                 pairs_with_paths_dict[(s, t)] = True
                 neurons_in_paths.update(p)
-                if path_bottlenecks is not None:
-                    bn = None
-                    for i in range(len(p) - 1):
-                        edges_in_paths.add((p[i], p[i+1]))
-                        edges_in_paths_with_layer.add((i, p[i], p[i+1]))
-                        w = G.adj.get(p[i], {}).get(p[i+1])
-                        if bn is None or w < bn:
-                            bn = w
-                    path_bottlenecks.append(bn)
-                else:
-                    for i in range(len(p) - 1):
-                        edges_in_paths.add((p[i], p[i+1]))
-                        edges_in_paths_with_layer.add((i, p[i], p[i+1]))
+                bn = None
+                for i in range(len(p) - 1):
+                    edges_in_paths.add((p[i], p[i+1]))
+                    edges_in_paths_with_layer.add((i, p[i], p[i+1]))
+                    w = G.adj.get(p[i], {}).get(p[i+1])
+                    if w is not None and (bn is None or w < bn):
+                        bn = w
+                path_bottlenecks.append(bn)
             
             pairs_with_paths = len(pairs_with_paths_dict)
 
             # P1: the MEASURED retained ceiling is the strongest enumerated
             # path's bottleneck. The enumerated paths are exactly the
-            # admissible simple paths under max_interlayer, so their max
-            # bottleneck IS the retained ceiling — this replaces the
-            # hop-unbounded widest-WALK stat recorded pre-enumeration by
-            # _graph_edge_frames (which can exceed it; see §3.3 of the
-            # auto-threshold plan). None when no path was materialized.
-            if path_mode == 'all':
-                self.strongest_retained_bottleneck = (
-                    max(path_bottlenecks) if path_bottlenecks else None)
+            # admissible simple paths under max_interlayer (or the shortest
+            # set), so their max bottleneck IS the retained ceiling — this
+            # replaces the hop-unbounded widest-WALK stat recorded
+            # pre-enumeration by _graph_edge_frames (which can exceed it; see
+            # §3.3 of the auto-threshold plan). None when no path was
+            # materialized.
+            _finite_bottlenecks = [
+                b for b in path_bottlenecks if b is not None]
+            self.strongest_retained_bottleneck = (
+                max(_finite_bottlenecks) if _finite_bottlenecks else None)
             
             elapsed = time.time() - start_time
             if self.verbose_mode == 'simple':
@@ -24064,6 +24262,12 @@ class FindNeuronConnection:
                 level='bodyId',
                 type_lookup=type_lookup
             )
+            # Keyword removal must apply to the bodyId export too; the type
+            # tables were already filtered, and the warning note names both
+            # levels as outputs.
+            path_df_bodyId = _apply_path_keywords(
+                path_df_bodyId, self._normalized_keyword_filter(),
+                label_lookup=type_lookup)
             # Unified builder returns the same frame type as its input
             is_polars = isinstance(path_df_bodyId, pl.DataFrame)
             

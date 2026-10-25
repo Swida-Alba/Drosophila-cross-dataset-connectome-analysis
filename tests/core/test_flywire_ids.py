@@ -37,6 +37,26 @@ def test_normalizer_rejects_lossy_or_invalid_ids(value):
         normalize_flywire_body_id(value)
 
 
+@pytest.mark.parametrize("value", [
+    "123456789", "123456789.0", 123456789, 123456789.0,
+    "000123456789",
+])
+def test_short_ids_complete_after_float_and_zero_canonicalization(value):
+    assert normalize_flywire_body_id(value) == "720575940123456789"
+
+
+def test_polars_short_id_expression_matches_python():
+    pl = pytest.importorskip("polars")
+    from flywire_ids import canonicalize_flywire_id_expr
+
+    frame = pl.DataFrame({"bodyId": [
+        "123456789", "123456789.0", "000123456789", LARGE_ID]})
+    out = frame.select(
+        canonicalize_flywire_id_expr("bodyId").alias("bodyId"))["bodyId"].to_list()
+    assert out[:3] == ["720575940123456789"] * 3
+    assert out[3] == LARGE_ID
+
+
 def test_dataframe_normalization_uses_string_ids_without_rounding():
     frame = pd.DataFrame({"bodyId": [LARGE_ID, "000123"], "weight": [1, 2]})
 
@@ -44,6 +64,15 @@ def test_dataframe_normalization_uses_string_ids_without_rounding():
 
     assert frame["bodyId"].tolist() == [LARGE_ID, "123"]
     assert frame["bodyId"].map(type).eq(str).all()
+
+
+def test_index_builder_uses_the_canonical_dataset_folder():
+    import neuron_index_builder as nib
+    from flywire_ids import dataset_folder as canonical
+
+    for alias in ("banc_v888", "flywire_BANC_v888", "banc:v888",
+                  "male-cns:v0.9"):
+        assert nib.dataset_folder(alias) == canonical(alias)
 
 
 def test_banc_dataset_resolution_does_not_fallback_to_fafb(tmp_path):

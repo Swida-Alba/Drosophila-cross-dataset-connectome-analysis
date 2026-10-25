@@ -529,10 +529,10 @@ class ExpandedLineFinder:
                         output_dir, run_root, compact_keep_last_n)
                     cleanup_audit = prune_find_lines_run(
                         run_root,
-                        # Match tables stay (retention window); the
-                        # downloaded images still go once the PDF exists.
+                        # Match tables stay (retention window); image
+                        # cleanup obeys the caller's flag.
                         keep_per_match_csv=True,
-                        cleanup_source_images=True,
+                        cleanup_source_images=cleanup_source_images,
                     )
                 else:
                     cleanup_audit = prune_find_lines_run(

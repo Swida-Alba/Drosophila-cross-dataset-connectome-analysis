@@ -24,6 +24,44 @@ import morphology as morph  # noqa: E402
 # Synthetic neurons (same convention as test_morphology.py)
 # ---------------------------------------------------------------------------
 
+def test_scorer_uses_cache_midline_and_reflect(monkeypatch):
+    calls = []
+
+    class FakeCache:
+        def load(self):
+            return None
+
+        def ensure(self, fetch_missing=0):
+            return {}
+
+        def spatial_midline(self):
+            return 123.0
+
+        def _reflect_flag(self, body_id):
+            return True
+
+    def fake_vectorize(neuron, **kwargs):
+        calls.append(kwargs)
+        return None, np.ones(256)
+
+    monkeypatch.setattr(morph, "find_similar_dataset_cache_v2",
+                        lambda *a, **k: FakeCache())
+    monkeypatch.setattr(morph, "find_similar_raw_cache",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(morph, "vectorize_neuron_v2", fake_vectorize)
+
+    morph.compute_morph_similarity_vs_queries(
+        [object()], [2], "fake_ds", query_bids=[1],
+        compute_nblast=False,
+        target_vector_cache={2: np.ones(256)},
+        target_side_cache={2: "left"},
+    )
+
+    assert calls
+    assert calls[0]["midline_x"] == 123.0
+    assert calls[0]["reflect"] is True
+
+
 def make_neuron(points, parents, radius=1.0):
     import navis
     n = len(points)

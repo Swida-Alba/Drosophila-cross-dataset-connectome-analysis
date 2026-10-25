@@ -254,6 +254,13 @@ class TestMatchTableRetention:
         policy.enforce_match_table_retention(str(tmp_path), str(new), 1)
         assert (old / "X_lines.csv").exists()
 
+    def test_missing_output_dir_is_a_noop(self, tmp_path):
+        missing = tmp_path / "does-not-exist"
+        result = policy.enforce_match_table_retention(
+            str(missing), str(missing / "run"), 1)
+        assert result["pruned_runs"] == []
+        assert result["removed"] == []
+
     def test_zero_window_is_a_noop(self, tmp_path):
         old = self._run(tmp_path, "NB-find-lines-expanded_ALL_OLD_20260914_000000")
         new = self._run(tmp_path, "NB-find-lines-expanded_ALL_NEW_20260915_000000")

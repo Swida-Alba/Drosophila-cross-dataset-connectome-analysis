@@ -1224,10 +1224,10 @@ DEFAULT_SETTING_SPECS = {
         "hint": "Cosine pre-filter of candidates for speed.",
     },
     "expand_2hop": {
-        "label": "2-Hop Expansion",
+        "label": "Include Untyped Partners",
         "group": "similarity",
         "kind": "bool",
-        "hint": "Include untyped partners via 2-hop typed partners.",
+        "hint": "Include partners without type annotations; 2-hop typed expansion is separate and on by default.",
     },
     "candidate_cap": {
         "label": "Candidate Cap",

@@ -135,7 +135,7 @@ All of it is `src/visualize_skeleton.py` (there is no `src/visualization/` packa
 | `{stem}_profiles/`, `{stem}_reexport/` | default out-dirs | `:910-911`, `:783` | — |
 | `individual_profiles_summary{_by_view,_by_name}.pptx` | a deck of profiles, widescreen | `:20891` in `:20792 _create_individual_pptx` | — |
 | `aggregated_images.pptx` | generic image-stack deck | `src/utils/report_utils.py:258-260 img2pptx` (its twin `img2pptx` call site in `src/visualize_skeleton.py`) | `src/neuronbridge_finder.py:9625` |
-| `<html_stem>_webdriver.png` | intended HTML→PNG route | `:22653 export_png_webdriver` (name assembled `:22727`) | **broken, §9** |
+| `<html_stem>_webdriver.png` | HTML→PNG route | `export_png_webdriver` (waits on `_PLOTLY_READY_CLASSES`; name assembled in the same function) | — |
 
 Framing defaults that decide whether an image is usable: `skeleton_mode "tube"`
 (`ui/config.py:523`; analysis default `"line"` `:524`), `brain_mesh "native"`
@@ -145,9 +145,9 @@ Framing defaults that decide whether an image is usable: `skeleton_mode "tube"`
 `src/visualize_skeleton.py:292`), `freeze_view True` (`:537`), `export_scale 3`
 (`:2900`), `auto_crop True` / `crop_margin 30` (`:1974-1975`), `width/height 900`
 (`:1970-1971`), `views='front'` (`:19968`). `neuron_alpha` is **not** in `ui/config.py`:
-backend `0.2` (`src/visualize_skeleton.py:3133`) vs tab setting `0.3`
-(`ui/components/skeleton_visualization_settings.py:198`, widget `ui/tabs/visualization.py:663`)
-— name the value you used.
+backend `0.2` (`src/visualize_skeleton.py:3133`) and the Skeleton tab `0.2`
+(`ui/tabs/visualization.py:681`); the shared editor default is `0.3`
+(`ui/components/skeleton_visualization_settings.py:198`) — name the value you used.
 
 ## 5. Connectivity, profiling, homologs, paths, networks, NeuronBridge, morphology
 
@@ -255,15 +255,15 @@ scene link is dead — see §9.
 
 ## 8. Per-file authority: the run-guide registry
 
-`ui/output_guide.py` `TOOL_GUIDE_SPECS` (`:1145`) is the real file→meaning map, and it
+`ui/output_guide.py` `TOOL_GUIDE_SPECS` is the real file→meaning map, and it
 describes files **as they exist in that run** (first-match-wins against the actual
-directory, `assemble_run_content:2626`, with a `leftovers` bucket for anything
-unrecognized). One entry per tool, 18 tools: `find_path:1146`, `find_shortest:1153`,
-`find_network:1161`, `plot3d_skeleton:1163`, `plot3d_reexport:1236`, `plot_path:1264`,
-`find_homologs:1283`, `find_similar_morphology:1290`, `connectivity_profiling:1316`,
-`morph_cross_dataset:1431`, `morphology_comparison:1488`, `inter_dataset:1547`,
-`nb_find_lines:1954`, `nb_find_lines_expanded:1991`, `nb_find_neuron:2039`,
-`nb_colabel:2085`, `flylight_download:2163`, `type_mapping_validation:2183`.
+directory, `assemble_run_content`, with a `leftovers` bucket for anything
+unrecognized). One entry per tool, **19 tools**: `find_path`, `find_shortest`,
+`find_network`, `plot3d_skeleton`, `plot3d_reexport`, `plot_path`,
+`find_homologs`, `find_similar_morphology`, `connectivity_profiling`,
+`morph_cross_dataset`, `morphology_multi_comparison`, `morphology_comparison`,
+`inter_dataset`, `nb_find_lines`, `nb_find_lines_expanded`, `nb_find_neuron`,
+`nb_colabel`, `flylight_download`, `type_mapping_validation`.
 
 Each file spec carries `pattern`, `description`, `columns`, `preview`, `preview_title`,
 `matrix`; column meanings come from `COLUMN_GLOSSARY:42` (`glossary_entry:517`), and the
@@ -279,13 +279,6 @@ guide also renders applied thresholds (`:2823`, `:2864`, `:2925`), key params (`
 
 ## 9. Trap register (each has bitten someone)
 
-*   **`export_png_webdriver()` cannot open any DROCAT page.** `:22770` waits
-    `By.CLASS_NAME, "plotly"` while `_write_plotly_html` (`:6151`) emits
-    `plotly-graph-div`; working sessions wait `js-plotly-plot` (`:1373`) and the JS
-    resolvers fall back (`.js-plotly-plot || .plotly-graph-div`: `:4458`, `:4838`, `:5250`).
-    It burns its 60 s timeout and returns `None`. Tests hide it by stubbing selenium
-    (`tests/core/test_visualize_skeleton_coverage.py:5554-5566`). Use
-    `export_individuals_from_html` (`:837`).
 *   **Non-uniform rescale.** the live `plot_individuals` kaleido path hardcodes 900×900
     (`src/visualize_skeleton.py:20418`); only
     `export_individuals_from_html` (`:839`) forwards a real viewport.

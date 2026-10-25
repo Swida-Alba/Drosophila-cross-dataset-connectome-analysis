@@ -285,6 +285,40 @@ def _declared_data_extent(metadata):
     return extent
 
 
+def _parquet_probe(path):
+    """Return ``(readable, reason)`` for *path*.
+
+    ``reason`` is ``"ok"``, ``"corrupt"`` (positive footer/envelope
+    damage), ``"empty"`` (a structurally valid but unusable table), or
+    ``"unverifiable"`` (permission/lock/OS error or missing pyarrow).
+    The distinction is what lets callers rebuild without deleting a table
+    that a transient failure merely hid.
+    """
+    try:
+        import pyarrow.parquet as pq
+
+        with pq.ParquetFile(path) as reader:
+            metadata = reader.metadata
+        if metadata.num_row_groups < 1 or metadata.num_rows <= 0:
+            return False, "empty"
+        extent = _declared_data_extent(metadata)
+        if extent and os.path.getsize(path) < extent:
+            return False, "corrupt"
+        return True, "ok"
+    except ImportError:
+        return False, "unverifiable"
+    except (PermissionError, OSError):
+        return False, "unverifiable"
+    except Exception as exc:
+        name = type(exc).__name__
+        text = str(exc).lower()
+        if (name in {"ArrowInvalid", "ArrowException"}
+                or "parquet" in text or "footer" in text
+                or "magic" in text):
+            return False, "corrupt"
+        return False, "unverifiable"
+
+
 def parquet_readable(path):
     """True when *path* parses as a complete, non-empty parquet file.
 
@@ -300,37 +334,36 @@ def parquet_readable(path):
     data pages.  In-place corruption of *equal* length is not detectable
     from metadata and would still surface on a page read.
     """
-    try:
-        import pyarrow.parquet as pq
+    return _parquet_probe(path)[0]
 
-        with pq.ParquetFile(path) as reader:
-            metadata = reader.metadata
-        if metadata.num_row_groups < 1 or metadata.num_rows <= 0:
-            return False
-        extent = _declared_data_extent(metadata)
-        if extent and os.path.getsize(path) < extent:
-            return False
-        return True
-    except Exception:
-        return False
+
+def _quarantine_parquet(path):
+    """Move *path* aside without deleting recoverable bytes."""
+    target = f"{path}.corrupt-{time.time_ns()}"
+    try:
+        os.replace(path, target)
+        return target
+    except OSError:
+        return None
 
 
 def parquet_is_reusable(path):
     """True when *path* is a complete parquet file that may be reused.
 
-    A file that exists but is truncated/unreadable (an interrupted write
-    from before the atomic writers landed) is removed so the caller
-    rebuilds it rather than trusting ``os.path.exists``.  Missing files
+    An unreadable file is quarantined (renamed to ``*.corrupt-<ns>``) only
+    when it is positively corrupt or structurally empty.  Permission/OS/
+    transient failures and a missing pyarrow leave the file untouched:
+    deleting a valid multi-GB table because a lock or a transient read
+    failed is worse than rebuilding it on the next run.  Missing files
     return False without side effects.
     """
     if not os.path.exists(path):
         return False
-    if parquet_readable(path):
+    readable, reason = _parquet_probe(path)
+    if readable:
         return True
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+    if reason in {"corrupt", "empty"}:
+        _quarantine_parquet(path)
     return False
 
 

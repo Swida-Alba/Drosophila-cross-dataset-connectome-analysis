@@ -1192,6 +1192,30 @@ def _edge_sets_for_walk(walk, hop_edges, clock_types):
     return body, types, clock
 
 
+def _record_scope_pair_mass(scope_pairs, walk, hop_edges):
+    """Accumulate the DISTINCT selected bodyId-edge mass per type pair.
+
+    A type pair can be a hop in several accepted walks. Summing
+    ``hop_edges[i]`` per walk counts the same physical edge more than once
+    and can push ``connection_ratio`` above 1; retain the edge keys and add
+    each edge's weight once. The set is scoped to the exported type pairs,
+    which is the smallest structure that keeps the ratio a true share.
+    """
+    for i in range(len(walk) - 1):
+        key = (walk[i], walk[i + 1])
+        rec = scope_pairs.setdefault(
+            key, {"mass": 0.0, "paths": 0, "walks": 0,
+                  "bodyid_paths": 0, "edges": {}})
+        edges = rec.setdefault("edges", {})
+        for edge, weight in hop_edges[i].items():
+            if edge in edges:
+                continue
+            edges[edge] = float(weight)
+            rec["mass"] += float(weight)
+        rec["paths"] += 1
+        rec["walks"] += 1
+
+
 def _select_diverse_topk(final, top_k, max_reuse, clock_types):
     """Select ``top_k`` accepted rows with a per-edge-per-depth quota.
 
@@ -2215,17 +2239,7 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
                        pairs["w_sum"], pairs["w_max"], pairs["n"])}
 
     def _record_scope_mass(walk, hop_edges):
-        for i in range(len(walk) - 1):
-            key = (walk[i], walk[i + 1])
-            # Retain only the summed selected mass for the typed lane; the
-            # per-edge union of every accepted walk was a large retained
-            # structure and is not needed by any export (issue 2026-10-23).
-            rec = scope_pairs.setdefault(
-                key, {"mass": 0.0, "paths": 0, "walks": 0,
-                      "bodyid_paths": 0})
-            rec["mass"] += float(sum(hop_edges[i].values()))
-            rec["paths"] += 1
-            rec["walks"] += 1
+        _record_scope_pair_mass(scope_pairs, walk, hop_edges)
 
     time_capped = False
     validated = phantoms = unverified = 0

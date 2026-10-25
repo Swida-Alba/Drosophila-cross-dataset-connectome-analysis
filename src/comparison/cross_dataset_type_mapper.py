@@ -1920,6 +1920,12 @@ class CrossDatasetTypeMapper:
         'last_load_error',      # runtime diagnostics, rebuilt per load
         '_unsupported_dataset_warnings',  # runtime log-once bookkeeping
         '_load_lock',           # thread primitive (class attribute anyway)
+        # Identity/config: the restoring instance resolved these from its own
+        # constructor and must not inherit another workspace's paths.
+        '_neuron_df_path',
+        '_mcns_v09_neuron_df_path',
+        '_flywire_neuron_df_paths',
+        'include_suspects_in_targets',
     })
 
     def _mapper_snapshot_path(self) -> Optional[Path]:
@@ -1967,6 +1973,22 @@ class CrossDatasetTypeMapper:
             entries.append((str(module_file), stat.st_mtime_ns, stat.st_size))
         except OSError:
             pass
+        # Explicit constructor paths are inputs too; the workspace walk
+        # cannot see a table/corrected release supplied from elsewhere.
+        explicit = []
+        for attr in ('_neuron_df_path', '_mcns_v09_neuron_df_path'):
+            explicit.append(getattr(self, attr, None))
+        for value in (getattr(self, '_flywire_neuron_df_paths', None)
+                      or {}).values():
+            explicit.append(value)
+        for value in explicit:
+            if not value:
+                continue
+            try:
+                stat = Path(value).stat()
+                entries.append((str(value), stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                entries.append((str(value), -1, -1))
         return tuple(sorted(entries))
 
     def _write_mapper_snapshot(self, snapshot_path: Path) -> None:

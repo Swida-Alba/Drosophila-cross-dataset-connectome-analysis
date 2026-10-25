@@ -36,10 +36,12 @@ class TokenManager:
     NEUPRINT_DEFAULT_SERVER = 'https://neuprint.janelia.org'
     NEUPRINT_PROBE_TIMEOUT = 5  # seconds; probing must never hang a render
 
-    def __init__(self, project_root=None):
+    def __init__(self, project_root=None, include_cwd=True):
         """project_root overrides auto-detection (used by tests to isolate
-        the config files actually read; defaults to the repository root)."""
+        the config files actually read; defaults to the repository root).
+        ``include_cwd=False`` restricts the chain to project_root + env."""
         self._project_root = project_root
+        self._include_cwd = bool(include_cwd)
         # Per-token ordered candidates: [('config.json', '...'), ...].
         # self.tokens keeps the merged first-wins view for callers/tests.
         self._token_sources = {}
@@ -65,10 +67,9 @@ class TokenManager:
     def _parse_config_file(self, project_root, filename, sources_dict):
         """Append the tokens of one project config file to the chain."""
         import json
-        search_paths = [
-            filename, # Current working directory
-            os.path.join(project_root, filename) # Project root
-        ]
+        search_paths = [os.path.join(project_root, filename)]
+        if self._include_cwd:
+            search_paths.insert(0, filename)  # Current working directory
         config_path = None
         for path in search_paths:
             if os.path.exists(path):

@@ -755,7 +755,11 @@ def _generate_query_html_report(analyzer, dataset_names, comparison_points,
         for dataset in dataset_names:
             threshold = _cell_value((query.get('thresholds') or {})[dataset])
             df = analyzer.raw_results.get(dataset, {}).get(threshold, pd.DataFrame())
-            chart_counts.append({'query_id': query_id, 'query_label': query_label, 'dataset': nickname_map.get(dataset, dataset), 'count': int(len(df))})
+            chart_counts.append({
+                'query_id': query_id, 'query_label': query_label,
+                'dataset': nickname_map.get(dataset, dataset),
+                'count': int(len(df)),
+                'count_basis': 'native_type_pairs_raw_run'})
             chart_weights.append({'query_id': query_id, 'query_label': query_label, 'dataset': nickname_map.get(dataset, dataset), 'weight': float(df['weight'].sum()) if not df.empty and 'weight' in df.columns else 0})
             avg_ratio = 0.0
             try:
@@ -3091,6 +3095,7 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
             count = int((aligned[d] > 0).sum()) if not aligned.empty and d in aligned.columns else 0
             corrected_data.append({
                 'dataset': nick, 'threshold': t, 'count': count,
+                'count_basis': 'canonical_aligned',
                 'applied_threshold': (applied_label.get(str(t), {})
                                       .get(d, {}) or {}).get('applied')})
     
@@ -3114,7 +3119,9 @@ def _generate_summary_section(analyzer, dataset_names: List[str], thresholds: Li
         try:
             ratio_data = analyzer._get_edge_ratio_data_for_threshold(t)
             if not ratio_data.empty:
-                ratio_data.to_csv(os.path.join(used_data_dir, f'ratio_data_t{t}.csv'))
+                ratio_data.to_csv(
+                    os.path.join(used_data_dir, f'ratio_data_t{t}.csv'),
+                    index_label='edge_key')
                 ratio_data_cache[t] = ratio_data
         except Exception as e:
             print(f"[HTML Report] Warning: Failed to get ratio data for threshold {t}: {e}")

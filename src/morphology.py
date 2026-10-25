@@ -4281,11 +4281,16 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
                 _FAFB_WORKER_BUNDLE = None
 
     def _bundle_population_rows(self, need: int,
-                                skip_ids: set) -> List[Tuple[int, List[float], str]]:
+                                skip_ids: set,
+                                bounds=None) -> List[Tuple[int, List[float], str]]:
         """Vectorize a seeded random sample of the FAFB healed skeleton
-        bundle into V2 rows. Bounds are (re-)estimated from a small
-        coordinate pre-sample of the bundle so the whole brain shares one
-        histogram binning; the estimate is persisted by ``_write_meta``."""
+        bundle into V2 rows.
+
+        ``bounds`` is the build's already-resolved population frame. Passing
+        it is required once local rows were vectorized: re-estimating from
+        the bundle would put the seeded rows in a different histogram frame.
+        Only a first build with no resolved bounds estimates them here.
+        """
         bundle = _fafb_bundle(self.dataset, str(self.project_root))
         if bundle is None:
             return []
@@ -4296,26 +4301,29 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             if not all_ids:
                 return []
             rng = np.random.default_rng(0)
-            pre = [int(b) for b in rng.choice(all_ids,
-                                              size=min(60, len(all_ids)),
-                                              replace=False)]
-            lo = np.full(3, np.inf)
-            hi = np.full(3, -np.inf)
-            for bid in pre:
-                content = bundle.get(bid)
-                if not content:
-                    continue
-                try:
-                    nrn = navis.read_swc(io.StringIO(content))
-                    pts = nrn.nodes[["x", "y", "z"]].to_numpy(dtype=float)
-                except Exception:
-                    continue
-                lo = np.minimum(lo, pts.min(axis=0))
-                hi = np.maximum(hi, pts.max(axis=0))
-            if not np.isfinite(lo).all():
-                return []
-            pad = 0.02 * (hi - lo)
-            bounds = np.vstack([lo - pad, hi + pad])
+            if bounds is None:
+                pre = [int(b) for b in rng.choice(all_ids,
+                                                  size=min(60, len(all_ids)),
+                                                  replace=False)]
+                lo = np.full(3, np.inf)
+                hi = np.full(3, -np.inf)
+                for bid in pre:
+                    content = bundle.get(bid)
+                    if not content:
+                        continue
+                    try:
+                        nrn = navis.read_swc(io.StringIO(content))
+                        pts = nrn.nodes[["x", "y", "z"]].to_numpy(dtype=float)
+                    except Exception:
+                        continue
+                    lo = np.minimum(lo, pts.min(axis=0))
+                    hi = np.maximum(hi, pts.max(axis=0))
+                if not np.isfinite(lo).all():
+                    return []
+                pad = 0.02 * (hi - lo)
+                bounds = np.vstack([lo - pad, hi + pad])
+            else:
+                bounds = np.asarray(bounds, dtype=float)
             self._spatial_bounds = bounds
             self._bounds_resolved = True
             rng.shuffle(all_ids)
@@ -4497,7 +4505,8 @@ class SkeletonVectorCacheV2(SkeletonVectorCache):
             need = self.bundle_sample_target - len(existing) - len(ok_rows)
             if need > 0:
                 t_bundle = time.time()
-                bundle_rows = self._bundle_population_rows(need, covered)
+                bundle_rows = self._bundle_population_rows(
+                    need, covered, bounds=bounds)
                 ok_rows.extend(bundle_rows)
                 self._log(f"[SkeletonVectorCacheV2] Bundle sample: "
                           f"+{len(bundle_rows)} neurons in "
@@ -4632,18 +4641,36 @@ def cache_fetched_skeleton_vectors(
     started = time.perf_counter()
     rows = []
     failures = 0
+    target = vector_cache
+    if target is None:
+        # A mesh-only batch keeps using the mesh cache; skeleton batches use
+        # the V1 cache. An explicit vector_cache (e.g. V2) always wins.
+        if items and all(
+                _neuron_rep(neuron) == "mesh"
+                for _bid, neuron in items):
+            target = find_similar_flywire_mesh_cache(
+                dataset, project_root=project_root, verbose=False)
+        else:
+            target = SkeletonVectorCache(
+                dataset, project_root=project_root, verbose=False)
+    target_is_v2 = bool(
+        target is not None and hasattr(target, "_vector_dim")
+        and target._vector_dim() == VECTOR_V2_DIM)
     for index, (body_id, neuron) in enumerate(items, start=1):
         try:
             rep = _neuron_rep(neuron)
             if rep not in {"skeleton", "mesh"}:
                 raise TypeError(
                     f"expected TreeNeuron or MeshNeuron, got {type(neuron).__name__}")
-            _, vector = vectorize_neuron(neuron)
-            rows.append((
-                _canonical_dataset_body_id(dataset, body_id),
-                vector,
-                rep,
-            ))
+            canonical_bid = _canonical_dataset_body_id(dataset, body_id)
+            if target_is_v2:
+                row = target._in_memory_vector_row(
+                    canonical_bid, neuron)
+                if row is not None:
+                    rows.append(row)
+            else:
+                _, vector = vectorize_neuron(neuron)
+                rows.append((canonical_bid, vector, rep))
         except Exception as exc:
             failures += 1
             if verbose:
@@ -4656,14 +4683,6 @@ def cache_fetched_skeleton_vectors(
     cached = 0
     cache_error = None
     if rows:
-        if vector_cache is not None:
-            target = vector_cache
-        elif all(row[2] == "mesh" for row in rows):
-            target = find_similar_flywire_mesh_cache(
-                dataset, project_root=project_root, verbose=False)
-        else:
-            target = SkeletonVectorCache(
-                dataset, project_root=project_root, verbose=False)
         try:
             cached = int(target.append_vectors(
                 rows, vector_basis=VECTOR_BASIS_RAW))
@@ -5350,12 +5369,22 @@ def _fetch_neuprint_skeleton_batch(
                     try:
                         rep = _neuron_rep(neuron)
                         if rep in {"skeleton", "mesh"}:
-                            _, vector = vectorize_neuron(neuron)
-                            rows.append((
-                                _canonical_dataset_body_id(
-                                    dataset, body_id),
-                                vector, rep,
-                            ))
+                            canonical_bid = _canonical_dataset_body_id(
+                                dataset, body_id)
+                            if (raw_cache is not None
+                                    and hasattr(raw_cache, "_vector_dim")
+                                    and raw_cache._vector_dim() == VECTOR_V2_DIM):
+                                # V2 caches store 256-dim rows. The V1
+                                # vectorizer returns 124 dims; appending it
+                                # raised IndexError and silently skipped the
+                                # cache write.
+                                row = raw_cache._in_memory_vector_row(
+                                    canonical_bid, neuron)
+                                if row is not None:
+                                    rows.append(row)
+                            else:
+                                _, vector = vectorize_neuron(neuron)
+                                rows.append((canonical_bid, vector, rep))
                     except Exception as exc:
                         # Glitchy fetches (empty/partial SWC) produce neurons
                         # without nodes; they are skipped from the vector
@@ -9511,6 +9540,7 @@ def compute_morph_similarity_vs_queries(
     # vector semantics (e.g. the raw-basis flip) is rebuilt from the local
     # raw skeletons instead of silently degrading this comparison.
     native_cache_data = None
+    _v2_cache = None
     try:
         _v2_cache = find_similar_dataset_cache_v2(
             target_dataset, project_root=root, verbose=False)
@@ -9538,6 +9568,7 @@ def compute_morph_similarity_vs_queries(
         return bounds, mean, std, whiten
 
     same_frame = (not have_xform) or native_space == render_space
+    art = None
     if same_frame:
         v2_bounds, v2_mean, v2_std, v2_whiten = _native_artifacts()
     else:
@@ -9554,6 +9585,28 @@ def compute_morph_similarity_vs_queries(
                       'scoring with native cache artifacts (degraded '
                       'spatial block).')
             v2_bounds, v2_mean, v2_std, v2_whiten = _native_artifacts()
+
+    # The cache's measured midline is the plane its stored rows used. Fresh
+    # query/target vectors must use that same plane (and the per-body
+    # reflection rule), or a cached target and the identical fresh target
+    # score differently. Cross-space artifacts may carry a transformed
+    # midline; otherwise the bbox midpoint remains the shared fallback.
+    v2_midline = None
+    if same_frame and _v2_cache is not None:
+        try:
+            v2_midline = _v2_cache.spatial_midline()
+        except Exception:
+            v2_midline = None
+    elif art is not None:
+        v2_midline = art.get('midline_x')
+
+    def _cache_reflect(body_id):
+        if not same_frame or _v2_cache is None:
+            return None
+        try:
+            return _v2_cache._reflect_flag(body_id)
+        except Exception:
+            return None
 
     native_rows: Dict[int, int] = {}
     if native_cache_data is not None:
@@ -9587,8 +9640,9 @@ def compute_morph_similarity_vs_queries(
         if qbid in q_vecs:
             continue
         try:
-            _, vec = vectorize_neuron_v2(q, spatial_bounds=v2_bounds,
-                                         lateral_normalize=True)
+            _, vec = vectorize_neuron_v2(
+                q, spatial_bounds=v2_bounds, lateral_normalize=True,
+                midline_x=v2_midline, reflect=_cache_reflect(qbid))
             q_vecs[qbid] = np.asarray(vec, dtype=float)
         except Exception:
             pass
@@ -9660,8 +9714,9 @@ def compute_morph_similarity_vs_queries(
                     pass
         if tb not in t_vecs:
             try:
-                _, vec = vectorize_neuron_v2(tn, spatial_bounds=v2_bounds,
-                                             lateral_normalize=True)
+                _, vec = vectorize_neuron_v2(
+                    tn, spatial_bounds=v2_bounds, lateral_normalize=True,
+                    midline_x=v2_midline, reflect=_cache_reflect(tb))
                 t_vecs[tb] = np.asarray(vec, dtype=float)
                 if target_vector_cache is not None:
                     target_vector_cache[tb] = t_vecs[tb]

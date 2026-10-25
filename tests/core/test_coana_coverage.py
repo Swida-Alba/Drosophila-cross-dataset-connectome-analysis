@@ -1015,6 +1015,18 @@ class TestRatioAdjColumns:
         out2 = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
         assert abs(out2['connection_ratio_adj'].iloc[0] - 10 / 50) < 1e-12
 
+    def test_ratio_basis_min_synapse_one_records_plain_denominator(self):
+        fc, _ = make_fc(min_synapse_num=1, weight_basis='connection_ratio')
+        df = pd.DataFrame({
+            'type_pre': ['TA', 'TB'], 'type_post': ['TT', 'TT'],
+            'weight': [10, 5],
+            'connection_ratio': [0.1, 0.05],
+        })
+        out = fc._attach_ratio_adj_columns(df, 'type_pre', 'type_post')
+        assert out['connection_ratio_adj'].tolist() == out[
+            'connection_ratio'].tolist()
+        assert fc._type_incoming_conditioned == {'TT': 100.0}
+
     def test_bodyid_level_uses_threshold_totals(self):
         fc, _ = make_fc(min_synapse_num=3)
         fc._fetch_total_incoming_weight = (

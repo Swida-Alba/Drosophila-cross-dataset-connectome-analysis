@@ -648,7 +648,10 @@ def test_aggregate_and_find_paths(analyzer):
         df, label_map, {"Src"}, {"Tgt"}, 2, DS1, 1, path_mode="all"
     )
     assert not out.empty
-    assert {"has_valid_path", "dataset", "threshold", "conn_layer", "traversal_probability"} <= set(out.columns)
+    assert {"has_valid_path", "dataset", "threshold", "conn_layer"} <= set(out.columns)
+    # Probability family is suspended (2026-10-06): the edge-mode export
+    # must not resurrect the old subset-probability column.
+    assert "traversal_probability" not in out.columns
     assert out["has_valid_path"].all()
     assert (out["conn_layer"].isin(["0->1", "1->2"])).all()
 
@@ -1391,6 +1394,57 @@ def test_fetch_local_metadata_from_files(tmp_path, monkeypatch):
     assert md["dataset"] == DS1
     assert md["source"] == "local"
     assert md["neuron_counts"]["total"] == 2
+
+
+def test_fetch_local_metadata_derives_presynaptic_total(
+        tmp_path, monkeypatch):
+    """A post-only local table still reports its presynaptic mass."""
+    a = ComparisonAnalyzer(_params(), verbose=False)
+    safe = a.parameters._sanitize_name(DS1)
+    d = tmp_path / safe
+    d.mkdir()
+    pd.DataFrame({"bodyId": [1, 2], "type": ["Src", "Tgt"],
+                  "post": [30, 20]}
+                 ).to_csv(d / f"{safe}_allneurons_neuron_df.csv", index=False)
+    pd.DataFrame({"bodyId_pre": [1, 1, 2],
+                  "bodyId_post": [2, 2, 1],
+                  "weight": [4, 2, 1]}
+                 ).to_parquet(d / f"{safe}_merged_connections.parquet",
+                              index=False)
+    monkeypatch.setattr(a, "_get_datasets_folder", lambda: str(tmp_path))
+    md = a._fetch_local_metadata(DS1)
+    assert md["synapse_density"]["pre_source"] == "derived_from_connections"
+    assert md["synapse_counts"]["total_presynaptic"] == 7
+    assert md["synapse_counts"]["total_postsynaptic"] == 50
+    assert md["synapse_counts"]["total"] == 57
+
+
+def test_metadata_pre_totals_stale_detects_old_sidecar():
+    stale = {'synapse_counts': {'total_presynaptic': 0},
+             'synapse_density': {'pre_source': 'derived_from_connections'}}
+    assert ComparisonAnalyzer._metadata_pre_totals_stale(stale)
+    assert not ComparisonAnalyzer._metadata_pre_totals_stale(
+        {'synapse_counts': {'total_presynaptic': 7},
+         'synapse_density': {'pre_source': 'derived_from_connections'}})
+    # Genuinely unavailable pre is not worth re-deriving on every run.
+    assert not ComparisonAnalyzer._metadata_pre_totals_stale(
+        {'synapse_counts': {'total_presynaptic': 0},
+         'synapse_density': {'pre_source': 'unavailable'}})
+
+
+def test_replace_state_notes_prunes_family_without_new_blocks(tmp_path):
+    """A clean rerun must remove the previous run's comparability warning."""
+    a = ComparisonAnalyzer(_params(output_folder=str(tmp_path)), verbose=False)
+    note = tmp_path / 'user_warning_notes.txt'
+    note.write_text(
+        'User warning notes\n==================\n\n'
+        '- [threshold comparability] stale line\n'
+        '- [untyped dropped] kept line\n', encoding='utf-8')
+    a._replace_state_notes(
+        [], str(tmp_path), owned_tags=['[threshold comparability]'])
+    text = note.read_text(encoding='utf-8')
+    assert 'stale line' not in text
+    assert 'kept line' in text
 
 
 def test_fetch_local_metadata_missing_files(tmp_path, monkeypatch):
