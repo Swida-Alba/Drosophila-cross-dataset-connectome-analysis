@@ -253,15 +253,14 @@ function exportPlotlyToImage(gd, format, filename, scale, width, height, onSucce
    conservative consumers the exported file ever meets, so the SVG is
    normalized into the subset they handle faithfully:
 
-   1. Arrowhead underlays: cytoscape paints every translucent arrowhead
-      over an opaque WHITE twin triangle (a canvas paint trick so the
-      edge line cannot show through the translucent arrow). Once
-      converted to shapes those twins are real geometry: one invisible
-      white dart per arrow that surfaces as a white chunk cutting the
-      edge on any non-white slide or after the shapes are recolored.
-      Each (opaque backing, translucent top) twin pair with identical
-      path data is collapsed into ONE opaque arrow whose fill is the
-      exact composite — pixel-identical, no helper shapes.
+   1. Arrowhead underlays: a renderer may serialise a translucent
+      arrowhead over an opaque WHITE twin triangle (the canvas cut-out
+      that keeps the edge line out of the arrow). Once converted to
+      shapes those twins are real geometry: one invisible white dart per
+      arrow that surfaces as a white chunk cutting the edge on any
+      non-white slide. Each (opaque backing, translucent top) twin pair
+      with identical path data loses the backing, and the top keeps its
+      own fill opacity so it blends like the canvas arrow.
    2. rgb() functional colors become #rrggbb; path numbers are
       re-emitted in fixed-point, rounded to 3 decimals (exponent forms
       and 15-digit floats are where lenient canvas consumers and strict
@@ -277,13 +276,15 @@ function exportPlotlyToImage(gd, format, filename, scale, width, height, onSucce
       so Office imports one editable, movable text box per label.
    5. Edge fusion + stroke-to-geometry: every edge's shaft and arrowheads
       are wrapped in one group, the shaft's stroke becomes a filled
-      outline polygon (never degenerate — the stroke width inflates both
-      axes, which <line> boxes cannot do for near-vertical/horizontal
-      shafts and PowerPoint then renders the stroke displaced from the
-      correctly-positioned frame), and each arrowhead stays a simple
-      single-subpath triangle (multi-subpath merged paths misplace their
-      subpath origins in the converted frame). No <line>, no multi-subpath
-      paths, nothing for the converter to misplace.
+      outline polygon carrying the stroke's own opacity (never
+      degenerate — the stroke width inflates both axes, which <line>
+      boxes cannot do for near-vertical/horizontal shafts and PowerPoint
+      then renders the stroke displaced from the correctly-positioned
+      frame), and each arrowhead stays a simple single-subpath triangle
+      (multi-subpath merged paths misplace their subpath origins in the
+      converted frame). Shaft and arrows keep their real alpha, so the
+      overlap composites exactly as it does on the canvas. No <line>, no
+      multi-subpath paths, nothing for the converter to misplace.
    6. A viewBox is added when missing so scaling stays unambiguous.
    7. Two global groups close it out: all geometry under id="shapes" and
       all node labels under id="texts" (PowerPoint converts each <g> to a
@@ -311,10 +312,11 @@ function sanitizeSvgForOffice(svgText) {
         }).join('');
     }
 
-    // 1. Collapse (opaque backing, translucent top) twin pairs: the top
-    //    fill becomes the exact composite over the backing color, the
-    //    backing is removed. Only same-`d` adjacent pairs qualify, so a
-    //    legitimately white-filled shape is never touched.
+    // 1. Drop (opaque backing, translucent top) twin pairs: the backing
+    //    is removed, the top keeps its fill and fill-opacity so the
+    //    arrow still blends with the shaft and with other arrows. Only
+    //    same-`d` adjacent pairs qualify, so a legitimately white-filled
+    //    shape is never touched.
     const paths = Array.prototype.slice.call(root.querySelectorAll('path'));
     const removed = [];
     for (let i = 0; i < paths.length - 1; i++) {
@@ -326,9 +328,6 @@ function sanitizeSvgForOffice(svgText) {
         const backOp = backing.getAttribute('fill-opacity') === null ? 1 : parseFloat(backing.getAttribute('fill-opacity'));
         const topOp = top.getAttribute('fill-opacity') === null ? 1 : parseFloat(top.getAttribute('fill-opacity'));
         if (!isFinite(backOp) || !isFinite(topOp) || backOp !== 1 || topOp >= 1) { continue; }
-        const blended = topFill.map(function (c, k) { return backFill[k] * (1 - topOp) + c * topOp; });
-        top.setAttribute('fill', toHex(blended));
-        top.setAttribute('fill-opacity', '1');
         removed.push(backing);
     }
     removed.forEach(function (el) { el.parentNode.removeChild(el); });
@@ -448,12 +447,11 @@ function sanitizeSvgForOffice(svgText) {
     //    inside a correctly-positioned frame). Every edge therefore
     //    becomes ONE group of simple single-subpath closed polygons: the
     //    shaft's stroke is converted to a filled outline polygon
-    //    (composited opaque over the background; never degenerate, the
-    //    stroke width inflates both axes), and each arrowhead stays its
-    //    own triangle. Rendering is unchanged.
+    //    (carrying the stroke's opacity; never degenerate, the stroke
+    //    width inflates both axes), and each arrowhead stays its own
+    //    triangle. Rendering is unchanged, including the shaft/arrow
+    //    composite.
     const allPaths = Array.prototype.slice.call(root.querySelectorAll('path'));
-    const bgRect = root.querySelector('rect');
-    const bgFill = (bgRect && bgRect.getAttribute('fill')) || '#ffffff';
     function vpIsArrowTri(p) {
         const d = p.getAttribute('d') || '';
         if (!/Z\s*$/.test(d)) { return false; }
@@ -528,14 +526,14 @@ function sanitizeSvgForOffice(svgText) {
             const g = doc.createElementNS('http://www.w3.org/2000/svg', 'g');
             g.setAttribute('data-vp-edge', '1');   // the global-grouping pass keeps this group indivisible
             p.parentNode.insertBefore(g, p);
-            // shaft: stroke converted to a filled outline (base = background)
-            const base = parseColor(shaft.color) || parseColor(bgFill) || [0, 0, 0];
-            const bgc = parseColor(bgFill) || [255, 255, 255];
+            // shaft: stroke converted to a filled outline carrying the
+            // stroke's own alpha, so shaft and arrows blend where the
+            // arrowhead overlaps the line
+            const base = parseColor(shaft.color) || [0, 0, 0];
             const op = isFinite(shaft.opacity) ? shaft.opacity : 1;
-            const blended = base.map(function (c, k) { return bgc[k] * (1 - op) + c * op; });
             const outline = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
-            outline.setAttribute('fill', toHex(blended));
-            outline.setAttribute('fill-opacity', '1');
+            outline.setAttribute('fill', toHex(base));
+            if (op < 1) { outline.setAttribute('fill-opacity', String(op)); }
             outline.setAttribute('stroke', 'none');
             outline.setAttribute('d', vpOutlinePoly(shaft));
             g.appendChild(outline);

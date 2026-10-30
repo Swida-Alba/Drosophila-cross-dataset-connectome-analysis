@@ -6,6 +6,16 @@ Welcome to the Drosophila Connectome Analysis Toolkit (DROCAT) documentation!
 
 ## 🆕 Recent Updates (August 2026) - V4.5.0
 
+### 🎨 Translucent network arrowheads composite
+- Network pages that draw edges with `line-opacity` below 1 now get true
+  alpha arrowheads: they blend with each other and with their own shaft
+  instead of erasing the ink underneath. Hollow arrows keep their cleared
+  interior, opaque pages are pixel-identical, and exported SVGs keep the
+  arrow and shaft transparency (no white wedge, no flattened edges).
+  The vendored Cytoscape 3.28.1 bundle carries the fix
+  (`scripts/patch_cytoscape_arrow_blend.py --check` is the CI gate); see
+  [`src/assets/VERSIONS.md`](../src/assets/VERSIONS.md).
+
 ### 🤖 Direct agent analysis without the UI
 - **[DROCAT Direct Analysis Skill](../skills/drocat-usage/SKILL.md)**: Run,
   inspect, and safely modify backend scripts without loading the entire

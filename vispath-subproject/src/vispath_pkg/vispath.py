@@ -13165,9 +13165,9 @@ class VisualizePath:
         const EDGE_BASE_ARROW_KEY = '__baseArrowColor';
 
         // This Cytoscape build supports neither target/source-arrow-opacity
-        // nor alpha in an arrow colour, so an alpha of 0 can only be honoured
-        // by removing the arrow SHAPE. (Partial alphas fade the line; the
-        // arrowhead stays solid.)
+        // nor alpha in an arrow colour (the opacity property is the only
+        // working alpha control, and it fades line and arrow together), so
+        // an alpha of 0 can only be honoured by removing the arrow SHAPE.
         function edgeArrowShapes(edge, opacity) {{
             if (opacity > 0) {{
                 edge.removeStyle('target-arrow-shape');
@@ -15508,8 +15508,9 @@ class VisualizePath:
             cy.edges().forEach(function(edge) {{
                 const currentColor = edge.style('line-color');
                 // A declared per-edge alpha (e.g. a class page's weight
-                // band) replaces the global default; the arrowhead takes
-                // the pre-blended colour so it matches the faded line.
+                // band) replaces the global default; line-opacity fades
+                // line and arrowheads together (an arrow COLOUR cannot
+                // carry alpha in this build).
                 const bandAlpha = edge.data('edge_alpha');
                 const hasBand = bandAlpha !== undefined && bandAlpha !== null
                     && bandAlpha !== '' && !isNaN(Number(bandAlpha));

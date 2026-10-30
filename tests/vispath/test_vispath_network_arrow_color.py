@@ -14,7 +14,7 @@ Design decisions these tests pin:
 * a declared `arrow_color` gets its own late stylesheet rule, so an explicit
   two-tone value still wins over the NT rule;
 * the alpha-only edge-style path and the highlight restore keep whatever
-  colour the load pass stored, including a band page's pre-blended arrows.
+  colour the load pass stored, including a band page's declared arrows.
 
 Run:
     python -m pytest tests/vispath/test_vispath_network_arrow_color.py -q
@@ -189,8 +189,8 @@ def test_explicit_arrow_colour_wins_and_survives_alpha_and_restore_live(
         "target": ["B", "C", "D", "A"],
         "weight": [10.0, 20.0, 30.0, 40.0],
         "nt_type": ["acetylcholine", "gaba", "glutamate", None],
-        # A band page declares its pre-blended arrow colours; the explicit
-        # value must survive the alpha pass and later restores.
+        # A band page may declare arrow colours; the explicit value must
+        # survive the alpha pass and later restores.
         "edge_alpha": [0.2, None, None, None],
         "arrow_color": ["#c8d2d2", None, "#112233", None],
     })

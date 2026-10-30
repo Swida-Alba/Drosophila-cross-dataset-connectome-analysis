@@ -3520,9 +3520,10 @@ def test_node_label_override_and_direction_group_options(tmp_path):
 
 @REQUIRES_CDP
 def test_edge_alpha_zero_hides_the_arrowheads(tmp_path):
-    """Alpha 0 must hide the arrowheads too. This Cytoscape build ignores
-    arrow-opacity and alpha in arrow colours, so the shapes are removed at
-    alpha 0 and restored from the stylesheet above 0."""
+    """Alpha 0 must hide the arrowheads too. This Cytoscape build has no
+    target/source-arrow-opacity and ignores alpha in arrow colours;
+    line-opacity fades line and arrows together, so the shapes are removed
+    at alpha 0 and restored from the stylesheet above 0."""
     df = pd.DataFrame({"source": ["A"], "target": ["B"], "weight": [5.0]})
     vp = VisualizePath(path_file=df, output_folder=str(tmp_path),
                        showfig=False, verbose=False, network_layout="dagre")
