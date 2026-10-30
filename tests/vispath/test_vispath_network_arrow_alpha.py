@@ -2,14 +2,18 @@
 
 Cytoscape 3.28.1's cut-out erased whatever sat under a below-full-opacity
 arrowhead before painting it, so two coincident translucent arrows kept the
-single-arrow value and the arrow could not blend with its own shaft.  The
-vendored bundle is patched only for the cut-out (hollow arrows keep it), and
-the Office sanitizer must not flatten the stroke/arrow alpha back to opaque.
+single-arrow value.  The vendored bundle is patched for the cut-out (hollow
+arrows keep it) and for the triangle geometry: the shaft now ends at the
+arrowhead's base instead of running inside it, so the translucent head has
+no darker overlap stripe.  The Office sanitizer must not flatten the
+stroke/arrow alpha back to opaque.
 
-The pixel expectations below are source-over composites over white.  They
-deliberately include the shaft/arrow overlap: an edge body and its arrowhead
-both carry real opacity and blend where they intersect, so an arrow interior
-crossed by its own line is darker than the arrow alone.
+The pixel expectations below are source-over composites over white.  The
+shaft and head meet at the base, so the head interior is uniform and equal
+to the arrow-only value; parallel arrows still composite with each other.
+The SVG export merges a same-colour geometrically straight shaft and head
+into ONE single-subpath path (no butt-joint seam, one PowerPoint shape);
+two-tone, curved, dashed and multi-head edges stay grouped.
 
 Run:
     python -m pytest tests/vispath/test_vispath_network_arrow_alpha.py -q
@@ -35,7 +39,7 @@ from heatmap_cdp import Page, REQUIRES_CDP  # noqa: E402
 from vispath_pkg.vispath import VisualizePath  # noqa: E402
 
 NS = "{http://www.w3.org/2000/svg}"
-MARKER = "DROCAT patch: arrow fill blends; hollow keeps cut-out"
+MARKER = "DROCAT patch (Cytoscape 3.28.1)"
 
 
 def _inline(path):
@@ -134,18 +138,19 @@ def test_canvas_arrowheads_blend_with_each_other_and_their_shaft(tmp_path):
         img = _png_rgb(browser)
         assert img.size == (840, 1200), img.size
 
-        # (line midpoint, arrow interior over its own shaft, arrow interior
-        #  clear of the shaft)
+        # (line midpoint, arrow interior at the head's rim, arrow interior
+        #  clear of the shaft); the rim value must equal the arrow-only
+        #  value because the shaft ends at the arrowhead base.
         cases = {
-            "single": (80, (153, 153, 153), (92, 92, 92), (153, 153, 153)),
-            "two coincident": (180, (92, 92, 92), (33, 33, 33), (92, 92, 92)),
-            "red over black": (280, (194, 92, 92), (196, 33, 33), (194, 92, 92)),
+            "single": (80, (153, 153, 153), (153, 153, 153), (153, 153, 153)),
+            "two coincident": (180, (92, 92, 92), (92, 92, 92), (92, 92, 92)),
+            "red over black": (280, (194, 92, 92), (194, 92, 92), (194, 92, 92)),
         }
-        for label, (y, line, overlap, arrow) in cases.items():
+        for label, (y, line, rim, arrow) in cases.items():
             assert _close(_rgb(img, 210, y), line), (label, "line", _rgb(img, 210, y))
-            assert _close(_rgb(img, 321, y), overlap), (
+            assert _close(_rgb(img, 321, y), rim), (
                 label,
-                "shaft+arrow overlap",
+                "arrow rim",
                 _rgb(img, 321, y),
             )
             assert _close(_rgb(img, 330, y - 8), arrow), (
@@ -275,41 +280,46 @@ def test_vispath_export_keeps_true_body_and_arrow_alpha(tmp_path):
         canvas_img = _png_rgb(browser)
         points = [(300, 80), (321, 80), (330, 80), (330, 72)]
         canvas = {p: _rgb(canvas_img, *p) for p in points}
+        # The rim and the arrow-only interior read the same: no shaft ink
+        # inside the head.
+        assert _close(canvas[(321, 80)], canvas[(330, 80)])
 
         sanitized = browser.js("return sanitizeSvgForOffice(cy.svg({full: true, bg: 'white'}));")
         root = ET.fromstring(sanitized)
 
-        groups = [g for g in root.iter(NS + "g") if g.get("data-vp-edge") == "1"]
-        assert len(groups) == 2, sanitized[:500]
-        arrow_ds = []
-        for group in groups:
-            paths = group.findall(NS + "path")
-            assert len(paths) == 2, [p.get("d") for p in paths]
-            outline, arrow = paths
-            # The stroke is now a filled outline that keeps the stroke alpha.
-            assert outline.get("fill-opacity") == "0.4", outline.attrib
-            assert outline.get("fill") in ("#000000", "#ff0000"), outline.attrib
-            assert arrow.get("fill-opacity") == "0.4", arrow.attrib
-            arrow_ds.append(arrow.get("d"))
-
-        # Coincident edges legitimately share one arrow geometry; what must
-        # not survive is an opaque white twin with that same geometry.
-        all_paths = list(root.iter(NS + "path"))
-        for d in set(arrow_ds):
-            assert not any(
-                p.get("d") == d and p.get("fill") in ("#ffffff", "white") for p in all_paths
-            )
+        # Both edges are solid straight shafts with one same-colour head,
+        # so each exports as ONE single-subpath path (no group, no seam).
+        edge_nodes = [el for el in root.iter() if el.get("data-vp-edge") == "1"]
+        assert len(edge_nodes) == 2, sanitized[:500]
+        for el in edge_nodes:
+            assert el.tag == NS + "path", el.tag
+            assert el.get("fill-opacity") == "0.4", el.attrib
+            assert el.get("fill") in ("#000000", "#ff0000"), el.attrib
+            d = el.get("d")
+            assert d.count("M") == 1, d
+            nums = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", d)]
+            assert len(nums) == 14, nums  # 7 vertices: shaft + one head
+            xs = nums[0::2]
+            assert abs(max(xs) - 349.5) <= 0.01, xs  # arrow tip
+            assert abs(sorted(set(xs))[-2] - 318.454) <= 0.01, xs  # head base
+            assert not any(318.5 < x < 349.4 for x in xs), xs
 
         # The exported SVG renders the same composites as the canvas:
-        # body-only, body+arrow overlap, arrow-only, arrow-only off-shaft.
+        # body-only, arrow rim, arrow-only, arrow-only off-shaft. The
+        # merged path also removes the butt-joint seam at x = 318.454.
+        seam = (318, 80)
         tx, ty = _translate(root)
-        browser.js(_SVG_EXPORT_JS % (json.dumps(sanitized), json.dumps(points), tx, ty))
+        browser.js(_SVG_EXPORT_JS % (json.dumps(sanitized), json.dumps(points + [seam]), tx, ty))
         assert browser.wait("return !!window.__exportSamples;", timeout=30)
         rendered = browser.js("return window.__exportSamples;")
         assert rendered != "load-error", rendered
         rendered_by_point = {tuple(row[:2]): tuple(row[2:]) for row in rendered}
         for p in points:
             assert _close(rendered_by_point[p], canvas[p], 3), (p, rendered, canvas)
+        assert _close(rendered_by_point[seam], canvas[(300, 80)], 3), (
+            rendered_by_point[seam],
+            canvas[(300, 80)],
+        )
 
         # A renderer that still emits the white cut-out twin: the sanitizer
         # drops the backing and leaves the arrow translucent.
@@ -326,22 +336,90 @@ def test_vispath_export_keeps_true_body_and_arrow_alpha(tmp_path):
         assert cleaned_paths[0].get("fill") == "#ff0000"
         assert cleaned_paths[0].get("fill-opacity") == "0.4"
 
-        # A synthetic shaft + arrow pair keeps both alphas after fusion.
+        def sanitized_nodes(svg_text):
+            return [el for el in ET.fromstring(svg_text).iter() if el.get("data-vp-edge") == "1"]
+
+        # Same-colour solid straight shaft + one head -> one path.
         pair = (
             '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120">'
             '<rect width="200" height="120" fill="white"/>'
             '<path fill="none" stroke="#000000" stroke-opacity="0.4" '
-            'stroke-width="6" d="M10 60 L 90 60"/>'
+            'stroke-width="6" d="M10 60 L 80 60"/>'
             '<path fill="#000000" fill-opacity="0.4" stroke="none" '
             'd="M80 70 L 100 60 L 80 50 Z"/></svg>'
         )
-        fused = ET.fromstring(browser.js("return sanitizeSvgForOffice(%s);" % json.dumps(pair)))
-        edge_groups = [g for g in fused.iter(NS + "g") if g.get("data-vp-edge") == "1"]
-        assert len(edge_groups) == 1
-        fused_paths = edge_groups[0].findall(NS + "path")
-        assert [p.get("fill-opacity") for p in fused_paths] == ["0.4", "0.4"], [
-            p.attrib for p in fused_paths
+        fused = sanitized_nodes(browser.js("return sanitizeSvgForOffice(%s);" % json.dumps(pair)))
+        assert len(fused) == 1 and fused[0].tag == NS + "path", fused
+        assert fused[0].get("fill-opacity") == "0.4"
+        fused_d = fused[0].get("d")
+        assert fused_d.count("M") == 1
+        fused_nums = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", fused_d)]
+        assert len(fused_nums) == 14
+        fused_xs = fused_nums[0::2]
+        assert (min(fused_xs), sorted(set(fused_xs))[-2], max(fused_xs)) == (
+            10.0,
+            80.0,
+            100.0,
+        )
+
+        # A bezier whose control point lies on the line is geometrically
+        # straight (the article's edges) and merges too.
+        bezier_straight = pair.replace("M10 60 L 80 60", "M10 60 Q 45 60 80 60")
+        bezier_nodes = sanitized_nodes(
+            browser.js("return sanitizeSvgForOffice(%s);" % json.dumps(bezier_straight))
+        )
+        assert len(bezier_nodes) == 1 and bezier_nodes[0].tag == NS + "path"
+
+        # A source-only head merges from the other end too.
+        source_head = pair.replace('d="M80 70 L 100 60 L 80 50 Z"', 'd="M10 70 L -10 60 L 10 50 Z"')
+        source_nodes = sanitized_nodes(
+            browser.js("return sanitizeSvgForOffice(%s);" % json.dumps(source_head))
+        )
+        assert len(source_nodes) == 1 and source_nodes[0].tag == NS + "path"
+        source_xs = [
+            float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", source_nodes[0].get("d"))[0::2]
         ]
-        assert not list(fused.iter(NS + "line"))
+        assert (min(source_xs), max(source_xs)) == (-10.0, 80.0)
+
+        # Two-tone heads stay as a group (two shapes).
+        two_tone = pair.replace(
+            'fill="#000000" fill-opacity="0.4" stroke="none"',
+            'fill="#ff0000" fill-opacity="0.4" stroke="none"',
+        )
+        two_tone_nodes = sanitized_nodes(
+            browser.js("return sanitizeSvgForOffice(%s);" % json.dumps(two_tone))
+        )
+        assert len(two_tone_nodes) == 1 and two_tone_nodes[0].tag == NS + "g"
+        two_tone_paths = two_tone_nodes[0].findall(NS + "path")
+        assert [p.get("fill") for p in two_tone_paths] == ["#000000", "#ff0000"]
+        assert [p.get("fill-opacity") for p in two_tone_paths] == ["0.4", "0.4"]
+
+        # Curved shafts stay as a group.
+        curved = pair.replace("M10 60 L 80 60", "M10 60 Q 45 30 80 60")
+        curved_nodes = sanitized_nodes(
+            browser.js("return sanitizeSvgForOffice(%s);" % json.dumps(curved))
+        )
+        assert len(curved_nodes) == 1 and curved_nodes[0].tag == NS + "g"
+        assert len(curved_nodes[0].findall(NS + "path")) == 2
+
+        # More than one head stays as a group.
+        multi_head = pair.replace(
+            "</svg>",
+            '<path fill="#000000" fill-opacity="0.4" stroke="none" '
+            'd="M80 70 L 100 60 L 80 50 Z"/></svg>',
+        )
+        multi_nodes = sanitized_nodes(
+            browser.js("return sanitizeSvgForOffice(%s);" % json.dumps(multi_head))
+        )
+        assert len(multi_nodes) == 1 and multi_nodes[0].tag == NS + "g"
+        assert len(multi_nodes[0].findall(NS + "path")) == 3
+
+        # Opaque same-colour straight edges merge too, with no opacity attr.
+        opaque = pair.replace(' stroke-opacity="0.4"', "").replace(' fill-opacity="0.4"', "")
+        opaque_nodes = sanitized_nodes(
+            browser.js("return sanitizeSvgForOffice(%s);" % json.dumps(opaque))
+        )
+        assert len(opaque_nodes) == 1 and opaque_nodes[0].tag == NS + "path"
+        assert opaque_nodes[0].get("fill-opacity") is None
 
         assert browser.errors() == [], browser.errors()

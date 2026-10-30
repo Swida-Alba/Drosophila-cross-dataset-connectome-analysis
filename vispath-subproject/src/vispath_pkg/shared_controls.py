@@ -282,9 +282,13 @@ function exportPlotlyToImage(gd, format, filename, scale, width, height, onSucce
       then renders the stroke displaced from the correctly-positioned
       frame), and each arrowhead stays a simple single-subpath triangle
       (multi-subpath merged paths misplace their subpath origins in the
-      converted frame). Shaft and arrows keep their real alpha, so the
-      overlap composites exactly as it does on the canvas. No <line>, no
-      multi-subpath paths, nothing for the converter to misplace.
+      converted frame). Shaft and arrows keep their real alpha, so
+      parallel edges and arrowheads composite exactly as they do on the
+      canvas. A solid geometrically straight (collinear) shaft with
+      exactly ONE same-colour, same-opacity head whose base meets the
+      shaft end is emitted as ONE single-subpath path instead (one
+      PowerPoint shape, no antialiased seam); two-tone, curved, dashed
+      and multi-head edges keep the group.
    6. A viewBox is added when missing so scaling stays unambiguous.
    7. Two global groups close it out: all geometry under id="shapes" and
       all node labels under id="texts" (PowerPoint converts each <g> to a
@@ -512,6 +516,85 @@ function sanitizeSvgForOffice(svgText) {
         const ring = left.concat(right.reverse());
         return 'M' + ring.map(function (q) { return vpR3(q.x) + ' ' + vpR3(q.y); }).join(' L ') + ' Z';
     }
+    // A solid geometrically straight (collinear) shaft plus ONE
+    // same-colour/same-opacity head whose base meets the shaft end is one
+    // simple polygon: one PowerPoint shape and no antialiased seam between
+    // two translucent shapes. Bezier edges whose control points lie on the
+    // line qualify. Returns null (keep the group) for two-tone, curved,
+    // dashed or multi-head edges.
+    function vpMergedArrow(shaft, arrowPath, shaftPath) {
+        if (!shaftPath.parentNode || shaftPath.parentNode !== arrowPath.parentNode) { return null; }
+        const pts = shaft.pts;
+        if (pts.length < 2) { return null; }
+        const p0 = pts[0], p1 = pts[pts.length - 1];
+        const dx = p1.x - p0.x, dy = p1.y - p0.y;
+        const len = Math.hypot(dx, dy);
+        if (!(len > 0)) { return null; }
+        const ux = dx / len, uy = dy / len;
+        const nx = -uy, ny = ux;
+        for (let i = 1; i < pts.length - 1; i++) {
+            const cross = Math.abs((pts[i].x - p0.x) * dy
+                                   - (pts[i].y - p0.y) * dx) / len;
+            if (cross > 0.5) { return null; }
+        }
+        const base = parseColor(shaft.color) || [0, 0, 0];
+        const fill = toHex(base);
+        if ((arrowPath.getAttribute('fill') || '').toLowerCase() !== fill.toLowerCase()) { return null; }
+        const op = isFinite(shaft.opacity) ? shaft.opacity : 1;
+        const arrowOpAttr = arrowPath.getAttribute('fill-opacity');
+        const arrowOp = arrowOpAttr === null ? 1 : parseFloat(arrowOpAttr);
+        if (!isFinite(arrowOp) || Math.abs(arrowOp - op) > 1e-9) { return null; }
+        const nums = (arrowPath.getAttribute('d') || '').match(/-?\d+(?:\.\d+)?/g) || [];
+        if (nums.length !== 6) { return null; }
+        const tri = [
+            {x: +nums[0], y: +nums[1]},
+            {x: +nums[2], y: +nums[3]},
+            {x: +nums[4], y: +nums[5]}
+        ];
+        let best = null;
+        for (let i = 0; i < 3; i++) {
+            const tip = tri[i], a = tri[(i + 1) % 3], b = tri[(i + 2) % 3];
+            const bm = {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2};
+            const d0 = Math.hypot(bm.x - p0.x, bm.y - p0.y);
+            const d1 = Math.hypot(bm.x - p1.x, bm.y - p1.y);
+            const dist = Math.min(d0, d1);
+            if (!best || dist < best.dist) {
+                best = {tip: tip, a: a, b: b, bm: bm, dist: dist, atEnd: d1 <= d0};
+            }
+        }
+        if (!best || best.dist > 0.05) { return null; }
+        const bw = Math.hypot(best.a.x - best.b.x, best.a.y - best.b.y);
+        if (!(bw > shaft.width + 1e-6)) { return null; }
+        const bvx = (best.a.x - best.b.x) / bw, bvy = (best.a.y - best.b.y) / bw;
+        if (Math.abs(bvx * ux + bvy * uy) > 0.1) { return null; }
+        const tipSide = Math.abs((best.tip.x - best.bm.x) * bvx
+                                 + (best.tip.y - best.bm.y) * bvy);
+        if (tipSide > bw * 0.1) { return null; }
+        const tipDelta = best.atEnd
+            ? (best.tip.x - p1.x) * ux + (best.tip.y - p1.y) * uy
+            : (best.tip.x - p0.x) * ux + (best.tip.y - p0.y) * uy;
+        if (best.atEnd ? tipDelta <= 0 : tipDelta >= 0) { return null; }
+        const aSide = (best.a.x - best.bm.x) * nx + (best.a.y - best.bm.y) * ny;
+        const aLeft = aSide > 0 ? best.a : best.b;
+        const aRight = aSide > 0 ? best.b : best.a;
+        const hw = shaft.width / 2;
+        const sl = {x: p0.x + nx * hw, y: p0.y + ny * hw};
+        const sr = {x: p0.x - nx * hw, y: p0.y - ny * hw};
+        const el = {x: p1.x + nx * hw, y: p1.y + ny * hw};
+        const er = {x: p1.x - nx * hw, y: p1.y - ny * hw};
+        const poly = best.atEnd
+            ? [sl, el, aLeft, best.tip, aRight, er, sr]
+            : [best.tip, aLeft, sl, el, er, sr, aRight];
+        const merged = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+        merged.setAttribute('data-vp-edge', '1');
+        merged.setAttribute('fill', fill);
+        if (op < 1) { merged.setAttribute('fill-opacity', String(op)); }
+        merged.setAttribute('stroke', 'none');
+        merged.setAttribute('d', 'M' + poly.map(function (q) {
+            return vpR3(q.x) + ' ' + vpR3(q.y);
+        }).join(' L ') + ' Z');
+        return merged;
+    }
     let vi = 0;
     while (vi < allPaths.length) {
         const p = allPaths[vi];
@@ -523,12 +606,22 @@ function sanitizeSvgForOffice(svgText) {
             arrows.push(allPaths[vj]); vj++;
         }
         if (shaft && arrows.length > 0) {
+            if (arrows.length === 1) {
+                const merged = vpMergedArrow(shaft, arrows[0], p);
+                if (merged) {
+                    p.parentNode.insertBefore(merged, p);
+                    p.parentNode.removeChild(p);
+                    arrows[0].parentNode.removeChild(arrows[0]);
+                    vi = vj;
+                    continue;
+                }
+            }
             const g = doc.createElementNS('http://www.w3.org/2000/svg', 'g');
             g.setAttribute('data-vp-edge', '1');   // the global-grouping pass keeps this group indivisible
             p.parentNode.insertBefore(g, p);
             // shaft: stroke converted to a filled outline carrying the
-            // stroke's own alpha, so shaft and arrows blend where the
-            // arrowhead overlaps the line
+            // stroke's own alpha; the renderer ends it at the arrowhead
+            // base, so parallel edges composite without an overlap stripe
             const base = parseColor(shaft.color) || [0, 0, 0];
             const op = isFinite(shaft.opacity) ? shaft.opacity : 1;
             const outline = doc.createElementNS('http://www.w3.org/2000/svg', 'path');

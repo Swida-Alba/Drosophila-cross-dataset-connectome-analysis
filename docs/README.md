@@ -8,11 +8,13 @@ Welcome to the Drosophila Connectome Analysis Toolkit (DROCAT) documentation!
 
 ### 🎨 Translucent network arrowheads composite
 - Network pages that draw edges with `line-opacity` below 1 now get true
-  alpha arrowheads: they blend with each other and with their own shaft
-  instead of erasing the ink underneath. Hollow arrows keep their cleared
+  alpha arrowheads: they blend with each other instead of erasing the ink
+  underneath, and the shaft stops at the arrowhead base (no darker overlap
+  stripe inside the translucent head). Hollow arrows keep their cleared
   interior, opaque pages are pixel-identical, and exported SVGs keep the
-  arrow and shaft transparency (no white wedge, no flattened edges).
-  The vendored Cytoscape 3.28.1 bundle carries the fix
+  arrow and shaft transparency (no white wedge, no flattened edges) while
+  merging a same-colour straight shaft and head into one path.
+  The vendored Cytoscape 3.28.1 bundle carries the fixes
   (`scripts/patch_cytoscape_arrow_blend.py --check` is the CI gate); see
   [`src/assets/VERSIONS.md`](../src/assets/VERSIONS.md).
 

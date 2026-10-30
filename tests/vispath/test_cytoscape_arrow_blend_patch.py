@@ -1,10 +1,10 @@
-"""The vendored Cytoscape bundle carries the arrow-blend patch.
+"""The vendored Cytoscape bundle carries the DROCAT arrow patches.
 
 Cytoscape 3.28.1 clears a full-alpha ``destination-out`` silhouette under
 every filled arrowhead whose opacity is below 1.  That cut-out stops the
 edge line showing through a translucent arrow, but it also erases whatever
-is already on the canvas, so translucent arrowheads never composite and the
-exported arrow cannot blend with its own shaft.  ``drawArrowhead``'s guard
+is already on the canvas, so translucent arrowheads never composite.
+``drawArrowhead``'s guard
 
     1===o&&"hollow"!==u||
 
@@ -13,9 +13,15 @@ keeps it only for hollow arrows:
 
     "hollow"===u&&
 
-``scripts/patch_cytoscape_arrow_blend.py`` applies the change (idempotent,
-SHA-256-guarded); this file is the CI gate that notices an unpatched or
-silently re-vendored bundle.
+The same renderer sets the triangle's line gap to ``2 * width * scale``,
+shorter than the drawn head, so the shaft runs inside the arrowhead and
+shows as a darker stripe once the cut-out is gone.  The patch gives the
+triangle a gap equal to its drawn length, ending the shaft at the head's
+base.
+
+``scripts/patch_cytoscape_arrow_blend.py`` applies both changes
+(idempotent, SHA-256-guarded); this file is the CI gate that notices an
+unpatched or silently re-vendored bundle.
 
 Run:
     python -m pytest tests/vispath/test_cytoscape_arrow_blend_patch.py -q
@@ -54,6 +60,8 @@ def test_bundle_is_patched_and_pinned():
     assert text.startswith(patch.MARKER), "bundle has no DROCAT patch marker"
     assert patch.ORIGINAL_GUARD not in text
     assert text.count(patch.PATCHED_GUARD) == 1
+    assert patch.TRIANGLE_ORIGINAL not in text
+    assert text.count(patch.TRIANGLE_PATCHED) == 1
     assert _sha(text) == patch.PATCHED_SHA256
 
 
@@ -68,8 +76,10 @@ def test_patch_script_check_gate_passes():
 def test_patch_script_reproduces_the_recorded_hashes():
     patch = _load_script()
     patched = _normalized(BUNDLE.read_text(encoding="utf-8"))
-    pristine = patched.removeprefix(patch.MARKER).replace(
-        patch.PATCHED_GUARD, patch.ORIGINAL_GUARD, 1
+    pristine = (
+        patched.removeprefix(patch.MARKER)
+        .replace(patch.PATCHED_GUARD, patch.ORIGINAL_GUARD, 1)
+        .replace(patch.TRIANGLE_PATCHED, patch.TRIANGLE_ORIGINAL, 1)
     )
     assert (
         _sha(pristine) == patch.PRISTINE_SHA256
@@ -77,5 +87,5 @@ def test_patch_script_reproduces_the_recorded_hashes():
 
     rebuilt = patch.patch_text(pristine)
     assert _sha(rebuilt) == patch.PATCHED_SHA256
-    # Idempotent: a second pass must not add a second marker or guard.
+    # Idempotent: a second pass must not add a second marker or replacement.
     assert patch.patch_text(rebuilt) == rebuilt
