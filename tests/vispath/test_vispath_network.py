@@ -588,7 +588,7 @@ class TestGeneratedHtmlStructure:
         js = _script_text(network_html)
         html = network_html.read_text(encoding="utf-8")
         # drift fix: declare the basis the projection actually uses
-        rf = _extract_js_function(js, "renderEdgeWaypoints")
+        rf = _extract_js_function(js, "vpApplySegmentRoute")
         assert "const s = e.source().position(), t = e.target().position();" in rf
         assert "e.style('edge-distances', 'node-position');" in rf
         # clearing waypoints removes the basis override with them
@@ -679,7 +679,8 @@ class TestGeneratedHtmlStructure:
         metric and reciprocal offset."""
         js = _script_text(network_html)
         for label in ("Adjust node size", "Adjust edge width", "Adjust font size",
-                      "Adjust arrow size", "Change edge width scale", "Change metric",
+                      "Adjust arrow size", "Hide arrows", "Show arrows",
+                      "Change edge width scale", "Change metric",
                       "Adjust reciprocal offset"):
             assert f"pushHistory('{label}')" in js, f"missing history entry: {label}"
         # snapshots carry the global style state so undo/redo restores it
@@ -2839,9 +2840,9 @@ class TestSelectionOptimizations:
 
     def test_geometry_sync_shows_mixed_placeholder(self, network_html):
         js = _script_text(network_html)
-        # width/height/edge-width fields show empty + 'mixed' when the
-        # selection disagrees; the shape row shows Mixed
-        assert js.count("placeholder = 'mixed'") == 3
+        # width/height/edge-width/edge-arrow-size fields show empty +
+        # 'mixed' when the selection disagrees; the shape row shows Mixed
+        assert js.count("placeholder = 'mixed'") == 4
         assert "options[0].textContent = 'Mixed'" in js
         # mixed (empty) fields keep each node's own size in the apply path
         assert "newHeight = (heightRaw === '' || heightRaw === null)" in js

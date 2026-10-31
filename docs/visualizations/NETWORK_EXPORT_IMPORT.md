@@ -184,11 +184,14 @@ The import automatically restores:
 | Scaling Method | "Edge Width Scale" dropdown | `updateEdgeWidths()` |
 | Edge Width | Edge Width slider | `updateEdgeWidth()` |
 | Arrow Size | Arrow Size slider | `updateArrowSize()` |
+| Arrow Visibility | Edge Route → Hide/Show Arrows | `toggleEdgeArrows()` (size 0 also hides) |
 | Font Size | Font Size slider | `updateFontSize()` |
 | Node Size | Node Size slider | `updateNodeSize()` |
 | Node Shape | Node Shape dropdown | `updateNodeShape()` |
 | Per-node geometry | — (restored directly) | width/height/shape/z-order overrides in `nodeGeometry` |
 | Per-edge width | — (restored directly) | manual widths in `edgeGeometry` (+ `customSize` marker) |
+| Per-edge route | Edge panel → Route | `edgeGeometry.routeStyle` and the edge data |
+| Per-edge arrow size / visibility | Edge panel → Arrow size / Arrows | `edgeGeometry.arrowSize` / `arrowMode` and the edge data |
 
 ## Layout Export/Import
 

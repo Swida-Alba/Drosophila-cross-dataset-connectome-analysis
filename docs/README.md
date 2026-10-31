@@ -18,6 +18,19 @@ Welcome to the Drosophila Connectome Analysis Toolkit (DROCAT) documentation!
   (`scripts/patch_cytoscape_arrow_blend.py --check` is the CI gate); see
   [`src/assets/VERSIONS.md`](../src/assets/VERSIONS.md).
 
+### 🔀 Undirected network view
+- Edge Route gains a **Hide Arrows** button; **Arrow Size 0** is the same
+  hidden state. Both arrowheads disappear, the size is preserved for
+  **Show Arrows**, and PNG/SVG exports omit the heads. Undo/redo and
+  Save/Export Layout carry the state.
+
+### 🎛️ Per-edge styling in the edge panel
+- Select edges → **Route** (Follow global / Straight / Flow), **Arrow size**
+  (empty = global; 0 hides), **Arrows** (Follow global / Show / Hide).
+  Flow curves a waypoint edge through its bends. Overrides survive
+  undo/redo, Save/Export Layout and graph export/import; a global Hide
+  Arrows or Arrow Size 0 still wins.
+
 ### 🤖 Direct agent analysis without the UI
 - **[DROCAT Direct Analysis Skill](../skills/drocat-usage/SKILL.md)**: Run,
   inspect, and safely modify backend scripts without loading the entire

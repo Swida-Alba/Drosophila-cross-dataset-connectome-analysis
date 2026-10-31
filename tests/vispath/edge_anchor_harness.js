@@ -344,20 +344,25 @@ console.log("[6] writeEdgeAnchors — auto snap mirrors, per-end override wins, 
 
 console.log('[7] renderEdgeWaypoints — bend renders exactly at the stored waypoint');
 {
-    // renderEdgeWaypoints is a function DECLARATION (not a const arrow)
-    const rwSrc = (() => {
-        const marker = 'function renderEdgeWaypoints(';
+    // renderEdgeWaypoints is a function DECLARATION (not a const arrow); it
+    // now delegates the projection/style writes to vpApplySegmentRoute and
+    // reads edgeWaypointPts, so pull all three into the harness scope.
+    const grab = (name) => {
+        const marker = 'function ' + name + '(';
         const start = html.indexOf(marker);
-        if (start === -1) throw new Error('renderEdgeWaypoints not found');
+        if (start === -1) throw new Error(name + ' not found');
         const open = html.indexOf('{', start);
         let depth = 0;
         for (let i = open; i < html.length; i++) {
             if (html[i] === '{') depth++;
             else if (html[i] === '}') { depth--; if (depth === 0) return html.slice(start, i + 1); }
         }
-        throw new Error('unbalanced braces: renderEdgeWaypoints');
-    })();
-    const renderEdgeWaypoints = new Function(rwSrc + '; return renderEdgeWaypoints;')();
+        throw new Error('unbalanced braces: ' + name);
+    };
+    const helpers = grab('edgeWaypointPts') + '\n' + grab('vpApplySegmentRoute');
+    const renderEdgeWaypoints = new Function(
+        helpers + '\n' + grab('renderEdgeWaypoints')
+        + '; return renderEdgeWaypoints;')();
 
     const cy3 = cytoscape({
         headless: true,

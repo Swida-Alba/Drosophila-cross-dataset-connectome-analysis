@@ -114,6 +114,14 @@ function buildScope(cy) {
         let globalFontSize = 12;
         let globalEdgeLabelFontSize = 9;
         let globalArrowSize = 9;
+        let lastVisibleArrowSize = 9;
+        let arrowsHidden = false;
+        function applyArrowShapes() {}
+        function syncArrowVisibilityControl() {}
+        function applyEdgeArrowStyle() {}
+        function applyAllEdgeArrowStyles() {}
+        function renderEdgeRoute() {}
+        function renderEdgeWaypoints() {}
         let globalEdgeWidthScale = 'log_e';
         let globalNodeShape = 'circle';
         let pendingNudge = null;

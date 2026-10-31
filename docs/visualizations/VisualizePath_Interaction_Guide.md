@@ -125,7 +125,7 @@ Bidirectional Edges.
 | **Node Size**  | 20-80px  | 40px    | All nodes uniformly                 |
 | **Node Shape** | dropdown | Circle  | Circle / Round Square / Sharp Square |
 | **Edge Width** | 0.5-30px | 3px     | Base edge thickness multiplier      |
-| **Arrow Size** | 3-20px   | 9px     | Arrowhead scale (normalized to 9px) |
+| **Arrow Size** | 0-20px   | 9px     | Arrowhead scale (normalized to 9px); 0 hides the heads |
 
 **Column 3: Export**
 

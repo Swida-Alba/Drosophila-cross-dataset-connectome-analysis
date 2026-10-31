@@ -67,7 +67,8 @@ Successfully integrated the VisualizePath class network visualization into three
 1. **Edge Width Controls:**
    - Dropdown to select scaling method (linear, log₂, log₁₀, sqrt, none)
    - Slider to adjust edge width (0.5-10px)
-   - **NEW:** Arrow size slider (3-20px)
+   - **NEW:** Arrow size slider (0-20px; 0 hides the heads) + Edge Route's
+     Hide/Show Arrows button (undirected view)
 
 2. **Export Capabilities:**
    - PNG export with adjustable resolution (1-10x scale)

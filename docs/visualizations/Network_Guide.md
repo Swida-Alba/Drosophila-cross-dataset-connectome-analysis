@@ -231,9 +231,37 @@ Control how connection strength maps to visual thickness:
 
 #### Arrow Size
 - **Default**: 9px
-- **Range**: 3-20px
+- **Range**: 0-20px
 - **Control**: Arrow Size slider
 - **Affects**: Arrowhead at connection end
+- **0 hides both arrowheads** — the same state as Edge Route's **Hide Arrows**
+
+#### Undirected view (Hide Arrows)
+- **Where**: Edge Route group → **Hide Arrows** (below Straight / Flow)
+- Hides the target and source arrowheads on every edge; the arrow size is
+  left unchanged, so **Show Arrows** restores the exact previous heads
+- **Arrow Size 0** also hides. A positive size clears the size-0 hide;
+  the Edge Route Hide Arrows toggle stays on until Show Arrows is
+  clicked, which also restores the last positive size
+- Survives undo/redo and Save/Export Layout; PNG and SVG exports omit the
+  arrowheads
+
+#### Per-edge overrides (right panel)
+- **Where**: select one or more edges → edge panel (right side)
+- **Route**: Follow global / Straight / Flow. Flow bows a plain edge around
+  obstructing nodes; on a waypoint edge Flow curves a spline through the
+  waypoint bends (Straight and Follow keep the exact waypoint polyline).
+  Route applies to single and waypoint edges; visible reciprocal pairs use
+  the ribbon Reciprocal Edges mode, and self-loops keep their loop geometry
+  (the Route select is disabled for those)
+- **Arrow size**: empty follows the ribbon Arrow Size; `0` hides this
+  edge's heads; a positive value scales only this edge. Applies to every
+  edge, including reciprocal/self-loop edges
+- **Arrows**: Follow global / Show / Hide. The ribbon's Hide Arrows or
+  Arrow Size 0 still wins over a per-edge Show
+- Width, pattern, color, alpha, waypoints and anchors are already
+  per-edge. All overrides survive undo/redo, Save/Export Layout and graph
+  export/import; the route and arrow values are stored in the edge data
 
 #### Connection Metrics
 

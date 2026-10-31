@@ -8220,8 +8220,8 @@ class VisualizePath:
                     <span class="vp-unit">px</span>
                 </div>
                 <div class="vp-spinner vp-spinner-inline">
-                    <label for="arrowSizeSlider" title="Size of the arrowheads on directed edges">Arrow Size</label>
-                    <input type="number" id="arrowSizeSlider" min="1" step="1" value="9" oninput="updateArrowSize(this.value)" title="Size of the arrowheads on directed edges in px">
+                    <label for="arrowSizeSlider" title="Size of the arrowheads on directed edges (0 hides them)">Arrow Size</label>
+                    <input type="number" id="arrowSizeSlider" min="0" step="1" value="9" oninput="updateArrowSize(this.value)" title="Size of the arrowheads on directed edges in px; 0 hides them (undirected view)">
                     <span class="vp-unit">px</span>
                 </div>
                 <div class="vp-spinner vp-spinner-inline">
@@ -8268,6 +8268,12 @@ class VisualizePath:
                     <button type="button" id="edgeRouteStraight" onclick="setEdgeRouteMode('straight')" title="Edges always straight; may pass behind nodes" style="padding: 4px 8px; font-size: 11px; border: none; background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Straight</button>
                     <button type="button" id="edgeRouteFlow" onclick="setEdgeRouteMode('flow')" title="Edges bow around nodes they would otherwise cut through" style="padding: 4px 8px; font-size: 11px; border: none; border-left: 1px solid var(--vp-border); background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Flow</button>
                 </div>
+            </div>
+            <div class="vp-spinner-row">
+                <!-- Undirected view: hide both arrowheads on every edge.
+                     Arrow Size 0 is the same state (the spinner and this
+                     button stay in sync). -->
+                <button type="button" id="edgeArrowsToggle" onclick="toggleEdgeArrows()" title="Hide the arrowheads to read the network as an undirected graph" style="width: 100%; padding: 4px 8px; font-size: 11px; border: 1px solid var(--vp-border); border-radius: 4px; background: var(--vp-bg, #fff); color: inherit; cursor: pointer;">Hide Arrows</button>
             </div>
             </div>
             <div class="vp-ribbon-group" id="edgeAnchorControls">
@@ -8554,6 +8560,25 @@ class VisualizePath:
                                 <span>Alpha&nbsp;%</span>
                                 <input type="number" id="edgeLineAlpha" min="0" max="100" step="5" value="100" oninput="applyEdgeLineStyle({{ alpha: parseFloat(this.value) / 100 }})" title="Line opacity in % (applies immediately; the weight label keeps full opacity)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
                             </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Route</span>
+                                <select id="selEdgeRoute" onchange="applySelectedEdgeRoute(this.value)" title="Per-edge route for single (non-reciprocal) edges; reciprocal pairs use the ribbon Reciprocal Edges mode. Follow global uses the ribbon Edge Route mode on plain edges (waypoint edges keep their bends); Flow bows a plain edge around nodes and curves a waypoint edge through its bends; Straight keeps the raw line or the waypoint bends" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                    <option value="">Follow global</option>
+                                    <option value="straight">Straight</option>
+                                    <option value="flow">Flow (curved)</option>
+                                </select>
+                            </div>
+                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
+                                <span>Arrow&nbsp;size</span>
+                                <input type="number" id="selEdgeArrowSize" min="0" step="1" placeholder="global" oninput="applySelectedEdgeArrowSize(this.value)" title="Per-edge arrow size; empty follows the ribbon Arrow Size; 0 hides this edge's heads" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                <span>Arrows</span>
+                                <select id="selEdgeArrowMode" onchange="applySelectedEdgeArrowMode(this.value)" title="Per-edge head visibility; Follow global uses the ribbon Hide Arrows / Arrow Size 0. Show cannot override a global hide" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                    <option value="">Follow global</option>
+                                    <option value="show">Show</option>
+                                    <option value="hide">Hide</option>
+                                </select>
+                            </div>
+                            <div style="font-size: 9px; color: var(--vp-text-2); margin-top: 3px;">Per-edge Route (single/waypoint edges) / Arrow overrides win over the ribbon controls; visible reciprocal pairs and self-loops use the ribbon Reciprocal Edges mode / loop geometry. A global Hide Arrows or global Arrow Size 0 still hides every edge. Waypoint edges keep their bends unless Route is Flow (curved).</div>
                             <div style="font-size: 9px; color: var(--vp-text-2); margin-top: 3px;">Edges are anchored to their endpoints — waypoints bend the connector between them.</div>
                             <label style="margin-top: 6px;">Waypoints:</label>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 2px;">
@@ -9515,6 +9540,8 @@ class VisualizePath:
         setTimeout(() => {{
             applyReciprocalMode(reciprocalMode);
             refreshEdgeStyles(false);
+            applyAllEdgeArrowStyles();
+            syncArrowVisibilityControl();
         }}, 0);
 
         const applyReciprocalOffsets = () => refreshEdgeStyles(false);
@@ -10988,6 +11015,10 @@ class VisualizePath:
                 const item = {{ id: e.id() }};
                 if (hasBypass(e, 'width')) item.width = parseFloat(e.style('width'));
                 if (hasBypass(e, 'line-style')) item.lineStyle = e.style('line-style');
+                // per-edge route/arrow overrides (absence = follow global)
+                if (e.data('routeStyle')) item.routeStyle = e.data('routeStyle');
+                if (e.data('arrowSize') !== undefined) item.arrowSize = Number(e.data('arrowSize'));
+                if (e.data('arrowMode')) item.arrowMode = e.data('arrowMode');
                 // user waypoints: persisted from the data marker
                 if (e.data('hasWaypoints')) {{
                     item.waypoints = edgeWaypointPts(e);
@@ -11063,6 +11094,7 @@ class VisualizePath:
                     fontSize: globalFontSize,
                     edgeLabelFontSize: globalEdgeLabelFontSize,
                     arrowSize: globalArrowSize,
+                    arrowsHidden: arrowsHidden,
                     edgeWidthScale: globalEdgeWidthScale,
                     nodeShape: globalNodeShape,
                     metric: currentMetric,
@@ -11075,6 +11107,7 @@ class VisualizePath:
                 edgeWidth: String(globalEdgeWidth),
                 edgeWidthScale: globalEdgeWidthScale,
                 arrowSize: String(globalArrowSize),
+                arrowsHidden: arrowsHidden,
                 fontSize: String(globalFontSize),
                 nodeSize: String(globalNodeSize),
                 // Metadata
@@ -11105,6 +11138,8 @@ class VisualizePath:
                     document.getElementById('edgeWidthScale').value = edgeWidthScale;
                     updateEdgeWidths();
                 }}
+                const restoredArrowsHidden = pick(gs.arrowsHidden, state.arrowsHidden);
+                if (restoredArrowsHidden !== undefined) arrowsHidden = !!restoredArrowsHidden;
                 const arrowSize = pick(gs.arrowSize, state.arrowSize);
                 if (arrowSize !== undefined) {{
                     document.getElementById('arrowSizeSlider').value = arrowSize;
@@ -11402,12 +11437,19 @@ class VisualizePath:
                         }} else {{
                             e.removeStyle('line-style');
                         }}
+                        if (item && item.routeStyle !== undefined) e.data('routeStyle', item.routeStyle);
+                        else e.removeData('routeStyle');
+                        if (item && item.arrowSize !== undefined) e.data('arrowSize', item.arrowSize);
+                        else e.removeData('arrowSize');
+                        if (item && item.arrowMode !== undefined) e.data('arrowMode', item.arrowMode);
+                        else e.removeData('arrowMode');
+                        applyEdgeArrowStyle(e);
                         // user waypoints: data + derived segment rendering;
                         // absence clears back to the straight/bezier line
                         if (item && item.waypoints !== undefined && item.waypoints.length) {{
                             e.data('waypoints', item.waypoints);
                             e.data('hasWaypoints', true);
-                            renderEdgeWaypoints(e);
+                            renderEdgeRoute(e);
                         }} else {{
                             e.removeData('waypoints');
                             e.removeData('hasWaypoints');
@@ -11421,6 +11463,8 @@ class VisualizePath:
                 if (state.pan && Number.isFinite(state.pan.x) && Number.isFinite(state.pan.y)) cy.pan(state.pan);
                 // endpoint anchors follow any restored size overrides
                 refreshEdgeStyles(false);
+                applyAllEdgeArrowStyles();
+                syncArrowVisibilityControl();
 
                 // --- labels ---
                 if (state.labelsVisible !== undefined && state.labelsVisible !== labelsVisible) toggleLabels();
@@ -11548,6 +11592,7 @@ class VisualizePath:
                     fontSize: globalFontSize,
                     edgeLabelFontSize: globalEdgeLabelFontSize,
                     arrowSize: globalArrowSize,
+                    arrowsHidden: arrowsHidden,
                     edgeWidthScale: globalEdgeWidthScale,
                     nodeShape: globalNodeShape,
                     metric: currentMetric,
@@ -11618,6 +11663,7 @@ class VisualizePath:
             restoreGlobalStyles(state.globalStyles);
 
             refreshEdgeStyles(false);
+            applyAllEdgeArrowStyles();
             updateUndoRedoButtons();
         }}
 
@@ -11667,9 +11713,14 @@ class VisualizePath:
                 if (gs.edgeWidth !== undefined) updateEdgeWidth(gs.edgeWidth);
                 if (gs.fontSize !== undefined) updateFontSize(gs.fontSize);
                 if (gs.edgeLabelFontSize !== undefined) updateEdgeLabelFontSize(gs.edgeLabelFontSize);
+                if (gs.arrowsHidden !== undefined) arrowsHidden = !!gs.arrowsHidden;
                 if (gs.arrowSize !== undefined) updateArrowSize(gs.arrowSize);
                 if (gs.nodeShape !== undefined) updateNodeShape(gs.nodeShape);
                 updateMetric();
+                // The flag may be captured without an arrow size (older undo
+                // snapshots); re-apply the shapes and the button state.
+                applyArrowShapes();
+                syncArrowVisibilityControl();
             }} finally {{
                 restoringHistoryState = false;
             }}
@@ -12335,7 +12386,7 @@ class VisualizePath:
                 // distances/weights are re-derived from the model-coord
                 // waypoints so bends stay fixed while nodes move.
                 if (edge.data('hasWaypoints')) {{
-                    renderEdgeWaypoints(edge);
+                    renderEdgeRoute(edge);
                     return;
                 }}
 
@@ -12352,8 +12403,12 @@ class VisualizePath:
                     // style above has already cleared any bow styles from
                     // a previous flow pass.  (The bow's obstruction test
                     // stays on the center line; anchor offsets sit within
-                    // the node box, well inside its pen+8 margin.)
-                    if (edgeRouteMode === 'flow') {{ vpBowAroundObstructions(edge); }}
+                    // the node box, well inside its pen+8 margin.)  A
+                    // per-edge override wins over the ribbon mode.
+                    const routeMode = (edge.data('routeStyle') === 'straight'
+                        || edge.data('routeStyle') === 'flow')
+                        ? edge.data('routeStyle') : edgeRouteMode;
+                    if (routeMode === 'flow') {{ vpBowAroundObstructions(edge); }}
                     return;
                 }}
                 // Compute perpendicular offset in CANONICAL direction (smaller ID -> larger ID)
@@ -12576,6 +12631,10 @@ class VisualizePath:
             applyReciprocalMode(mode);
             refreshEdgeStyles(false);
             syncReciprocalControls();
+            // A merge/unmerge changes whether a selected edge's Route
+            // control applies; re-seed the edge panel.
+            const selectedEdge = cy.$('edge:selected')[0];
+            if (selectedEdge) syncSelectedGeometryInputs(selectedEdge);
             updateHoverInfo('✓ Reciprocal edges: ' + mode);
         }}
 
@@ -12904,18 +12963,86 @@ class VisualizePath:
             refreshEdgeStyles(false);
         }}
 
-        function updateArrowSize(size) {{
-            const value = parseFloat(size);
+        function updateArrowSize(size, historyLabel) {{
+            let value = parseFloat(size);
+            if (!isFinite(value)) {{ return; }}
+            value = Math.max(0, value);
+            const wasHidden = arrowsHidden || !(globalArrowSize > 0);
+            if (value > 0) lastVisibleArrowSize = value;
             const echo = document.getElementById('arrowSizeValue');
             if (echo) echo.textContent = value + 'px';
-            if (!restoringHistoryState && value !== globalArrowSize) pushHistory('Adjust arrow size');
+            const input = document.getElementById('arrowSizeSlider');
+            if (input && parseFloat(input.value) !== value) input.value = value;
+            if (!restoringHistoryState && value !== globalArrowSize) {{
+                if (historyLabel) pushHistory(historyLabel);
+                else pushHistory('Adjust arrow size');
+            }}
             globalArrowSize = value;
             cy.style()
                 .selector('edge')
                 .style({{
-                    'arrow-scale': parseFloat(size) / 9  // Normalize to default size of 9
+                    'arrow-scale': value / 9  // Normalize to default size of 9
                 }})
                 .update();
+            // Size 0 is the undirected view: hide the shapes too, rather
+            // than drawing a degenerate zero-scale triangle. Only the
+            // hidden->visible transition needs the per-edge walk; plain
+            // size changes keep the shapes and just rescale them.
+            const nowHidden = arrowsHidden || !(value > 0);
+            if (wasHidden !== nowHidden) applyArrowShapes();
+            syncArrowVisibilityControl();
+        }}
+
+        function applyArrowShapes() {{
+            cy.edges().forEach(edge => {{
+                if (typeof edgeArrowShapes === 'function') {{
+                    edgeArrowShapes(edge,
+                        parseFloat(edge.style('line-opacity')) || 0);
+                }}
+            }});
+        }}
+
+        // Edge Route's Hide/Show Arrows button leaves the size alone (so
+        // showing restores the exact previous heads); Arrow Size 0 hides
+        // too, and showing restores the last positive size.
+        function syncArrowVisibilityControl() {{
+            const btn = document.getElementById('edgeArrowsToggle');
+            if (!btn) {{ return; }}
+            const hidden = arrowsHidden || !(globalArrowSize > 0);
+            btn.textContent = hidden ? 'Show Arrows' : 'Hide Arrows';
+            btn.title = hidden
+                ? 'Show the arrowheads again'
+                : 'Hide the arrowheads to read the network as an undirected graph';
+            btn.style.background = hidden ? '#2196f3' : 'var(--vp-bg, #fff)';
+            btn.style.color = hidden ? '#fff' : 'inherit';
+        }}
+
+        function toggleEdgeArrows() {{
+            const hidden = arrowsHidden || !(globalArrowSize > 0);
+            if (hidden) {{
+                if (!(globalArrowSize > 0)) {{
+                    updateArrowSize(
+                        lastVisibleArrowSize > 0 ? lastVisibleArrowSize : 9,
+                        'Show arrows');
+                    // A button hide is sticky: updateArrowSize restores the
+                    // size but leaves arrowsHidden alone, so clear it here.
+                    if (arrowsHidden) {{
+                        arrowsHidden = false;
+                        applyArrowShapes();
+                        syncArrowVisibilityControl();
+                    }}
+                    return;
+                }}
+                if (!restoringHistoryState) pushHistory('Show arrows');
+                arrowsHidden = false;
+                applyArrowShapes();
+                syncArrowVisibilityControl();
+            }} else {{
+                if (!restoringHistoryState) pushHistory('Hide arrows');
+                arrowsHidden = true;
+                applyArrowShapes();
+                syncArrowVisibilityControl();
+            }}
         }}
 
         // ============ Color Palette Functions ============
@@ -12951,6 +13078,12 @@ class VisualizePath:
         let globalFontSize = 12;
         let globalEdgeLabelFontSize = {self.edge_label_font_size};
         let globalArrowSize = 9;
+        // Last positive Arrow Size: Edge Route's Show Arrows restores it
+        // after the size reaches 0 (the undirected view).
+        let lastVisibleArrowSize = 9;
+        // Edge Route's Hide Arrows: leaves the size alone so showing again
+        // restores the exact previous heads. Arrow Size 0 also hides.
+        let arrowsHidden = false;
         let globalEdgeWidthScale = document.getElementById('edgeWidthScale')?.value || 'log_e';
         // Node geometry ('circle'|'round-square'|'sharp-square'); seeded
         // from the generation-time choice (by-role renders show their
@@ -13164,18 +13297,53 @@ class VisualizePath:
         const EDGE_BASE_OPACITY_KEY = '__baseOpacity';
         const EDGE_BASE_ARROW_KEY = '__baseArrowColor';
 
+        // Per-edge arrow overrides.  An absent arrowSize follows the ribbon
+        // Arrow Size; 0 hides that edge.  arrowMode '' / 'show' / 'hide' is
+        // an explicit per-edge visibility override.  The global undirected
+        // view (Hide Arrows or global size 0) still wins over 'show'.
+        function edgeArrowSizeValue(edge) {{
+            const v = edge.data('arrowSize');
+            if (v === undefined || v === null || v === '' || !isFinite(Number(v))) {{
+                return globalArrowSize;
+            }}
+            return Math.max(0, Number(v));
+        }}
+        function edgeArrowsHidden(edge) {{
+            return arrowsHidden || globalArrowSize <= 0
+                || edge.data('arrowMode') === 'hide'
+                || edgeArrowSizeValue(edge) <= 0;
+        }}
+
         // This Cytoscape build supports neither target/source-arrow-opacity
         // nor alpha in an arrow colour (the opacity property is the only
         // working alpha control, and it fades line and arrow together), so
         // an alpha of 0 can only be honoured by removing the arrow SHAPE.
+        // The global undirected view (Hide Arrows or Arrow Size 0) removes
+        // the shapes the same way; removing the bypasses later restores the
+        // stylesheet (including a merged edge's source arrow).
         function edgeArrowShapes(edge, opacity) {{
-            if (opacity > 0) {{
+            if (opacity > 0 && !edgeArrowsHidden(edge)) {{
                 edge.removeStyle('target-arrow-shape');
                 edge.removeStyle('source-arrow-shape');
             }} else {{
                 edge.style({{ 'target-arrow-shape': 'none',
                               'source-arrow-shape': 'none' }});
             }}
+        }}
+
+        // Apply one edge's per-edge arrow size and visibility (the size
+        // bypass wins over the global arrow-scale rule; absence restores it).
+        function applyEdgeArrowStyle(edge) {{
+            const v = edge.data('arrowSize');
+            if (v !== undefined && v !== null && v !== '' && isFinite(Number(v))) {{
+                edge.style('arrow-scale', Math.max(0, Number(v)) / 9);
+            }} else {{
+                edge.removeStyle('arrow-scale');
+            }}
+            edgeArrowShapes(edge, parseFloat(edge.style('line-opacity')) || 0);
+        }}
+        function applyAllEdgeArrowStyles() {{
+            cy.edges().forEach(edge => applyEdgeArrowStyle(edge));
         }}
 
         function setEdgeBaseAppearance(edge, color, opacity, applyImmediately = true,
@@ -14213,6 +14381,43 @@ class VisualizePath:
                         : (parseFloat(primary.style('line-opacity')) || 1);
                     lineAlpha.value = Math.round(op * 100);
                 }}
+                // Per-edge Route / Arrows: the primary's override (empty =
+                // follow the ribbon). Arrow size shows mixed for a
+                // disagreeing multi-selection.
+                const routeSel = document.getElementById('selEdgeRoute');
+                if (routeSel) {{
+                    routeSel.value = primary.data('routeStyle') || '';
+                    const isLoop = primary.source().id() === primary.target().id();
+                    const reverseVisible = cy.edges().filter(e =>
+                        e.id() !== primary.id()
+                        && e.source().id() === primary.target().id()
+                        && e.target().id() === primary.source().id()
+                        && !e.hasClass('hidden') && !e.hasClass('filtered')
+                        && !e.hasClass('pair-hidden')).length > 0;
+                    const routeAllowed = !isLoop &&
+                        (!!primary.data('hasWaypoints') || !reverseVisible);
+                    routeSel.disabled = !routeAllowed;
+                    routeSel.title = routeAllowed
+                        ? 'Per-edge route: Follow global uses the ribbon Edge Route mode on plain edges (waypoint edges keep their bends); Flow bows a plain edge / curves a waypoint edge; Straight keeps the raw line or waypoint bends'
+                        : 'Per-edge Route does not apply to visible reciprocal pairs or self-loops; use the ribbon Reciprocal Edges mode or the loop geometry';
+                }}
+                const arrowSizeField = document.getElementById('selEdgeArrowSize');
+                if (arrowSizeField && document.activeElement !== arrowSizeField) {{
+                    const sizes = new Set(selEdges.map(e => {{
+                        const v = e.data('arrowSize');
+                        return (v === undefined || v === null || v === '') ? null : Number(v);
+                    }}));
+                    if (sizes.size > 1) {{
+                        arrowSizeField.value = '';
+                        arrowSizeField.placeholder = 'mixed';
+                    }} else {{
+                        const v = [...sizes][0];
+                        arrowSizeField.value = (v === null || v === undefined) ? '' : v;
+                        arrowSizeField.placeholder = 'global';
+                    }}
+                }}
+                const arrowModeSel = document.getElementById('selEdgeArrowMode');
+                if (arrowModeSel) arrowModeSel.value = primary.data('arrowMode') || '';
                 // Waypoint shift inputs reset on selection change; the
                 // per-waypoint list renders for a single selected edge
                 const sx = document.getElementById('wpShiftX');
@@ -14618,14 +14823,15 @@ class VisualizePath:
             return (e.data('waypoints') || []).map(p => ({{ x: p.x, y: p.y }}));
         }}
 
-        function renderEdgeWaypoints(e) {{
-            const wps = e.data('waypoints') || [];
-            if (wps.length === 0) return;
+        // Write interior segment points (model coords) as the segments-style
+        // route. Shared by the polyline waypoints and the curved samples.
+        function vpApplySegmentRoute(e, pts) {{
+            if (!pts || pts.length === 0) return;
             const s = e.source().position(), t = e.target().position();
             const dx = t.x - s.x, dy = t.y - s.y;
             const len = Math.sqrt(dx * dx + dy * dy) || 1;
             const dists = [], weights = [];
-            wps.forEach(p => {{
+            pts.forEach(p => {{
                 // NO clamping: the weight may extrapolate beyond the
                 // endpoints (weight < 0 or > 1) so a waypoint can sit
                 // anywhere in the canvas, not just between them.
@@ -14640,6 +14846,8 @@ class VisualizePath:
                 // from the bypass bookkeeping when segment values are set as
                 // a bypass — the value itself applies (verified by read-back
                 // and render), so the error is swallowed.
+                e.removeStyle('control-point-distances');
+                e.removeStyle('control-point-weights');
                 e.style('curve-style', 'segments');
                 // cytoscape's DEFAULT distance basis is 'intersection' — the
                 // rim-to-rim span — which re-parameterizes the weights over a
@@ -14653,6 +14861,56 @@ class VisualizePath:
                 e.style('segment-distances', dists);
                 e.style('segment-weights', weights);
             }} catch (err) {{ /* value applied despite the bookkeeping error */ }}
+        }}
+
+        function renderEdgeWaypoints(e) {{
+            const wps = edgeWaypointPts(e);
+            if (wps.length === 0) return;
+            vpApplySegmentRoute(e, wps);
+        }}
+
+        // Catmull-Rom samples through the source, waypoints and target:
+        // the curve passes through every waypoint, so the rings stay on the
+        // edge. Returned points are interior only (the endpoints are the
+        // edge endpoints); the spans' shared waypoint is emitted once.
+        function vpCurvedWaypointSamples(points, steps) {{
+            const out = [];
+            const n = points.length;
+            if (n < 3) return out;
+            for (let i = 0; i < n - 1; i++) {{
+                const p0 = points[Math.max(0, i - 1)];
+                const p1 = points[i];
+                const p2 = points[i + 1];
+                const p3 = points[Math.min(n - 1, i + 2)];
+                for (let k = 1; k <= steps; k++) {{
+                    if (i === n - 2 && k === steps) continue;  // target endpoint
+                    const t = k / steps, t2 = t * t, t3 = t2 * t;
+                    out.push({{
+                        x: 0.5 * (2 * p1.x + (-p0.x + p2.x) * t
+                            + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2
+                            + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+                        y: 0.5 * (2 * p1.y + (-p0.y + p2.y) * t
+                            + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2
+                            + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3)
+                    }});
+                }}
+            }}
+            return out;
+        }}
+
+        function renderCurvedWaypoints(e) {{
+            const wps = edgeWaypointPts(e);
+            if (wps.length === 0) return;
+            const s = e.source().position(), t = e.target().position();
+            vpApplySegmentRoute(e, vpCurvedWaypointSamples([s, ...wps, t], 12));
+        }}
+
+        // Waypoint edges: Flow curves through the bends; everything else
+        // keeps the exact polyline through the stored waypoint rings.
+        function renderEdgeRoute(e) {{
+            if (!e.data('hasWaypoints')) return;
+            if (e.data('routeStyle') === 'flow') renderCurvedWaypoints(e);
+            else renderEdgeWaypoints(e);
         }}
 
         function addEdgeWaypoint() {{
@@ -14681,7 +14939,7 @@ class VisualizePath:
                     wps.splice(li - 1, 0, wp);
                     e.data('waypoints', wps);
                     e.data('hasWaypoints', true);
-                    renderEdgeWaypoints(e);
+                    renderEdgeRoute(e);
                     // bundle keys are INDEX-keyed: every selected waypoint of
                     // this edge at or after the splice point moves one slot
                     const at = li - 1;
@@ -14697,6 +14955,11 @@ class VisualizePath:
             }});
             syncWaypointHighlights();
             renderWaypointList();
+            // Adding a waypoint makes Route applicable on a reciprocal half
+            // (the waypoint branch bypasses the pair router); re-seed the
+            // panel so the Route select enables immediately.
+            const sel = cy.$('edge:selected');
+            if (sel.length) syncSelectedGeometryInputs(sel[0]);
             updateHoverInfo('✓ Waypoint added (adjust via Shift/Align or the per-waypoint list)');
         }}
 
@@ -14717,6 +14980,10 @@ class VisualizePath:
             refreshEdgeStyles(false);
             syncWaypointHighlights();
             renderWaypointList();
+            // Clearing the last waypoint on a reciprocal half re-enables
+            // the pair router, so Route no longer applies: re-seed.
+            const sel = cy.$('edge:selected');
+            if (sel.length) syncSelectedGeometryInputs(sel[0]);
             updateHoverInfo('✓ Waypoints cleared');
         }}
 
@@ -14729,7 +14996,7 @@ class VisualizePath:
                 const pts = edgeWaypointPts(e).map(p =>
                     ({{ x: p.x + (axis === 'x' ? delta : 0), y: p.y + (axis === 'y' ? delta : 0) }}));
                 e.data('waypoints', pts);
-                renderEdgeWaypoints(e);
+                renderEdgeRoute(e);
             }}));
             syncWaypointHighlights();
             renderWaypointList();
@@ -14749,7 +15016,7 @@ class VisualizePath:
             cy.batch(() => edges.forEach(e => {{
                 e.data('waypoints', edgeWaypointPts(e).map(p =>
                     ({{ x: axis === 'h' ? p.x : mean, y: axis === 'h' ? mean : p.y }})));
-                renderEdgeWaypoints(e);
+                renderEdgeRoute(e);
             }}));
             syncWaypointHighlights();
             updateHoverInfo('✓ Waypoints aligned ' + (axis === 'h' ? 'horizontally' : 'vertically'));
@@ -14803,7 +15070,7 @@ class VisualizePath:
                     pts[idx][this.dataset.axis] = v;
                     queueStyleHistory('Move waypoint');
                     e.data('waypoints', pts);
-                    renderEdgeWaypoints(e);
+                    renderEdgeRoute(e);
                     positionWaypointRing(e.id(), idx);
                 }});
             }});
@@ -15294,7 +15561,7 @@ class VisualizePath:
                 pts[wpDrag.index].x = wpDrag.startPt.x + dx;
                 pts[wpDrag.index].y = wpDrag.startPt.y + dy;
                 edge.data('waypoints', pts);
-                renderEdgeWaypoints(edge);
+                renderEdgeRoute(edge);
                 positionWaypointRing(edge.id(), wpDrag.index);
                 syncSelectedWaypointRings();
                 // live-update the list row inputs without a rebuild
@@ -15424,6 +15691,57 @@ class VisualizePath:
                 }});
             }});
             updateHoverInfo('✓ Line style applied to ' + edges.length + ' edge(s)');
+        }}
+
+        // Per-edge Route: '' follows the ribbon mode; 'straight'/'flow'
+        // override it. A waypoint edge's Flow curves through its bends; a
+        // plain edge's Flow bows around obstructing nodes.
+        function applySelectedEdgeRoute(mode) {{
+            const edges = cy.$('edge:selected');
+            if (edges.length === 0) return;
+            queueStyleHistory('Change edge route');
+            cy.batch(() => edges.forEach(e => {{
+                if (mode === 'straight' || mode === 'flow') e.data('routeStyle', mode);
+                else e.removeData('routeStyle');
+            }}));
+            refreshEdgeStyles(false);
+            updateHoverInfo('✓ Edge route: ' + (mode || 'follow global'));
+        }}
+
+        // Per-edge Arrow Size: empty follows the ribbon Arrow Size; 0 hides
+        // this edge. The per-edge arrow-scale bypass wins over the global
+        // arrow-scale rule.
+        function applySelectedEdgeArrowSize(raw) {{
+            const edges = cy.$('edge:selected');
+            if (edges.length === 0) return;
+            const text = String(raw).trim();
+            let value = null;
+            if (text !== '') {{
+                value = parseFloat(text);
+                if (!isFinite(value)) return;
+                value = Math.max(0, value);
+            }}
+            queueStyleHistory('Adjust edge arrow size');
+            cy.batch(() => edges.forEach(e => {{
+                if (value === null) e.removeData('arrowSize');
+                else e.data('arrowSize', value);
+                applyEdgeArrowStyle(e);
+            }}));
+            updateHoverInfo('✓ Arrow size: ' + (value === null ? 'global' : value + 'px'));
+        }}
+
+        // Per-edge head visibility: '' follows the ribbon; 'show'/'hide'
+        // override. A global Hide Arrows / Arrow Size 0 still wins.
+        function applySelectedEdgeArrowMode(mode) {{
+            const edges = cy.$('edge:selected');
+            if (edges.length === 0) return;
+            queueStyleHistory('Change edge arrows');
+            cy.batch(() => edges.forEach(e => {{
+                if (mode === 'show' || mode === 'hide') e.data('arrowMode', mode);
+                else e.removeData('arrowMode');
+                edgeArrowShapes(e, parseFloat(e.style('line-opacity')) || 0);
+            }}));
+            updateHoverInfo('✓ Edge arrows: ' + (mode || 'follow global'));
         }}
 
         // Per-node shape: a stylesheet-level bypass per selected node.
@@ -16472,6 +16790,7 @@ class VisualizePath:
                     width: parseFloat(document.getElementById('edgeWidthSlider')?.value || 3)
                 }},
                 arrowSize: parseFloat(document.getElementById('arrowSizeSlider')?.value || 9),
+                arrowsHidden: arrowsHidden,
                 fontSize: parseFloat(document.getElementById('fontSizeSlider')?.value || 12),
                 nodeSize: parseFloat(document.getElementById('nodeSizeSlider')?.value || 40),
                 metric: currentMetric,
@@ -16827,6 +17146,9 @@ class VisualizePath:
                         // 'Import graph' is the recorded operation)
                         restoringHistoryState = true;
                         try {{
+                            // Undirected view flag (older exports omit it
+                            // and import visible).
+                            arrowsHidden = !!settings.arrowsHidden;
                             // Restore edge width scaling
                             if (settings.edgeWidthScaling) {{
                                 const scalingSelect = document.getElementById('edgeWidthScale');
@@ -16891,6 +17213,8 @@ class VisualizePath:
                         }} finally {{
                             restoringHistoryState = false;
                         }}
+                        applyArrowShapes();
+                        syncArrowVisibilityControl();
                         
                         // Restore group defaults (NT groups, etc.)
                         if (settings.groupDefaults) {{
@@ -16938,6 +17262,11 @@ class VisualizePath:
                             addedEdges + ' edges (layout preserved)'
                         );
                     }}
+                    // Per-edge data (route/arrow size/mode/waypoints) came
+                    // in with edgesData; re-derive its rendering for both
+                    // the settings and legacy branches.
+                    refreshEdgeStyles(false);
+                    applyAllEdgeArrowStyles();
                     
                 }} catch (error) {{
                     showToast('Error loading graph file: ' + error.message, 'error');

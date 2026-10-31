@@ -85,7 +85,9 @@
 - **Display:** Weight / Ratio / Probability
 - **Width Scale:** Linear / Log / Sqrt / None
 - **Width:** Slider (1-20 px)
-- **Arrow Size:** Slider (3-20 px)
+- **Arrow Size:** Slider (0-20 px; 0 hides the heads)
+- **Arrow Visibility:** Hide Arrows / Show Arrows (Edge Route group) — undirected view
+- **Per-edge overrides (edge right panel):** Route (Follow global / Straight / Flow), Arrow size (empty = global, 0 hides), Arrows (Follow global / Show / Hide); Flow curves a waypoint edge through its bends
 - **Filter:** Hide by weight ⭐
 - **Reciprocal Edges:** Straight / Curved / Merged (+ Offset slider, Straight only)
 
