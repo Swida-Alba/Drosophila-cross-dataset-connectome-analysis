@@ -13,6 +13,7 @@ focus-panel + contact-sheet workspace.
 import logging
 import os
 import sys
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -373,14 +374,8 @@ html, body {
     min-height: 76px !important;
     padding: 0 28px !important;
 }
-.drocat-brand-mark {
-    width: 42px; height: 42px; border-radius: 13px;
-    display: grid; place-items: center;
-    background: var(--drocat-cobalt);
-    color: #fff;
-    box-shadow: 0 8px 18px rgba(20, 92, 255, .24);
-}
-.drocat-brand-title { font-size: 19px; font-weight: 700; letter-spacing: -.02em; color: var(--drocat-navy); }
+.drocat-brand-logo { height: 54px; display: flex; align-items: center; }
+.drocat-brand-logo svg { display: block; height: 100%; width: auto; }
 .drocat-brand-sub { font-size: 12.5px; color: var(--drocat-muted); }
 .drocat-version-pill {
     border: 1px solid var(--drocat-line-strong); border-radius: 999px;
@@ -1451,7 +1446,7 @@ html, body {
     .drocat-group-card { min-width: 170px; }
     .drocat-group-head { font-size: 9px; letter-spacing: .03em; }
     .drocat-header { min-height: 64px !important; padding: 0 16px !important; }
-    .drocat-brand-mark { width: 36px; height: 36px; border-radius: 11px; }
+    .drocat-brand-logo { height: 34px; }
     .drocat-brand-sub, .drocat-header-link { display: none; }
     .drocat-shell { padding: 14px 14px 32px; }
     .drocat-page { padding-top: 16px; }
@@ -2792,6 +2787,22 @@ def _neuprint_token_configured() -> bool:
     return bool(token)
 
 
+@lru_cache(maxsize=1)
+def _brand_logo_svg() -> str:
+    """Header brand: the full DROCAT logo (network mark + wordmark)."""
+    logo = PROJECT_ROOT / "logo" / "logo_v1" / "DROCAT_LOGO.svg"
+    return logo.read_text(encoding="utf-8").replace(
+        "<svg ", '<svg role="img" aria-label="DROCAT" ', 1
+    )
+
+
+@lru_cache(maxsize=1)
+def _favicon_svg() -> str:
+    """Tab icon: the bold DROCAT mark, inlined to bust browser caches."""
+    icon = PROJECT_ROOT / "logo" / "logo_v1" / "DROCAT_LOGO_icon.svg"
+    return icon.read_text(encoding="utf-8")
+
+
 @ui.page("/")
 def main_page():
     """Main application page with light/dark Photo-Selector-inspired layout."""
@@ -2838,11 +2849,8 @@ def main_page():
     # Header
     with ui.header(elevated=False).classes("drocat-header items-center justify-between"):
         with ui.row().classes("items-center gap-3"):
-            with ui.element("div").classes("drocat-brand-mark"):
-                ui.icon("hub")
-            with ui.column().classes("gap-0"):
-                ui.label("DROCAT").classes("drocat-brand-title")
-                ui.label("Drosophila Connectome Analysis Toolkit").classes("drocat-brand-sub")
+            ui.html(_brand_logo_svg(), sanitize=False).classes("drocat-brand-logo")
+            ui.label("Drosophila Connectome Analysis Toolkit").classes("drocat-brand-sub")
         with ui.row().classes("items-center gap-4"):
             ui.label(f"v{APP_VERSION}").classes("drocat-version-pill")
             ui.link("Documentation", "docs/ui_guides/README.html").classes("drocat-header-link")
@@ -3272,7 +3280,7 @@ def main():
         port=port,
         reload=False,
         show=show,
-        favicon="🧠",
+        favicon=_favicon_svg(),
     )
 
 
