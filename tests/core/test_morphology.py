@@ -2803,6 +2803,13 @@ class TestFafbBundleLocalSources:
         cache = morph.find_similar_dataset_cache_v2(
             "flywire_FAFB_v783", project_root=str(tmp_path), verbose=False)
         cache.skeleton_dir.mkdir(parents=True, exist_ok=True)
+        # V2 rows are vectorized against a population frame; production
+        # supplies it from the healed FAFB bundle, which this synthetic
+        # fixture does not ship. Seed the frame the 20-node line neurons
+        # need (line_neuron spans x=0..19, y=z=0).
+        cache._spatial_bounds = np.array([[0.0, -1.0, -1.0],
+                                          [19.0, 1.0, 1.0]])
+        cache._bounds_resolved = True
         # neuron index drives the missing set
         write_neuron_index(tmp_path, "flywire_FAFB_v783", [
             (720575940000000001, "T", "T_1"),

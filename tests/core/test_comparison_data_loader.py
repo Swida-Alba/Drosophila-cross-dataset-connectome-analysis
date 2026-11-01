@@ -64,7 +64,11 @@ def test_ensure_directories(loader):
 
 def test_sanitize_name(loader):
     assert loader._sanitize_name("hemibrain:v1.2.1") == "hemibrain_v1_2_1"
-    assert loader._sanitize_name("male-cns:v0.9") == "male_cns_v0_9"
+    # The writer (ComparisonParameters._sanitize_name) and this loader
+    # replace ':' and '.' but preserve '-' for readability, so the folder
+    # is male-cns_v0_9 — not the column-safe male_cns_v0_9 used by the
+    # label mapper.
+    assert loader._sanitize_name("male-cns:v0.9") == "male-cns_v0_9"
 
 
 def test_get_dataset_path(loader):
