@@ -4122,17 +4122,15 @@ class FindNeuronConnection:
     never floored (trimming can inflate hop distances).
     '''
 
-    corridor_mode: str = 'auto'
-    '''Two-mode switch (plan-corridor-lane.md §23.2): 'complete' | 'auto'
-    | 'both' — legacy 'off'/'on' normalize on read. Every run is COMPLETE
-    mode (all intact paths >= the applied threshold; the run itself).
-    FAST mode is the standalone post-materialization pass that
-    re-enumerates pathfinding at the ASKED threshold restricted to
-    validated top-M* type-level corridors (per source-target type pair),
-    writing its own route_scope_paths/ mirror folder: 'complete' never
-    runs Fast, 'auto' runs it iff max_interlayer >= 4, 'both' always.
-    Fast never modifies the main run's outputs; failures are contained
-    to one user_warning_notes entry.'''
+    corridor_mode: str = 'complete'
+    '''The ONE lane this run executes (plan-corridor-lane.md §23.2):
+    'complete' | 'fast' | 'typed'. Every mode is mutually exclusive:
+    Complete runs the normal pipeline; Fast runs the corridor lane
+    standalone (Complete skipped); typed runs the type-pruned complete
+    lane standalone (Complete skipped). Legacy mixed spellings
+    ('off'/'on'/'auto'/'both') normalize to 'complete'. Lanes never modify
+    another mode's outputs; failures are contained to one
+    user_warning_notes entry.'''
 
     route_top_m_base: int = 10
     '''Provisional candidate quota at h=1; grows geometrically with hop
@@ -19307,28 +19305,30 @@ class FindNeuronConnection:
         return lines
 
     def _resolved_run_mode(self):
-        """The Run Mode knob as its canonical value: 'complete' | 'auto' |
-        'both' | 'fast' (legacy 'off'/'on' normalize). The corridor knobs
-        themselves stay out of every pre-lane export (§3b tier 2), but this
-        one derived value is stamped as `run mode` into parameters.txt /
-        all_attributes.json so a reader can tell 'Complete only was
-        selected' from 'a Fast lane that never ran' — the pair report's
-        tab-presence rule needs that distinction (plan-corridor-refill D3).
+        """The Run Mode knob as its canonical value: 'complete' | 'fast' |
+        'typed'. A run executes ONE lane; legacy mixed spellings ('auto',
+        'both', 'on') normalize to 'complete' so no second lane is silently
+        activated. The corridor knobs themselves stay out of every pre-lane
+        export (§3b tier 2), but this one derived value is stamped as
+        `run mode` into parameters.txt / all_attributes.json so a reader can
+        tell which single lane the folder carries.
         """
-        mode = str(getattr(self, 'corridor_mode', 'auto') or 'auto').lower()
-        mode = {'off': 'complete', 'on': 'both'}.get(mode, mode)
-        return mode if mode in ('complete', 'auto', 'both', 'fast') else 'auto'
+        mode = str(getattr(self, 'corridor_mode', 'complete')
+                   or 'complete').lower()
+        mode = {'off': 'complete', 'on': 'complete',
+                'auto': 'complete', 'both': 'complete'}.get(mode, mode)
+        return mode if mode in ('complete', 'fast', 'typed') else 'complete'
 
     def _maybe_generate_corridor_deep_dive(self):
-        """Corridor lane hook (plan-corridor-lane.md §23.2): after a
-        materialized run folder carries its final provenance, run the
-        standalone corridor lane into ``route_scope_paths/`` (Fast) or
-        ``route_scope_paths_type_pruned/`` (typed) when the mode
-        resolves on ('on'; or 'auto' with max_interlayer >= 4). Never
+        """Type-pruned lane hook (one run = one lane): after a typed-only run
+        folder carries its parameters and enrollment, run the standalone
+        type-pruned lane into ``route_scope_paths_type_pruned/`` via
+        scripts/CorridorDeepDive.py. Complete runs have no secondary lane;
+        Fast-only runs its lane directly, so both return False here. Never
         raises: any failure is contained to one user_warning_notes entry
         (refill's "never raises" pattern). Returns True when notes were
-        appended (caller re-writes the notes file); False on success —
-        lane outputs live only in the lane namespace (§3b tier 2).
+        appended (caller re-writes the notes file); False on success — lane
+        outputs live only in the lane namespace (§3b tier 2).
 
         The lane runs in a SUBPROCESS (scripts/CorridorDeepDive.py,
         run-folder mode) with a hard wall-clock budget: in-process, the
@@ -19337,30 +19337,7 @@ class FindNeuronConnection:
         completes in ~3 min standalone — verified on the FAFB bound-5
         in-hook anchor). The child resolves connection/neuron tables from
         the run's own parameters.txt (dataset key)."""
-        mode = self._resolved_run_mode()
-        typed = bool(getattr(self, 'type_pruned', False))
-        # NAME UNIFICATION (2026-10-11): canonical values are
-        # 'complete' (Complete mode only), 'auto' (Fast on deep runs,
-        # max_interlayer >= 4), 'both' (Complete + Fast always). Legacy
-        # 'off'/'on' payloads normalize inside _resolved_run_mode().
-        # TYPE-PRUNED (plan-drocat-type-pruned-pathfinding): a SEPARATE
-        # lane, not a Run Mode value — it runs at the run's own bound (the
-        # article's 3-interlayer run must not inherit the Fast lane's
-        # >= 4 auto gate, P2-M) and does not require a Fast selection.
-        # ISSUE 2026-10-22 §2.1: Fast and typed are SEPARATE namespaces.
-        # A run that selects both gets two subprocesses (two folders); a
-        # typed-only selection gets the typed folder only. The old single
-        # command put typed tables into the Fast folder and replaced its
-        # witness tables.
-        fast_selected = mode in ('auto', 'both')
-        if mode == 'fast':
-            # STANDALONE FAST (2026-10-14): the hook may be reached on a
-            # fast-only folder (defensive) -- the Fast lane always runs.
-            fast_selected = True
-        if (mode == 'auto'
-                and int(getattr(self, 'max_interlayer', 0) or 0) < 4):
-            fast_selected = False
-        if not fast_selected and not typed:
+        if self._resolved_run_mode() != 'typed':
             return False
         run_dir = getattr(self, 'allpath_folder', None)
         if not run_dir or not os.path.isdir(run_dir):
@@ -19377,161 +19354,115 @@ class FindNeuronConnection:
                                'CorridorDeepDive.py')
             if not os.path.isfile(cli):
                 self._warn_notes.append(
-                    '- [corridor lane] not generated: driver script '
+                    '- [type-pruned lane] not generated: driver script '
                     f'missing ({cli}).')
                 return True
-
-            def _run_lane_subprocess(lane_typed, lane_out, trigger_label):
-                cmd = [
-                    _sys.executable, cli, str(run_dir), '--quiet',
-                    '--trigger', trigger_label,
-                ]
-                if lane_out:
-                    cmd += ['--out', lane_out]
-                if not lane_typed:
-                    # The run folder may be typed-stamped; the Fast lane must
-                    # not adopt that stamp and write typed tables under
-                    # route_scope_paths/ (the two lanes are separate).
-                    cmd.append('--no-infer-type-pruned')
+            cmd = [
+                _sys.executable, cli, str(run_dir), '--quiet',
+                '--trigger', 'in-run (typed standalone)',
+                '--top-m-base',
+                str(int(getattr(self, 'route_top_m_base', 10))),
+                '--length-decay',
+                str(float(getattr(self, 'route_length_decay', 1.5))),
+                '--pair-length-budget',
+                str(int(getattr(
+                    self, 'route_path_budget_per_pair_length', 100))),
+                '--type-pruned',
+                '--type-prune-basis',
+                str(getattr(self, 'type_prune_basis', 'ratio_adj')),
+                '--type-prune-scope',
+                str(getattr(self, 'type_prune_scope', 'full_floor')),
+                '--type-min-ratio-adj',
+                str(float(getattr(self, 'type_min_ratio_adj', 0.01))),
+                '--type-min-synapse',
+                str(int(getattr(self, 'type_min_synapse', 0) or 0)),
+                '--type-min-wmax',
+                str(int(getattr(self, 'type_min_wmax', 0) or 0)),
+                '--type-walk-cap',
+                str(int(getattr(self, 'type_walk_cap',
+                                2_000_000) or 2_000_000)),
+                '--type-revisit-policy',
+                str(getattr(self, 'type_revisit_policy', 'bounded')),
+                '--type-max-type-visits',
+                str(int(getattr(self, 'type_max_type_visits', 0) or 0)),
+                '--type-validate-work-cap',
+                str(int(getattr(self, 'type_validate_work_cap',
+                                2_000_000) or 2_000_000)),
+            ]
+            _topk = int(getattr(self, 'type_top_k', 0) or 0)
+            if _topk > 0:
+                cmd += ['--type-top-k', str(_topk)]
+            _div = str(getattr(self, 'type_diversity', 'off') or 'off')
+            if _div != 'off':
                 cmd += [
-                    '--top-m-base',
-                    str(int(getattr(self, 'route_top_m_base', 10))),
-                    '--length-decay',
-                    str(float(getattr(self, 'route_length_decay', 1.5))),
-                    '--pair-length-budget',
-                    str(int(getattr(
-                        self, 'route_path_budget_per_pair_length', 100))),
+                    '--type-diversity', _div,
+                    '--type-edge-reuse-fraction',
+                    str(float(getattr(
+                        self, 'type_edge_reuse_fraction', 0.05))),
+                    '--type-diversity-pool',
+                    str(float(getattr(
+                        self, 'type_diversity_pool', 2.0))),
                 ]
-                if lane_typed:
-                    cmd += [
-                        '--type-pruned',
-                        '--type-prune-basis',
-                        str(getattr(self, 'type_prune_basis',
-                                    'ratio_adj')),
-                        '--type-prune-scope',
-                        str(getattr(self, 'type_prune_scope',
-                                    'full_floor')),
-                        '--type-min-ratio-adj',
-                        str(float(getattr(self, 'type_min_ratio_adj',
-                                          0.01))),
-                        '--type-min-synapse',
-                        str(int(getattr(self, 'type_min_synapse', 0) or 0)),
-                        '--type-min-wmax',
-                        str(int(getattr(self, 'type_min_wmax', 0) or 0)),
-                        '--type-walk-cap',
-                        str(int(getattr(self, 'type_walk_cap',
-                                        2_000_000) or 2_000_000)),
-                        '--type-revisit-policy',
-                        str(getattr(self, 'type_revisit_policy',
-                                    'bounded')),
-                        '--type-max-type-visits',
-                        str(int(getattr(self, 'type_max_type_visits',
-                                        0) or 0)),
-                        '--type-validate-work-cap',
-                        str(int(getattr(self, 'type_validate_work_cap',
-                                        2_000_000) or 2_000_000)),
-                    ]
-                    _topk = int(getattr(self, 'type_top_k', 0) or 0)
-                    if _topk > 0:
-                        cmd += ['--type-top-k', str(_topk)]
-                    _div = str(getattr(self, 'type_diversity', 'off') or 'off')
-                    if _div != 'off':
-                        cmd += [
-                            '--type-diversity', _div,
-                            '--type-edge-reuse-fraction',
-                            str(float(getattr(
-                                self, 'type_edge_reuse_fraction', 0.05))),
-                            '--type-diversity-pool',
-                            str(float(getattr(
-                                self, 'type_diversity_pool', 2.0))),
-                        ]
-                    if getattr(self, 'clock_relay_mode', False):
-                        cmd.append('--allow-clock-relays')
-                    _excl = str(getattr(
-                        self, 'type_exclude_pairs', '') or '').strip()
-                    if _excl:
-                        cmd += ['--exclude-pairs', _excl]
-                    if getattr(self, 'exclude_clock_clock', False):
-                        cmd.append('--exclude-clock-clock')
-                    if getattr(self, 'per_pair_scope', False):
-                        cmd += [
-                            '--per-pair-scope',
-                            '--scope-lt-mode',
-                            str(getattr(self, 'scope_lt_mode', 'discover')),
-                            '--scope-pad',
-                            str(int(getattr(self, 'scope_pad', 2) or 0)),
-                            '--scope-hard-cap',
-                            str(int(getattr(self, 'scope_hard_cap', 6) or 0)),
-                            '--scope-discovery-cap',
-                            str(int(getattr(
-                                self, 'scope_discovery_cap', 6) or 6)),
-                        ]
-                        _scope_tbl = str(
-                            getattr(self, 'scope_table', '') or '').strip()
-                        if _scope_tbl:
-                            cmd += ['--scope-table', _scope_tbl]
-                else:
-                    _div = str(getattr(
-                        self, 'type_diversity', 'off') or 'off')
-                    if _div != 'off':
-                        cmd += [
-                            '--type-diversity', _div,
-                            '--type-edge-reuse-fraction',
-                            str(float(getattr(
-                                self, 'type_edge_reuse_fraction', 0.05))),
-                        ]
-                if getattr(self, 'skip_bodyId', False):
-                    cmd.append('--no-bodyid')
-                # CORRIDOR-ON-RATIO: the adaptive ratio cone makes the
-                # lane's drain genuinely bigger; a typed run gets a
-                # larger envelope too because validation is per walk.
-                budget_s = (3600 if lane_typed else
-                            1800 if str(getattr(
-                                self, 'weight_basis', 'synapse')).startswith(
-                                'connection_ratio') else 900)
-                label = 'type-pruned lane' if lane_typed else 'corridor lane'
-                try:
-                    proc = subprocess.run(
-                        cmd, capture_output=True, text=True,
-                        timeout=budget_s, check=False,
-                        cwd=str(self.script_path))
-                except subprocess.TimeoutExpired:
-                    self._warn_notes.append(
-                        f'- [{label}] not generated: the lane exceeded '
-                        f'its {budget_s}s wall-clock budget and was '
-                        f'stopped (deep bound + memory pressure; rerun '
-                        f'scripts/CorridorDeepDive.py on this folder for '
-                        f'an uncapped pass).')
-                    return True
-                if proc.returncode == 0:
-                    return False
-                if proc.returncode == 2:
-                    reason = (proc.stdout or '').strip().splitlines()
-                    reason = reason[-1] if reason else 'refused'
-                    reason = reason.replace('corridor lane refused: ', '')
-                    self._warn_notes.append(
-                        f'- [{label}] not generated: {reason}')
-                    return True
+            if getattr(self, 'clock_relay_mode', False):
+                cmd.append('--allow-clock-relays')
+            _excl = str(getattr(
+                self, 'type_exclude_pairs', '') or '').strip()
+            if _excl:
+                cmd += ['--exclude-pairs', _excl]
+            if getattr(self, 'exclude_clock_clock', False):
+                cmd.append('--exclude-clock-clock')
+            if getattr(self, 'per_pair_scope', False):
+                cmd += [
+                    '--per-pair-scope',
+                    '--scope-lt-mode',
+                    str(getattr(self, 'scope_lt_mode', 'discover')),
+                    '--scope-pad',
+                    str(int(getattr(self, 'scope_pad', 2) or 0)),
+                    '--scope-hard-cap',
+                    str(int(getattr(self, 'scope_hard_cap', 6) or 0)),
+                    '--scope-discovery-cap',
+                    str(int(getattr(
+                        self, 'scope_discovery_cap', 6) or 6)),
+                ]
+                _scope_tbl = str(
+                    getattr(self, 'scope_table', '') or '').strip()
+                if _scope_tbl:
+                    cmd += ['--scope-table', _scope_tbl]
+            if getattr(self, 'skip_bodyId', False):
+                cmd.append('--no-bodyid')
+            budget_s = 3600
+            label = 'type-pruned lane'
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    timeout=budget_s, check=False,
+                    cwd=str(self.script_path))
+            except subprocess.TimeoutExpired:
                 self._warn_notes.append(
-                    f'- [{label}] generation failed (exit '
-                    f'{proc.returncode}): '
-                    f'{(proc.stderr or proc.stdout or "").strip()[-300:]}')
+                    f'- [{label}] not generated: the lane exceeded '
+                    f'its {budget_s}s wall-clock budget and was '
+                    f'stopped (deep bound + memory pressure; rerun '
+                    f'scripts/CorridorDeepDive.py on this folder for '
+                    f'an uncapped pass).')
                 return True
-
-            added = False
-            if fast_selected:
-                added |= _run_lane_subprocess(
-                    False, None, 'in-run (subprocess)')
-            if typed:
-                added |= _run_lane_subprocess(
-                    True,
-                    os.path.join(run_dir, 'route_scope_paths_type_pruned'),
-                    'in-run (subprocess, typed)')
-            return added
+            if proc.returncode == 0:
+                return False
+            if proc.returncode == 2:
+                reason = (proc.stdout or '').strip().splitlines()
+                reason = reason[-1] if reason else 'refused'
+                reason = reason.replace('corridor lane refused: ', '')
+                self._warn_notes.append(
+                    f'- [{label}] not generated: {reason}')
+                return True
+            self._warn_notes.append(
+                f'- [{label}] generation failed (exit '
+                f'{proc.returncode}): '
+                f'{(proc.stderr or proc.stdout or "").strip()[-300:]}')
+            return True
         except Exception as exc:  # containment is the contract (§3b tier 3)
             try:
                 self._warn_notes.append(
-                    f'- [corridor lane] generation failed: '
+                    f'- [type-pruned lane] generation failed: '
                     f'{type(exc).__name__}: {exc}')
             except Exception:
                 pass
@@ -20846,6 +20777,16 @@ class FindNeuronConnection:
         # _run_export_attributes already carries (only the lane KNOBS are
         # withheld there, §3b Tier 2).
         self.run_mode = self._resolved_run_mode()
+        # ONE run = ONE lane. 'typed' owns the type-pruned flag; a stray
+        # type_pruned on Complete/Fast is dropped (never run a second lane).
+        if self.run_mode == 'typed':
+            self.type_pruned = True
+        elif getattr(self, 'type_pruned', False):
+            self._warn_notes.append(
+                '- [run mode] type_pruned ignored: one run selects one mode '
+                '(Complete / Fast / Type-pruned); the selected mode is '
+                f'{self.run_mode}.')
+            self.type_pruned = False
         public_attrs = self._run_export_attributes(path_mode=path_mode)
         with open(os.path.join(self.allpath_folder,
                                'all_attributes.json'), 'w',
@@ -20870,7 +20811,7 @@ class FindNeuronConnection:
         # refill). The folder carries parameters + enrollment + the lane's
         # route_scope_paths/ exports; in-process is safe here (no big
         # engine graph exists in a fast-only process).
-        if str(getattr(self, 'corridor_mode', 'auto') or '').lower() == 'fast':
+        if self.run_mode == 'fast':
             self._save_path_neuron_enrollment(self.allpath_folder)
             self._warn_notes = getattr(self, '_warn_notes', None) or []
             self._warn_notes.append(
@@ -20901,6 +20842,30 @@ class FindNeuronConnection:
             # the fast-only round exists to avoid (found by the branch's own
             # test, 2026-10-16).
             self._write_user_warning_notes(self.allpath_folder)
+            return None
+
+        # STANDALONE TYPE-PRUNED MODE (corridor_mode='typed'): the typed
+        # lane IS the deliverable -- skip the Complete pipeline exactly like
+        # Fast-only. The lane runs in a subprocess with its own wall-clock
+        # budget (the hook), because it validates every type walk over the
+        # full-floor body graph; writes route_scope_paths_type_pruned/ only.
+        if self.run_mode == 'typed':
+            self._save_path_neuron_enrollment(self.allpath_folder)
+            self._warn_notes = getattr(self, '_warn_notes', None) or []
+            self._warn_notes.append(
+                '- [typed-only] Complete mode skipped (Run Mode = '
+                'Type-pruned only): the type-pruned lane ran standalone on '
+                'this query; this folder carries no allpaths/connection '
+                'exports.')
+            self._vprint('Typed-only run: the type-pruned lane is the '
+                         'deliverable (Complete mode skipped).',
+                         level='always')
+            added = self._maybe_generate_corridor_deep_dive()
+            self._write_user_warning_notes(self.allpath_folder)
+            if not added:
+                self._vprint('  ✓ Typed-only lane complete '
+                             '(route_scope_paths_type_pruned/)',
+                             level='always')
             return None
 
         # FlyWire identifiers are canonicalized losslessly before any graph

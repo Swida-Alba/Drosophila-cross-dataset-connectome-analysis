@@ -180,57 +180,97 @@ def test_the_ratio_payload_is_the_only_source_of_the_basis():
 # --- L3: one Run Mode control, one label, one live line ------------------
 
 def test_run_mode_label_is_single_sourced(pc):
-    assert pc.RUN_MODE_LABEL == "Run Mode (Complete / Fast)"
-    assert pc.AUTO_DEPTH == 4
+    assert pc.RUN_MODE_LABEL == "Run Mode (Complete / Fast / Type-pruned)"
     for rel in MODE_TABS:
         src = _src(rel)
         assert "Fast Mode (corridor lane)" not in src, \
             f"{rel} reintroduced the second label"
         assert '"corridor_mode": run_mode.value' in src, rel
+        # the typed lane rides in the same Run Mode value, not a checkbox
+        assert "supports_type_pruned" not in src, rel
 
 
-@pytest.mark.parametrize("mode,depth,expect", [
-    ("complete", 5, "Fast mode: off"),
-    ("fast", 0, "no Complete run"),
-    ("auto", 3, "will NOT"),
-    ("auto", 4, "WILL"),
-    ("both", 0, "WILL"),
+@pytest.mark.parametrize("mode,expect", [
+    ("complete", "Complete mode"),
+    ("fast", "Fast only"),
+    ("typed", "Type-pruned only"),
 ])
-def test_the_live_line_states_the_gate(pc, mode, depth, expect):
-    text = pc.run_mode_note_text(mode, depth)
-    assert expect in text, (mode, depth, text)
-    if mode == "auto":
-        # 'all_neurons' forces depth 0 in the payload, not in the field the
-        # line quotes — so the override has to be in the sentence itself
-        assert "all_neurons" in text and "does NOT run" in text, text
-    # the gate is stated, not implied: the line names the mode, the depth and
-    # the threshold the engine uses
-    assert "depth 4" in text or depth < 4 or mode in ("both", "fast") or mode == "complete"
+def test_the_live_line_describes_exactly_one_mode(pc, mode, expect):
+    text = pc.run_mode_note_text(mode)
+    assert expect in text, (mode, text)
+    # Exactly one lane is claimed; the other lane names do not appear as
+    # active statements.
+    assert text.count("only") + text.count("Complete mode") >= 1
+    if mode == "complete":
+        assert "off" in text and "skipped" not in text
+    else:
+        assert "skipped" in text
+    if mode == "typed":
+        assert "route_scope_paths_type_pruned/" in text
+        assert "bodyId-validated" in text
 
 
-def test_the_note_is_refreshed_by_both_inputs():
-    """'auto' depends on the depth as well as the selection: a tab that only
-    rewired the selector would keep showing a stale WILL/will-NOT."""
-    # every surface whose depth can move must refresh the line it prints —
-    # Cross-Dataset changed the depth in three places and shipped the stale
-    # case. The law is the WIRING, not one spelling: a tab may bind a named
-    # handler, so follow the registration to the body that runs.
-    for rel in MODE_TABS:
-        src = _src(rel)
-        wired = re.search(
-            r"max_interlayer\.on_value_change\(([^\n]*)\)\n", src)
-        assert wired, f"{rel} never reacts to its own depth"
-        arg = wired.group(1).strip()
-        if arg.startswith("lambda"):
-            bound = "run_mode.refresh()" in arg
-        else:
-            body = src[src.index(f"def {arg}("):]
-            body = body.split("\n\n")[0]
-            bound = "run_mode.refresh()" in body
-        assert bound, f"{rel} can outlive its own depth change ({arg})"
+def test_the_selector_drives_the_note():
+    """The Run Mode select is the only mode input: changing it must refresh
+    the live line and the typed knobs' visibility."""
     src = _src("ui/components/pathfinding_controls.py")
+    assert "self.control.on_value_change(lambda _e: self._on_mode_change())" in src
+    assert "def _on_mode_change" in src
+    assert "_sync_visibility()" in src and "self.refresh()" in src
     assert "def refresh(self)" in src and "self.note.set_text(" in src
     assert "set_value(" not in src.split("def refresh")[1][:400]
+    # no tab needs a depth-driven refresh: the mode no longer depends on depth
+    for rel in MODE_TABS:
+        assert "run_mode.refresh()" not in _src(rel), rel
+
+
+def test_typed_run_mode_renders_its_knobs_and_maps_the_payload(pc):
+    """The typed lane is chosen from the Run Mode list itself — no lane
+    checkbox exists — and the selector's composite value becomes the
+    engine's corridor_mode plus type_pruned in the payload."""
+    from nicegui import Client
+    from nicegui.page import page
+
+    client = Client(page("/typed-run-mode"))
+    with client:
+        rc = pc.RunModeControl()
+        assert rc.value == "complete"
+        assert rc.payload() == {"type_pruned": False}
+        assert "hidden" in _cls(rc._type_row)
+        assert "hidden" in _cls(rc._scope_toggle_row)
+
+        rc.control.value = "typed"
+        rc._sync_visibility()
+        rc.refresh()
+
+        assert rc.typed and rc.value == "typed"
+        assert "hidden" not in _cls(rc._type_row)
+        assert "hidden" not in _cls(rc._scope_toggle_row)
+        assert rc.payload()["type_pruned"] is True
+        assert rc.payload()["type_prune_scope"] == "full_floor"
+        assert "Type-pruned only" in rc.note_text()
+
+        rc.per_pair_scope.value = True
+        rc._sync_visibility()
+        payload = rc.payload()
+        assert payload["per_pair_scope"] is True
+        assert payload["scope_lt_mode"] == "discover"
+        assert "hidden" not in _cls(rc._scope_row)
+
+        rc.control.value = "fast"
+        rc._sync_visibility()
+        assert not rc.typed and rc.value == "fast"
+        assert rc.payload() == {"type_pruned": False}
+        assert "hidden" in _cls(rc._type_row)
+        assert rc.per_pair_scope.value is False
+
+        labels = [(getattr(el, "_props", None) or {}).get("label")
+                  for el in client.elements.values()]
+        assert "Type-pruned complete lane" not in labels
+    # the selector itself drives the knobs' visibility, not a second control
+    shared = _src("ui/components/pathfinding_controls.py")
+    assert ("self.control.on_value_change(lambda _e: self._on_mode_change())"
+            in shared)
 
 
 # --- the visibility law reaches the DOM -----------------------------------
@@ -346,13 +386,14 @@ def test_the_shortest_tab_renders_the_shared_controls():
     labels = [(getattr(el, "_props", None) or {}).get("label")
               for el in client.elements.values()]
     for want in ("Threshold Basis", "Min Connection Ratio (%)",
-                 "Combine Thresholds", "Run Mode (Complete / Fast)"):
+                 "Combine Thresholds",
+                 "Run Mode (Complete / Fast / Type-pruned)"):
         assert want in labels, want
     # the raw 0-1 field the tab used to carry is gone
     assert "Min Connection Ratio" not in labels
     texts = [str(getattr(el, "text", "") or "")
              for el in client.elements.values()]
-    assert any("depth 5" in t and "WILL" in t for t in texts), texts
+    assert any("Complete mode" in t for t in texts), texts
 
 
 def test_network_states_what_does_not_apply(pc):

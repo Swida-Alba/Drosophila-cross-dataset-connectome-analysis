@@ -390,6 +390,13 @@ def run_kind_for(run_dir, meta=None) -> str:
     """
     name = Path(run_dir).name
     kind = run_kind(name)
+    # A lane-only run keeps the tool's find-paths-complete folder grammar,
+    # but it is NOT a Complete run: the header/run card must name the ONE
+    # selected lane (real-data review 2026-11-02).
+    _mode = _parameters_value(run_dir, 'run mode').strip().lower()
+    if _mode in ('fast', 'typed') and not any(
+            Path(run_dir).glob('*_allpaths_type.csv')):
+        return 'Fast only' if _mode == 'fast' else 'Type-pruned only'
     if kind != 'Pathfinding':
         return kind
     return {
@@ -2168,6 +2175,19 @@ def _render_per_type_coverage_table(unit: dict, show_label: bool) -> str:
         '</tr></thead><tbody>' + ''.join(body) + '</tbody></table></div>')
 
 
+def _lane_only_coverage_note(payload: dict) -> str:
+    units = (payload.get('lane') or {}).get('units') or []
+    typed = any(bool(u.get('type_pruned')) for u in units)
+    tail = ('The typed lane validates by layered type reachability and writes '
+            'no bodyId witnesses.' if typed else
+            "Fast lane bodyId paths are the lane's representative envelope, "
+            "not full-enrollment coverage.")
+    return ('Not applicable to a lane-only run: full-enrollment bodyId '
+            'coverage is a Complete-run metric. A lane covers validated type '
+            'chains; per-pair and per-path coverage stay in the Pair Explorer. '
+            + tail)
+
+
 def _render_query_coverage_card(payload: dict) -> str:
     """Overall (query-scope) source/target bodyId coverage on the
     Overview tab — over the whole enrollment, IGNORING path pairs:
@@ -2175,6 +2195,11 @@ def _render_query_coverage_card(payload: dict) -> str:
     bodyIds reached (Checked) / resolved. One line per unit (cross
     roots show every delegate), followed by the per-type breakdown of
     the same enrollment CSVs."""
+    if (payload.get('lane') or {}).get('lane_only'):
+        return ('<div class="card"><h3>Overall bodyId coverage '
+                '(query scope)</h3><p class="cap-note">'
+                + _esc(_lane_only_coverage_note(payload))
+                + '</p></div>')
     units = (payload.get('global') or {}).get('units') or []
     lines = []
     tables = []
@@ -2379,6 +2404,12 @@ def _render_overview(payload: dict, run_dir: Path,
     # A lane that attempted and refused gets its own card, because Option B
     # only mounts a corridor page when the corridor HAS data — without this
     # the refusal reason would be nowhere in the report.
+    _lane_units = lane_info.get('units') or []
+    _is_typed_lane = any(bool(u.get('type_pruned')) for u in _lane_units)
+    _lane_dir_name = ((_lane_units[0].get('lane_dir')
+                       if _lane_units else None) or LANE_DIR)
+    _lane_mode_label = ('Type-pruned complete' if _is_typed_lane
+                        else 'Fast mode (corridor)')
     _refused = lane_info.get('refusals') or []
     # (an f-string expression cannot span lines on this interpreter, so the
     # per-unit rows are built outside the concatenation)
@@ -2388,7 +2419,7 @@ def _render_overview(payload: dict, run_dir: Path,
             _esc(r.get('status')), _esc(r.get('reason')))
         for r in _refused)
     refusal_note = ('' if not _refused else
-                    '<div class="card"><h3>Fast mode (corridor) &mdash; '
+                    '<div class="card"><h3>' + _lane_mode_label + ' &mdash; '
                     'did not run</h3><p style="color:var(--secondary-color);'
                     'font-size:0.9em;">The lane was selected for this run but '
                     'produced no tables, so it offers no destination under Path. The '
@@ -2398,10 +2429,6 @@ def _render_overview(payload: dict, run_dir: Path,
                       'folder with <code>scripts/CorridorDeepDive.py '
                       '&lt;run_dir&gt;</code> to see whether it runs '
                       'now.</p></div>')
-    _lane_units = lane_info.get('units') or []
-    _is_typed_lane = any(bool(u.get('type_pruned')) for u in _lane_units)
-    _lane_dir_name = ((_lane_units[0].get('lane_dir')
-                       if _lane_units else None) or LANE_DIR)
     mode_note = ('' if not lane_info.get('lane_only') else
                  '<div class="card"><h3>Run mode: '
                  + ('Type-pruned complete only' if _is_typed_lane
@@ -2540,7 +2567,9 @@ def _render_overview(payload: dict, run_dir: Path,
             + mode_note + _typed_card + refusal_note +
             f'<div class="card"><h3>Summary</h3>{stats_html}</div>'
             + hist_html + coverage_card + refill_card
-            + _render_provenance_card(run, run_dir) + pair_table + artifacts)
+            + ('' if lane_info.get('lane_only')
+               else _render_provenance_card(run, run_dir))
+            + pair_table + artifacts)
 
 
 def _meta_summary(run: dict) -> str:
@@ -2711,9 +2740,10 @@ def _render_global_tab(payload: dict) -> str:
     glob = payload['global']
     run = payload['run']
     unit_labels = {u['id']: u['label'] for u in run['units']}
+    _lane_only = bool((payload.get('lane') or {}).get('lane_only'))
 
     def _cov_cell(pair_tuple, title):
-        if not pair_tuple:
+        if _lane_only or not pair_tuple:
             return '<td>—</td>'
         n, total = pair_tuple
         pct = (f' ({100.0 * n / total:.1f}%)' if total else '')
@@ -2752,7 +2782,10 @@ def _render_global_tab(payload: dict) -> str:
     query_cov_card = (
         '<div class="card"><h3>Query bodyId coverage</h3>'
         + (''.join(query_cov_lines) if query_cov_lines
-           else '<p class="cap-note">Enrollment files unavailable.</p>')
+           else ('<p class="cap-note">'
+                 + _esc(_lane_only_coverage_note(payload)) + '</p>'
+                 if _lane_only else
+                 '<p class="cap-note">Enrollment files unavailable.</p>'))
         + '<p class="cap-note">Query-scope: source = bodyIds on ANY path '
           '(isInPath) / all enrolled; target = bodyIds reached (Checked) / '
           'all resolved — over the whole query. The Pair × unit matrix '
@@ -2895,6 +2928,50 @@ def unit_csv_candidates(run_dir: Path, unit: dict) -> List[Path]:
     return sorted(folder.glob(f'*{PATHS_SUFFIX}'))
 
 
+def _lane_common_links(folder: Path, lane_dir: str, link_prefix: str,
+                       *, include_bodyid: bool) -> list:
+    """The shared Fast/typed lane file set, in one order.
+
+    Fast and typed use the same names for every shared table. The typed
+    lane intentionally omits route_paths_bodyId.csv (layered validation has
+    no bodyId witnesses), so its caller passes include_bodyid=False and the
+    card states that omission. Mode-specific extras are appended by the
+    caller after this list."""
+    specs = [
+        (LANE_WALKS_NAME, "validated walks"),
+    ]
+    if include_bodyid:
+        specs.append(("route_paths_bodyId.csv", "bodyId paths"))
+    specs.extend([
+        ("route_connection_type.csv", "connection table"),
+        ("route_full_paths_type.csv",
+         "full-scope (synapse &ge; 1) chains"),
+        ("route_full_carrying_paths_type.csv",
+         "full-scope refill-carrying chains"),
+        ("route_full_type_pairs.csv", "full-scope pair table"),
+        ("route_type_incoming_asked.csv",
+         "conditioned incoming (&ge; asked)"),
+        ("route_type_incoming.csv", "incoming (synapse &ge; 1)"),
+        ("route_paths_type_diverse.csv",
+         "diverse path view (edge quota)"),
+        ("route_connection_type_diverse.csv", "diverse edge table"),
+        ("route_diversity_pairs.csv", "diverse per-class audit"),
+        ("type_nt_consensus.csv", "effective-label NT consensus"),
+        ("route_type_network.html", "type network (mirror page)"),
+        ("route_type_heatmap.html", "type heatmap (mirror page)"),
+        ("route_full_type_network.html",
+         "full-scope network (mirror page)"),
+        ("route_full_type_heatmap.html",
+         "full-scope heatmap (mirror page)"),
+        ("route_provenance.json", "provenance"),
+        ("README.md", "lane README"),
+    ])
+    return ['<a href="' + link_prefix + lane_dir + "/" + fname + '">' + lab
+            + '</a>'
+            for fname, lab in specs
+            if (folder / lane_dir / fname).exists()]
+
+
 def _render_corridor_section(folder: Path, label: str,
                              link_prefix: str = '',
                              lane_dir: str = LANE_DIR) -> Tuple[str, bool]:
@@ -2946,33 +3023,30 @@ def _render_corridor_section(folder: Path, label: str,
                    + str(gap.get('both', '&mdash;')) + ' shared / '
                    + str(gap.get('corridor_only', '&mdash;'))
                    + ' corridor-only.</p>')
-    links = []
-    for fname, lab in ((LANE_WALKS_NAME, 'validated walks'),
-                       ('route_paths_bodyId.csv', 'bodyId paths'),
-                       ('route_connection_type.csv', 'connection table'),
-                       ('route_full_paths_type.csv',
-                        'full-scope (synapse &ge; 1) chains'),
-                       ('route_full_carrying_paths_type.csv',
-                        'full-scope refill-carrying chains'),
-                       ('route_full_type_pairs.csv',
-                        'full-scope pair table'),
-                       ('route_type_incoming_asked.csv',
-                        'conditioned incoming (&ge; asked)'),
-                       ('route_type_incoming.csv',
-                        'incoming (synapse &ge; 1)'),
-                       ('route_paths_type_diverse.csv',
-                        'diverse path view (edge quota)'),
-                       ('route_connection_type_diverse.csv',
-                        'diverse edge table'),
-                       ('route_diversity_pairs.csv',
-                        'diverse per-class audit'),
-                       ('type_nt_consensus.csv',
-                        'effective-label NT consensus'),
-                       ('route_provenance.json', 'provenance'),
-                       ('README.md', 'lane README')):
-        if (folder / lane_dir / fname).exists():
-            links.append('<a href="' + link_prefix + lane_dir + '/'
-                         + fname + '">' + lab + '</a>')
+    links = _lane_common_links(
+        folder, lane_dir, link_prefix, include_bodyid=not _is_typed)
+    if _is_typed:
+        # The typed lane's mode-specific extras; the shared table set came
+        # from _lane_common_links above. route_paths_bodyId.csv is
+        # intentionally absent and is disclosed in the card text.
+        for fname, lab in (
+                ("route_type_pairs_pruned.csv", "pruned type graph"),
+                ("route_scope_pairs.csv", "per-pair scope table"),
+                ("scope_table.csv", "reusable scope table"),
+                ("route_topk_pairs.csv", "top-k per-pair search table"),
+                ("route_topk_pairs_diverse.csv", "diverse top-k audit"),
+                ("route_paths_type_first_clock.csv", "first-clock paths"),
+                ("route_paths_type_clock_relay.csv", "clock-relay paths"),
+                ("route_paths_type_clock_relay_no_intra.csv",
+                 "clock-relay paths (no intra-clock)"),
+                ("route_paths_type_clock_relay_intra.csv",
+                 "clock-relay paths (intra-clock kept)"),
+                ("route_paths_type_no_intra_clock_edges.csv",
+                 "no-intra-clock view (first-clock + relay no-intra)"),
+                ("type_prune_manifest.json", "type-prune manifest")):
+            if (folder / lane_dir / fname).exists():
+                links.append('<a href="' + link_prefix + lane_dir + '/'
+                             + fname + '">' + lab + '</a>')
     _typed_block = prov.get('type_prune') if _is_typed else {}
     basis = _esc(str(
         (_typed_block.get('validation_basis') if _is_typed
@@ -3031,9 +3105,10 @@ def _render_corridor_section(folder: Path, label: str,
                         'unaffected.</p>')
         elif _fstat == 'skipped_not_requested':
             full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1): '
-                        'not requested for this typed lane. Pass '
-                        '<code>--full-scope</code> to re-value its chains; '
-                        'the asked-scope tables are unaffected.</p>')
+                        'disabled with <code>--no-full-scope</code>. Re-run '
+                        'without it to write the shared '
+                        '<code>route_full_*</code> tables; the asked-scope '
+                        'tables are unaffected.</p>')
         elif _fstat in ('empty',):
             full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1): '
                         'none of the lane&#8217;s chains realizes at the '
@@ -3085,15 +3160,21 @@ def _render_corridor_section(folder: Path, label: str,
             + _esc(str(_dv.get("strength_loss_abs_max")))
             + '. The pure route_paths_type.csv is unchanged; see '
             '<code>route_diversity_pairs.csv</code>.</p>')
+    def _tp_value(key):
+        value = _tp.get(key)
+        # 0 / 0.0 are REAL values, not missing; only None/empty become a dash.
+        return ('&mdash;' if value is None or value == ''
+                else _esc(str(value)))
+
     _typed_para = (        '<p><b>Type-pruned COMPLETE lane</b>: '
-        + _esc(str(_tp.get('basis') or '&mdash;')) + ' prune at '
-        + _esc(str(_tp.get('min_ratio_adj') or '&mdash;')) + '; '
-        + _esc(str(_tp.get('candidate_walks') or '&mdash;'))
-        + ' candidate walks, ' + _esc(str(_tp.get('phantoms') or '&mdash;'))
+        + _tp_value('basis') + ' prune at '
+        + _tp_value('min_ratio_adj') + '; '
+        + _tp_value('candidate_walks')
+        + ' candidate walks, ' + _tp_value('phantoms')
         + ' phantoms; <b>type_pruned_complete</b>='
         + _esc(str(prov.get('type_pruned_complete'))) + ', '
         + '<b>filter_complete</b>='
-        + _esc(str(_tp.get('filter_complete'))) + '. '
+        + _tp_value('filter_complete') + '. '
         + (('Scope: <b>per-pair validated shortest</b> ('
             + _esc(str(_tp.get('scope_mode'))) + ', Lt '
             + _esc(str(_tp.get('scope_lt'))) + ', pad '
@@ -3105,7 +3186,8 @@ def _render_corridor_section(folder: Path, label: str,
         + '<code>paths_complete</code>.</p>'
         if _is_typed else '')
     return ('<div class="card"><h3>' + _esc(label)
-            + (' &mdash; Type-pruned complete lane' if _is_typed else '')
+            + (' &mdash; Type-pruned complete lane' if _is_typed
+               else ' &mdash; Fast corridor lane')
             + '</h3>' + _typed_para
             + '<p style="color:var(--secondary-color);font-size:0.9em;">'
             'Route-scoped pass at the ASKED threshold &mdash; same ratio '
@@ -3156,18 +3238,14 @@ def _render_type_pruned_section(folder: Path, label: str,
         return default if value is None else _esc(str(value))
 
     pair_txt = (f'{_v("pairs_before")} &rarr; {_v("pairs_after")}')
-    links = []
+    links = _lane_common_links(
+        folder, TYPED_LANE_DIR, link_prefix, include_bodyid=False)
     for fname, lab in (
-            ("route_paths_type.csv", "validated type walks"),
-            ("route_paths_bodyId.csv", "bodyId paths"),
-            ("route_connection_type.csv", "connection table"),
             ("route_type_pairs_pruned.csv", "pruned type graph"),
             ("route_scope_pairs.csv", "per-pair scope table"),
             ("scope_table.csv", "reusable scope table"),
             ("route_topk_pairs.csv", "top-k per-pair search table"),
             ("route_topk_pairs_diverse.csv", "diverse top-k audit"),
-            ("route_paths_type_diverse.csv", "diverse path view"),
-            ("route_connection_type_diverse.csv", "diverse edge table"),
             ("route_paths_type_first_clock.csv", "first-clock paths"),
             ("route_paths_type_clock_relay.csv", "clock-relay paths"),
             ("route_paths_type_clock_relay_no_intra.csv",
@@ -3176,13 +3254,7 @@ def _render_type_pruned_section(folder: Path, label: str,
              "clock-relay paths (intra-clock kept)"),
             ("route_paths_type_no_intra_clock_edges.csv",
              "no-intra-clock view (first-clock + relay no-intra)"),
-            ("route_full_paths_type.csv", "full-scope (synapse &ge; 1) chains"),
-            ("route_full_type_pairs.csv", "full-scope pair table"),
-            ("type_prune_manifest.json", "type-prune manifest"),
-            ("type_nt_consensus.csv",
-             "effective-label NT consensus"),
-            ("route_provenance.json", "provenance"),
-            ("README.md", "lane README")):
+            ("type_prune_manifest.json", "type-prune manifest")):
         if (lane / fname).exists():
             links.append('<a href="' + link_prefix + TYPED_LANE_DIR + "/"
                          + fname + '">' + lab + '</a>')
@@ -3200,7 +3272,7 @@ def _render_type_pruned_section(folder: Path, label: str,
         scope_txt = (
             '<p><b>Per-pair shortest scope</b>: '
             + _esc(str(scope_mode)) + '; Lt source '
-            + _esc(str(manifest.get("scope_lt") or "&mdash;"))
+            + _v("scope_lt")
             + ', pad ' + _v("scope_pad") + ', hard cap '
             + (_v("scope_hard_cap") if manifest.get("scope_hard_cap")
                else "none") + '. '
@@ -3216,9 +3288,10 @@ def _render_type_pruned_section(folder: Path, label: str,
     _full = prov.get("full") or {}
     if str(_full.get("status") or "") == "skipped_not_requested":
         full_txt = ('<p><b>Full-scope second round</b> (synapse &ge; 1): '
-                    'not requested for this typed lane. Pass '
-                    '<code>--full-scope</code> to re-value its chains; the '
-                    'asked-scope tables are unaffected.</p>')
+                    'disabled with <code>--no-full-scope</code>. Re-run '
+                    'without it to write the shared '
+                    '<code>route_full_*</code> tables; the asked-scope '
+                    'tables are unaffected.</p>')
     elif str(_full.get("status") or "") == "failed":
         full_txt = ('<p><b>Full-scope second round: FAILED</b> &mdash; '
                     + _esc(str(_full.get("error") or ""))
@@ -3230,9 +3303,9 @@ def _render_type_pruned_section(folder: Path, label: str,
             '<p><b>Strongest-first top-k</b>: k=' + _v("type_top_k")
             + ' per source-target pair; <b>topk_certified</b>='
             + _esc(str(_cert)) + ', bound '
-            + _esc(str(manifest.get("topk_bound") or "&mdash;"))
+            + _v("topk_bound")
             + ', next candidate bound '
-            + _esc(str(manifest.get("topk_next_bound") or "&mdash;"))
+            + _v("topk_next_bound")
             + ', candidates pulled ' + _v("candidates_pulled")
             + ' / prefixes expanded ' + _v("candidates_expanded")
             + '. Per-pair stop reasons are in '
@@ -3290,8 +3363,8 @@ def _render_type_pruned_section(folder: Path, label: str,
         '<div class="card"><h3>' + _esc(label)
         + ' &mdash; ' + lane_title + '</h3>'
         + '<p>Pruned the lossless discovery cone on '
-        + _esc(str(manifest.get("basis") or "&mdash;")) + ' at '
-        + _esc(str(manifest.get("min_ratio_adj") or "&mdash;"))
+        + _v("basis") + ' at '
+        + _v("min_ratio_adj")
         + '; enumerated ' + _v("candidate_walks")
         + ((' scoped type walks (' if scope_mode else ' complete type walks (')
            + _v("revisit_policy")
@@ -3329,7 +3402,7 @@ def _render_type_pruned_section(folder: Path, label: str,
            if manifest.get("nt_consensus_labels") is not None else '')
         + full_txt
         + '<p>Pairs ' + pair_txt + '; mass source '
-        + _esc(str(manifest.get("mass_source") or "&mdash;"))
+        + _v("mass_source")
         + '; floor ' + _v("type_pruned_floor")
         + ' (Complete tau ' + _v("complete_tau") + '). '
         + '<b>type_pruned_complete</b>=' + _esc(str(complete))
@@ -3386,12 +3459,13 @@ def _render_corridor_tab(payload: dict, run_dir: Path) -> str:
         # 'corridor' — so any text placed here for that tool is unreachable
         # (measured). Its absence is stated where the reader actually lands,
         # in the Analysis bar caption (run.mode_note).
-        return ('<div class="card"><h3>Fast mode (corridor lane)</h3>'
-                '<p style="color:var(--secondary-color);">No corridor '
-                'artifacts under this run. Fast mode writes '
-                '<code>route_scope_paths/</code> after deep runs '
-                '(Fast Mode = both, or auto with Max Intermediate '
-                'Layers &ge; 4); regenerate any run folder post-hoc with '
+        return ('<div class="card"><h3>Corridor lane</h3>'
+                '<p style="color:var(--secondary-color);">No lane '
+                'artifacts under this run. A lane-only run writes '
+                '<code>route_scope_paths/</code> (Fast only) or '
+                '<code>route_scope_paths_type_pruned/</code> '
+                '(Type-pruned only); Complete-only runs carry no lane. '
+                'Regenerate any run folder post-hoc with '
                 '<code>scripts/CorridorDeepDive.py &lt;run_dir&gt;</code>.'
                 '</p></div>')
     return ''.join(sections)
@@ -3409,9 +3483,10 @@ def _corridor_tier_text(lane: dict) -> str:
 
 
 def _render_corridor_explorer_tab(payload: dict, run_dir: Path) -> str:
-    """Analysis &rarr; Fast (corridor) &rarr; Pair Explorer (F3): the lane's
-    validated walks browsed per source &times; target, in the same capped,
-    per-cell-explained table grammar the Complete Pair Explorer uses.
+    """Analysis &rarr; corridor (Fast or Type-pruned) &rarr; Pair Explorer
+    (F3): the lane's validated walks browsed per source &times; target, in
+    the same capped, per-cell-explained table grammar the Complete Pair
+    Explorer uses.
 
     The lane's own disclosure card stands above the explorer, so the tier the
     numbers are valued at, the walk-budget stop reasons and the export links
@@ -3471,10 +3546,11 @@ def _render_corridor_explorer_tab(payload: dict, run_dir: Path) -> str:
 
 
 def _render_corridor_refill_tab(payload: dict, run_dir: Path) -> str:
-    """Analysis &rarr; Fast (corridor) &rarr; Refill: the lane's SECOND ROUND
-    (Q2) — the same validated chains re-valued at synapse &ge; 1 through the
-    refill's own layered filter, so a Fast run answers the same scope pair a
-    Complete run does and can be read standalone.
+    """Analysis &rarr; corridor &rarr; Refill: the lane's SECOND ROUND (Q2)
+    — the same validated chains re-valued at synapse &ge; 1 through the
+    refill's own layered filter, so a lane-only run answers the same scope
+    pair a Complete run does and can be read standalone. The mode title is
+    taken from the run's mode label, never hardcoded to Fast.
 
     Only the full scope exists here: the lane has no budget that raises an
     applied threshold, so its sub-threshold band is <code>[1, asked)</code>
@@ -3487,7 +3563,9 @@ def _render_corridor_refill_tab(payload: dict, run_dir: Path) -> str:
                  or (carrying and carrying.get('pairs')))
     units_for_bar = ((complete_full or {}).get('units')
                      or (carrying or {}).get('units') or [])
-    parts = ['<div class="card"><h3>Fast mode (corridor) &mdash; refill</h3>'
+    _mode_label = ((payload.get('run') or {}).get('mode_labels')
+                   or {}).get('corridor', 'Fast (corridor)')
+    parts = [f'<div class="card"><h3>{_esc(_mode_label)} &mdash; refill</h3>'
              '<p style="color:var(--secondary-color);font-size:0.9em;">The '
              'lane\u2019s chains re-valued at <b>synapse &ge; 1</b> (no '
              'tier) against the lane\u2019s own hop pairs, with the refill\u2019s '
@@ -6389,8 +6467,15 @@ def generate_paths_pair_report(
     # tab can link the per-delegate reports via _link_if_exists.
     nested_reports: List[Path] = []
     if any(u.dataset for u in units):
+        _root_resolved = Path(run_dir).resolve()
         for unit in units:
             if not unit.dataset:
+                continue
+            # A lane-only root unit carries the run's dataset label but its
+            # folder IS this run folder. Generating a nested report there
+            # recurses into the same folder (real-data hang, 2026-11-02):
+            # only genuine delegate subfolders get nested reports.
+            if Path(unit.folder).resolve() == _root_resolved:
                 continue
             try:
                 nested_reports.append(generate_paths_pair_report(

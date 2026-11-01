@@ -134,16 +134,13 @@ def create_find_path_tab():
                 hint="Enrich the path graph with reciprocal direct connections.",
             )
 
-            # Corridor lane (plan-corridor-lane.md) — selector + the live
-            # WILL/will-NOT line, both defined once for every tab that has a
-            # Run Mode (shared module; the label, the four values and the
-            # auto-depth rule cannot drift between them again).
-            run_mode = pc.run_mode_block(
-                depth_getter=lambda: int(max_interlayer.value or 0))
+            # Corridor lane (plan-corridor-lane.md) — the shared Run Mode
+            # selector + live line. One run selects ONE lane: Complete,
+            # Fast (standalone) or Type-pruned (standalone).
+            run_mode = pc.run_mode_block()
 
             def _on_max_interlayer_change(e):
                 interlayer_warning.set_visibility((e.value or 0) >= 4)
-                run_mode.refresh()
 
             max_interlayer.on_value_change(_on_max_interlayer_change)
 

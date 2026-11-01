@@ -157,13 +157,6 @@ def create_find_shortest_tab():
                          "kept and tau is reported. Filters the emitted PATHS "
                          "only — the graph is not trimmed. 0 = auto (1M budget).",
                 )
-                run_mode = pc.run_mode_block(
-                    depth_getter=lambda: int(max_interlayer.value or 0),
-                    extra=" At this tab's default depth (5) the built-in "
-                          "'auto' runs the lane on every query.",
-                    # The typed lane requires path_mode='all'; offering it
-                    # on Shortest would guarantee a post-run refusal.
-                    supports_type_pruned=False)
                 edge_limit = number_input(
                     "Visualization Edge Limit", get_user_default("edgeN_limit"), 10, 5000,
                     hint="Drawing-only cap: at most this many unique edges are "
@@ -222,6 +215,10 @@ def create_find_shortest_tab():
                 lambda _e: _sync_coverage_custom())
             _sync_coverage_custom()
 
+            # Run Mode spans the full card width: the selected lane's live
+            # line and typed knob grid cannot be squeezed into one grid cell.
+            run_mode = pc.run_mode_block()
+
             def _sync_threshold_basis():
                 pc.sync_threshold_visibility(threshold_basis, min_synapse,
                                              min_ratio_threshold,
@@ -231,9 +228,6 @@ def create_find_shortest_tab():
                         min_ratio_threshold):
                 _el.on_value_change(lambda _e: _sync_threshold_basis())
             _sync_threshold_basis()
-            # the Run Mode line depends on the depth too ('auto' needs >= 4),
-            # so the depth control refreshes it
-            max_interlayer.on_value_change(lambda _e: run_mode.refresh())
 
             def _coverage_payload(value):
                 """UI level -> engine fraction (None = legacy)."""

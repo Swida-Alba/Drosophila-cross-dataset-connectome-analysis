@@ -21,7 +21,8 @@ route_type_incoming_asked.csv, route_provenance.json, README.md — plus the
 lane's OWN second round at synapse >= 1 (route_full_paths_type.csv,
 route_full_carrying_paths_type.csv, route_full_type_pairs.csv,
 route_type_incoming.csv and the route_full_type_{network,heatmap}.html
-mirrors; opt-in for the typed lane via --full-scope) — plus plan.json under
+mirrors; on by default for BOTH lane modes, --no-full-scope skips it) —
+plus plan.json under
 data_details/route_plan/ beside the output root.
 
 The typed lane validates each type walk with ONE layered forward/backward
@@ -130,12 +131,15 @@ def main():
     ap.add_argument("--no-bodyid", action="store_true",
                     help="skip route_paths_bodyId.csv (Fast lane only; the "
                          "typed lane never writes bodyId witness rows)")
-    ap.add_argument("--full-scope", action="store_true",
-                    default=None,
-                    help="also run the synapse >= 1 second round for the "
-                         "typed lane. It is off by default there (layered "
-                         "validation is the production contract; the Fast "
-                         "lane keeps its existing default).")
+    _full = ap.add_mutually_exclusive_group()
+    _full.add_argument("--full-scope", dest="full_scope", action="store_true",
+                       default=None,
+                       help="run the synapse >= 1 second round (default ON "
+                            "for BOTH lane modes; the shared file set).")
+    _full.add_argument("--no-full-scope", dest="full_scope",
+                       action="store_false",
+                       help="skip the synapse >= 1 second round and its "
+                            "route_full_* tables.")
     ap.add_argument("--time-budget", type=float, default=900.0,
                     help="wall-clock budget in seconds (0 = unlimited)")
     ap.add_argument("--allow-multi-visit", action="store_true",
@@ -324,11 +328,17 @@ def main():
                   infer_type_pruned=not args.no_infer_type_pruned)
     try:
         if args.run_dir:
-            out = (Path(args.out) if args.out else
-                   Path(args.run_dir) / (TYPED_LANE_DIR if args.type_pruned
-                                         else FAST_LANE_DIR))
+            # Only an EXPLICIT --out is forwarded as out_dir. Otherwise let
+            # run_lane choose the lane namespace (route_scope_paths[ _type_
+            # pruned]/), so plan.json lands at the run root for both lanes
+            # instead of inside the lane folder.
+            explicit_out = Path(args.out) if args.out else None
             run_lane(args.run_dir, connections_path=args.connections,
-                     neuron_table=args.neuron_table, out_dir=out, **common)
+                     neuron_table=args.neuron_table,
+                     out_dir=explicit_out, **common)
+            out = (explicit_out if explicit_out is not None else
+                   Path(args.run_dir) / (
+                       TYPED_LANE_DIR if args.type_pruned else FAST_LANE_DIR))
         else:
             if not (args.dataset_dir and args.sources and args.targets
                     and args.out):

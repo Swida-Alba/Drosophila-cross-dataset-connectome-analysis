@@ -2689,6 +2689,12 @@ def _run_type_pruned(*, walk_rows, scope_pairs, pairs,
     clock_token_counts = dict(sorted(clock_token_counts.items()))
     block.update({
         "mode": "type_pruned_complete",
+        # The shared lane file contract is one table set; this lane's
+        # bodyId table is intentionally omitted (layered validation does not
+        # enumerate bodyId witnesses). Disclosed in the manifest+provenance.
+        "bodyId_export": "not_applicable",
+        "bodyId_export_reason": (
+            "layered forward/backward validation; no bodyId witness rows"),
         "walk_mode": ("topk" if top_k > 0 else "complete"),
         "selection_mode": ("strongest_first" if top_k > 0
                            else "exhaustive"),
@@ -3184,11 +3190,14 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     No top-M share and no class quota: every validated walk that clears
     the exact filter is exported. ``type_pruned_complete`` is true only
     when the type-walk enumeration exhausted and every walk got a layered
-    verdict. This mode requires path_mode='all' (a shortest-run discovery
-    store is not a full-floor bodyId source). It writes no
-    ``route_paths_bodyId.csv`` and skips the additive synapse >= 1 second
-    round unless ``full_scope=True`` (``--full-scope``); the Fast lane
-    keeps its previous second-round default.
+    verdict. This mode uses the full-floor connection source on BOTH
+    path modes: a shortest run's discovery store is deliberately ignored
+    (it is min-hop-restricted, not a full-floor bodyId source), and the
+    run's own max_interlayer supplies the hop bound. It writes no
+    ``route_paths_bodyId.csv`` (layered validation has no bodyId
+    witnesses; disclosed in the manifest/provenance). The additive
+    synapse >= 1 second round is written by BOTH lane modes by default;
+    ``--no-full-scope`` skips it.
 
     ``per_pair_scope=True`` replaces the single global hop bound with a
     per-(source_type,target_type) scope. ``Lt_i`` is the shortest
@@ -3383,7 +3392,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
              "trigger": trigger},
             indent=2, default=str), encoding="utf-8")
         (out / "README.md").write_text(
-            "# Corridor lane (route_scope_paths)\n\n"
+            ("# Type-pruned complete lane" if type_pruned
+             else "# Corridor lane")
+            + f" ({TYPED_LANE_DIR if type_pruned else FAST_LANE_DIR})\n\n"
             f"NOT generated — refused: {reason}\n", encoding="utf-8")
         raise CorridorRefusal(reason)
 
@@ -3400,10 +3411,11 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     # The switched-off path keeps the global bound above byte-for-byte.
     scope_mode_resolved = None
     _scope_hard_cap = None
-    # The typed lane's additive synapse >= 1 second round is opt-in; when
-    # skipped, its full connection/typed frames are released before the
-    # enumeration (memory bound, issue 2026-10-23).
-    full_scope_requested = ((not type_pruned) if full_scope is None
+    # The additive synapse >= 1 second round is part of the shared lane
+    # deliverable: BOTH Fast and typed run it by default (same file set).
+    # --no-full-scope skips it; when skipped, the typed lane releases its
+    # full connection/typed frames before enumeration (memory bound).
+    full_scope_requested = (True if full_scope is None
                             else bool(full_scope))
     if per_pair_scope:
         if not type_pruned:
@@ -3560,16 +3572,15 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     # store when present (min-hop-restricted scope, refill's
     # _load_shortest_store contract: layer_weights = [(label,
     # {(pre,post): w})]); absent/unreadable ⇒ lossless prune fallback with
-    # an explicit disclosure (the storeless path keeps working).
+    # an explicit disclosure (the storeless path keeps working). The typed
+    # lane is the exception: its completeness claim is full-floor, so it
+    # never reads that store, on either path mode.
     path_mode = str(kv.get("path_mode", "all") or "all").strip().lower()
     if type_pruned:
-        # P0-F / P2-P: the typed lane's completeness claim needs a
-        # FULL-FLOOR bodyId source. A shortest run's discovery store is the
-        # run's min-hop-restricted explored scope, not that source.
-        if path_mode == "shortest":
-            _refuse("the type-pruned complete lane requires path_mode='all' "
-                    "(a shortest-run discovery store is not a full-floor "
-                    "bodyId source)")
+        # The typed lane always rebuilds its full-floor bodyId source from
+        # the connection table; a shortest run's min-hop discovery store is
+        # deliberately NOT that source, so it is ignored below. The run's
+        # own max_interlayer remains the typed lane's hop bound.
         if str(type_walk_mode).lower() != "complete":
             _refuse(f"type walk mode {type_walk_mode!r} is not supported; "
                     "only 'complete' can carry a completeness claim")
@@ -3585,9 +3596,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
                     "combined with the type-pruned complete lane")
     store_universe = None
     store_distances = None   # F-PF-009 D3-B: per-target distance maps
-    validation_basis = ("lossless_prune" if path_mode != "shortest"
+    validation_basis = ("lossless_prune"
+                        if (path_mode != "shortest" or type_pruned)
                         else "lossless_prune_fallback")
-    if path_mode == "shortest" and run_dir:
+    if path_mode == "shortest" and run_dir and not type_pruned:
         try:
             # VECTORIZED store read (plan F8): _load_shortest_store's
             # per-row Python dict build over the multimillion-row store
@@ -5329,114 +5341,109 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         # The KEPT type graph itself (the coarse candidate universe every
         # exported walk was drawn from), with both pair-level ratios.
         pairs.write_csv(out / "route_type_pairs_pruned.csv")
-    # one row per VALIDATED WALK in *_allpaths_type.csv column order +
-    # the additive lane columns (per-path detail lives in the bodyId csv)
-    walk_rows.sort(key=lambda r: (r["path"], r["route_h"],
-                                  r["plan_rank"]))
-    if type_pruned:
-        # Layered contract (issue 2026-10-23): chain-level columns only.
-        # No sampled witness columns, no realization envelope/count.
-        typed_schema = {
-            "path": pl.Utf8, "weights": pl.Utf8, "ratios": pl.Utf8,
-            "ratios_adj": pl.Utf8,
-            "min_weight": pl.Int64, "min_ratio": pl.Float64,
-            "min_ratio_adj": pl.Float64,
-            "length": pl.Int64, "nt_types": pl.Utf8,
-            "coverage": pl.Utf8, "applied_tau": pl.Float64,
-            "route_h": pl.Int64, "route_ub": pl.Float64,
-            "route_floor_h": pl.Float64, "plan_rank": pl.Int64,
-            "chain_revisit": pl.Boolean,
-            "pair_weights": pl.Utf8,
-            "ratio_adj_complete": pl.Boolean,
-            "type_pruned": pl.Boolean}
-        if clock_relay_mode:
-            relay_schema = dict(typed_schema)
-            relay_schema.update({
-                "clock_sequence": pl.Utf8,
-                "intra_clock_edges": pl.Int64,
-                "first_clock": pl.Utf8,
-                "clock_relay": pl.Boolean,
-            })
-            pl.DataFrame(walk_rows, schema=relay_schema).write_csv(
-                out / "route_paths_type.csv")
-            _first_clock_rows = [
-                {k: v for k, v in r.items() if k not in (
-                    "clock_sequence", "intra_clock_edges", "first_clock",
-                    "clock_relay")}
-                for r in walk_rows if not r.get("clock_relay")]
-            _relay_rows = [r for r in walk_rows if r.get("clock_relay")]
-            pl.DataFrame(_first_clock_rows, schema=typed_schema).write_csv(
-                out / "route_paths_type_first_clock.csv")
-            pl.DataFrame(_relay_rows, schema=relay_schema).write_csv(
-                out / "route_paths_type_clock_relay.csv")
-            pl.DataFrame(
-                [r for r in _relay_rows
-                 if int(r.get("intra_clock_edges") or 0) == 0],
-                schema=relay_schema).write_csv(
-                out / "route_paths_type_clock_relay_no_intra.csv")
-            pl.DataFrame(
-                [r for r in _relay_rows
-                 if int(r.get("intra_clock_edges") or 0) > 0],
-                schema=relay_schema).write_csv(
-                out / "route_paths_type_clock_relay_intra.csv")
-            # Full no-intra view = first-clock + relay paths with zero
-            # clock-clock hops (updated issue follow-up 3). Path-level,
-            # never an edge cut.
-            _no_intra = [
-                r for r in walk_rows if not r.get("clock_relay")]
-            _no_intra += [
-                r for r in _relay_rows
-                if int(r.get("intra_clock_edges") or 0) == 0]
-            _no_intra.sort(key=lambda r: (r["path"], r["route_h"],
-                                          r["plan_rank"]))
-            pl.DataFrame(_no_intra, schema=relay_schema).write_csv(
-                out / "route_paths_type_no_intra_clock_edges.csv")
-        else:
-            pl.DataFrame(walk_rows, schema=typed_schema).write_csv(
-                out / "route_paths_type.csv")
-        if str(type_diversity) == "edge_quota" and diverse_rows:
-            diverse_rows.sort(key=lambda r: (r["path"], r["route_h"],
-                                             r["plan_rank"]))
-            _div_schema = relay_schema if clock_relay_mode else typed_schema
-            pl.DataFrame(diverse_rows, schema=_div_schema).write_csv(
-                out / "route_paths_type_diverse.csv")
-        elif str(type_diversity) == "edge_quota":
-            (out / "route_paths_type_diverse.csv").unlink(missing_ok=True)
+    # ONE lane table contract for Fast and typed. Mode-specific extras
+    # (typed manifest/scope/top-k/relay splits; Fast witness counts) are
+    # separate files, but every shared column exists in BOTH modes. The
+    # typed lane leaves the witness-only columns EMPTY and discloses that
+    # in provenance (bodyId_export=not_applicable).
+    lane_schema = {
+        "path": pl.Utf8, "weights": pl.Utf8, "ratios": pl.Utf8,
+        "ratios_adj": pl.Utf8,
+        "min_weight": pl.Int64, "min_ratio": pl.Float64,
+        "min_ratio_adj": pl.Float64,
+        "gate_min_ratio_adj": pl.Float64,
+        "exact_gate_basis": pl.Utf8,
+        "realization_sample_truncated": pl.Boolean,
+        "length": pl.Int64, "nt_types": pl.Utf8,
+        "coverage": pl.Utf8, "applied_tau": pl.Float64,
+        "route_h": pl.Int64, "route_ub": pl.Float64,
+        "route_floor_h": pl.Float64, "plan_rank": pl.Int64,
+        "realized_paths": pl.Int64,
+        "sampled_support_mass": pl.Utf8,
+        "sampled_ratios": pl.Utf8,
+        "sampled_coverage": pl.Utf8,
+        "chain_revisit": pl.Boolean,
+        "pair_weights": pl.Utf8,
+        "ratio_adj_complete": pl.Boolean,
+        "type_pruned": pl.Boolean,
+        # Clock-relay columns are always present in the shared contract;
+        # they stay null/false when the lane did not run relay search.
+        "clock_sequence": pl.Utf8,
+        "intra_clock_edges": pl.Int64,
+        "first_clock": pl.Utf8,
+        "clock_relay": pl.Boolean}
+    for _row in walk_rows:
+        _row.setdefault("gate_min_ratio_adj", _row.get("min_ratio_adj"))
+        _row.setdefault("exact_gate_basis", "layered_chain")
+        _row.setdefault("realization_sample_truncated", False)
+        _row.setdefault("type_pruned", bool(type_pruned))
+        _row.setdefault("clock_sequence", None)
+        _row.setdefault("intra_clock_edges", None)
+        _row.setdefault("first_clock", None)
+        _row.setdefault("clock_relay", False)
+        if type_pruned:
+            _row.setdefault("realized_paths", None)
+            _row.setdefault("sampled_support_mass", None)
+            _row.setdefault("sampled_ratios", None)
+            _row.setdefault("sampled_coverage", None)
+    if clock_relay_mode:
+        pl.DataFrame(walk_rows, schema=lane_schema).write_csv(
+            out / "route_paths_type.csv")
+        _first_clock_rows = [
+            {**r, "clock_sequence": None, "intra_clock_edges": None,
+             "first_clock": None, "clock_relay": False}
+            for r in walk_rows if not r.get("clock_relay")]
+        _relay_rows = [r for r in walk_rows if r.get("clock_relay")]
+        pl.DataFrame(_first_clock_rows, schema=lane_schema).write_csv(
+            out / "route_paths_type_first_clock.csv")
+        pl.DataFrame(_relay_rows, schema=lane_schema).write_csv(
+            out / "route_paths_type_clock_relay.csv")
+        pl.DataFrame(
+            [r for r in _relay_rows
+             if int(r.get("intra_clock_edges") or 0) == 0],
+            schema=lane_schema).write_csv(
+            out / "route_paths_type_clock_relay_no_intra.csv")
+        pl.DataFrame(
+            [r for r in _relay_rows
+             if int(r.get("intra_clock_edges") or 0) > 0],
+            schema=lane_schema).write_csv(
+            out / "route_paths_type_clock_relay_intra.csv")
+        # Full no-intra view = first-clock + relay paths with zero
+        # clock-clock hops (updated issue follow-up 3). Path-level,
+        # never an edge cut.
+        _no_intra = [
+            r for r in walk_rows if not r.get("clock_relay")]
+        _no_intra += [
+            r for r in _relay_rows
+            if int(r.get("intra_clock_edges") or 0) == 0]
+        _no_intra.sort(key=lambda r: (r["path"], r["route_h"],
+                                      r["plan_rank"]))
+        pl.DataFrame(_no_intra, schema=lane_schema).write_csv(
+            out / "route_paths_type_no_intra_clock_edges.csv")
     else:
-        for _row in walk_rows:
-            _row.setdefault("gate_min_ratio_adj",
-                            _row.get("min_ratio_adj"))
+        pl.DataFrame(walk_rows, schema=lane_schema).write_csv(
+            out / "route_paths_type.csv")
+    if str(type_diversity) == "edge_quota" and diverse_rows:
+        diverse_rows.sort(key=lambda r: (r["path"], r["route_h"],
+                                         r["plan_rank"]))
+        for _row in diverse_rows:
+            _row.setdefault("gate_min_ratio_adj", _row.get("min_ratio_adj"))
             _row.setdefault("exact_gate_basis", "layered_chain")
             _row.setdefault("realization_sample_truncated", False)
-        type_schema = {
-            "path": pl.Utf8, "weights": pl.Utf8, "ratios": pl.Utf8,
-            "ratios_adj": pl.Utf8,
-            "min_weight": pl.Int64, "min_ratio": pl.Float64,
-            "min_ratio_adj": pl.Float64,
-            "gate_min_ratio_adj": pl.Float64,
-            "exact_gate_basis": pl.Utf8,
-            "realization_sample_truncated": pl.Boolean,
-            "length": pl.Int64, "nt_types": pl.Utf8,
-            "coverage": pl.Utf8, "applied_tau": pl.Float64,
-            "route_h": pl.Int64, "route_ub": pl.Float64,
-            "route_floor_h": pl.Float64, "plan_rank": pl.Int64,
-            "realized_paths": pl.Int64,
-            # Decisions 3: the sampled witness readout, demoted to
-            # explicitly-named columns beside the chain-level ones.
-            "sampled_support_mass": pl.Utf8,
-            "sampled_ratios": pl.Utf8,
-            "sampled_coverage": pl.Utf8,
-            "chain_revisit": pl.Boolean,
-            "pair_weights": pl.Utf8,
-            "ratio_adj_complete": pl.Boolean,
-            "type_pruned": pl.Boolean}
-        pl.DataFrame(walk_rows, schema=type_schema).write_csv(
-            out / "route_paths_type.csv")
-        if str(type_diversity) == "edge_quota" and diverse_rows:
-            diverse_rows.sort(key=lambda r: (r["path"], r["route_h"],
-                                             r["plan_rank"]))
-            pl.DataFrame(diverse_rows, schema=type_schema).write_csv(
-                out / "route_paths_type_diverse.csv")
+            _row.setdefault("type_pruned", bool(type_pruned))
+            _row.setdefault("clock_sequence", None)
+            _row.setdefault("intra_clock_edges", None)
+            _row.setdefault("first_clock", None)
+            _row.setdefault("clock_relay", False)
+            if type_pruned:
+                _row.setdefault("realized_paths", None)
+                _row.setdefault("sampled_support_mass", None)
+                _row.setdefault("sampled_ratios", None)
+                _row.setdefault("sampled_coverage", None)
+        pl.DataFrame(diverse_rows, schema=lane_schema).write_csv(
+            out / "route_paths_type_diverse.csv")
+    elif str(type_diversity) == "edge_quota":
+        (out / "route_paths_type_diverse.csv").unlink(missing_ok=True)
     if write_bodyid and not type_pruned:
         pl.DataFrame(body_rows, schema={
             "path": pl.Utf8, "weights": pl.Utf8, "length": pl.Int64,
@@ -5591,8 +5598,8 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     full_block = None
     # The second round is additive and is NOT part of the layered typed
     # contract (it retains per-chain structures and was the residual peak).
-    # The Fast lane keeps its existing default; the typed lane opts in with
-    # --full-scope.
+    # BOTH lane modes write it by default so their file sets match;
+    # --no-full-scope explicitly disables it.
     if not full_scope_requested:
         # Remove stale additive artifacts from an older in-place typed run.
         for _stale in (
@@ -5605,9 +5612,9 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         full_block = {
             "status": "skipped_not_requested", "scope": "synapse >= 1",
             "asked": asked,
-            "note": ("the layered typed lane does not run the additive "
-                     "synapse >= 1 second round by default; pass "
-                     "--full-scope to re-value its chains")}
+            "note": ("the additive synapse >= 1 second round was disabled "
+                     "with --no-full-scope; re-run without it to write the "
+                     "shared route_full_* tables")}
     else:
         refill_conn = conn
         refill_cut_keys = None
@@ -5721,13 +5728,11 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
     ).hexdigest()[:12]
     plan["plan_hash"] = plan_hash
     try:
-        if type_pruned and not explicit_out:
-            # The typed lane owns its own plan.json; the Fast lane's
-            # data_details/route_plan must stay untouched.
-            plan_dir = out / "data_details" / "route_plan"
-        else:
-            plan_dir = (out if (explicit_out or not run_dir)
-                        else Path(run_dir)) / "data_details" / "route_plan"
+        # ONE plan location for both lane modes: beside the run folder, not
+        # inside the mode namespace. An explicit --out (direct mode) keeps
+        # its plan beside that output root.
+        plan_dir = (Path(out) if (explicit_out or not run_dir)
+                    else Path(run_dir)) / "data_details" / "route_plan"
         plan_dir.mkdir(parents=True, exist_ok=True)
         (plan_dir / "plan.json").write_text(
             json.dumps(plan, indent=2, default=str), encoding="utf-8")
@@ -5823,6 +5828,13 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "path_mode": path_mode,
         "validation_basis": validation_basis,
         "nt_consensus_table": "type_nt_consensus.csv",
+        # Shared lane file contract: Fast writes route_paths_bodyId.csv;
+        # typed intentionally omits it (layered validation has no bodyId
+        # witnesses) and says so here instead of leaving a silent gap.
+        "bodyId_export": ("not_applicable" if type_pruned else "written"),
+        "bodyId_export_reason": (
+            "layered forward/backward validation; no bodyId witness rows"
+            if type_pruned else None),
         # P2-N/P2-S: the typed lane's identity and completeness are SEPARATE
         # from the Complete lane's `paths_complete`.
         "type_pruned": bool(type_pruned),
@@ -6000,10 +6012,10 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
             "chains to re-value).\n\n")
     elif full_block.get('status') == 'skipped_not_requested':
         _second_round_txt = (
-            "- SECOND ROUND (synapse >= 1): NOT REQUESTED for this typed "
-            "lane. The layered lane keeps only its chain tables; pass "
-            "`--full-scope` if the additive synapse >= 1 re-value is "
-            "wanted. The asked-scope tables above are unaffected.\n\n")
+            "- SECOND ROUND (synapse >= 1): DISABLED with "
+            "`--no-full-scope`. The lane keeps only its chain tables; "
+            "re-run without that flag to write the shared route_full_* "
+            "tables. The asked-scope tables above are unaffected.\n\n")
     elif full_block.get('status') == 'failed':
         _second_round_txt = (
             f"- SECOND ROUND (synapse >= 1): FAILED — "
@@ -6064,6 +6076,12 @@ def run_lane(run_dir=None, corridor_mode="both", top_m_base=10,
         "disclosed as store_weight_conflicts)"
         if validation_basis in ("shortest_store_edge_union",
                                 "shortest_dag_store_enforced") else
+        " (lossless hop-budget prune; the shortest run's discovery store is "
+        "IGNORED by the typed lane — validation uses the full-floor "
+        "connection source at the run's own hop bound)"
+        if (validation_basis == "lossless_prune" and path_mode == "shortest"
+            and type_block is not None)
+        else
         " (lossless hop-budget prune)"
         if validation_basis == "lossless_prune" else
         " (store absent — lossless-prune FALLBACK, not min-hop-"

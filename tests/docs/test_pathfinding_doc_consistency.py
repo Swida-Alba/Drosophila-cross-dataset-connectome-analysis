@@ -211,11 +211,11 @@ def test_the_page_names_and_mode_values_stay_current():
         # user guide names the control's LABELS, which is what a reader of the
         # guide sees on screen.
         if rel.endswith(".md"):
-            for value in ("complete", "auto", "both", "fast"):
+            for value in ("complete", "fast", "typed"):
                 assert f"`{value}`" in text, (rel, value)
         else:
-            for label in ("Complete only", "Auto (deep runs)",
-                          "Complete + Fast", "Fast only"):
+            for label in ("Complete only", "Fast only (standalone)",
+                          "Type-pruned only (standalone)"):
                 assert label in text, (rel, label)
         assert "Refill tab" not in text, rel
     guide_src = (root / "docs/ui_guides/src/pathfinding_algorithms.md"

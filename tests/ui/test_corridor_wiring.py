@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "vispath-subproject" / "src"))
 
-FIELDS = {"corridor_mode": "'auto'", "route_top_m_base": "10",
+FIELDS = {"corridor_mode": "'complete'", "route_top_m_base": "10",
           "route_length_decay": "1.5",
           "route_path_budget_per_pair_length": "100"}
 
@@ -24,7 +24,7 @@ def _make_cache_only_fnc():
     import dataclasses
     fields = {f.name: f for f in dataclasses.fields(
         coana.FindNeuronConnection)}
-    assert fields["corridor_mode"].default == "auto"
+    assert fields["corridor_mode"].default == "complete"
     assert fields["route_top_m_base"].default == 10
     assert fields["route_length_decay"].default == 1.5
     assert (fields["route_path_budget_per_pair_length"].default == 100)
@@ -34,7 +34,7 @@ def _make_cache_only_fnc():
                                       targetNeurons=["PPL101"],
                                       output_dir=None, use_cache=True,
                                       cache_only=True)
-    assert inst.corridor_mode == "auto"
+    assert inst.corridor_mode == "complete"
     return inst
 
 
@@ -46,13 +46,13 @@ def test_config_defaults_present():
     import ui.config as cfg
     for name, val in FIELDS.items():
         assert cfg.DEFAULTS[name] is not None, name
-    assert cfg.DEFAULTS["corridor_mode"] == "auto"
+    assert cfg.DEFAULTS["corridor_mode"] == "complete"
     assert cfg.DEFAULTS["route_path_budget_per_pair_length"] == 100
 
 
 def _tab_wired(rel, need_control=True):
     """A tab drives the SHARED Run Mode block and sends ITS value (2026-10-16
-    Q7: the control, its label, its four values and its live status line are
+    Q7: the control, its label, its values and its live status line are
     defined once, so a tab can no longer carry a stale copy of any of them)."""
     src = (ROOT / rel).read_text()
     if need_control:
@@ -63,31 +63,30 @@ def _tab_wired(rel, need_control=True):
 
 def test_find_path_tab_wired():
     src = _tab_wired("ui/tabs/find_path.py")
-    # §7 live feedback: the depth-change handler refreshes the corridor status
-    # line (the shared block does it with Label.set_text, not set_value —
-    # house rule), and this tab wires its own depth control to it.
-    assert "run_mode.refresh()" in src  # depth change refreshes the line
+    # One mode = one lane; the depth warning still tracks the depth field.
     assert "interlayer_warning.set_visibility" in src
 
 
 def test_find_shortest_tab_wired():
     src = _tab_wired("ui/tabs/find_shortest.py")
     assert "shortest-DAG" in src  # honest scope label
-    # the tab whose default depth already clears the auto gate says so
-    assert "default depth (5)" in src
-    # the typed lane requires path_mode='all'; Shortest hides its controls
-    assert "supports_type_pruned=False" in src
+    # typed is a Run Mode here too: the lane rebuilds its full-floor source,
+    # so a shortest run is not a refusal and there is no support gate
+    assert "supports_type_pruned" not in src
 
 
-def test_cross_dataset_typed_control_follows_path_mode():
+def test_cross_dataset_typed_control_is_not_path_mode_gated():
     src = _tab_wired("ui/tabs/inter_dataset.py")
-    assert "set_type_pruned_supported(" in src
-    assert "path_mode.value != 'shortest'" in src
+    # typed rides in the Run Mode value; it is never a checkbox that a
+    # path-mode switch hides
+    assert "set_type_pruned_supported" not in src
+    assert "supports_type_pruned" not in src
 
 
 def test_inter_dataset_tab_wired():
     src = _tab_wired("ui/tabs/inter_dataset.py")
-    assert "Per dataset" in src  # its own extra sentence on the shared line
+    # One mode per delegate: no per-dataset auto-gate sentence remains.
+    assert "Per dataset: a delegate" not in src
 
 
 def test_mode_control_unified_naming():
@@ -95,22 +94,20 @@ def test_mode_control_unified_naming():
     canonical values with human labels, a hover hint, and a help_doc link
     into the algorithms guide — in all three tabs.
 
-    The 2026-10-15 half is the cross-surface law the round needed and did
-    not have: the canonical set is FOUR values now (the standalone
-    `fast` = Fast only landed on the Complete Paths tab), and a tab may
-    announce only the values its own control offers. Three surfaces went
-    stale because nothing tied a guide's value list to the selector's
-    options — this is that tie."""
-    canonical = {"complete", "auto", "both", "fast"}
+    A run now selects ONE lane. The canonical set is THREE mutually
+    exclusive values: complete, fast (standalone) and typed (standalone).
+    A tab may announce only the values its own control offers; the guide's
+    value list is tied to the shared selector."""
+    canonical = {"complete", "fast", "typed"}
     shared = (ROOT / "ui" / "components"
               / "pathfinding_controls.py").read_text()
     # The value dict is owned by the Settings registry (Q3: it is now both a
     # tab control and a persisted default), so the card and the tabs cannot
     # be reworded apart; the shared control re-exports it.
     vocab = (ROOT / "ui" / "config.py").read_text()
-    for value, label in (("complete", "Complete only"), ("auto", "Auto (deep runs)"),
-                         ("both", "Complete + Fast"),
-                         ("fast", "Fast only (standalone)")):
+    for value, label in (("complete", "Complete only"),
+                         ("fast", "Fast only (standalone)"),
+                         ("typed", "Type-pruned only (standalone)")):
         assert f'"{value}": "{label}"' in vocab, value
     assert "RUN_MODE_OPTIONS = CORRIDOR_MODE_CHOICES" in shared
     assert 'help_doc="pathfinding_algorithms"' in shared
@@ -146,7 +143,7 @@ def test_mode_control_unified_naming():
             assert f'<code>{value}</code>' in value_sentence, (
                 f'{guide}.md does not document the {value} value its '
                 'control offers')
-    # every surface that offers the mode offers all four values, and the
+    # every surface that offers the mode offers every value, and the
     # standalone one is among them (plan Q4/D3) — read from the shared dict
     from ui.components import pathfinding_controls as _pc
     assert "fast" in _pc.RUN_MODE_OPTIONS
@@ -161,13 +158,11 @@ def _src_shared_tabs_joined():
 
 
 def test_settings_legacy_values_normalize():
-    """Saved 'off'/'on' settings resolve to the canonical names."""
+    """Legacy mixed spellings resolve to Complete under the one-mode rule."""
     import ui.config as cfg
-    # direct map check (get_user_default reads user overrides — the map
-    # is the contract)
-    assert {'off': 'complete', 'on': 'both'}.get('off') == 'complete'
-    assert {'off': 'complete', 'on': 'both'}.get('on') == 'both'
-    assert cfg.DEFAULTS["corridor_mode"] == "auto"
+    assert {'off': 'complete', 'on': 'complete',
+            'auto': 'complete', 'both': 'complete'}.get('on') == 'complete'
+    assert cfg.DEFAULTS["corridor_mode"] == "complete"
 
 
 def test_hook_isolation_in_coana_source():
@@ -178,20 +173,31 @@ def test_hook_isolation_in_coana_source():
     # (in-process GC pressure made the bound-5 lane pathological)
     hook = src[src.index("def _maybe_generate_corridor_deep_dive"):]
     # stop at the next TOP-LEVEL method (a nested helper is indented deeper)
-    body = hook[:hook.index("\n    def ", 10)]
-    # the mode gate (resolved through _resolved_run_mode since the
-    # run_mode stamping landed) still precedes any import/subprocess work
+    body = hook[:hook.index("\n    def ", 8)]
+    # ONE mode per run: the hook is typed-only. Fast-only runs its lane in
+    # its own branch; Complete has no secondary lane.
+    assert "if self._resolved_run_mode() != 'typed':" in body
     assert body.index("_resolved_run_mode()") < body.index("import subprocess")
-    # The typed lane is a separate gate: it runs alongside Complete at the
-    # run's own bound, and both lanes get distinct subprocess namespaces.
-    assert "fast_selected = mode in ('auto', 'both')" in body
-    assert "if not fast_selected and not typed:" in body
+    assert "fast_selected" not in body
     assert "route_scope_paths_type_pruned" in body
     assert "type_pruned" in body
     assert "_run_folder_is_replay_slice" in body  # §6 step 8 replay gate
     assert "except Exception as exc" in body  # contained failure (§3b tier 3)
     assert "TimeoutExpired" in body  # hard wall-clock budget
     assert "CorridorDeepDive.py" in body  # subprocess driver
+
+
+def test_cli_forwards_only_an_explicit_out_for_run_folders():
+    """Real-data regression (2026-11-02): the run-folder CLI used to pass its
+    internally resolved lane folder as ``out_dir``, which made run_lane treat
+    it as an explicit ``--out`` and put plan.json inside the lane namespace.
+    Only a user-supplied --out may reach run_lane; otherwise run_lane owns the
+    lane namespace and the plan stays at the run root."""
+    src = (ROOT / 'scripts' / 'CorridorDeepDive.py').read_text()
+    block = src.split('if args.run_dir:', 1)[1].split('else:', 1)[0]
+    assert 'explicit_out = Path(args.out) if args.out else None' in block
+    assert 'out_dir=explicit_out' in block
+    assert 'out_dir=out' not in block
 
 
 def test_run_mode_resolution_and_stamping(tmp_path):
@@ -213,11 +219,13 @@ def test_run_mode_resolution_and_stamping(tmp_path):
     import paths_pair_report as ppr
 
     fc = _make_cache_only_fnc()
-    for raw, want in {"auto": "auto", "complete": "complete",
-                      "both": "both", "fast": "fast",
-                      "off": "complete", "on": "both",
-                      "OFF": "complete", "nonsense": "auto",
-                      None: "auto", "": "auto"}.items():
+    # ONE mode per run: every legacy mixed spelling collapses to Complete.
+    for raw, want in {"auto": "complete", "complete": "complete",
+                      "both": "complete", "fast": "fast",
+                      "typed": "typed",
+                      "off": "complete", "on": "complete",
+                      "OFF": "complete", "nonsense": "complete",
+                      None: "complete", "": "complete"}.items():
         fc.corridor_mode = raw
         assert fc._resolved_run_mode() == want, raw
 
@@ -292,7 +300,8 @@ class _Proc:
 
 def _hook_ready(tmp_path):
     inst = _make_cache_only_fnc()
-    inst.corridor_mode = "on"
+    inst.corridor_mode = "typed"
+    inst.type_pruned = True
     inst.allpath_folder = str(tmp_path)
     (tmp_path / "parameters.txt").write_text("max interlayer: 5\n")
     # the hook invokes scripts/CorridorDeepDive.py — the driver must exist
@@ -316,7 +325,7 @@ def test_hook_refusal_appends_one_note(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(
         2, stdout="corridor lane refused: ratio-basis runs unsupported\n"))
     assert inst._maybe_generate_corridor_deep_dive() is True
-    notes = [n for n in inst._warn_notes if "[corridor lane]" in n]
+    notes = [n for n in inst._warn_notes if "[type-pruned lane]" in n]
     assert len(notes) == 1 and "not generated" in notes[0]
     assert "ratio-basis" in notes[0]
 
@@ -327,7 +336,7 @@ def test_hook_unexpected_error_contained(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(
         1, stderr="Traceback ... lane exploded"))
     assert inst._maybe_generate_corridor_deep_dive() is True  # contained
-    notes = [n for n in inst._warn_notes if "[corridor lane]" in n]
+    notes = [n for n in inst._warn_notes if "[type-pruned lane]" in n]
     assert len(notes) == 1 and "generation failed" in notes[0]
 
 
@@ -340,55 +349,43 @@ def test_hook_timeout_budget_contained(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _timeout)
     assert inst._maybe_generate_corridor_deep_dive() is True
-    notes = [n for n in inst._warn_notes if "[corridor lane]" in n]
+    notes = [n for n in inst._warn_notes if "[type-pruned lane]" in n]
     assert len(notes) == 1 and "wall-clock budget" in notes[0]
 
 
 def test_hook_guards(tmp_path):
-    """mode=off/complete always no-op; auto below L4 no-op; bad run dir
-    no-op; replay slice no-op — all BEFORE any route_plan import or
-    I/O. Legacy 'off'/'on' normalize to 'complete'/'both' (name
-    unification 2026-10-11)."""
-    import coana
+    """The typed hook is the ONLY lane hook. Complete and Fast runs no-op
+    before any import/IO; a bad run dir and a replay slice also no-op."""
     inst = _make_cache_only_fnc()
     inst.allpath_folder = str(tmp_path)
     (tmp_path / "parameters.txt").write_text("max interlayer: 5\n")
-    inst.corridor_mode = "off"
-    assert inst._maybe_generate_corridor_deep_dive() is False
-    inst.corridor_mode = "complete"  # canonical
-    assert inst._maybe_generate_corridor_deep_dive() is False
-    inst.corridor_mode = "auto"
-    inst.max_interlayer = 3
-    assert inst._maybe_generate_corridor_deep_dive() is False
-    inst.max_interlayer = 5
-    (tmp_path / "parameters.txt").write_text(
-        "max interlayer: 5\nreplayed_from:              3\n")
-    assert inst._maybe_generate_corridor_deep_dive() is False
-    inst.allpath_folder = str(tmp_path / "nope")
-    (tmp_path / "parameters.txt").write_text("max interlayer: 5\n")
-    assert inst._maybe_generate_corridor_deep_dive() is False
-    # 'on' (legacy) fires like 'both' — normalization proven by the hook
-    # reaching run_lane (monkeypatched) instead of returning early
     import subprocess as _sp
-    inst2 = _make_cache_only_fnc()
-    inst2.corridor_mode = "on"
-    inst2.allpath_folder = str(tmp_path)
-    (tmp_path / "parameters.txt").write_text("max interlayer: 5\n")
-    calls = {}
-    monkey = "pytest-monkeypatch-here"
+    calls = []
     orig_run = _sp.run
 
     def _spy(cmd, **kw):
-        calls["cmd"] = cmd
-        return type("_P", (), {"returncode": 0, "stdout": "",
-                               "stderr": ""})()
+        calls.append(cmd)
+        return _Proc(0)
 
     _sp.run = _spy
     try:
-        assert inst2._maybe_generate_corridor_deep_dive() is False
+        for mode in ("off", "complete", "auto", "both", "fast"):
+            inst.corridor_mode = mode
+            assert inst._maybe_generate_corridor_deep_dive() is False, mode
+        assert calls == [], calls
+        # typed fires; a replay slice still no-ops
+        inst.corridor_mode = "typed"
+        (tmp_path / "parameters.txt").write_text(
+            "max interlayer: 5\nreplayed_from:              3\n")
+        assert inst._maybe_generate_corridor_deep_dive() is False
+        assert calls == []
+        (tmp_path / "parameters.txt").write_text("max interlayer: 5\n")
+        assert inst._maybe_generate_corridor_deep_dive() is False
+        assert len(calls) == 1 and "--type-pruned" in calls[0]
+        inst.allpath_folder = str(tmp_path / "nope")
+        assert inst._maybe_generate_corridor_deep_dive() is False
     finally:
         _sp.run = orig_run
-    assert calls, "legacy 'on' must still trigger the lane"
 
 
 def test_comparison_parameters_accepts_corridor_mode():
@@ -400,7 +397,7 @@ def test_comparison_parameters_accepts_corridor_mode():
                              corridor_mode="off")
     assert p.corridor_mode == "off"
     assert ComparisonParameters(
-        datasets=["hemibrain:v1.2.1"]).corridor_mode == "auto"
+        datasets=["hemibrain:v1.2.1"]).corridor_mode == "complete"
     d = p.to_dict()
     assert d["corridor_mode"] == "off"
     restored = ComparisonParameters.from_dict(d)
@@ -419,18 +416,18 @@ def test_comparison_analyzer_forwards_corridor_mode():
     sys.path.insert(0, str(ROOT / "src"))
     ca = importlib.import_module("comparison.comparison_analyzer")
     params = SimpleNamespace(
-        corridor_mode="auto",
+        corridor_mode="typed",
         get_thresholds_for_dataset=lambda _ds: [1, 3, 5])
-    assert ca._corridor_mode_for_threshold("ds", 1, params) == "auto"
+    # The typed lane is single-floor: lowest tier typed, higher tiers Complete.
+    assert ca._corridor_mode_for_threshold("ds", 1, params) == "typed"
     assert ca._corridor_mode_for_threshold("ds", 3, params) == "complete"
     assert ca._corridor_mode_for_threshold("ds", 5, params) == "complete"
-    params.corridor_mode = "off"   # legacy normalizes to 'complete'
-    assert ca._corridor_mode_for_threshold("ds", 1, params) == "complete"
-    # the sweep gate is ABSOLUTE (§8): even explicit 'both' stays at the
-    # lowest tier — higher tiers are strict subsets (superset property)
-    params.corridor_mode = "both"
-    assert ca._corridor_mode_for_threshold("ds", 1, params) == "both"
-    assert ca._corridor_mode_for_threshold("ds", 5, params) == "complete"
+    for legacy in ("off", "on", "auto", "both"):  # one mode -> Complete
+        params.corridor_mode = legacy
+        assert ca._corridor_mode_for_threshold("ds", 1, params) == "complete"
+    params.corridor_mode = "fast"
+    assert ca._corridor_mode_for_threshold("ds", 1, params) == "fast"
+    assert ca._corridor_mode_for_threshold("ds", 5, params) == "fast"
 
 
 if __name__ == "__main__":
@@ -1016,8 +1013,8 @@ def test_typed_lane_fields_and_hook_flags(tmp_path, monkeypatch):
     inst.scope_pad = 1
     inst.scope_hard_cap = 5
     inst.scope_discovery_cap = 4
-    inst.corridor_mode = "complete"       # no Fast lane requested
-    inst.max_interlayer = 3               # below the auto gate
+    inst.corridor_mode = "typed"          # the ONE selected lane
+    inst.max_interlayer = 3
     inst.allpath_folder = str(tmp_path)
     (tmp_path / "parameters.txt").write_text("max interlayer: 3\n")
     calls = {}
@@ -1103,12 +1100,12 @@ def test_corridor_section_names_the_typed_lane(tmp_path):
     assert "paths_complete" in html
 
 
-def test_fast_and_typed_lanes_get_separate_folders(tmp_path, monkeypatch):
-    """Issue 2026-10-22 §2.1: selecting both lanes runs two subprocesses
-    into two distinct namespaces; neither can overwrite the other."""
+def test_typed_only_hook_runs_one_typed_subprocess(tmp_path, monkeypatch):
+    """ONE run = ONE lane: a typed run spawns exactly one typed subprocess,
+    and Complete/Fast runs spawn none."""
     import subprocess
     inst = _make_cache_only_fnc()
-    inst.corridor_mode = "both"
+    inst.corridor_mode = "typed"
     inst.type_pruned = True
     inst.max_interlayer = 3
     inst.allpath_folder = str(tmp_path)
@@ -1122,13 +1119,19 @@ def test_fast_and_typed_lanes_get_separate_folders(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _spy)
     assert inst._maybe_generate_corridor_deep_dive() is False
-    assert len(calls) == 2, calls
-    fast = next(c for c in calls if "--type-pruned" not in c)
-    typed = next(c for c in calls if "--type-pruned" in c)
-    # Fast keeps its default namespace; typed gets an explicit distinct one
-    assert "--out" not in fast
-    assert typed[typed.index("--out") + 1] == str(
-        tmp_path / "route_scope_paths_type_pruned")
+    assert len(calls) == 1, calls
+    typed = calls[0]
+    assert "--type-pruned" in typed
+    # no --out: the lane's default namespace is used and plan.json stays at
+    # the run root (the shared plan location for both lane modes).
+    assert "--out" not in typed
+
+    # A Complete or Fast run never spawns the typed hook.
+    for mode in ("complete", "fast"):
+        calls.clear()
+        inst.corridor_mode = mode
+        assert inst._maybe_generate_corridor_deep_dive() is False
+        assert calls == [], (mode, calls)
 
 
 def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
@@ -1247,6 +1250,29 @@ def _write_typed_lane(run, name='route_scope_paths_type_pruned'):
     return lane
 
 
+def test_lane_only_report_does_not_recurse_into_itself(tmp_path, monkeypatch):
+    """Real-data regression (2026-11-02): a lane-only root unit carries the
+    run's dataset label and its folder IS the run folder. Nested report
+    generation must skip that root unit, or the report recurses into itself
+    (and on a real run spent >10 min rebuilding refill datasets)."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / 'src'))
+    import paths_pair_report as ppr
+
+    run = _lane_only_run(tmp_path)
+    calls = []
+    original = ppr.generate_paths_pair_report
+
+    def wrapper(*args, **kwargs):
+        calls.append(str(args[0]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ppr, 'generate_paths_pair_report', wrapper)
+    report = wrapper(run, log=None)
+    assert Path(report).exists()
+    assert calls == [str(run)], calls
+
+
 def test_pair_report_reads_the_typed_namespace(tmp_path):
     """Issue 2026-10-22 §2.1: a typed folder is read explicitly; a run with
     both lanes keeps the Fast tables untouched and shows both cards."""
@@ -1258,6 +1284,11 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     fast_csv = run / 'route_scope_paths' / 'route_paths_type.csv'
     before = fast_csv.read_bytes()
     _write_typed_lane(run)
+    for name in ("route_type_network.html", "route_type_heatmap.html",
+                 "route_full_type_network.html",
+                 "route_full_type_heatmap.html"):
+        (run / 'route_scope_paths_type_pruned' / name).write_text(
+            '<html></html>', encoding='utf-8')
     report = ppr.generate_paths_pair_report(run, log=None)
     text = Path(report).read_text(encoding='utf-8')
     assert 'Type-pruned complete lane' in text
@@ -1270,7 +1301,7 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     assert 'layered forward/backward superset' in text
     assert 'No bodyId witness enumeration' in text
     assert 'layered_fwd_bwd' in text
-    assert 'not requested for this typed lane' in text
+    assert 'disabled with' in text and '--no-full-scope' in text
     assert 'Strongest-first top-k' in text
     assert 'route_topk_pairs.csv' in text
     assert 'Clock-relay search' in text
@@ -1280,6 +1311,13 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     assert 'type_nt_consensus.csv' in text
     assert 'Diverse top-k' in text
     assert 'route_topk_pairs_diverse.csv' in text
+    # ONE lane link set: the typed card carries the same mirror-page links
+    # as Fast, and no bodyId link (the typed table is intentionally absent).
+    for name in ("route_type_network.html", "route_type_heatmap.html",
+                 "route_full_type_network.html",
+                 "route_full_type_heatmap.html"):
+        assert ('route_scope_paths_type_pruned/' + name) in text, name
+    assert 'route_scope_paths_type_pruned/route_paths_bodyId.csv' not in text
     assert fast_csv.read_bytes() == before
 
     # typed-only: the lane unit falls through to the typed namespace
@@ -1287,13 +1325,44 @@ def test_pair_report_reads_the_typed_namespace(tmp_path):
     typed_only.mkdir()
     (typed_only / 'parameters.txt').write_text(
         "dataset: male-cns:v1.0\nMin Synapse Count: 1\n"
-        "run mode: fast\npath_mode: all\n", encoding='utf-8')
+        "run mode: typed\npath_mode: all\n"
+        "type_pruned:                True\n", encoding='utf-8')
     _write_typed_lane(typed_only)
     report2 = ppr.generate_paths_pair_report(typed_only, log=None)
     text2 = Path(report2).read_text(encoding='utf-8')
     assert 'Type-pruned complete lane' in text2
     assert '"corridor": "Type-pruned complete"' in text2
     assert 'Fast (corridor) only' not in text2
+    # The header names the ONE selected lane, not the folder-name tool.
+    assert 'Type-pruned only —' in text2
+
+
+def test_typed_card_keeps_zero_values_and_does_not_escape_dashes(tmp_path):
+    """Real-data review (2026-11-02): a 0.0 prune floor / 0 phantoms must
+    print as values, and a real missing-value dash must render as an entity,
+    not literal &amp;mdash; text."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / 'src'))
+    import paths_pair_report as ppr
+
+    run = _lane_only_run(tmp_path)
+    _write_typed_lane(run)
+    manifest_p = (run / 'route_scope_paths_type_pruned'
+                  / 'type_prune_manifest.json')
+    manifest = json.loads(manifest_p.read_text())
+    manifest['min_ratio_adj'] = 0.0
+    manifest['phantoms'] = 0
+    manifest['candidate_walks'] = 8
+    manifest_p.write_text(json.dumps(manifest), encoding='utf-8')
+    prov_p = run / 'route_scope_paths_type_pruned' / 'route_provenance.json'
+    prov = json.loads(prov_p.read_text())
+    prov['type_prune'].update(manifest)
+    prov_p.write_text(json.dumps(prov), encoding='utf-8')
+    html, found = ppr._render_corridor_section(
+        run, 'Run', lane_dir=ppr.TYPED_LANE_DIR)
+    assert found
+    assert 'at 0.0' in html and '0 phantoms' in html
+    assert '&amp;mdash;' not in html
 
 
 def test_pair_report_marks_an_incomplete_typed_lane(tmp_path):
@@ -1550,6 +1619,9 @@ def test_per_pair_scope_control_is_wired():
                   "scope_pad", "scope_hard_cap", "scope_discovery_cap",
                   "max_interlayer is REPLACED"):
         assert token in src, token
+    # typed is a Run Mode value, never a standalone lane checkbox
+    assert '"Type-pruned complete lane"' not in src
+    assert "supports_type_pruned" not in src
     import ui.config as cfg
     assert cfg.DEFAULTS["per_pair_scope"] is False
     assert cfg.DEFAULTS["scope_lt_mode"] == "discover"

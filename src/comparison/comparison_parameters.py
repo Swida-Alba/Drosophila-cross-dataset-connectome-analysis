@@ -292,19 +292,21 @@ class ComparisonParameters:
     shortest route and inflate reported distances. None uses the per-mode
     default; 0 disables the Edge Budget."""
 
-    corridor_mode: str = "auto"
-    """Corridor lane mode forwarded to every per-dataset path run
-    (plan-corridor-lane.md §8/§23.4): 'off' | 'auto' | 'on'. 'auto' runs
-    the standalone route-scoped pass after deep runs (max intermediate
-    layers >= 4), per dataset, writing route_scope_paths/ beside each
-    run folder. The lane never modifies the compared runs' own outputs."""
+    corridor_mode: str = "complete"
+    """The ONE mode each per-dataset path run executes: 'complete' |
+    'fast' | 'typed'. Lanes are mutually exclusive. Legacy mixed
+    spellings ('auto', 'both', 'on') normalize to 'complete'. 'fast'
+    writes route_scope_paths/ beside each run folder; 'typed' writes
+    route_scope_paths_type_pruned/ at the dataset's lowest swept
+    threshold (higher tiers run Complete). The lane never modifies the
+    compared runs' own outputs."""
 
     type_pruned: bool = False
-    """Type-pruned COMPLETE lane (plan-drocat-type-pruned-pathfinding
-    Phase B/C): forwarded to every per-dataset run. A SEPARATE lane, not
-    a Run Mode value; runs at the run's own bound and carries its own
-    `type_pruned_complete` field. When `per_pair_scope` is on, that field
-    means complete within the per-pair Lt+pad scope only."""
+    """Engine flag for the type-pruned lane; the UI's single Run Mode
+    value 'typed' sets it. Runs standalone (Complete pipeline skipped)
+    and carries its own `type_pruned_complete` field. When
+    `per_pair_scope` is on, that field means complete within the
+    per-pair Lt+pad scope only."""
 
     type_prune_basis: str = "ratio_adj"
     """Coarse pair-level prune basis: ratio_adj | connection_ratio | synapse."""
@@ -2475,7 +2477,7 @@ class ComparisonParameters:
             top_edges=data.get('top_edges', 50),
             graph_edge_limit_bodyid=data.get('graph_edge_limit_bodyid', None),
             max_paths_bodyid=data.get('max_paths_bodyid', None),
-            corridor_mode=data.get('corridor_mode', 'auto'),
+            corridor_mode=data.get('corridor_mode', 'complete'),
             type_pruned=data.get('type_pruned', False),
             type_prune_basis=data.get('type_prune_basis', 'ratio_adj'),
             type_prune_scope=data.get('type_prune_scope', 'full_floor'),

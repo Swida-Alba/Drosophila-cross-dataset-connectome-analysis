@@ -498,14 +498,13 @@ DEFAULTS = {
     # many bodyId edges are floored just above the N-th strongest edge's
     # weight (w0 = w1 + 1). 0 = off.
     "graph_edge_limit_bodyid": 1000000,
-    "corridor_mode": "auto",
+    "corridor_mode": "complete",
     "route_top_m_base": 10,
     "route_length_decay": 1.5,
     "route_path_budget_per_pair_length": 100,
-    # Type-pruned COMPLETE lane (plan-drocat-type-pruned-pathfinding):
-    # separate from the Run Mode vocabulary — it runs alongside Complete
-    # and carries its own completeness field.
-    "type_pruned": False,
+    # Type-pruned COMPLETE lane (plan-drocat-type-pruned-pathfinding) is the
+    # `typed` Run Mode — there is no separate on/off default. Its knobs are
+    # saved here.
     "type_prune_basis": "ratio_adj",
     "type_prune_scope": "full_floor",
     "type_min_ratio_adj": 0.01,
@@ -625,14 +624,29 @@ THRESHOLD_COMBINATION_CHOICES = {
 }
 CORRIDOR_MODE_CHOICES = {
     "complete": "Complete only",
-    "auto": "Auto (deep runs)",
-    "both": "Complete + Fast",
     "fast": "Fast only (standalone)",
+    "typed": "Type-pruned only (standalone)",
 }
-# Pre-2026-10-11 saved spellings of Run Mode. Normalized BEFORE the option
-# test in `_coerce_user_default`, so an old override is still readable instead
-# of coercing to nothing and silently falling back to the built-in default.
-LEGACY_CORRIDOR_MODE = {"off": "complete", "on": "both"}
+# Legacy saved spellings of Run Mode. A run now selects ONE lane; the old
+# mixed schedules ('auto' = Complete + Fast on deep runs, 'both'/'on' =
+# Complete + Fast) normalize to Complete so the base run is preserved and no
+# second lane is silently activated.
+LEGACY_CORRIDOR_MODE = {
+    "off": "complete",
+    "on": "complete",
+    "auto": "complete",
+    "both": "complete",
+}
+
+
+def split_corridor_mode(mode: str) -> tuple[str, bool]:
+    """(engine corridor_mode, type_pruned) for any Run Mode value."""
+    mode = str(mode or "").strip().lower()
+    mode = LEGACY_CORRIDOR_MODE.get(mode, mode)
+    if mode not in CORRIDOR_MODE_CHOICES:
+        mode = "complete"
+    return mode, mode == "typed"
+
 
 # Output formats
 OUTPUT_FORMATS = ["csv", "xlsx"]
@@ -980,30 +994,18 @@ DEFAULT_SETTING_SPECS = {
         "hint": "Default intermediate neuron layers for Complete Paths.",
     },
     "corridor_mode": {
-        "label": "Run Mode (Complete / Fast)",
+        "label": "Run Mode (Complete / Fast / Type-pruned)",
         "group": "pathfinding_output",
         "kind": "select",
         "options": CORRIDOR_MODE_CHOICES,
-        "hint": "What runs on a pathfinding query. 'Complete only': the run "
-                "itself. 'Auto (deep runs)': Complete, then Fast once the "
-                "depth reaches 4 — so the same saved default fires on "
-                "Shortest Paths (depth 5) and not on Complete (depth 2). "
-                "'Complete + Fast': always. 'Fast only (standalone)': just "
-                "the corridor lane. Network has no lane: direct connections "
-                "run once.",
-    },
-    "type_pruned": {
-        "label": "Type-pruned complete lane",
-        "group": "pathfinding_output",
-        "kind": "bool",
-        "hint": "After the Complete run, prune the type graph coarsely, "
-                "enumerate EVERY type walk over it, validate each at bodyId "
-                "level and export only paths clearing the exact realized "
-                "min_ratio_adj gate. Separate from Run Mode; carries its own "
-                "completeness field (type_pruned_complete; scoped to the "
-                "per-pair bound when Per-pair shortest scope is on) and "
-                "writes route_scope_paths_type_pruned/"
-                "type_prune_manifest.json.",
+        "hint": "Which ONE lane a pathfinding run executes. 'Complete only': "
+                "the Complete pipeline (all intact paths >= the applied "
+                "threshold). 'Fast only (standalone)': the corridor lane "
+                "alone; the Complete pipeline is skipped. 'Type-pruned only "
+                "(standalone)': the type-pruned complete lane alone; the "
+                "Complete pipeline is skipped. Lanes are mutually exclusive "
+                "— one run selects one mode. Network has no lane: direct "
+                "connections run once.",
     },
     "per_pair_scope": {
         "label": "Per-pair shortest scope",

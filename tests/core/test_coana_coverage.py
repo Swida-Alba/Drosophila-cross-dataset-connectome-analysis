@@ -3217,6 +3217,44 @@ def test_zero_path_exits_are_wired(monkeypatch):
     k = export.index('self._record_zero_path_exit(')
     assert 'stamp=False' in export[k:k + 220]
 
+def test_typed_only_run_skips_the_complete_pipeline(monkeypatch, tmp_path):
+    """The typed-only ENGINE branch: one run selects one lane. The Complete
+    pipeline is skipped exactly like Fast-only, the typed hook is invoked,
+    parameters carry `run mode: typed` + the type_pruned stamp, and the
+    skipped pipeline is disclosed."""
+    import coana
+
+    fc, _logs = _make_path_fc(monkeypatch, tmp_path,
+                              [("S", "A", 10), ("A", "T", 10)],
+                              {"S": "TS", "A": "TA", "T": "TT"})
+    fc.corridor_mode = 'typed'
+    fc.type_pruned = False              # the mode alone must set the flag
+    called = {'hook': False}
+
+    def _hook():
+        called['hook'] = True
+        return False
+
+    monkeypatch.setattr(fc, '_maybe_generate_corridor_deep_dive', _hook)
+    coana.clear_findallpath_cache()
+    try:
+        fc.FindAllPath()
+        folder = Path(fc.allpath_folder)
+        assert called['hook'] is True
+        assert fc.type_pruned is True
+        assert not list(folder.glob('*_allpaths_type.csv'))
+        params = (folder / 'parameters.txt').read_text(encoding='utf-8')
+        assert 'run mode:' in params and 'typed' in params.split(
+            'run mode:')[1][:40]
+        assert 'type_pruned:' in params and 'True' in params.split(
+            'type_pruned:')[1][:40]
+        notes = folder / 'user_warning_notes.txt'
+        assert notes.exists()
+        assert 'typed-only' in notes.read_text(encoding='utf-8')
+    finally:
+        coana.clear_findallpath_cache()
+
+
 def test_fast_only_run_skips_the_complete_pipeline(monkeypatch, tmp_path):
     """§8.3 — the fast-only ENGINE branch, which nothing executed in-suite.
 

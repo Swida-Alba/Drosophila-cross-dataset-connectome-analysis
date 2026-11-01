@@ -122,20 +122,9 @@ def create_inter_dataset_tab():
                          "unlimited search.",
                 )
                 # One Run Mode control for all four pathfinding surfaces
-                # (plan 2026-10-16 B1/B2): same label, same four values, and
-                # the live line that says whether 'auto' will actually fire —
-                # here 'deep' is per dataset, so the line reads the sweep's
-                # own Max Intermediate Layers.
-                run_mode = pc.run_mode_block(
-                    depth_getter=lambda: int(max_interlayer.value or 0),
-                    extra=" Per dataset: a delegate whose depth clears the "
-                          "gate runs its own lane.")
-                # 'auto' depends on the DEPTH as well as the selection, and
-                # this tab changes the depth in three places — typing, and the
-                # two programmatic resets on the path-mode switch — so the
-                # line is refreshed on every one of them (a stale WILL/will-
-                # NOT here would be a claim about a lane the run never runs).
-                max_interlayer.on_value_change(lambda _e: run_mode.refresh())
+                # (plan 2026-10-16 B1/B2): same label and values, one lane
+                # per run. It is built BELOW the grid so its live line and
+                # typed knob grid span the full card.
                 threshold_basis = select_input(
                     "Threshold Basis", pc.THRESHOLD_BASIS_OPTIONS,
                     # the same saved default the three path tabs read (Q3):
@@ -208,6 +197,10 @@ def create_inter_dataset_tab():
                     lambda _e: _sync_xcoverage())
                 shortest_target_coverage.on_value_change(
                     lambda _e: _sync_xcoverage())
+
+            # Run Mode spans the full card width (the selected lane's live
+            # line and typed knob grid cannot be squeezed into one cell).
+            run_mode = pc.run_mode_block()
             # Auto is the default mode: it measures each dataset's own
             # threshold window from one bootstrap run and emits BOTH the
             # per-threshold (vertical) and density-matched (horizontal)
@@ -916,10 +909,6 @@ def create_inter_dataset_tab():
                         max_interlayer.value = 2
                         edge_budget.enable()
                         edge_budget.value = get_user_default("graph_edge_limit_bodyid") or 1000000
-                    # the reset above moved the depth the live line quotes
-                    run_mode.set_type_pruned_supported(
-                        path_mode.value != 'shortest')
-                    run_mode.refresh()
                     _sync_xcoverage()
                     if notify:
                         ui.notify(

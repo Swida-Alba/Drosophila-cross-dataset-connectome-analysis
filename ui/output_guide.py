@@ -1363,14 +1363,15 @@ _PATHFINDING_FILES = [
      "preview_title": "Path table (bodyId-level)",
      "columns": _BODYID_PATH_COLUMNS},
     {"pattern": "route_scope_paths/route_paths_type.csv",
-     "description": "Fast mode (deep runs, Fast Mode != complete): one "
-                    "row per validated top-M* corridor walk with emitted "
-                    "paths, re-enumerated "
-                    "at the ASKED threshold. Engine path-table columns "
-                    "(weights/ratios/min_weight/nt_types/coverage) plus "
-                    "applied_tau, route_h, route_ub, route_floor_h, "
-                    "plan_rank, realized_paths. Never merged into the "
-                    "allpaths tables.",
+     "description": "Fast lane (Run Mode=fast; standalone — Complete "
+                    "skipped): one row per validated top-M* corridor walk "
+                    "with emitted paths, re-enumerated at the ASKED "
+                    "threshold. Engine path-table columns plus applied_tau, "
+                    "route_h, route_ub, route_floor_h, plan_rank, "
+                    "realized_paths and the demoted sample columns. Shares "
+                    "ONE column schema with the typed lane's table (typed "
+                    "leaves witness-only columns empty). Never merged into "
+                    "the allpaths tables.",
      "preview": True,
      "preview_title": "Corridor walks (asked threshold)",
      "columns": ["applied_tau", "route_ub"]},
@@ -1426,13 +1427,24 @@ _PATHFINDING_FILES = [
                     "validated by ONE layered forward/backward pass and "
                     "clears the exact realized min_ratio_adj gate. "
                     "Label-revisiting rows carry the disclosed layered-walk "
-                    "superset masses; this lane writes no bodyId CSV and "
-                    "has no realization envelope. With --allow-clock-relays "
+                    "superset masses; this lane writes no bodyId CSV "
+                    "(bodyId_export=not_applicable in the manifest/"
+                    "provenance) and has no realization envelope. The table "
+                    "shares the ONE lane schema with Fast (witness-only "
+                    "columns present but empty). With --allow-clock-relays "
                     "it also carries clock_sequence, intra_clock_edges, "
                     "first_clock and clock_relay.",
      "preview": True,
      "preview_title": "Type-pruned walks",
      "columns": ["pair_weights", "ratio_adj_complete", "type_pruned"]},
+    {"pattern": "route_scope_paths_type_pruned/route_type_heatmap.html",
+     "description": "Type-pruned mirror heatmap: the validated scope drawn "
+                    "like the refill views (same renderer and file contract "
+                    "as the Fast lane)."},
+    {"pattern": "route_scope_paths_type_pruned/route_type_network.html",
+     "description": "Type-pruned mirror network of the validated scope "
+                    "(hover shows weight + both ratio flavors; same file "
+                    "contract as the Fast lane)."},
     {"pattern": "route_scope_paths_type_pruned/route_topk_pairs.csv",
      "description": "Strongest-first top-k per source-target pair: topk, "
                     "accepted, validated_walks, candidates_pulled, "
@@ -1493,7 +1505,7 @@ _PATHFINDING_FILES = [
                     "candidate/validated/phantom/unverified/weak-filtered "
                     "counts, type_pruned_complete + filter_complete + "
                     "completeness_reason, validation_basis=layered_fwd_bwd, "
-                    "revisit_semantics, bodyid_export=disabled, revisit "
+                    "revisit_semantics, bodyId_export=not_applicable, revisit "
                     "policy, label-map hash, selection_mode/type_top_k/"
                     "topk_complete/topk_certified/topk_bound, "
                     "clock_relay_mode/clock_relay_counts/clock_token_counts "
@@ -1513,11 +1525,9 @@ _PATHFINDING_FILES = [
                     "so every candidate walk can be checked against its "
                     "coarse prune basis."},
     {"pattern": "route_scope_paths_type_pruned/route_full_paths_type.csv",
-     "description": "Typed lane's additive synapse >= 1 second round. Off by "
-                    "default (layered validation is the production "
-                    "contract); written only when --full-scope is passed. "
-                    "Same route_full_* schema as the Fast lane's second "
-                    "round."},
+     "description": "The shared synapse >= 1 second round, written by "
+                    "BOTH Fast and typed lanes by default (same route_full_* "
+                    "schema); --no-full-scope skips it."},
     {"pattern": "route_scope_paths_type_pruned/route_scope_pairs.csv",
      "description": "Per-pair shortest scope (per-pair runs only): "
                     "source_type, target_type, Lt_i/Lt/Lt_dataset, the "
@@ -2012,32 +2022,37 @@ _PATHFINDING_FILES = [
 # (first row = header).
 _PATHFINDING_EXPLANATION = [
     {
-        "heading": "Two analysis modes: Complete and Fast",
+        "heading": "One lane per run: Complete, Fast or Type-pruned",
         "paragraphs": [
-            "Every pathfinding run is COMPLETE mode: it finds ALL intact "
-            "paths with bottleneck >= the run's applied threshold (the "
-            "StrongestFirst budget + optional Edge Budget floor set that "
-            "threshold; the Refill recovers the mass the budget cut). FAST "
-            "mode — the corridor lane — is a standalone second pass that "
-            "re-enumerates at the run's ASKED threshold restricted to "
-            "validated top-M* type-level corridors (per source-target type "
-            "pair x hop length): the strongest type-level routes and the "
-            "weak-but-real [asked, applied) mass along them, which the "
-            "budget cut. The Run Mode control selects when it runs: "
-            "'Complete only' never; 'Auto (deep runs)' when "
-            "max_interlayer >= 4; 'Complete + Fast' always; 'Fast only' "
-            "skips the Complete pipeline entirely, so route_scope_paths/ "
-            "is the run's only path table. Fast writes "
-            "only its own route_scope_paths/ folder beside the run (plus "
-            "data_details/route_plan/plan.json) and never modifies this "
-            "run's outputs; a user_warning_notes entry appears only when "
-            "Fast refuses or fails. Browse it under Path → Fast "
-            "(corridor) in path_report.html (Pair Explorer for the lane's "
-            "validated walks, Refill for its synapse >= 1 second round) "
-            "and, when the corridor ran, in the route_scope_paths/ file "
-            "list above. A run that found no paths "
-            "writes path_report.html as an empty state naming the "
-            "threshold that produced nothing.",
+            "Every pathfinding run selects ONE lane (Run Mode); lanes are "
+            "mutually exclusive: 'Complete only', 'Fast only (standalone)' "
+            "or 'Type-pruned only (standalone)'. COMPLETE: all intact paths "
+            "with bottleneck >= the run's applied threshold (StrongestFirst "
+            "budget + optional Edge Budget floor; the Refill recovers the "
+            "mass the budget cut). FAST: the corridor lane standalone — it re-enumerates at the "
+            "run's ASKED threshold restricted to validated top-M* type-level "
+            "corridors (per source-target type pair x hop length): the "
+            "strongest type-level routes and the weak-but-real [asked, "
+            "applied) mass along them. TYPE-PRUNED: the type-level "
+            "completeness lane standalone — every type walk over the coarse "
+            "pruned graph is validated by layered forward/backward passes "
+            "against the full-floor bodyId source and exported with its own "
+            "type_pruned_complete field. Both lane-only modes skip the "
+            "Complete pipeline entirely, so their route_paths_type.csv is the "
+            "run's only path table. Fast and typed share ONE file contract: "
+            "same route_paths_type.csv columns, mirror pages and the synapse "
+            ">= 1 full-scope round by default; the typed lane intentionally "
+            "omits route_paths_bodyId.csv and discloses "
+            "bodyId_export=not_applicable. Each lane writes only its own "
+            "route_scope_paths/ (Fast) or route_scope_paths_type_pruned/ "
+            "(typed) folder beside the run (plus data_details/route_plan/"
+            "plan.json) and never modifies the run's outputs; a "
+            "user_warning_notes entry appears only when a lane refuses or "
+            "fails. Browse a lane under Path → Fast (corridor) or "
+            "Path → Type-pruned complete in path_report.html (Pair Explorer "
+            "for its validated walks, Refill for its synapse >= 1 second "
+            "round). A run that found no paths writes path_report.html as an "
+            "empty state naming the threshold that produced nothing.",
         ],
         "table": None,
         "pipeline": None,

@@ -23,8 +23,9 @@ from nicegui import ui
 from ..config import (
     CORRIDOR_MODE_CHOICES, THRESHOLD_BASIS_CHOICES,
     THRESHOLD_COMBINATION_CHOICES, get_user_default,
+    split_corridor_mode,
 )
-from .common import checkbox_input, number_input, select_input
+from .common import checkbox_input, number_input, param_grid, select_input
 
 # --- Threshold regime -------------------------------------------------------
 
@@ -198,30 +199,26 @@ def ratio_payloads(basis: ui.select, combination: ui.select,
 
 # --- Run mode (the corridor lane) -------------------------------------------
 
-RUN_MODE_LABEL = "Run Mode (Complete / Fast)"
+RUN_MODE_LABEL = "Run Mode (Complete / Fast / Type-pruned)"
 #: The one value dict (config owns it; the Settings card and every tab read it).
 RUN_MODE_OPTIONS = CORRIDOR_MODE_CHOICES
-#: The depth at which 'auto' hands the query to the corridor lane — the
-#: engine's own gate (`coana._maybe_generate_corridor_deep_dive`).
-AUTO_DEPTH = 4
 
 RUN_MODE_HINT = (
-    "What runs on this query — complete: the COMPLETE mode only (all intact "
-    "paths >= the applied threshold; the run itself). auto: COMPLETE, then "
-    f"FAST on deep searches (max intermediate layers >= {AUTO_DEPTH}). both: "
-    "ALWAYS run FAST after the run. fast: STANDALONE FAST — only the corridor "
-    "lane runs on this query (no Complete run; the folder carries "
-    "route_scope_paths/ only). FAST mode is upper-bound-guided representative "
-    "exploration under per-class route-share quotas — not a guarantee of the "
-    "strongest actual neuron routes. Fast never modifies other outputs. Full "
-    "guide via the book icon."
+    "Which ONE lane this run executes — complete: the COMPLETE pipeline only "
+    "(all intact paths >= the applied threshold). fast: the FAST corridor "
+    "lane alone — route-scoped representative exploration under per-class "
+    "route-share quotas; the Complete pipeline is skipped and the folder "
+    "carries route_scope_paths/ only. typed: the TYPE-PRUNED complete lane "
+    "alone — every type walk over the coarse-pruned graph is bodyId-validated "
+    "against the full-floor connection source, written to "
+    "route_scope_paths_type_pruned/ with its own completeness field; the "
+    "Complete pipeline is skipped. Lanes are mutually exclusive: one run "
+    "selects one mode. Full guide via the book icon."
 )
 
 
 def run_mode_selector(hint: str = RUN_MODE_HINT) -> ui.select:
     """The Run Mode selector — one label, one value set, on every surface."""
-    from ..config import get_user_default
-
     return select_input(
         RUN_MODE_LABEL, RUN_MODE_OPTIONS,
         default=get_user_default("corridor_mode"),
@@ -230,32 +227,27 @@ def run_mode_selector(hint: str = RUN_MODE_HINT) -> ui.select:
     )
 
 
-def run_mode_note_text(mode: str, depth: int, extra: str = "") -> str:
-    """What the selected mode will ACTUALLY do at this depth.
+def run_mode_note_text(mode: str) -> str:
+    """What the selected mode will ACTUALLY do.
 
-    The engine's gate is ``mode in ('both', 'fast') or (mode == 'auto' and
-    depth >= 4)``; a reader deserves to see it before clicking — especially on
-    a tab whose own default depth already clears the gate (Shortest Paths
-    starts at 5, Complete at 2, so the same saved 'auto' does different
-    things there)."""
-    depth = int(depth or 0)
-    if mode == "fast":
+    One run selects one lane: Complete, Fast (standalone) or Type-pruned
+    (standalone). No mode is depth-gated and no mode schedules a second
+    lane."""
+    base, typed = split_corridor_mode(mode)
+    if base == "fast":
         return ("Fast only: the corridor lane runs standalone on this query "
-                "— no Complete run (the folder carries route_scope_paths/ "
-                "only)." + extra)
-    if mode == "complete":
-        return "Fast mode: off (Complete only)." + extra
-    will = (mode == "both" or (mode == "auto" and depth >= AUTO_DEPTH))
-    return (f"Fast mode (corridor lane): "
-            f"{'WILL' if will else 'will NOT'} "
-            f"run after this search (mode {mode}, "
-            f"depth {depth}; auto needs >= {AUTO_DEPTH})."
-            # An 'all_neurons' side is not in the field: the payload forces
-            # depth 0 for it, so a line that only quotes the field would
-            # promise a lane to a run that searches direct connections only.
-            + (" An 'all_neurons' side overrides this to depth 0, where auto "
-               "does NOT run the lane." if mode == "auto" else "")
-            + extra)
+                "— the Complete pipeline is skipped (the folder carries "
+                "route_scope_paths/ only).")
+    if base == "typed":
+        return ("Type-pruned only: the type-pruned complete lane runs "
+                "standalone — every type walk over the pruned graph is "
+                "bodyId-validated against the full-floor connection source "
+                "and written to route_scope_paths_type_pruned/ with its own "
+                "completeness field. The Complete pipeline and Fast lane are "
+                "skipped.")
+    return ("Complete mode: the Complete pipeline enumerates all intact "
+            "paths >= the applied threshold; the Fast and type-pruned lanes "
+            "are off.")
 
 
 TYPE_PRUNE_BASIS_CHOICES = {
@@ -270,32 +262,18 @@ _TYPE_PRUNE_BASIS_KEYS = {label: key
 class RunModeControl:
     """The selector plus its live status line, wired to a depth source.
 
-    The TYPE-PRUNED COMPLETE lane is a separate checkbox, not a fifth Run
-    Mode value: it runs alongside Complete at the run's own bound and has
-    its own completeness field, so folding it into the Fast lane's
-    vocabulary would make two different claims share one label.
+    The TYPE-PRUNED COMPLETE lane is one of the three mutually exclusive
+    Run Modes. The selector's `typed` value carries the engine mode plus
+    type_pruned=True; its own knobs (basis, floors, walk cap, scope) appear
+    only there. There is no separate on/off checkbox and no second lane.
     """
 
-    def __init__(self, depth_getter, extra='', *,
-                 supports_type_pruned=True):
-        self.depth_getter = depth_getter
-        self.extra = extra
-        self._supports_type_pruned = bool(supports_type_pruned)
+    def __init__(self):
         self.control = run_mode_selector()
         self.note = ui.label("").classes("text-caption text-blue-8")
-        self.control.on_value_change(lambda _e: self.refresh())
+        self.control.on_value_change(lambda _e: self._on_mode_change())
         with ui.row().classes(
-                "items-center gap-4 flex-wrap") as self._type_toggle_row:
-            self.type_pruned = checkbox_input(
-                "Type-pruned complete lane",
-                bool(get_user_default("type_pruned")),
-                hint="Prune the type graph coarsely, enumerate EVERY type "
-                     "walk (within the per-pair scope when enabled), "
-                     "validate each at bodyId level and export only paths "
-                     "clearing the exact realized min_ratio_adj gate. "
-                     "Writes route_scope_paths_type_pruned/ "
-                     "(type_prune_manifest.json).",
-            )
+                "items-center gap-4 flex-wrap") as self._scope_toggle_row:
             self.per_pair_scope = checkbox_input(
                 "Per-pair shortest scope",
                 bool(get_user_default("per_pair_scope")),
@@ -310,7 +288,7 @@ class RunModeControl:
             str(get_user_default("type_prune_basis")), "Adjusted ratio")
         _ratio_default = float(
             get_user_default("type_min_ratio_adj") or 0.01) * 100.0
-        with ui.row().classes("items-center gap-4 flex-wrap") as self._type_row:
+        with param_grid(3) as self._type_row:
             self.type_basis = select_input(
                 "Type prune basis", list(TYPE_PRUNE_BASIS_CHOICES.values()),
                 _basis_default,
@@ -365,7 +343,7 @@ class RunModeControl:
             get_user_default("scope_lt_mode") or "discover").lower()
         if _lt_default not in ("external", "discover"):
             _lt_default = "discover"
-        with ui.row().classes("items-center gap-4 flex-wrap") as self._scope_row:
+        with param_grid(3) as self._scope_row:
             self.scope_lt_mode = select_input(
                 "Scope Lt mode", ["discover", "external"], _lt_default,
                 hint="discover computes the local validated Lt and writes "
@@ -375,7 +353,7 @@ class RunModeControl:
             self.scope_table = ui.input(
                 "Scope table (external)",
                 value=str(get_user_default("scope_table") or ""),
-            ).props("dense outlined").classes("w-80")
+            ).props("dense outlined").classes("w-full")
             self.scope_pad = number_input(
                 "Scope pad", int(get_user_default("scope_pad") or 2),
                 min_val=0, max_val=10, step=1,
@@ -393,41 +371,26 @@ class RunModeControl:
                 min_val=1, max_val=10, step=1,
                 hint="Deepest hop count discovery may search for Lt.",
             )
-        def _on_type_toggle(_e):
-            self._sync_type_visibility()
-            self.refresh()
-
         def _on_scope_toggle(_e):
-            self._sync_type_visibility()
+            self._sync_visibility()
             self.refresh()
 
-        self.type_pruned.on_value_change(_on_type_toggle)
         self.per_pair_scope.on_value_change(_on_scope_toggle)
-        self._sync_type_visibility()
-        self.refresh()
-        if not self._supports_type_pruned:
-            self.set_type_pruned_supported(False)
-
-    def set_type_pruned_supported(self, supported: bool) -> None:
-        """Show/disable the typed-lane controls for the current path mode.
-
-        The backend refuses the typed lane on shortest runs, so offering it
-        there would be a guaranteed post-run refusal.
-        """
-        self._supports_type_pruned = bool(supported)
-        self._type_toggle_row.set_visibility(self._supports_type_pruned)
-        if self._supports_type_pruned:
-            self.type_pruned.enable()
-            if self.type_pruned.value:
-                self.per_pair_scope.enable()
-        else:
-            self.type_pruned.disable()
-            self.per_pair_scope.disable()
-        self._sync_type_visibility()
+        self._sync_visibility()
         self.refresh()
 
-    def _sync_type_visibility(self) -> None:
-        typed = bool(self._supports_type_pruned and self.type_pruned.value)
+    @property
+    def typed(self) -> bool:
+        """True when the selected Run Mode is the type-pruned lane."""
+        return split_corridor_mode(self.control.value)[1]
+
+    def _on_mode_change(self) -> None:
+        self._sync_visibility()
+        self.refresh()
+
+    def _sync_visibility(self) -> None:
+        typed = self.typed
+        self._scope_toggle_row.set_visibility(typed)
         self._type_row.set_visibility(typed)
         if typed:
             self.per_pair_scope.enable()
@@ -439,7 +402,7 @@ class RunModeControl:
 
     def payload(self) -> dict:
         """The constructor keys the typed lane needs (empty when off)."""
-        if not self._supports_type_pruned or not self.type_pruned.value:
+        if not self.typed:
             return {"type_pruned": False}
         payload = {
             "type_pruned": True,
@@ -473,15 +436,8 @@ class RunModeControl:
         return payload
 
     def note_text(self) -> str:
-        text = run_mode_note_text(self.control.value,
-                                  self.depth_getter(), self.extra)
-        if not self._supports_type_pruned:
-            return text
-        if self.type_pruned.value:
-            text += (" Type-pruned COMPLETE lane: every type walk over the "
-                     "pruned graph, bodyId-validated, exact realized "
-                     "min_ratio_adj gate; separate completeness field.")
-        if self.type_pruned.value and self.per_pair_scope.value:
+        text = run_mode_note_text(self.control.value)
+        if self.typed and self.per_pair_scope.value:
             cap = int(self.scope_hard_cap.value or 0)
             text += (
                 " Per-pair shortest scope: bound = min(Lt + "
@@ -498,14 +454,13 @@ class RunModeControl:
 
     @property
     def value(self) -> str:
-        return self.control.value
+        """The engine's corridor_mode for the selected Run Mode."""
+        return split_corridor_mode(self.control.value)[0]
 
 
-def run_mode_block(depth_getter, extra: str = '',
-                   *, supports_type_pruned: bool = True) -> RunModeControl:
+def run_mode_block() -> RunModeControl:
     """Build the selector + live line in the caller's current container."""
-    return RunModeControl(depth_getter, extra,
-                          supports_type_pruned=supports_type_pruned)
+    return RunModeControl()
 
 
 # --- Hemisphere card --------------------------------------------------------

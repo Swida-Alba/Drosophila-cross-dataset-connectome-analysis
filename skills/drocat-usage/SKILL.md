@@ -202,12 +202,17 @@ similar-neuron → 3D skeleton), see [references/combinations.md](references/com
   with denominators in `route_type_incoming.csv` (synapse >= 1) and
   `route_type_incoming_asked.csv` (the lane's asked tier), plus mirror
   pages `route_full_type_network.html` / `route_full_type_heatmap.html`).
-  Auto-fires after deep runs (Max Intermediate Layers
-  >= 4; the Run Mode (Complete / Fast) control values are complete/auto/both/fast — `fast`
-  is Fast only, which skips the Complete pipeline entirely so
-  `route_scope_paths/route_paths_type.csv` is the run's only path table;
-  legacy
-  off/on normalized); never modifies the run's own outputs.
+  One run selects ONE mutually exclusive lane via Run Mode
+  (Complete / Fast / Type-pruned): `complete` is the Complete pipeline,
+  `fast` is the Fast corridor lane standalone, `typed` is the type-pruned
+  complete lane standalone — both lane-only modes skip the Complete
+  pipeline entirely, so their `route_paths_type.csv` is the run's only
+  path table. Fast and typed share one file/schema/report contract (same
+  columns, mirror pages and synapse >= 1 full-scope round by default;
+  typed omits `route_paths_bodyId.csv` with a `bodyId_export=not_applicable`
+  disclosure). On shortest runs the typed lane ignores the min-hop store
+  and rebuilds the full-floor bodyId source. Legacy off/on/auto/both
+  normalize to complete; a lane never modifies the run's own outputs.
   Visualization metric bases (Synapses / Ratio / Adj. Ratio (>= <the recorded tier>) /
   Refilled) are selectable on the heatmap toggle and the network +
   Sankey Connection-Metric selectors when the data carries them.

@@ -798,6 +798,88 @@ def test_shortest_store_validation_basis(tmp_path):
     assert "FALLBACK" in readme
 
 
+def test_typed_lane_runs_on_a_shortest_run_and_ignores_the_store(tmp_path):
+    """The typed lane's completeness claim is full-floor on both path modes:
+    a shortest run's min-hop discovery store is not its source, so the lane
+    rebuilds from the connection table instead of refusing the run."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "parameters.txt").write_text(
+        "source neurons:             ['A']\n"
+        "target neurons:             ['C']\n"
+        "min synapse number:         1\n"
+        "max interlayer:             2\n"
+        "path_mode:                  shortest\n"
+        "dataset:                    ds\n"
+        "type_pruned:                True\n"
+        "type prune basis:           synapse\n"
+        "type min ratio adj:         0.0\n"
+        "type min synapse:           1\n")
+    # A store carrying only the first hop would make the walk unrealizable
+    # if the typed lane consulted it; the full-floor source has B->C.
+    store = run / "shortest_discovery_store"
+    (store / "connections").mkdir(parents=True)
+    (store / "meta.json").write_text('{"targets_found": ["c1"]}')
+    pl.DataFrame({
+        "bodyId_pre": ["a1"], "bodyId_post": ["b1"],
+        "weight": [100.0]}).write_parquet(
+        store / "connections" / "connections_L0.parquet")
+
+    assert run_lane(run, connections_path=root / "connections.parquet",
+                    neuron_table=root / "neurons.parquet",
+                    type_pruned=True)
+    out = run / "route_scope_paths_type_pruned"
+    prov = json.loads((out / "route_provenance.json").read_text())
+    assert prov["status"] == "complete"
+    assert prov["validation_basis"] == "lossless_prune"
+    paths = pl.read_csv(out / "route_paths_type.csv")
+    assert "A->B->C" in set(paths["path"])
+    readme = (out / "README.md").read_text()
+    assert "IGNORED by the typed lane" in readme
+    # ONE plan location for both lane modes: beside the run, not the lane.
+    assert (run / "data_details" / "route_plan" / "plan.json").exists()
+    assert not (out / "data_details" / "route_plan" / "plan.json").exists()
+
+
+def test_fast_and_typed_lanes_share_one_table_contract(tmp_path):
+    """Fast and typed use the same route_paths_type.csv columns and the same
+    shared file set; only the typed bodyId table is omitted, with an explicit
+    bodyId_export disclosure in the manifest and provenance."""
+    edges = [("a1", "b1", 100), ("b1", "c1", 80)]
+    types = {"a1": "A", "b1": "B", "c1": "C"}
+    root = _typed_dataset(tmp_path, edges, types)
+    fast = tmp_path / "fast"
+    assert run_lane(
+        None, asked=1, max_interlayer=2, source_types=["A"],
+        target_types=["C"],
+        connections_path=root / "connections.parquet",
+        neuron_table=root / "neurons.parquet", out_dir=fast)
+    _run_typed(root, tmp_path / "typed")
+    typed = tmp_path / "typed"
+    fast_cols = pl.read_csv(fast / "route_paths_type.csv").columns
+    typed_cols = pl.read_csv(typed / "route_paths_type.csv").columns
+    assert fast_cols == typed_cols
+    # Same shared names where applicable.
+    for name in ("route_connection_type.csv", "route_type_incoming_asked.csv",
+                 "type_nt_consensus.csv", "route_provenance.json",
+                 "README.md"):
+        assert (fast / name).exists(), name
+        assert (typed / name).exists(), name
+    assert (fast / "route_paths_bodyId.csv").exists()
+    assert not (typed / "route_paths_bodyId.csv").exists()
+    manifest = json.loads((typed / "type_prune_manifest.json").read_text())
+    assert manifest["bodyId_export"] == "not_applicable"
+    assert json.loads(
+        (typed / "route_provenance.json").read_text())["bodyId_export"] == \
+        "not_applicable"
+    assert json.loads(
+        (fast / "route_provenance.json").read_text())["bodyId_export"] == \
+        "written"
+
+
 # ------------------------------------------------ plan-2026-10-11 rounds
 def test_drain_deadline_bites_immediately():
     """F2: the drain's wall-clock check must fire against a monotonic
@@ -2067,7 +2149,8 @@ def test_type_pruned_revisit_uses_layered_superset(tmp_path):
     stale_full = out / "route_full_paths_type.csv"
     stale_full.write_text("stale\n", encoding="utf-8")
     rows, manifest = _run_typed(
-        root, out, max_interlayer=3, type_min_ratio_adj=0.01)
+        root, out, max_interlayer=3, type_min_ratio_adj=0.01,
+        full_scope=False)
     assert "A->B->A->C" in set(rows["path"])
     row = rows.filter(pl.col("path") == "A->B->A->C").row(0, named=True)
     assert row["chain_revisit"] is True
@@ -2078,20 +2161,25 @@ def test_type_pruned_revisit_uses_layered_superset(tmp_path):
     # A->C is type-simple; the layered pass keeps both source bodies'
     # A->C edges, so its hop mass and conditioned denominator are 101/101.
     assert abs(float(simple["min_ratio_adj"]) - 1.0) < 1e-9
-    # The layered contract has no sampled witness fields or envelope.
-    for removed in ("exact_gate_basis", "realization_sample_truncated",
+    # ONE lane table contract: witness-only columns EXIST in both modes;
+    # the typed lane leaves them empty (no sampled envelope/count).
+    for present in ("exact_gate_basis", "realization_sample_truncated",
                     "sampled_support_mass", "sampled_ratios",
                     "sampled_coverage", "realized_paths",
                     "gate_min_ratio_adj"):
-        assert removed not in rows.columns
+        assert present in rows.columns
+    assert set(rows["exact_gate_basis"].to_list()) == {"layered_chain"}
+    assert rows["realized_paths"].null_count() == rows.height
+    assert rows["sampled_support_mass"].null_count() == rows.height
     assert manifest["validation_basis"] == "layered_fwd_bwd"
     assert manifest["revisit_semantics"] == "layered_fwd_bwd_superset"
     assert manifest["chains_revisit"] >= 1
     assert "realization_truncated" not in manifest
     assert "realization_envelope" not in manifest
     assert not (out / "route_paths_bodyId.csv").exists()
-    # The additive synapse >= 1 round is off by default for the typed lane;
-    # stale artifacts from an older in-place run are removed.
+    assert manifest["bodyId_export"] == "not_applicable"
+    # The shared full-scope round is on by default; --no-full-scope skips
+    # it and removes stale artifacts from an older in-place run.
     prov = json.loads((out / "route_provenance.json").read_text())
     assert prov["full"]["status"] == "skipped_not_requested"
     assert not stale_full.exists()
@@ -2277,10 +2365,13 @@ def test_type_pruned_topk_matches_the_sorted_full_set(tmp_path):
     assert pair["stop_reason"] == "certified"
     assert pair["next_bound"] == manifest["topk_next_bound"]
     assert not (tmp_path / "out_topk" / "route_paths_bodyId.csv").exists()
-    for removed in ("realization_envelope", "realization_truncated",
-                    "sampled_support_mass", "realized_paths"):
-        assert removed not in manifest
-        assert removed not in rows.columns
+    for absent in ("realization_envelope", "realization_truncated"):
+        assert absent not in manifest
+    # The shared contract keeps the witness columns; typed leaves them empty.
+    for present in ("sampled_support_mass", "realized_paths"):
+        assert present in rows.columns
+    assert rows["realized_paths"].null_count() == rows.height
+    assert rows["sampled_support_mass"].null_count() == rows.height
 
 
 def test_clock_relay_exports_both_views_from_one_search(tmp_path):

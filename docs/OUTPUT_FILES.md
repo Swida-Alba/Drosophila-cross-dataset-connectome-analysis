@@ -396,25 +396,23 @@ all-mode run):
     with only `refill_weight` gets no page and its own note).
 *   **`parameters.csv`**: the run's parameters.
 
-#### Fast Mode Standalone Folder (`route_scope_paths/`)
-Written by the corridor lane — the route-scoped deep pass
-(plan-corridor-lane.md), the second of the two analysis modes
-(**Complete mode** = the run itself: all intact paths &ge; the applied
-threshold; **Fast mode** = this lane: upper-bound-guided representative
-exploration at the ASKED threshold under per-class share quotas — not a
-guarantee of the strongest actual neuron routes; bodyId-level paths are
-body-SIMPLE (a neuron appears at most once — the knob-restored
-multi-visit walks enumerate body-simple paths only, the generator
-enforces raw-body simplicity directly, F-PF-003)) —
-after Complete/Shortest Paths runs with
-Fast Mode = `both`, or `auto` with Max Intermediate Layers &ge; 4
-(canonical values `complete`/`auto`/`both`/`fast`; legacy `off`/`on`
-normalized on read — `fast` is **Fast only**: it skips discovery,
-enumeration, materialization and the refill entirely, so
-`route_scope_paths/route_paths_type.csv` is that run's ONLY path table and
+#### Lane Modes Standalone Folders (`route_scope_paths/`, `route_scope_paths_type_pruned/`)
+A run selects ONE lane in Run Mode (`complete` / `fast` / `typed`; lanes are
+mutually exclusive; legacy `off`/`on`/`auto`/`both` normalize to
+`complete`). **Complete** is the run itself (all intact paths &ge; the
+applied threshold). **Fast** writes `route_scope_paths/`; **Type-pruned**
+writes `route_scope_paths_type_pruned/`. A lane-only mode (`fast` or
+`typed`) skips discovery, enumeration, materialization and the refill
+entirely, so its `route_paths_type.csv` is that run's ONLY path table and
 the pair report renders the lane as its own Path-page content rather than an
-empty state). The
-lane re-enumerates at the run's ASKED threshold restricted to validated
+empty state.
+
+The Fast lane is upper-bound-guided representative exploration at the ASKED
+threshold under per-class share quotas — not a guarantee of the strongest
+actual neuron routes; bodyId-level paths are body-SIMPLE (a neuron appears
+at most once — the knob-restored multi-visit walks enumerate body-simple
+paths only, the generator enforces raw-body simplicity directly, F-PF-003).
+It re-enumerates at the run's ASKED threshold restricted to validated
 top-M* type corridors (per source-target type pair &times; hop length,
 phantom-validated; each class carries a route share (valid type-level walks, counted once per acceptance) and a 100-path realization envelope (bodyId witnesses, &ge; 1 guaranteed per published route), StrongestFirst tie-drain
 semantics). It runs in an isolated subprocess with a 900&nbsp;s
@@ -469,9 +467,11 @@ lowest-threshold folder carries the superset corridors).
     guaranteed per published route), never a connection weight; it
     can never exceed the `weights` beside it) and `chain_revisit` (the layered
     filter's superset disclosure).
-*   **`route_paths_bodyId.csv`** (Skip BodyId off): one row per emitted
-    bodyId path on a validated walk (`path` = bodyId chain, per-path
-    `weights`, `applied_tau`, `route_h`, `plan_rank`).
+*   **`route_paths_bodyId.csv`** (Fast lane; Skip BodyId off): one row per
+    emitted bodyId path on a validated walk (`path` = bodyId chain, per-path
+    `weights`, `applied_tau`, `route_h`, `plan_rank`). The typed lane omits
+    this file (layered validation has no bodyId witnesses) and records
+    `bodyId_export: not_applicable` in its manifest/provenance.
 *   **`route_connection_type.csv`**: type-pair masses within the
     validated scopes, with TWO named support sets —
     `weight`/`universe_type_weights` = the whole admitted type-pair mass
@@ -493,11 +493,13 @@ lowest-threshold folder carries the superset corridors).
     `mean_edge_f9_ratio` (the mean per-edge F9 ratio over the selected
     support — never a mass quotient).
 *   **The lane's SECOND ROUND (synapse &ge; 1; plan-corridor-refill Q2)** —
-    the Fast lane has no budget that raises an applied threshold, so its
+    a lane has no budget that raises an applied threshold, so its
     sub-threshold band is `[1, asked)`: the mass its own admission cut left
     out on the SAME validated chains, re-valued through the refill's
-    forward + backward layered filter (no path enumeration). Same column
-    grammar as the Complete mode's refill, lane namespace:
+    forward + backward layered filter (no path enumeration). BOTH Fast and
+    typed lanes write this round by default (same file names and schema);
+    `--no-full-scope` skips it. Same column grammar as the Complete mode's
+    refill, lane namespace:
     *   **`route_full_paths_type.csv`**: every lane chain re-valued at
         synapse &ge; 1, with `emitted_weights` + `refill_weights` ==
         `weights` hop for hop.
@@ -551,15 +553,34 @@ lowest-threshold folder carries the superset corridors).
     `data_details/`): the serialized validated plan (walks with UBs,
     floors, knob values), content-hashed.
 
-Cross-dataset comparisons forward the lane mode to each per-dataset run
-(firing at each dataset's LOWEST swept threshold only — corridors at the
-lowest tier are supersets) and render a presence-driven Fast-mode report
-section (per-dataset plan summary, canonical-type corridor comparison,
-gap partition) plus a Connection-strength section (weight / ratio /
-adjusted ratio / refilled per delegate) in ``comparison_report.html``.
+Cross-dataset comparisons forward the ONE selected lane to each per-dataset
+run. Fast runs at every swept tier; the typed lane runs at each dataset's
+LOWEST swept threshold only (single-floor rule; higher tiers run Complete).
+The report renders a presence-driven lane section (per-dataset plan
+summary, canonical-type corridor comparison, gap partition) with the same
+cards/links for Fast and typed, plus a Connection-strength section
+(weight / ratio / adjusted ratio / refilled per delegate) in
+``comparison_report.html``.
 The pair report (``path_report.html``) is NOT written at the cross root
 — per-delegate pair reports live beside each delegate under
 ``dataset_data/<dataset>/<delegate>/``.
+
+#### Type-Pruned Lane Standalone Folder (`route_scope_paths_type_pruned/`)
+Selected by Run Mode = `typed`; the Complete pipeline is skipped exactly as
+in Fast-only mode. It shares the Fast lane's file contract: the same
+`route_paths_type.csv` columns (witness-only columns present but empty),
+`route_connection_type.csv`, `route_type_incoming_asked.csv`, the synapse
+&ge; 1 `route_full_*` round (default in both lanes), the
+`route_type_network.html` / `route_type_heatmap.html` mirror pages (linked
+by the report), `type_nt_consensus.csv`, `route_provenance.json` and
+`README.md`. It intentionally writes **no** `route_paths_bodyId.csv`;
+`bodyId_export: not_applicable` and the reason are stated in
+`type_prune_manifest.json` and `route_provenance.json`. Typed-only extras:
+`type_prune_manifest.json` (completeness `type_pruned_complete`, top-k,
+clock-relay, scope, exclusion and NT disclosures), the pruned type graph
+(`route_type_pairs_pruned.csv`), per-pair scope tables, strongest-first
+top-k tables and the clock-relay path views. `plan.json` lives at the run
+root's `data_details/route_plan/plan.json` for BOTH lane modes.
 
 #### Pair Report (`path_report.html`, `paths_pair_breakdown/`)
 

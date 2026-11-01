@@ -59,20 +59,24 @@ def test_combination_override_reaches_the_tab(cfg_file):
 
 
 def test_run_mode_override_round_trips(cfg_file):
-    assert cfg.set_user_default("corridor_mode", "both")
-    assert cfg.get_user_default("corridor_mode") == "both"
-    assert cfg.load_local_config()["user_defaults"]["corridor_mode"] == "both"
+    assert cfg.set_user_default("corridor_mode", "fast")
+    assert cfg.get_user_default("corridor_mode") == "fast"
+    assert cfg.load_local_config()["user_defaults"]["corridor_mode"] == "fast"
+
+
+def test_typed_run_mode_override_round_trips(cfg_file):
+    assert cfg.set_user_default("corridor_mode", "typed")
+    assert cfg.get_user_default("corridor_mode") == "typed"
+    assert (cfg.load_local_config()["user_defaults"]["corridor_mode"]
+            == "typed")
 
 
 def test_legacy_spellings_still_resolve(cfg_file):
-    """Stored BEFORE the normalization existed: 'off' meant Complete-only and
-    'on' meant Complete+Fast. They must keep working on read…"""
-    cfg.save_local_config({"user_defaults": {"corridor_mode": "off"}})
-    assert cfg.get_user_default("corridor_mode") == "complete"
-    cfg.save_local_config({"user_defaults": {"corridor_mode": "on"}})
-    assert cfg.get_user_default("corridor_mode") == "both"
-    """…and the WRITE path normalizes too: the old post-coercion map sat after
-    the option test, so saving 'off' was rejected and the value never stored."""
+    """One run = one lane: every legacy mixed spelling collapses to Complete
+    on read, and the WRITE path normalizes too."""
+    for legacy in ("off", "on", "auto", "both"):
+        cfg.save_local_config({"user_defaults": {"corridor_mode": legacy}})
+        assert cfg.get_user_default("corridor_mode") == "complete", legacy
     assert cfg.set_user_default("corridor_mode", "off")
     assert cfg.load_local_config()["user_defaults"]["corridor_mode"] == "complete"
 
@@ -86,7 +90,7 @@ def test_an_invalid_override_falls_back(cfg_file):
 def test_reset_restores_the_builtin(cfg_file):
     cfg.set_user_default("corridor_mode", "fast")
     assert cfg.reset_user_default("corridor_mode")
-    assert cfg.get_user_default("corridor_mode") == "auto"
+    assert cfg.get_user_default("corridor_mode") == "complete"
 
 
 # --- one vocabulary, four surfaces -----------------------------------------
@@ -102,6 +106,17 @@ def test_the_tabs_and_settings_share_one_vocabulary():
     assert cfg.DEFAULTS["corridor_mode"] in pc.RUN_MODE_OPTIONS
     assert pc.weight_basis_of(_w("Connection ratio")) == "connection_ratio"
     assert pc.weight_basis_of(_w("Synapse count")) == "synapse"
+
+
+def test_split_corridor_mode_is_one_lane():
+    """One run = one lane. 'typed' is its own engine mode + the flag; every
+    legacy mixed spelling normalizes to Complete."""
+    assert cfg.split_corridor_mode("typed") == ("typed", True)
+    for plain in ("complete", "fast"):
+        assert cfg.split_corridor_mode(plain) == (plain, False)
+    for legacy in ("off", "on", "auto", "both"):
+        assert cfg.split_corridor_mode(legacy) == ("complete", False)
+    assert "type_pruned" not in cfg.DEFAULTS
 
 
 def test_the_run_mode_labels_are_not_re_declared_in_the_tabs():
@@ -142,7 +157,7 @@ def test_the_rendered_card_stores_engine_keys():
     want = {
         "Threshold Basis": cfg.THRESHOLD_BASIS_CHOICES,
         "Combine Thresholds": cfg.THRESHOLD_COMBINATION_CHOICES,
-        "Run Mode (Complete / Fast)": cfg.CORRIDOR_MODE_CHOICES,
+        "Run Mode (Complete / Fast / Type-pruned)": cfg.CORRIDOR_MODE_CHOICES,
     }
     found = {}
     for el in client.elements.values():

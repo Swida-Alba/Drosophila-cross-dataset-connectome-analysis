@@ -2732,24 +2732,23 @@ def test_drop_untyped_path_rows(tmp_path):
 # path rows" rather than raising.
 # ---------------------------------------------------------------------------
 
-def test_fast_mode_passes_through_the_per_dataset_resolver():
-    """`_corridor_mode_for_threshold` special-cases 'auto'/'both' (lane fires
-    at the lowest swept tier only). Every other value must reach the engine
-    UNCHANGED — `fast` included, since the comparison then runs each dataset
-    in Fast-only mode by the user's explicit choice."""
+def test_one_mode_per_threshold_passes_through_the_per_dataset_resolver():
+    """The per-dataset resolver enforces ONE mode per run. Fast and Complete
+    pass through at every tier; legacy mixed spellings collapse to Complete;
+    the typed lane is single-floor (lowest tier typed, higher tiers Complete)."""
     from comparison.comparison_analyzer import _corridor_mode_for_threshold
 
     params = _params()
     tiers = params.get_thresholds_for_dataset(DS1)
     assert tiers, 'the fixture has no thresholds to sweep'
-    # `fast` and `complete` pass through at EVERY tier (their semantics do not
-    # depend on the sweep); `auto`/`both` fire the lane only at the LOWEST
-    # swept tier, which the resolver expresses by collapsing them to
-    # `complete` above it; the legacy aliases normalize first.
-    for raw, low_want, high_want in (('fast', 'fast', 'fast'),
-                                     ('complete', 'complete', 'complete'),
-                                     ('off', 'complete', 'complete'),
-                                     ('on', 'both', 'complete')):
+    for raw, low_want, high_want in (
+            ('fast', 'fast', 'fast'),
+            ('complete', 'complete', 'complete'),
+            ('off', 'complete', 'complete'),
+            ('on', 'complete', 'complete'),
+            ('auto', 'complete', 'complete'),
+            ('both', 'complete', 'complete'),
+            ('typed', 'typed', 'complete')):
         params.corridor_mode = raw
         for threshold in tiers:
             got = _corridor_mode_for_threshold(DS1, threshold, params)

@@ -180,21 +180,19 @@ class _UserFirstLabelMapper:
 
 
 def _corridor_mode_for_threshold(dataset_name, threshold, parameters) -> str:
-    """Resolve the Fast-mode lane switch for ONE per-dataset path run
-    (plan-corridor-lane.md §8): threshold sweeps fire the lane at the
-    dataset's LOWEST threshold only — corridors at the lowest threshold
-    are supersets for higher ones (ratified superset property), so higher
-    tiers would pay the lane enumeration for identical scope. The gate is
-    absolute (explicit 'both' included): a higher-tier run's corridors
-    are a strict subset of the lowest tier's. Canonical values
-    complete/auto/both/fast; legacy 'off'/'on' normalize here so every
-    downstream surface sees the canonical names."""
-    mode = getattr(parameters, 'corridor_mode', 'auto')
-    if mode == 'off':
+    """Resolve the single Run Mode for ONE per-dataset path run: complete |
+    fast | typed. A run executes ONE lane, so legacy mixed spellings
+    ('auto', 'both', 'on') normalize to 'complete'. The typed lane is a
+    SINGLE-FLOOR lane: only the dataset's lowest swept threshold runs it;
+    higher tiers run Complete so the lane is never re-enumerated per tier.
+    Fast-only runs its lane at every tier (each tier is a separate
+    standalone run)."""
+    mode = getattr(parameters, 'corridor_mode', 'complete')
+    if mode in ('off', 'on', 'auto', 'both'):
         mode = 'complete'
-    elif mode == 'on':
-        mode = 'both'
-    if mode != 'both' and mode != 'auto':
+    if mode not in ('complete', 'fast', 'typed'):
+        mode = 'complete'
+    if mode != 'typed':
         return mode
     try:
         tiers = sorted(float(t) for t in
