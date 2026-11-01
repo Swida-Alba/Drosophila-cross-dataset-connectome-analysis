@@ -9,6 +9,7 @@ Asserts the single-source-of-truth contract:
     cannot break out of the inline script or inject markup.
 """
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -125,6 +126,41 @@ class TestInjectionEscaping:
         assert "\\u003cimg" in net_html
         assert "escapeHtml(data.label)" in net_html
 
+    def test_json_safe_serializes_numpy_scalars_and_arrays(self):
+        dumped = json_safe(
+            {
+                "weights": [np.int64(7), np.float32(1.5), np.bool_(True)],
+                "matrix": np.array([[1, 2], [3, 4]], dtype=np.int64),
+            }
+        )
+        assert '"weights": [7, 1.5, true]' in dumped
+        assert '"matrix": [[1, 2], [3, 4]]' in dumped
+
+    def test_sankey_accepts_numpy_integer_weights(self, tmp_path):
+        # Edge-list input keeps the weight column as int64; the Sankey
+        # weights payload used to raise "Object of type int64 is not JSON
+        # serializable" before the json_safe fallback.
+        df = pd.DataFrame(
+            {
+                "source": ["S", "A", "B"],
+                "target": ["A", "B", "T"],
+                "weight": np.array([10, 20, 30], dtype=np.int64),
+            }
+        )
+        vp = VisualizePath(
+            path_file=df,
+            output_folder=str(tmp_path),
+            showfig=False,
+            verbose=False,
+            network_layout="dagre",
+        )
+        vp.build_network()
+        sankey_path = vp.create_sankey()
+        html = Path(sankey_path).read_text(encoding="utf-8")
+        match = re.search(r"const weights = (\[[^\]]*\]);", html)
+        assert match, "Sankey weights payload missing"
+        assert sorted(json.loads(match.group(1))) == [10, 20, 30]
+
     def test_json_safe_escapes_script_terminators(self):
         payload = {"label": "</script><script>alert(1)</script>"}
         dumped = json_safe(payload)
@@ -225,8 +261,12 @@ class TestHeatmapLabelToggleTemplate:
     handler, so this is asserted as a class of bug, not as four literals.
     """
 
-    NESTED_TITLE_KEYS = ("'colorbar.title.text'", "'title.text'",
-                         "'xaxis.title.text'", "'yaxis.title.text'")
+    NESTED_TITLE_KEYS = (
+        "'colorbar.title.text'",
+        "'title.text'",
+        "'xaxis.title.text'",
+        "'yaxis.title.text'",
+    )
 
     @staticmethod
     def _toggle_body(heat_html):
@@ -238,8 +278,9 @@ class TestHeatmapLabelToggleTemplate:
         heat_html = _heatmap_html(tmp_path)
         for key in self.NESTED_TITLE_KEYS:
             assert key not in heat_html, (
-                f'{key} is a two-level write into a container the page stores as a '
-                'string; Plotly throws `container is not an object` on it')
+                f"{key} is a two-level write into a container the page stores as a "
+                "string; Plotly throws `container is not an object` on it"
+            )
 
     def test_restyle_calls_pass_an_array_trace_index(self, tmp_path):
         heat_html = _heatmap_html(tmp_path)
@@ -247,8 +288,9 @@ class TestHeatmapLabelToggleTemplate:
         assert calls, "expected the heatmap page to issue a restyle"
         for call in calls:
             # the captured group is the argument list, closing paren excluded
-            assert re.search(r",\s*\[[^\]]*\]$", call.strip()), (
-                f'Plotly.restyle wants a trace-index ARRAY, got: {call.strip()}')
+            assert re.search(
+                r",\s*\[[^\]]*\]$", call.strip()
+            ), f"Plotly.restyle wants a trace-index ARRAY, got: {call.strip()}"
 
     def test_colourbar_title_comes_from_one_source(self, tmp_path):
         """createHeatmap titles the colourbar with the *selected* metric's display
@@ -265,7 +307,7 @@ class TestHeatmapLabelToggleTemplate:
         """The old handler wrote the caption first, so a refused update left the
         control asserting a state the picture never reached."""
         body = self._toggle_body(_heatmap_html(tmp_path))
-        assert body.index("Plotly.relayout(gd, layoutUpdate)") < \
-            body.index("btn.textContent = showLabels"), (
-            "the button caption must be the last thing the toggle writes")
+        assert body.index("Plotly.relayout(gd, layoutUpdate)") < body.index(
+            "btn.textContent = showLabels"
+        ), "the button caption must be the last thing the toggle writes"
         assert "showLabels = !showLabels;" in body  # rollback restores this

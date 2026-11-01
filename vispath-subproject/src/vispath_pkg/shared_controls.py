@@ -48,6 +48,39 @@ def html_escape(value):
     )
 
 
+def _json_default(o):
+    """Serialize NumPy scalars/arrays for the HTML payloads.
+
+    The visualizations receive pandas frames and convert edge weights into
+    NumPy scalars; ``json.dumps`` rejects those (the Sankey export failed
+    with ``Object of type int64 is not JSON serializable``). Convert the
+    common numeric/boolean scalars losslessly and arrays via ``tolist``
+    (which also converts nested scalars).
+    """
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - numpy is a vispath dependency
+        np = None
+    if np is not None:
+        if isinstance(o, np.integer):
+            return int(o)
+        if isinstance(o, np.floating):
+            return float(o)
+        if isinstance(o, np.bool_):
+            return bool(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        if isinstance(o, (np.datetime64, np.timedelta64)):
+            return str(o)
+    item = getattr(o, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except Exception:  # noqa: BLE001 - fall through to the TypeError
+            pass
+    raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
+
+
 def json_safe(value, default=None):
     """json.dumps a value for embedding inside an inline ``<script>`` block.
 
@@ -56,10 +89,13 @@ def json_safe(value, default=None):
     inline script and allow arbitrary HTML/JS injection. Replace those
     characters (plus the JS line separators U+2028/U+2029) with their
     ``\\uXXXX`` escapes, which JSON.parse decodes back identically.
+
+    NumPy scalars/arrays are converted by the default fallback unless the
+    caller supplies its own ``default`` handler.
     """
     import json as _json
 
-    text = _json.dumps(value, default=default)
+    text = _json.dumps(value, default=default or _json_default)
     return (
         text.replace("<", "\\u003c")
         .replace(">", "\\u003e")
