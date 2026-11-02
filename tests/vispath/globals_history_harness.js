@@ -37,6 +37,21 @@ function extractFunction(name, source) {
     throw new Error('unbalanced braces: ' + name);
 }
 
+
+const LABEL_FIT_PRELUDE = `
+        let NODE_LABEL_FIT = 'structured';
+        const NODE_LABEL_DEFAULT_MAX_WIDTH = 80;
+        const NODE_LABEL_FONT_FAMILY = 'Arial';
+        const _labelMeasureCtx = {
+            font: '12px Arial',
+            measureText: function (text) {
+                const m = /([0-9]+(?:[.][0-9]+)?)px/.exec(this.font || '');
+                const px = m ? parseFloat(m[1]) : 12;
+                return { width: String(text).length * px * 0.6 };
+            }
+        };
+`;
+
 const FUNCTIONS = [
     'updateHoverInfo',
     'captureStyleBypass',
@@ -55,6 +70,7 @@ const FUNCTIONS = [
     'refreshEdgeStyles', 'clearEdgeEndpointOverrides', 'applyStraightEdgeStyle',
     'vpBowAroundObstructions', 'vpNodeHalfSizes', 'vpRimDistance', 'vpPointInsideNode',
     'hasBypass',
+    'isStructuredLabel', 'measureLabelRow', 'fitStructuredLabels',
 ];
 
 // Top-level const arrow helpers the extracted functions close over
@@ -178,7 +194,7 @@ function buildScope(cy) {
         };
     `;
 
-    const src = prelude + fnSources + `
+    const src = LABEL_FIT_PRELUDE + prelude + fnSources + `
         return {
             undo, redo, pushHistory, captureState, restoreState,
             updateNodeSize, updateNodeShape, updateEdgeWidth, updateFontSize, updateArrowSize,

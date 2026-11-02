@@ -40,6 +40,21 @@ function extractFunction(name, source) {
     throw new Error('unbalanced braces: ' + name);
 }
 
+
+const LABEL_FIT_PRELUDE = `
+        let NODE_LABEL_FIT = 'structured';
+        const NODE_LABEL_DEFAULT_MAX_WIDTH = 80;
+        const NODE_LABEL_FONT_FAMILY = 'Arial';
+        const _labelMeasureCtx = {
+            font: '12px Arial',
+            measureText: function (text) {
+                const m = /([0-9]+(?:[.][0-9]+)?)px/.exec(this.font || '');
+                const px = m ? parseFloat(m[1]) : 12;
+                return { width: String(text).length * px * 0.6 };
+            }
+        };
+`;
+
 const FUNCTIONS = [
     // persistence pair + buttons
     'captureNetworkState', 'applyNetworkState', 'saveLayout', 'loadLayout',
@@ -51,6 +66,7 @@ const FUNCTIONS = [
     // global style update fns
     'updateNodeSize', 'updateNodeShape', 'updateEdgeWidth', 'updateFontSize', 'updateArrowSize',
     'hasBypass',
+    'isStructuredLabel', 'measureLabelRow', 'fitStructuredLabels',
     'updateEdgeLabelFontSize', 'updateMetric', 'updateEdgeWidths',
     'updateEdgeMetricLabels',
     // edge filter chain
@@ -224,7 +240,7 @@ function buildScope(cy) {
         const bgCtrl = createBackgroundController(['#ffffff', '#000000'], ['White', 'Black'], applyBackground);
     `;
 
-    const src = prelude + fnSources + `
+    const src = LABEL_FIT_PRELUDE + prelude + fnSources + `
         return {
             captureNetworkState, applyNetworkState, saveLayout, loadLayout,
             pushHistory, captureState, syncToggleButtons,

@@ -427,21 +427,35 @@ def test_conserved_paths_label_mapper_naming(tmp_path, monkeypatch):
     governing = LabelMapper(overall_mapping_json=str(gov))
 
     class AutoMapper:
-        """Decorates EVERY name the way the real auto mapper decorates
-        cross-dataset differences — including settled labels, which is
-        exactly the behavior the fix must suppress for governed nodes."""
+        """Resolves the auto-mapper remainder while the governing label
+        mapper keeps its own labels verbatim."""
 
-        def get_display_name_with_dataset_info(self, name, datasets):
-            if name == 'LNd_a':
-                return 'LNdX(LNd_a)', {'M': 'LNd_a'}
-            if name == '5th-LNv':
-                return '5thsLNv_LNd6(5th-LNv/s-LNv_a)', {'F': '5th-LNv'}
-            if name == 'DN1pC':
-                return 'DN1pC(SMP530)', {'B': 'SMP530'}
-            return name, {}
+        _loaded = True
+        _neuron_df_path = None
+        last_load_error = None
+
+        def _get_type_mapping_key(self, dataset):
+            return dataset
+
+        def _get_dataset_short_codes(self, datasets):
+            return ['M', 'F'][:len(datasets)]
 
         def get_all_dataset_short_codes(self, datasets):
-            return {'male-cns:v1.0': 'M'}
+            return {'M': D1, 'F': D2}
+
+        def _detect_type_source(self, name):
+            return D1 if name in ('LNd_a', '5th-LNv', 'DN1pC') else None
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False,
+                                 route_scope='curated'):
+            if source_type == 'LNd_a' and target_dataset == D2:
+                return {'status': 'mapped', 'target_type': 'LNdX',
+                        'target_types': ['LNdX'], 'conflicts': [],
+                        'relationship': 'renamed'}
+            return {'status': 'unmapped', 'target_type': None,
+                    'target_types': [], 'conflicts': [],
+                    'relationship': None}
 
     class Analyzer:
         parameters = SimpleNamespace(
@@ -490,12 +504,15 @@ def test_conserved_paths_label_mapper_naming(tmp_path, monkeypatch):
         an, threshold=3, trim_dead_ends=False)
 
     nodes = set(captured['edges']['source']) | set(captured['edges']['target'])
-    # Governed labels verbatim — never decorated.
+    # Node ids stay canonical; governed labels are never decorated.
     assert '5th-LNv' in nodes and 'DN1pC' in nodes and 'LNd_CRY+_ITP+' in nodes
+    assert 'LNd_a' in nodes
     assert '5thsLNv_LNd6(5th-LNv/s-LNv_a)' not in nodes
     assert 'DN1pC(SMP530)' not in nodes
-    # Auto-resolved name keeps the decoration.
-    assert 'LNdX(LNd_a)' in nodes
+    # Auto-resolved names keep the two-line decoration, keyed by the id.
+    labels = captured['kw']['network_node_labels']
+    assert labels.get('LNd_a') == 'LNd_a\n(LNdX)', labels
+    assert '5th-LNv' not in labels and 'DN1pC' not in labels, labels
 
 
 def test_conservation_network_resolves_bodyid_orphans(tmp_path):

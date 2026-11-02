@@ -222,6 +222,31 @@ The web UI builds custom mappings **inline on each tab** — no scripting needed
    its base type exists **and** is partly governed, so an untouched type's
    `T*` never rows that type's whole population, and a name the dataset
    actually uses stays a name.
+
+### Node labels are presentation (2026-11-02)
+
+A network node's **id is its canonical key** and is never decorated or
+parsed. The visible label is built once through
+`comparison.display_labels.build_node_display` and rendered in one of three
+forms:
+
+| form | example | use |
+| --- | --- | --- |
+| `network` | `SLP249\n(APDN3)` | vispath network nodes (two rows) |
+| `inline` | `SLP249(APDN3)` | report tables, count rows |
+| `plain` | `SLP249` | ids, keys, matching, bodyId axes |
+
+A settled label or residual key from this mapper is **tier-0**: it passes
+through verbatim and never gains a parenthetical. Names are atomic — a
+comma is part of a native type (`SMP523,SMP524` is one BANC type), never a
+list separator — and alternatives follow dataset order. Mapper-only names
+decorate only for `mapped`/`bridged`/`valid_split_evidence`; a `claimed` or
+`evidence_only` name is hover evidence only. The hover is keyed by the same
+canonical id and lists each selected dataset's atomic names in dataset
+order; a comma-bearing name is quoted there. This is the label-mapper's
+display counterpart, not a second identity system: it never rewrites a
+LabelMapper label, and `label_utils.build_body_id_label` keeps its own
+`{bodyId}_{label}({native})` grammar.
    *Cross-dataset scope*: the key is deliberately UNDECORATED — two
    datasets' residuals of the same native name are the same class ("the
    un-enrolled remainder of `T`") and share one comparison row, while a

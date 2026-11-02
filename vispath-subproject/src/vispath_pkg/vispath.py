@@ -1847,7 +1847,7 @@ class VisualizePath:
         color_edges_by_nt=False, # NEW: Color edges by neurotransmitter type
         dataset_legend=None,    # NEW: Dataset short code legend {code: full_name} for display names
         dataset_legend_meta=None,  # NEW: per-code {'count': int, 'color': str} — chip count + swatch override
-        node_dataset_info=None, # NEW: Node-level dataset info {node_label: {code: name_in_dataset}}
+        node_dataset_info=None, # NEW: {node id: {code: name_or_names}} hover names
         node_groups=None,       # NEW: Declared node groups [{name,label,color}] (dataset groups in the mapping views)
         separate_hemispheres=False,  # NEW: Enable hemisphere-aware coloring/layout
         hemisphere_desaturate_side='R',  # NEW: Hemisphere to desaturate ('L' or 'R')
@@ -1864,7 +1864,8 @@ class VisualizePath:
         merge_reciprocal_edges=False,  # NEW: Collapse reciprocal pairs into one both-end-arrow edge
         network_node_universe=None,  # NEW: declared nodes kept on the network canvas even with no edge
         network_node_colors=None,    # NEW: {node: hex} fill overrides (a type-palette canvas)
-        network_node_labels=None,    # NEW: {node: display label} overrides (IDs keep their suffixes)
+        network_node_labels=None,    # NEW: {node id: display label} overrides (ids keep their suffixes)
+        node_label_fit='structured',  # NEW: 'structured'|'shrink'|'none' multi-line label fit
         edge_group_legend=None,      # NEW: [{label, color}] edge-direction chips in the footer
         network_role_legend=True,    # NEW: False hides the source/intermediate/target chips
         network_edge_legend=None,    # NEW: [{title, items}] arrow-sample legend (page overlay + SVG exports)
@@ -2201,6 +2202,19 @@ class VisualizePath:
             str(k): str(v) for k, v in (network_node_colors or {}).items()}
         self.network_node_labels = {
             str(k): str(v) for k, v in (network_node_labels or {}).items()}
+        # Keyed by node id (never by the rendered label); kept for the
+        # unknown-key disclosure after the graph is built.
+        self._provided_node_label_keys = set(self.network_node_labels)
+        self._provided_dataset_info_keys = set(
+            str(k) for k in (node_dataset_info or {}))
+        fit_mode = str(node_label_fit or 'structured').lower()
+        self.node_label_fit = (
+            fit_mode if fit_mode in ('structured', 'shrink', 'none')
+            else 'structured')
+        if self.node_label_fit != fit_mode:
+            self._vprint(
+                f"Warning: unknown node_label_fit {node_label_fit!r}; "
+                "using 'structured'.")
         self.edge_group_legend = list(edge_group_legend or [])
         self.network_role_legend = bool(network_role_legend)
         self.network_edge_legend = normalize_edge_legend(network_edge_legend)
@@ -4388,7 +4402,20 @@ class VisualizePath:
                         attrs[metric_name] = float(val)
         self.conn_df = conn_df
         self.G_network = G
-        
+
+        # Both maps are keyed by node id; a display-label key is dead and
+        # would silently drop the hover/label, so disclose it.
+        for key in getattr(self, '_provided_node_label_keys', ()):
+            if key not in G:
+                self._vprint(
+                    f"Warning: network_node_labels key {key!r} is not a "
+                    "node id in this graph.")
+        for key in getattr(self, '_provided_dataset_info_keys', ()):
+            if key not in G:
+                self._vprint(
+                    f"Warning: node_dataset_info key {key!r} is not a node "
+                    "id in this graph (labels must be keyed by id).")
+
         return conn_df, G
     
     def create_sankey(self):
@@ -9560,6 +9587,14 @@ class VisualizePath:
             updateEdgeWidths();
         }}, 100);
 
+        function formatDatasetName(name) {{
+            const text = String(name === undefined || name === null ? '' : name);
+            if (text.indexOf(',') !== -1 || text.indexOf(' | ') !== -1) {{
+                return '"' + text + '"';
+            }}
+            return text;
+        }}
+
         // Show hover info in bottom-left box (like coana)
         cy.on('mouseover', 'node', function(evt) {{
             const node = evt.target;
@@ -9575,10 +9610,17 @@ class VisualizePath:
             if (data.hemisphere) {{
                 html += `<br><b>Hemisphere:</b> ${{escapeHtml(data.hemisphere)}}`;
             }}
-            // Add dataset info if available
+            // Add dataset info if available.  Keys keep the formatter's
+            // dataset order (never alphabetised); a list is one dataset's
+            // atomic names joined with ' | ', and a name containing ',' or
+            // ' | ' is quoted so it cannot read as a list.
             if (data.dataset_info && Object.keys(data.dataset_info).length > 0) {{
                 html += `<br><span style="color: #888; font-size: 0.9em;">─────────────</span><br><b>Names by dataset:</b>`;
-                for (const [code, name] of Object.entries(data.dataset_info).sort()) {{
+                for (const code of Object.keys(data.dataset_info)) {{
+                    const rawName = data.dataset_info[code];
+                    const name = Array.isArray(rawName)
+                        ? rawName.map(formatDatasetName).join(' | ')
+                        : formatDatasetName(rawName);
                     html += `<br>&nbsp;&nbsp;${{escapeHtml(code)}}: ${{escapeHtml(name)}}`;
                 }}
             }}
@@ -11004,8 +11046,11 @@ class VisualizePath:
                     item.borderOpacity = parseFloat(n.style('border-opacity'));
                     item.borderWidth = parseFloat(n.style('border-width'));
                 }}
-                // per-node label font size override
-                if (hasBypass(n, 'font-size')) item.fontSize = parseFloat(n.style('font-size'));
+                // per-node label font size override (never captured for a
+                // structured label: that size is a fit artefact, not state)
+                if (hasBypass(n, 'font-size') && !isStructuredLabel(n)) {{
+                    item.fontSize = parseFloat(n.style('font-size'));
+                }}
                 // z-order override: captured only when manual
                 const zc = n.style('z-index-compare');
                 if (zc === 'manual') item.zIndex = n.style('z-index');
@@ -11383,6 +11428,7 @@ class VisualizePath:
                             n.removeStyle('shape');
                             n.removeStyle('z-index');
                             n.removeStyle('z-index-compare');
+                            n.removeStyle('font-size');
                             return;
                         }}
                         if (item.width !== undefined || item.height !== undefined) {{
@@ -11397,8 +11443,11 @@ class VisualizePath:
                         }}
                         if (item.shape !== undefined) n.style('shape', item.shape);
                         else n.removeStyle('shape');
-                        if (item.fontSize !== undefined) n.style('font-size', item.fontSize + 'px');
-                        else n.removeStyle('font-size');
+                        if (item.fontSize !== undefined && !isStructuredLabel(n)) {{
+                            n.style('font-size', item.fontSize + 'px');
+                        }} else {{
+                            n.removeStyle('font-size');
+                        }}
                         if (item.borderStyle !== undefined || item.borderColor !== undefined) {{
                             n.style({{
                                 'border-style': (item.borderStyle !== undefined ? item.borderStyle : 'solid'),
@@ -11470,6 +11519,9 @@ class VisualizePath:
                 if (state.labelsVisible !== undefined && state.labelsVisible !== labelsVisible) toggleLabels();
 
                 resizeCanvasAfterVisibilityControlChange();
+                // Re-fit after every state application: a saved/imported
+                // geometry bundle must not resurrect a per-node cap.
+                fitStructuredLabels();
                 return true;
             }} finally {{
                 restoringHistoryState = false;
@@ -11665,6 +11717,7 @@ class VisualizePath:
             refreshEdgeStyles(false);
             applyAllEdgeArrowStyles();
             updateUndoRedoButtons();
+            fitStructuredLabels();
         }}
 
         // Re-apply a captured set of global style controls (node size,
@@ -12819,6 +12872,58 @@ class VisualizePath:
         
 {SHARED_JS}{edge_legend_js}
 
+        // Structured-label fitting.  A label carrying an explicit newline
+        // is one primary row plus one parenthetical row: the fit measures
+        // each row at the current font and widens text-max-width so neither
+        // row is re-wrapped.  Font size stays GLOBAL in 'structured' mode
+        // (a per-node font-size cap must not survive a saved layout);
+        // 'shrink' is the legacy opt-in and 'none' keeps the raw 80 px wrap.
+        const NODE_LABEL_FIT = {self.node_label_fit!r};
+        const NODE_LABEL_DEFAULT_MAX_WIDTH = 80;
+        const NODE_LABEL_FONT_FAMILY = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif";
+        const _labelMeasureCanvas = document.createElement('canvas');
+        const _labelMeasureCtx = _labelMeasureCanvas.getContext('2d');
+        function measureLabelRow(text, fontPx) {{
+            if (!_labelMeasureCtx) return String(text).length * fontPx * 0.6;
+            _labelMeasureCtx.font = fontPx + 'px ' + NODE_LABEL_FONT_FAMILY;
+            return _labelMeasureCtx.measureText(String(text)).width;
+        }}
+        function isStructuredLabel(node) {{
+            return String(node.data('label') || '').indexOf('\\n') !== -1;
+        }}
+        function fitStructuredLabels() {{
+            if (NODE_LABEL_FIT === 'none' || typeof cy === 'undefined' || !cy) return;
+            const fontPx = parseFloat(globalFontSize) || 12;
+            cy.batch(function() {{
+                cy.nodes().forEach(function(node) {{
+                    if (!isStructuredLabel(node)) {{
+                        node.removeStyle('text-max-width');
+                        return;
+                    }}
+                    // Never let a fitter-era bypass (or a restored saved
+                    // layout) override the global Font Size control.
+                    node.removeStyle('font-size');
+                    const rows = String(node.data('label')).split('\\n');
+                    let widest = 0;
+                    rows.forEach(function(row) {{
+                        widest = Math.max(widest, measureLabelRow(row, fontPx));
+                    }});
+                    if (NODE_LABEL_FIT === 'shrink') {{
+                        node.style('text-max-width', NODE_LABEL_DEFAULT_MAX_WIDTH + 'px');
+                        if (widest > NODE_LABEL_DEFAULT_MAX_WIDTH && widest > 0) {{
+                            const fitted = Math.max(
+                                6, fontPx * NODE_LABEL_DEFAULT_MAX_WIDTH / widest);
+                            node.style('font-size', fitted + 'px');
+                        }}
+                    }} else {{
+                        node.style('text-max-width', Math.max(
+                            NODE_LABEL_DEFAULT_MAX_WIDTH,
+                            Math.ceil(widest) + 8) + 'px');
+                    }}
+                }});
+            }});
+        }}
+
         function updateFontSize(size) {{
             const value = parseFloat(size);
             const echo = document.getElementById('fontSizeValue');
@@ -12829,6 +12934,7 @@ class VisualizePath:
                 .selector('node')
                 .style('font-size', value + 'px')
                 .update();
+            fitStructuredLabels();
         }}
 
         // Text size of the on-edge weight labels (the 🏋️ Edge Weights
@@ -17421,6 +17527,7 @@ class VisualizePath:
         initializeEdgeBaseStyles();
         initializeLogBaseVisibility();
         initPanelBar();
+        fitStructuredLabels();
 
         // Open view: with a layout saved for THIS generated file, it is
         // re-applied on open; with no save, the view is fitted ONCE here —

@@ -24873,7 +24873,11 @@ class FindNeuronConnection:
         )
 
     def _extract_hemi_from_label(self, label: str):
-        base = label.split('(')[0].strip() if '(' in label else label
+        try:
+            from comparison.display_labels import parse_display_label
+            base = parse_display_label(label)[0]
+        except Exception:  # pragma: no cover - legacy fallback (no parsing)
+            base = label
         hemi = None
         if base.endswith(('_L', '_R', '_U')):
             hemi = base[-1]

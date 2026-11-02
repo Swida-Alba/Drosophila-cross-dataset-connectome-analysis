@@ -1447,26 +1447,52 @@ def test_conservation_network_partial_three_datasets(tmp_path):
 
 
 class FakeAutoTypeMapper:
-    def get_all_dataset_short_codes(self, datasets):
-        return {"D1": "ds_one", "D2": "ds_two"}
+    """Minimal validity-aware mapper protocol (display_labels contract)."""
 
+    _loaded = True
+    _neuron_df_path = None
+    last_load_error = None
+
+    TARGETS = {
+        "B": "B1",
+        "GNG588": "CB0038",
+        "NEW": "N1",
+        "DUPA": "N2",
+        "NEWT": "N2",
+        "DUPT": "N3",
+        "BALT": "B1",
+        "TALT": "B1",
+    }
+
+    def get_all_dataset_short_codes(self, datasets):
+        return {"M": "male-cns v1.0", "F": "FlyWire FAFB v783"}
+
+    def _get_dataset_short_codes(self, datasets):
+        return ["M", "F"][:len(datasets)]
+
+    def _get_type_mapping_key(self, dataset):
+        return "male-cns:v1.0" if dataset == "ds_one" else str(dataset)
+
+    def _detect_type_source(self, name):
+        return "ds_one" if name in self.TARGETS else None
+
+    def get_mapping_decision(self, source_type, source_dataset,
+                             target_dataset, include_bridges=False,
+                             route_scope='curated'):
+        target = self.TARGETS.get(source_type)
+        if target is None:
+            return {"status": "unmapped", "target_type": None,
+                    "target_types": [], "conflicts": [],
+                    "relationship": None}
+        return {"status": "mapped", "target_type": target,
+                "target_types": [target], "conflicts": [],
+                "relationship": "renamed"}
+
+    # Legacy wrapper calls kept for any other report section.
     def get_display_name_with_dataset_info(self, name, datasets):
-        if name == "B":
-            return "B (F:B1)", {"F": "B1"}
-        if name == "GNG588":
-            return "GNG588 (CB0038)", {"F": "GNG588"}
-        if name == "NEW":
-            return "CAN (F:N1)", {"F": "N1"}
-        if name == "DUPA":
-            return "CAN (F:N2)", {"F": "N2"}
-        if name == "NEWT":
-            return "CAN2 (H:N2)", {"H": "N2"}
-        if name == "DUPT":
-            return "CAN2 (H:N3)", {"H": "N3"}
-        if name in ("BALT", "TALT"):
-            # display label already present as a transformed edge node
-            return "B (F:B1)", {}
-        return name, {}
+        target = self.TARGETS.get(name)
+        return (name if target is None else f"{name}({target})",
+                {} if target is None else {"F": target})
 
 
 def test_conservation_network_type_mapper(tmp_path):
@@ -1475,10 +1501,6 @@ def test_conservation_network_type_mapper(tmp_path):
         source_neurons=("A", "NEW", "DUPA", "BALT", "PAT*"),
         target_neurons=("B", "NEWT", "DUPT", "TALT", "TPAT*"),
     )
-    # Keep the mapper's settled labels disjoint from the decorated tokens:
-    # a tier-0 label passes verbatim through the isolated-node display
-    # chain (label-mapper display compatibility, 2026-10-10) and would
-    # suppress the "CAN (F:N…)" auto-mapper decoration asserted below.
     fa.label_mapper = FakeLabelMapper(("A",), ("B",))
     fa.parameters._auto_type_mapper = FakeAutoTypeMapper()
     df = _aligned_df()
@@ -1488,9 +1510,12 @@ def test_conservation_network_type_mapper(tmp_path):
     # no path data -> custom edges are not filtered away
     fa._get_path_data_for_threshold = lambda t: pd.DataFrame()
     html = hrg._generate_conservation_network(fa, DATASETS, 1, NICKNAME_MAP)
-    assert "B (F:B1)" in html
-    assert "CAN (F:N" in html
-    assert "CAN2 (H:N" in html
+    # BALT/TALT are outside the tier-0 set, so the mapper decorates them.
+    assert "BALT(B1)" in html
+    assert "NEW(N1)" in html
+    assert "NEWT(N2)" in html
+    # Tier-0 labels stay verbatim (no parenthetical).
+    assert '"label": "B"' in html
     assert "Dataset codes in node names" in html
     assert "Names by dataset" in html
 

@@ -32,9 +32,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 try:  # package import (usual pipeline path)
     from . import report_kit
     from .cross_dataset_type_mapper import basis_is_row_evidence
+    from .display_labels import parse_display_label
 except ImportError:  # script / notebook path
     import report_kit  # type: ignore[no-redef]
     from cross_dataset_type_mapper import basis_is_row_evidence
+    from display_labels import parse_display_label
 
 
 def split_basis_buckets(basis_map: Dict[str, Any]) -> Tuple[List[str], List[str]]:
@@ -1031,10 +1033,10 @@ def collect_run_data(run_dir: Path,
         # no_source orphans vs backward-mapped, by the ordered leaf token
         if tok.endswith('(out-map)'):
             br = cand_break['in_family']
-            br['types'][tok.split('(')[0].strip()] += 1
+            br['types'][parse_display_label(tok)[0]] += 1
         elif '(no_source)' in tok:
             br = cand_break['no_source']
-            br['types'][tok.split('(')[0].strip()] += 1
+            br['types'][parse_display_label(tok)[0]] += 1
         elif '>' in tok:
             br = cand_break['backward']
             br['to'][tok.split('>', 1)[1].strip()] += 1

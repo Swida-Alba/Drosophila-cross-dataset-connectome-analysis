@@ -45,6 +45,7 @@ from .type_resolver import (
     resolve_valid_targets,
 )
 from .comparison_parameters import threshold_cell_value
+from .display_labels import parse_display_label
 
 STATUS_PRESENT = 'present'
 STATUS_BELOW_THRESHOLD = 'below_threshold'
@@ -450,7 +451,7 @@ def build_query_type_coverage(analyzer, query: Dict[str, Any]
             # — which are a rendering construct the mapper and the neuron
             # tables never contain; resolution and same-name existence
             # checks use the base name (the hover/tooltip convention).
-            resolve_name = str(type_name).split('(')[0].strip() or type_name
+            resolve_name = parse_display_label(type_name)[0] or str(type_name)
             candidates = [resolve_name]
             try:
                 resolution = resolve_valid_targets(
@@ -707,7 +708,7 @@ def absence_note(coverage: Dict[Tuple[str, str], TypeCoverageEntry],
     notes = []
     saw_any = False
     for name in type_names:
-        base = str(name).split('(')[0]
+        base = parse_display_label(name)[0]
         entry = coverage.get((base, dataset))
         if entry is None:
             continue
@@ -731,7 +732,7 @@ def node_coverage_line(coverage: Dict[Tuple[str, str], TypeCoverageEntry],
     """One-line per-dataset absence summary for a node tooltip."""
     if not coverage:
         return ''
-    base = str(label).split('(')[0]
+    base = parse_display_label(label)[0]
     parts = []
     for dataset in datasets:
         entry = coverage.get((base, dataset))

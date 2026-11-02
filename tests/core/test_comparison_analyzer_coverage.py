@@ -1107,6 +1107,15 @@ class _FakeAutoTypeMapper:
     def _get_type_mapping_key(self, dataset):
         return dataset
 
+    def _get_dataset_short_codes(self, datasets):
+        return [str(dataset)[0].upper() for dataset in datasets]
+
+    def get_dataset_short_code(self, dataset):
+        return str(dataset)[0].upper()
+
+    def get_all_dataset_short_codes(self, datasets):
+        return {self.get_dataset_short_code(ds): ds for ds in datasets}
+
     def get_mapping_decision(self, source_type, source_dataset,
                              target_dataset, include_bridges=False):
         target = "SrcCanon" if source_type == "Src" else source_type
@@ -2328,20 +2337,52 @@ def test_visualize_conserved_paths_happy(monkeypatch, tmp_path):
 
 
 def test_visualize_conserved_paths_with_auto_mapper(monkeypatch, tmp_path):
-    _install_fake_vispath(monkeypatch)
-    a = ComparisonAnalyzer(_params(), verbose=False)
-    a.raw_results = _standard_results()
+    fake = _install_fake_vispath(monkeypatch)
+    captured = {}
 
-    mapper = _enable_fake_auto_mapper(a.parameters)
-    mapper.get_display_name_with_dataset_info = (
-        lambda node, datasets: (f"{node}(HB)", {"HB": node}))
-    mapper.get_all_dataset_short_codes = lambda datasets: {"HB": datasets[0]}
-    mapper._detect_type_source = lambda t: None
-    mapper.get_mapped_type = lambda *args: None
+    class _Recorder(_FakeVisualizePath):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            captured['vp'] = self
+
+    fake.VisualizePath = _Recorder
+
+    class _CanonMapper(_FakeAutoTypeMapper):
+        def _detect_type_source(self, type_name):
+            return DS1 if type_name in ('Src', 'Mid') else None
+
+        def get_mapping_decision(self, source_type, source_dataset,
+                                 target_dataset, include_bridges=False):
+            if source_type in ('Src', 'Mid'):
+                target = source_type + 'Canon'
+                return {'status': 'mapped', 'source_type': source_type,
+                        'target_type': target, 'target_types': [target],
+                        'relationship': '1-1', 'conflicts': []}
+            return super().get_mapping_decision(
+                source_type, source_dataset, target_dataset,
+                include_bridges=include_bridges)
+
+    a = ComparisonAnalyzer(_params(), verbose=False)
+    a.raw_results = {
+        DS1: {1: _edge_df([("Src", "Mid", 5), ("Mid", "Tgt", 5)])},
+        DS2: {1: _edge_df([("Src", "Mid", 5), ("Mid", "Tgt", 5)])},
+    }
+    a.parameters.auto_type_mapping = True
+    a.parameters._auto_type_mapper = _CanonMapper()
 
     out = a.visualize_conserved_paths(threshold=1,
                                       output_folder=str(tmp_path))
     assert out is not None
+    vp = captured['vp']
+    # Node ids stay canonical (the aligned key), never decorated strings.
+    ids = set(vp.path_file['source']) | set(vp.path_file['target'])
+    assert ids == {'Src', 'MidCanon', 'Tgt'}, ids
+    # The run-observed raw name decorates the canonical key as a two-line
+    # network label; the map is keyed by the canonical id.
+    labels = vp.kwargs['network_node_labels']
+    assert labels == {'MidCanon': 'MidCanon\n(Mid)'}, labels
+    info = vp.kwargs['node_dataset_info']
+    assert info['MidCanon'] == {'M': 'Mid', 'H': 'Mid'}, info
 
 
 def test_visualize_conserved_paths_all_thresholds(monkeypatch, tmp_path):

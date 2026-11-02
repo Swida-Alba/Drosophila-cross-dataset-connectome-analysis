@@ -921,10 +921,11 @@ def test_get_merge_mapping_for_types(mapper):
     assert merge['MCNS_aMe12'] == 'aMe12(MTe07)'
     assert merge['FAFB_MTe07'] == 'aMe12(MTe07)'
 
-    # queried_name overrides the main display name
+    # queried_name is the primary only when it is a mapped name; 'Query' is
+    # not, so the canonical stays and the canonical is never dropped.
     merge_q = mapper.get_merge_mapping_for_types(
         ['MCNS_aMe12', 'FAFB_MTe07'], queried_name='Query')
-    assert merge_q['MCNS_aMe12'] == 'Query(MTe07)'
+    assert merge_q['MCNS_aMe12'] == 'aMe12(MTe07)'
 
     # no underscore -> passthrough; unknown prefix -> base type
     merge_misc = mapper.get_merge_mapping_for_types(

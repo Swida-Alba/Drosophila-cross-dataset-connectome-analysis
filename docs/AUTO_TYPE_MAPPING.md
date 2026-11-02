@@ -990,6 +990,34 @@ display = mapper.get_display_name(
     source_dataset='male-cns:v0.9'
 )
 # Returns: 'MeVPLo2(MTe07)' if names differ across datasets
+# (compatibility wrapper: the inline form of the structured model below)
+
+# Structured node labels — the one A(B) contract (2026-11-02)
+from comparison.display_labels import build_node_display
+
+display = build_node_display(
+    'aMe12',
+    ['male-cns:v1.0', 'flywire_FAFB_v783', 'banc_v888'],
+    mapper=mapper,
+    observed={'aMe12': {'flywire_FAFB_v783': ['MTe07']}})
+display.label('network')   # 'aMe12\n(MTe07)'  two rows on a vispath canvas
+display.label('inline')    # 'aMe12(MTe07)'    one line in report tables
+display.label('plain')     # 'aMe12'           ids, keys, matching, sorting
+display.hover()            # {'M': 'aMe12', 'F': 'MTe07'}
+
+# Rules:
+# * A name is ATOMIC: a comma is part of a native type (`SMP523,SMP524` is
+#   one BANC type), never a list separator.  Lists cross the API as tuples.
+# * Alternatives follow dataset order (MCNS → FAFB → BANC → hemibrain →
+#   MANC → caller order), not alphabetical order.
+# * Run-observed names (`metrics.last_edge_display_names`) decorate
+#   unconditionally; mapper-only names decorate only for the licensed
+#   statuses `mapped` / `bridged` / `valid_split_evidence`.  `claimed`,
+#   `evidence_only` and `conflict` are hover evidence, never equivalences.
+# * Tier-0 (LabelMapper / merge-policy) labels, source/target queries and
+#   residual `T*` keys pass verbatim with no parenthetical.
+# * `inline` falls back to `plain` when a name contains `(`/`)`/`/`; never
+#   parse a rendered label back into an id.
 #
 # Canonical-key unification (2026-10-09): cross-dataset comparison keys
 # (presence matrices, unified comparisons, similarity, report tables) carry

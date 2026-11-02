@@ -240,5 +240,20 @@ function textInfo(t) {
     check('I #shapes keeps geometry', shapesG.querySelectorAll('rect, path').length, 2);
 }
 
+// ===== J: explicit-newline label A\n(B) -> one text, two tspans =====
+{
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="800">' +
+        '<g transform="translate(220, 140)">' +
+        labelText('A', 0, -8) + labelText('(B)', 0, 8) +
+        '</g></svg>';
+    const doc = parse(sanitizeSvgForOffice(svg));
+    const texts = doc.querySelectorAll('text');
+    check('J one text survives', texts.length, 1);
+    check('J explicit newline merges to two tspans', textInfo(texts[0]).tspans, [
+        { tag: 'tspan', x: '0', y: '-8', text: 'A' },
+        { tag: 'tspan', x: '0', y: '8', text: '(B)' },
+    ]);
+}
+
 console.log(failures === 0 ? 'ALL SVG TEXT-MERGE TESTS PASSED' : failures + ' SVG TEXT-MERGE TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

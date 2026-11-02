@@ -4078,7 +4078,8 @@ class CrossDatasetTypeMapper:
         COMPATIBILITY-ONLY one-target-per-dataset resolver.  Splits collapse
         to ``None`` (or an arbitrary branch in some paths), and status and
         provenance are lost.  New analysis code must use
-        :mod:`comparison.type_resolver`.
+        :mod:`comparison.type_resolver`; new display code must use
+        :func:`comparison.display_labels.build_node_display`.
 
         Args:
             type_name: Type name to resolve.
@@ -4311,86 +4312,55 @@ class CrossDatasetTypeMapper:
     ) -> str:
         """
         Get a display name for a type showing mappings across datasets.
-        
-        Format: {canonical}({alt1}/{alt2}) if names differ, skipping identical names.
-        Example: "MeVPLo2(MTe07)" if FAFB uses MTe07 but BANC uses MeVPLo2.
-        
+
+        COMPATIBILITY-ONLY wrapper around
+        :func:`comparison.display_labels.build_node_display`; new code must
+        build a ``NodeDisplay`` and choose its style explicitly.  Returns the
+        one-line ``inline`` form, falling back to the plain primary when the
+        inline form would be ambiguous (native ``(``/``)``/``/``).
+
         Args:
             type_name: Type name to display.
             datasets: Datasets being compared.
             source_dataset: Source dataset for the type.
-            
+
         Returns:
             Display name with alternative names in parentheses.
         """
-        base_name, hemi_suffix = self._split_hemi_suffix(type_name)
-        mappings = self.resolve_type_across_datasets(base_name, datasets, source_dataset)
-        
-        # Get the Male-CNS name as canonical (primary display name).  This
-        # works whether the selected Male-CNS release is v0.9 or v1.0.
-        mcns_name = self._get_male_cns_mapping_name(mappings)
-        
-        if not mcns_name:
-            # Use the original type name as canonical
-            mcns_name = base_name
-        canonical_base = mcns_name
-        if hemi_suffix:
-            mcns_name = f"{mcns_name}{hemi_suffix}"
-        
-        # Collect unique alternative names (different from canonical)
-        alt_names = set()
-        for ds, mapped_name in mappings.items():
-            if mapped_name and mapped_name != canonical_base:
-                alt_names.add(f"{mapped_name}{hemi_suffix}" if hemi_suffix else mapped_name)
-        
-        if alt_names:
-            # Sort for consistent ordering, join with /
-            alt_str = '/'.join(sorted(alt_names))
-            return f"{mcns_name}({alt_str})"
-        
-        return mcns_name
+        from .display_labels import build_node_display, format_label
+
+        display = build_node_display(
+            type_name, datasets, mapper=self,
+            source_dataset=source_dataset)
+        return format_label(display, 'inline')
     
     def get_display_name_with_dataset_info(
         self,
         type_name: str,
         datasets: List[str],
         source_dataset: Optional[str] = None,
-    ) -> Tuple[str, Dict[str, str]]:
+    ) -> Tuple[str, Dict[str, Any]]:
         """
         Get display name and dataset->name mapping for hover labels.
-        
+
+        COMPATIBILITY-ONLY wrapper around ``build_node_display``.  Hover
+        values are strings for one name and lists of atomic names when a
+        dataset carries several.
+
         Args:
             type_name: Type name to display.
             datasets: Datasets being compared.
             source_dataset: Source dataset for the type.
-            
+
         Returns:
-            Tuple of (display_name, {dataset_code: name_in_that_dataset}).
+            Tuple of (display_name, {dataset_code: name_or_names}).
         """
-        base_name, hemi_suffix = self._split_hemi_suffix(type_name)
-        mappings = self.resolve_type_across_datasets(base_name, datasets, source_dataset)
-        display_name = self.get_display_name(type_name, datasets, source_dataset)
-        
-        # Build dataset code -> name mapping for hover info
-        dataset_names = {}
-        dataset_codes = self._get_dataset_short_codes(datasets)
-        for ds, mapped_name in mappings.items():
-            if mapped_name:
-                # ``mappings`` uses the original full dataset identifiers as
-                # keys.  Resolve the code in the same selected-list context
-                # used by the legend so collision-qualified codes cannot be
-                # overwritten in the hover dictionary.
-                code = next(
-                    (
-                        code
-                        for selected_ds, code in zip(datasets, dataset_codes)
-                        if selected_ds == ds
-                    ),
-                    self.get_dataset_short_code(ds),
-                )
-                dataset_names[code] = f"{mapped_name}{hemi_suffix}" if hemi_suffix else mapped_name
-        
-        return display_name, dataset_names
+        from .display_labels import build_node_display, format_label
+
+        display = build_node_display(
+            type_name, datasets, mapper=self,
+            source_dataset=source_dataset)
+        return format_label(display, 'inline'), display.hover()
     
     def is_n_to_1_type(self, type_name: str, dataset: str) -> bool:
         """
@@ -7706,9 +7676,12 @@ class CrossDatasetTypeMapper:
         
         The merged type name format is:
           {queried_name}({datasetA_name}/{datasetB_name})
-        
-        If no queried_name is provided, uses male-cns name as the main name:
-          {mcns_name}({datasetA_name}/{datasetB_name})
+
+        ``queried_name`` is used as the main name only when it is one of the
+        group's mapped names; otherwise the male-cns canonical is the main
+        name (so the canonical is never dropped), and every other mapped
+        name — canonical included — appears in the parenthetical in dataset
+        order.
         
         Args:
             prefixed_types: List of prefixed type names (e.g., 'MCNS_aMe12', 'FAFB_MTe07').
@@ -7727,7 +7700,7 @@ class CrossDatasetTypeMapper:
         aggregation_warnings = []  # Track N-to-1 and 1-to-N aggregations
         
         # Group prefixed types by their canonical name to build display names
-        canonical_groups: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)  # canonical -> [(prefixed, prefix, base_type)]
+        canonical_groups: Dict[str, List[Tuple[str, str, str, str]]] = defaultdict(list)  # canonical -> [(prefixed, prefix, base_type, source_ds)]
         
         # Parse prefixed types and map to canonical
         for prefixed in prefixed_types:
@@ -7767,7 +7740,8 @@ class CrossDatasetTypeMapper:
             canonical = self.get_canonical_type(base_type, source_ds)
             
             # Group by canonical
-            canonical_groups[canonical].append((prefixed, prefix, base_type))
+            canonical_groups[canonical].append(
+                (prefixed, prefix, base_type, source_ds))
             
             # Track aggregation warnings
             if canonical != base_type:
@@ -7789,28 +7763,60 @@ class CrossDatasetTypeMapper:
                         break
         
         # Build merged display names: {main_name}({other_names})
+        # Delegates the formatting/ordering contract to display_labels: the
+        # canonical is never dropped, alternatives follow dataset order, and
+        # a queried name is the primary only when it is one of the mapped
+        # names.
+        from .display_labels import (
+            DatasetNames, NodeDisplay, dataset_codes, format_label,
+            order_datasets)
+        from .type_resolver import same_namespace
+
         for canonical, group_items in canonical_groups.items():
-            # Collect all distinct type names (excluding canonical if present)
-            all_names = set()
-            for prefixed, prefix, base_type in group_items:
-                all_names.add(base_type)
-            
-            # Determine main name: queried_name if provided, else male-cns canonical
-            main_name = queried_name if queried_name else canonical
-            
-            # Collect "other" names (names that differ from main_name)
-            other_names = {name for name in all_names if name != main_name and name != canonical}
-            
-            # Build display name
-            if other_names:
-                # Format: main_name(name1/name2)
-                others_str = '/'.join(sorted(other_names))
-                display_name = f"{main_name}({others_str})"
-            else:
-                display_name = main_name
-            
+            name_items = [
+                (str(base_type), source_ds)
+                for _prefixed, _prefix, base_type, source_ds in group_items
+            ]
+            if not any(name == canonical for name, _ds in name_items):
+                name_items.append((str(canonical), 'male-cns:v1.0'))
+            ordered = [str(ds) for ds in order_datasets(
+                [ds for _name, ds in name_items], self)]
+
+            entries = []
+            dataset_code_list = dataset_codes(ordered, self)
+            for dataset, code in zip(ordered, dataset_code_list):
+                names: List[str] = []
+                for name, name_dataset in name_items:
+                    if (name not in names
+                            and same_namespace(self, name_dataset, dataset)):
+                        names.append(name)
+                entries.append(DatasetNames(
+                    dataset=str(dataset), code=str(code),
+                    names=tuple(names), status='mapped', observed=True,
+                    observed_names=tuple(names)))
+
+            all_names = [
+                name for entry in entries for name in entry.names]
+            all_names = list(dict.fromkeys(all_names))
+            main_name = (
+                str(queried_name)
+                if queried_name and str(queried_name) in all_names
+                else str(canonical))
+            alternatives = tuple(
+                name for name in all_names if name != main_name)
+            primary_dataset = next(
+                (entry.dataset for entry in entries
+                 if main_name in entry.names), None)
+            display = NodeDisplay(
+                node_id=str(canonical), primary=main_name,
+                primary_dataset=primary_dataset,
+                alternatives=alternatives,
+                names_by_dataset=tuple(entries),
+                tier='canonical', decorated=bool(alternatives))
+            display_name = format_label(display, 'inline')
+
             # Assign display name to all prefixed types in this group
-            for prefixed, prefix, base_type in group_items:
+            for prefixed, prefix, base_type, source_ds in group_items:
                 merge_map[prefixed] = display_name
         
         if verbose and aggregation_warnings:

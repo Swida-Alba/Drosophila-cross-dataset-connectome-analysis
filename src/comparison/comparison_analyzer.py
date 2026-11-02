@@ -219,6 +219,52 @@ def _type_pruned_for_threshold(dataset_name, threshold, parameters) -> bool:
     return not tiers or float(threshold) == tiers[0]
 
 
+def _display_variants_for_alignment(analyzer, generation_before: int):
+    """Run-observed display variants for the alignment just requested.
+
+    The aligned frame may come from a cache, in which case no alignment ran
+    and ``metrics.last_edge_display_names`` still holds a previous
+    threshold's variants.  Those are display-only, but using them would
+    mislabel this page, so fall back to licensed mapper names and say so.
+    """
+    from .display_labels import invert_edge_display_names
+
+    metrics = getattr(analyzer, 'metrics', None)
+    generation = getattr(metrics, 'alignment_generation', None)
+    if generation is not None and generation == generation_before:
+        log = getattr(analyzer, '_log', None)
+        if callable(log):
+            log("  Display variants unavailable for a cached alignment; "
+                "using licensed mapper names only.")
+        return {}
+    return invert_edge_display_names(
+        getattr(metrics, 'last_edge_display_names', None) or {})
+
+
+def _network_node_displays(analyzer, nodes, dataset_names, type_mapper,
+                           observed, verbatim):
+    """One structured display per canonical node id (ids are untouched)."""
+    from .display_labels import build_node_display
+
+    snapshot = getattr(analyzer, '_mapper_snapshot', None)
+    return {
+        node: build_node_display(
+            node, dataset_names, mapper=type_mapper,
+            observed=observed, verbatim=verbatim,
+            source_dataset=None, snapshot=snapshot)
+        for node in nodes
+    }
+
+
+def _display_match_names(display) -> set:
+    """Every name a source/target pattern may legitimately match."""
+    names = {display.node_id, display.primary}
+    names.update(display.alternatives)
+    for entry in display.names_by_dataset:
+        names.update(entry.names)
+    return names
+
+
 class ComparisonAnalyzer:
     """
     Main orchestrator for cross-dataset comparison analysis.
@@ -6810,7 +6856,8 @@ class ComparisonAnalyzer:
             return aligned
 
         def extract_hemi(label: str):
-            base = label.split('(')[0].strip() if '(' in label else label
+            # Alignment keys are canonical ids; never parse a rendered label.
+            base = str(label)
             hemi = None
             if base.endswith(('_L', '_R', '_U')):
                 hemi = base[-1]
@@ -11617,7 +11664,8 @@ class ComparisonAnalyzer:
             coverage = {}
 
         def _endpoint_status(name: Any, dataset: str) -> str:
-            entry = coverage.get((str(name).split('(')[0], dataset))
+            # Endpoint names are canonical alignment keys; do not parse them.
+            entry = coverage.get((str(name), dataset))
             return entry.status if entry is not None else ''
 
         if coverage:
@@ -14116,8 +14164,12 @@ class ComparisonAnalyzer:
             f"{display_threshold}...")
 
         # Get aligned data
+        generation_before = getattr(
+            getattr(self, 'metrics', None), 'alignment_generation', 0)
         aligned = (self.get_aligned_data_for_query(query)
                    if query else self.get_aligned_data(threshold))
+        observed_variants = _display_variants_for_alignment(
+            self, generation_before)
         if aligned.empty:
             self._log("Warning: No aligned data at this threshold.")
             return None
@@ -14224,14 +14276,10 @@ class ComparisonAnalyzer:
             if 'color_edges_by_nt' not in vispath_kwargs:
                 vispath_kwargs['color_edges_by_nt'] = True
 
-        # Helper to extract canonical name from display name
-        def get_canonical_name(display_name: str) -> str:
-            if '(' in display_name:
-                return display_name.split('(')[0].strip()
-            return display_name
-        
-        # Transform node labels to display format with dataset-specific names
-        # Format: {canonical}({alt1}/{alt2}) for types that differ across datasets
+        # Structured node presentation (comparison.display_labels): node ids
+        # stay canonical and undecorated; the canvas label and the hover are
+        # both keyed by that id.  Alternatives come from the run-observed
+        # variants plus licensed mapper targets, in dataset order.
         type_mapper = self.parameters._auto_type_mapper if self.parameters.auto_type_mapping else None
         # Label-mapper display compatibility (user directive 2026-10-10): a
         # node the USER label mapper governs keeps its settled label
@@ -14246,52 +14294,38 @@ class ComparisonAnalyzer:
                         str(x) for x in _lm_cons.get_all_std_labels(_role))
                 except Exception:  # noqa: BLE001 — role simply absent
                     pass
-        display_name_map = {}  # {canonical_name: display_name}
-        node_dataset_info = {}  # {display_name: {code: name_in_that_dataset}} for hover labels
-        dataset_legend = {}  # {short_code: full_dataset_name} for legend
-
-        if type_mapper:
-            # Get all unique nodes and compute display names + dataset info for hover
-            all_unique_nodes = set(edges_df['source'].unique()) | set(edges_df['target'].unique())
-            for node in all_unique_nodes:
-                if node in tier0_labels:
-                    continue
-                display_name, ds_info = type_mapper.get_display_name_with_dataset_info(node, dataset_names)
-                if display_name != node:
-                    display_name_map[node] = display_name
-                if ds_info:
-                    node_dataset_info[display_name] = ds_info
-            
-            # Get dataset legend info
-            dataset_legend = type_mapper.get_all_dataset_short_codes(dataset_names)
-            
-            # Apply display name transformation to edges_df
-            if display_name_map:
-                edges_df['source'] = edges_df['source'].apply(lambda x: display_name_map.get(x, x))
-                edges_df['target'] = edges_df['target'].apply(lambda x: display_name_map.get(x, x))
-                
-                # Update edge_labels keys to use display names
-                new_edge_labels = {}
-                for (src, tgt), info in edge_labels.items():
-                    new_src = display_name_map.get(src, src)
-                    new_tgt = display_name_map.get(tgt, tgt)
-                    new_edge_labels[(new_src, new_tgt)] = info
-                edge_labels = new_edge_labels
-                
-                self._log(f"  Applied display names to {len(display_name_map)} nodes with cross-dataset name differences")
+        resolved_source_names = set()
+        resolved_target_names = set()
+        if self.parameters.auto_type_mapping:
+            for dataset in dataset_names:
+                resolved_source_names.update(
+                    self.parameters.get_source_neurons_for_dataset(dataset))
+                resolved_target_names.update(
+                    self.parameters.get_target_neurons_for_dataset(dataset))
+        verbatim_labels = (
+            tier0_labels | resolved_source_names | resolved_target_names)
+        all_unique_nodes = (
+            set(edges_df['source'].unique())
+            | set(edges_df['target'].unique()))
+        node_displays = _network_node_displays(
+            self, all_unique_nodes, dataset_names, type_mapper,
+            observed_variants, verbatim_labels)
+        dataset_legend = (
+            type_mapper.get_all_dataset_short_codes(dataset_names)
+            if type_mapper else {})
+        decorated_count = sum(
+            1 for display in node_displays.values() if display.decorated)
+        if decorated_count:
+            self._log("  Applied structured display labels to "
+                      f"{decorated_count} nodes with cross-dataset "
+                      "name differences")
 
         # Identify source and target nodes from parameters
         # CRITICAL: Include ALL mapped type names across all datasets, not just original query types
         source_patterns = set(self.parameters._ensure_flat_list(self.parameters.source_neurons))
         target_patterns = set(self.parameters._ensure_flat_list(self.parameters.target_neurons))
-        
-        # If auto_type_mapping is enabled, also include resolved type names for each dataset
-        if self.parameters.auto_type_mapping:
-            for dataset in dataset_names:
-                src_resolved = self.parameters.get_source_neurons_for_dataset(dataset)
-                source_patterns.update(src_resolved)
-                tgt_resolved = self.parameters.get_target_neurons_for_dataset(dataset)
-                target_patterns.update(tgt_resolved)
+        source_patterns.update(resolved_source_names)
+        target_patterns.update(resolved_target_names)
         
         # Convert back to list for matching function
         source_patterns = list(source_patterns)
@@ -14300,25 +14334,17 @@ class ComparisonAnalyzer:
         # Get all unique nodes
         all_nodes = set(edges_df['source'].unique()) | set(edges_df['target'].unique())
         
-        # Helper to extract base name without hemisphere suffix
-        def get_base_name(label: str) -> str:
-            """Extract base name from label, removing hemisphere suffix like _L, _R, _U."""
-            base = get_canonical_name(label)
-            if base.endswith(('_L', '_R', '_U')):
-                return base[:-2]
-            return base
-        
         # Classify nodes as source, target, or intermediate
         import re
+        from .type_resolver import native_base as _native_base
         separate_hemispheres = bool(getattr(self.parameters, 'separate_hemispheres', False))
         
         def matches_patterns(node: str, patterns: list) -> bool:
-            """Check if node matches any pattern. Handles merged display names and hemisphere suffixes."""
-            # Get canonical name for matching (handles merged display names)
-            canonical = get_canonical_name(node)
-            base = get_base_name(node)
-            # Check the full label, canonical name, and base name
-            names_to_check = list(set([node, canonical, base]))
+            """Check if node matches any pattern (canonical id or any name)."""
+            names_to_check = {node, _native_base(node)}
+            display = node_displays.get(node)
+            if display is not None:
+                names_to_check.update(_display_match_names(display))
             
             for name in names_to_check:
                 for pattern in patterns:
@@ -14424,6 +14450,19 @@ class ComparisonAnalyzer:
         )
 
         self._log(f"  Creating VisualizePath visualization with {len(edges_df)} edges...")
+
+        final_nodes = set(edges_df['source']) | set(edges_df['target'])
+        network_node_labels = {
+            node: display.label('network')
+            for node, display in node_displays.items()
+            if node in final_nodes and display.decorated}
+        node_dataset_info = {
+            node: display.hover()
+            for node, display in node_displays.items()
+            if node in final_nodes and display.hover()}
+        vispath_kwargs = dict(vispath_kwargs)
+        vispath_kwargs.pop('network_node_labels', None)
+        vispath_kwargs.pop('node_dataset_info', None)
         
         # Create VisualizePath with conserved edges
         vp = VisualizePath(
@@ -14434,7 +14473,8 @@ class ComparisonAnalyzer:
             edge_width_scale=edge_width_scale,
             edge_labels=edge_labels,  # Multi-dataset synapse strengths
             dataset_legend=dataset_legend,  # Dataset short code legend for display names
-            node_dataset_info=node_dataset_info,  # Node-level dataset info for hover labels
+            node_dataset_info=node_dataset_info,  # Keyed by canonical node id
+            network_node_labels=network_node_labels,  # Keyed by canonical node id
             verbose=self.verbose,
             separate_hemispheres=self.parameters.separate_hemispheres,
             **vispath_kwargs
@@ -14584,8 +14624,12 @@ class ComparisonAnalyzer:
             f"Generating conserved reciprocal graph @ threshold="
             f"{display_threshold}...")
 
+        generation_before = getattr(
+            getattr(self, 'metrics', None), 'alignment_generation', 0)
         aligned = (self.get_aligned_data_for_network(query)
                    if query else self.get_aligned_data_for_network(threshold))
+        observed_variants = _display_variants_for_alignment(
+            self, generation_before)
         if aligned.empty:
             self._log("Warning: No aligned reciprocal data at this threshold.")
             return None
@@ -14651,36 +14695,55 @@ class ComparisonAnalyzer:
 
         edges_df = pd.DataFrame(edge_list)
 
-        source_patterns = set(self.parameters._ensure_flat_list(self.parameters.source_neurons))
-        target_patterns = set(self.parameters._ensure_flat_list(self.parameters.target_neurons))
+        # Structured presentation for the reciprocal page as well — it must
+        # read the same as Cross-Dataset > Paths.
+        type_mapper = (
+            self.parameters._auto_type_mapper
+            if self.parameters.auto_type_mapping else None)
+        tier0_labels = set()
+        _lm_graph = getattr(self, 'label_mapper', None)
+        if _lm_graph is not None and not getattr(_lm_graph, 'is_empty', True):
+            for _role in ('source', 'target', 'intermediate'):
+                try:
+                    tier0_labels.update(
+                        str(x) for x in _lm_graph.get_all_std_labels(_role))
+                except Exception:  # noqa: BLE001 — role simply absent
+                    pass
+        resolved_source_names = set()
+        resolved_target_names = set()
         if self.parameters.auto_type_mapping:
             for dataset in dataset_names:
-                source_patterns.update(self.parameters.get_source_neurons_for_dataset(dataset))
-                target_patterns.update(self.parameters.get_target_neurons_for_dataset(dataset))
+                resolved_source_names.update(
+                    self.parameters.get_source_neurons_for_dataset(dataset))
+                resolved_target_names.update(
+                    self.parameters.get_target_neurons_for_dataset(dataset))
+        verbatim_labels = (
+            tier0_labels | resolved_source_names | resolved_target_names)
+
+        source_patterns = set(self.parameters._ensure_flat_list(self.parameters.source_neurons))
+        target_patterns = set(self.parameters._ensure_flat_list(self.parameters.target_neurons))
+        source_patterns.update(resolved_source_names)
+        target_patterns.update(resolved_target_names)
         source_patterns = list(source_patterns)
         target_patterns = list(target_patterns)
 
         all_nodes = set(edges_df['source'].unique()) | set(edges_df['target'].unique())
+        node_displays = _network_node_displays(
+            self, all_nodes, dataset_names, type_mapper,
+            observed_variants, verbatim_labels)
+        dataset_legend = (
+            type_mapper.get_all_dataset_short_codes(dataset_names)
+            if type_mapper else {})
 
         import re
+        from .type_resolver import native_base as _native_base
         separate_hemispheres = bool(getattr(self.parameters, 'separate_hemispheres', False))
 
-        def get_canonical_name(display_name: str) -> str:
-            """Extract canonical name from display name with potential annotations."""
-            if '(' in display_name:
-                return display_name.split('(')[0].strip()
-            return display_name.strip()
-
-        def get_base_name(label: str) -> str:
-            base = get_canonical_name(label)
-            if base.endswith(('_L', '_R', '_U')):
-                return base[:-2]
-            return base
-
         def matches_patterns(node: str, patterns: list) -> bool:
-            canonical = get_canonical_name(node)
-            base = get_base_name(node)
-            names_to_check = list(set([node, canonical, base]))
+            names_to_check = {node, _native_base(node)}
+            display = node_displays.get(node)
+            if display is not None:
+                names_to_check.update(_display_match_names(display))
             for name in names_to_check:
                 for pattern in patterns:
                     if isinstance(pattern, str):
@@ -14762,6 +14825,19 @@ class ComparisonAnalyzer:
             if query else f"conserved_reciprocal_t{filename_threshold}"
         )
 
+        final_nodes = set(edges_df['source']) | set(edges_df['target'])
+        network_node_labels = {
+            node: display.label('network')
+            for node, display in node_displays.items()
+            if node in final_nodes and display.decorated}
+        node_dataset_info = {
+            node: display.hover()
+            for node, display in node_displays.items()
+            if node in final_nodes and display.hover()}
+        vispath_kwargs = dict(vispath_kwargs)
+        vispath_kwargs.pop('network_node_labels', None)
+        vispath_kwargs.pop('node_dataset_info', None)
+
         vp = VisualizePath(
             path_file=edges_df,
             output_folder=output_folder,
@@ -14769,6 +14845,9 @@ class ComparisonAnalyzer:
             network_layout=network_layout,
             edge_width_scale=edge_width_scale,
             edge_labels=edge_labels,
+            dataset_legend=dataset_legend,
+            node_dataset_info=node_dataset_info,
+            network_node_labels=network_node_labels,
             verbose=self.verbose,
             separate_hemispheres=self.parameters.separate_hemispheres,
             **vispath_kwargs

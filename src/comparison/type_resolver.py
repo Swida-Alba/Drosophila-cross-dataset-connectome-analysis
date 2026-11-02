@@ -52,7 +52,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .cross_dataset_type_mapper import CrossDatasetTypeMapper, get_type_mapper
+try:
+    from .cross_dataset_type_mapper import CrossDatasetTypeMapper, get_type_mapper
+except ImportError:  # pragma: no cover - direct package imports
+    from cross_dataset_type_mapper import CrossDatasetTypeMapper, get_type_mapper
 
 try:
     from ..utils.naming_utils import canonical_dataset_name

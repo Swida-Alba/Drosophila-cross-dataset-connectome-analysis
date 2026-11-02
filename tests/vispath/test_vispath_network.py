@@ -3616,3 +3616,127 @@ def test_edge_alpha_preserves_declared_arrow_colour(tmp_path):
         assert recol['source'] == 'rgb(0,255,0)', recol
         assert recol['base'] == '#00ff00', recol
         assert page.errors() == [], page.errors()
+
+
+# =============================================================================
+# Structured (two-line) node labels: fit, global font size, saved-state restore
+# =============================================================================
+
+@REQUIRES_CDP
+def test_structured_labels_follow_global_font_and_ignore_saved_font_size(tmp_path):
+    df = pd.DataFrame({
+        "source": ["aDT4", "Dm8a"], "target": ["Dm8a", "A"],
+        "weight": [5.0, 6.0],
+    })
+    vp = VisualizePath(
+        path_file=df, output_folder=str(tmp_path), showfig=False,
+        verbose=False, network_layout="dagre",
+        network_node_labels={
+            "aDT4": "aDT4\n(AC neuron)",
+            "Dm8a": "Dm8a\n(yDm8)",
+            "A": "A\n(B)",
+        },
+        node_dataset_info={
+            "Dm8a": {"F": ["Dm8a", "yDm8"], "B": "SMP523,SMP524"},
+            "A": {"M": "A"},
+        })
+    vp.base_filename = "structured_labels"
+    vp.build_network()
+    out = vp.create_network()
+
+    probe = """
+      var out = {};
+      cy.nodes().forEach(function(n) {
+        var rs = n._private.rscratch || {};
+        out[n.id()] = {
+          lines: rs.labelWrapCachedLines || [],
+          wrap: n.style('text-wrap'),
+          maxWidth: n.style('text-max-width'),
+          fontSize: n.style('font-size'),
+          hasFontBypass: hasBypass(n, 'font-size')
+        };
+      });
+      return out;
+    """
+
+    with Page(Path(out)) as page:
+        assert page.wait(
+            "return typeof cy !== 'undefined' && cy.nodes().length === 3;")
+        assert page.wait(
+            "var n=cy.getElementById('A');"
+            "return !!(n && n._private.rscratch"
+            " && n._private.rscratch.labelWrapCachedLines);")
+        first = page.js(probe)
+        assert first['A']['lines'] == ['A', '(B)'], first['A']
+        assert first['A']['wrap'] == 'wrap', first['A']
+        assert len(first['aDT4']['lines']) == 2, first['aDT4']
+        assert len(first['Dm8a']['lines']) == 2, first['Dm8a']
+
+        # Global 24 px: structured labels follow it (no per-node cap) and
+        # the parenthetical row widens instead of shrinking the font.
+        page.js("document.getElementById('fontSizeSlider').value = 24;"
+                "updateFontSize(24); return true;")
+        assert page.wait(
+            "var n=cy.getElementById('aDT4');"
+            "return n.style('font-size') === '24px'"
+            " && n._private.rscratch.labelWrapCachedLines"
+            " && n._private.rscratch.labelWrapCachedLines.length === 2;")
+        big = page.js(probe)
+        assert big['A']['fontSize'] == '24px', big['A']
+        assert big['aDT4']['fontSize'] == '24px', big['aDT4']
+        assert big['aDT4']['hasFontBypass'] is False, big['aDT4']
+        assert float(big['aDT4']['maxWidth'].replace('px', '')) > 80, big['aDT4']
+
+        # A saved layout carrying the old 12.6 px bypass must not win.
+        page.js("applyNetworkState({globalStyles: {fontSize: 24},"
+                " nodeGeometry: [{id: 'Dm8a', fontSize: 12.6}]});"
+                "return true;")
+        restored = page.js(probe)
+        assert restored['Dm8a']['fontSize'] == '24px', restored['Dm8a']
+        assert restored['Dm8a']['hasFontBypass'] is False, restored['Dm8a']
+        assert float(restored['Dm8a']['maxWidth'].replace('px', '')) >= 80
+
+        # The no-item branch also clears an older font-size bypass.
+        page.js("cy.getElementById('A').style('font-size', '12.6px');"
+                "applyNetworkState({globalStyles: {fontSize: 24},"
+                " nodeGeometry: []}); return true;")
+        assert page.js(
+            "return hasBypass(cy.getElementById('A'), 'font-size');") is False
+        assert page.js(
+            "return cy.getElementById('A').style('font-size');") == '24px'
+
+        # Capturing the state after the fit writes no fontSize for a
+        # structured label.
+        captured = page.js(
+            "var s = captureNetworkState(); var out = {};"
+            " (s.nodeGeometry || []).forEach(function(item) {"
+            "  if (item.fontSize !== undefined) out[item.id] = item.fontSize;"
+            " }); return out;")
+        assert captured == {}, captured
+
+        # Hover: dataset insertion order is preserved, lists join with ' | '
+        # and a comma-bearing atomic name is quoted.
+        hover = page.js("cy.getElementById('Dm8a').emit('mouseover');"
+                        "return document.getElementById('hoverInfo').innerHTML;")
+        assert 'F: Dm8a | yDm8' in hover, hover
+        assert 'B: "SMP523,SMP524"' in hover, hover
+        assert hover.index('F: Dm8a') < hover.index('B: "SMP523'), hover
+        assert page.errors() == [], page.errors()
+
+
+def test_display_label_keys_are_reported_as_unknown_node_ids(tmp_path, capsys):
+    """network_node_labels / node_dataset_info are keyed by node id; a
+    display-label key would silently drop the override, so it warns."""
+    df = pd.DataFrame({
+        "source": ["A"], "target": ["B"], "weight": [5.0],
+    })
+    vp = VisualizePath(
+        path_file=df, output_folder=str(tmp_path), showfig=False,
+        verbose=True, network_layout="dagre",
+        network_node_labels={"A(B)": "A\n(B)"},
+        node_dataset_info={"A(B)": {"F": "x"}})
+    vp.base_filename = "label_key_warning"
+    vp.build_network()
+    printed = capsys.readouterr().out
+    assert "network_node_labels key 'A(B)' is not a node id" in printed
+    assert "node_dataset_info key 'A(B)' is not a node id" in printed

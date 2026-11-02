@@ -39,7 +39,17 @@ class ComparisonMetrics:
     
     def __init__(self):
         """Initialize ComparisonMetrics."""
-        pass
+        # Run-observed display variants: {canonical_key: {raw_name: {datasets}}}.
+        # ``alignment_generation`` advances on every real alignment so a
+        # caller that got a cached frame can tell the variants are stale
+        # (display-only disclosure; see display_labels).
+        self.last_edge_display_names: Dict[str, Dict[str, Set[str]]] = {}
+        self._alignment_generation = 0
+
+    @property
+    def alignment_generation(self) -> int:
+        """Counter advanced by every alignment that refreshed the variants."""
+        return self._alignment_generation
     
     # =========================================================================
     # Path Count Metrics
@@ -1104,6 +1114,9 @@ class ComparisonMetrics:
             
             dfs.append(agg_df)
         
+        self.last_edge_display_names = dict(edge_display_names)
+        self._alignment_generation += 1
+
         if not dfs:
             return pd.DataFrame()
 
@@ -1117,8 +1130,6 @@ class ComparisonMetrics:
         # are the disclosure: exported to
         # comparison_results/edge_key_variants.csv by the analyzer and
         # rendered as per-dataset hover lines in the report.
-        self.last_edge_display_names = dict(edge_display_names)
-
         return aligned
     
     # =========================================================================
