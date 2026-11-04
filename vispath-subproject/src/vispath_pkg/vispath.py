@@ -713,24 +713,10 @@ def _cell_style_js_chunks(fields, outline_map):
             applyCellStyle();
         }
 
-        // ~count round ticks inside lo..hi, ends included: 0..800 -> 0,200..800,
-        // 0..37 -> 0,10,20,30,37. A fixed 0,200,.. list would put a whole small
-        // range on one tick.
+        // One tick rule for every bar on the page (defined with the metric
+        // colorbar helpers below; function declarations are shared per page).
         function cellStyleNiceTicks(lo, hi, count) {
-            const span = hi - lo;
-            if (!(span > 0)) return [lo];
-            const raw = span / Math.max(1, count - 1);
-            const mag = Math.pow(10, Math.floor(Math.log10(raw)));
-            const step = [1, 2, 2.5, 5, 10].map(x => x * mag)
-                .filter(x => x >= raw)[0] || 10 * mag;
-            const out = [];
-            for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9;
-                 v += step) {
-                out.push(Math.abs(v) < 1e-9 ? 0 : v);
-            }
-            if (!out.length || out[0] > lo + 1e-9) out.unshift(lo);
-            if (out[out.length - 1] < hi - 1e-9) out.push(hi);
-            return out;
+            return niceTicks(lo, hi, count);
         }
 
         // The same transform getDataForScale applies to the matrix, so a pinned
@@ -888,10 +874,11 @@ def _cell_style_js_chunks(fields, outline_map):
             const ratioMetric = cellStyleMetricKey() === 'ratio' ||
                 cellStyleMetricKey() === 'ratio_adj';
             // Synapse bars label whole synapses; ratio bars label percentages
-            // at one decimal, matching the cell values.
+            // at one decimal, matching the cell values. Fractional/tiny
+            // metrics keep their decimals through the shared formatter.
             const fmt = v => ratioMetric
                 ? (Number(v) * 100).toFixed(1) + '%'
-                : String(Math.round(Number(v)));
+                : formatColorbarValue(v, false);
             const firstKey = active.keys.length ? active.keys[0] : null;
             const baseRange = (firstKey && cellStyleRangeFor(active.field, firstKey))
                 || [Number(active.field.range[0]), Number(active.field.range[1])];
@@ -19743,6 +19730,11 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         let customZmin = {json.dumps(float(zmin)) if zmin is not None else 'null'};
         let customZmax = {json.dumps(float(zmax)) if zmax is not None else 'null'};
         let customColorScale = {json_safe(provided_color_scale) if provided_color_scale is not None else 'null'};  // Custom color scale (caller-provided or built by the color panel)
+        // Custom value domains are per metric: a 0..900 synapse pin must not
+        // deform the ratio metric (whose values are 0..1). `customColorRange`
+        // stays the ACTIVE metric's mirror for panel/seed code.
+        let customColorRanges = {{}};    // metric -> {{min, max}} in metric units
+        let customColorTriplets = {{}};  // metric -> {{min, mid, max}} for a user-applied 3-point map
         let use3PointScale = false;
         let currentWidth = {init_width if init_width else 800};
         let currentHeight = {init_height if init_height else 800};
@@ -19902,13 +19894,18 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             const mag = Math.pow(10, Math.floor(Math.log10(raw)));
             const step = [1, 2, 2.5, 5, 10].map(x => x * mag)
                 .filter(x => x >= raw)[0] || 10 * mag;
+            // Epsilons scale with the range/step. An absolute 1e-9 zeroed
+            // every tick of a 1e-11-valued metric and let the loop run ~1e6
+            // extra iterations past hi.
+            const spanEps = span * 1e-9;
+            const zeroEps = Math.abs(step) * 1e-9;
             const out = [];
-            for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9;
-                 v += step) {{
-                out.push(Math.abs(v) < 1e-9 ? 0 : v);
+            for (let v = Math.ceil(lo / step - spanEps / step) * step;
+                 v <= hi + spanEps; v += step) {{
+                out.push(Math.abs(v) <= zeroEps ? 0 : v);
             }}
-            if (!out.length || out[0] > lo + 1e-9) out.unshift(lo);
-            if (out[out.length - 1] < hi - 1e-9) out.push(hi);
+            if (!out.length || out[0] > lo + spanEps) out.unshift(lo);
+            if (out[out.length - 1] < hi - spanEps) out.push(hi);
             return out;
         }}
 
@@ -19920,7 +19917,11 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             const n = Number(value);
             if (!Number.isFinite(n)) return String(value);
             if (ratioMetric) return (n * 100).toFixed(1) + '%';
-            if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+            // Relative tolerance: an absolute 1e-9 would print every tick of
+            // a 1e-11 metric as "0".
+            if (Math.abs(n - Math.round(n)) <= Math.abs(n) * 1e-9) {{
+                return String(Math.round(n));
+            }}
             return String(Number(n.toPrecision(3)));
         }}
 
@@ -19929,6 +19930,103 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 case 'log10': return ' (log₁₀)';
                 case 'sqrt': return ' (√)';
                 default: return '';
+            }}
+        }}
+
+        // ---- custom colour domains, one per metric -------------------------
+        function colorMetricKey() {{
+            return (typeof currentMetric === 'undefined' || !currentMetric)
+                ? 'weight' : currentMetric;
+        }}
+
+        function storedCustomColorRange() {{
+            const r = customColorRanges[colorMetricKey()];
+            const lo = r ? Number(r.min) : NaN;
+            const hi = r ? Number(r.max) : NaN;
+            return (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo)
+                ? {{min: lo, max: hi}} : null;
+        }}
+
+        // The active custom domain: the metric's own stored range, else the
+        // caller's page-level pin (zmin/zmax), else null (auto).
+        function activeCustomColorRange() {{
+            const stored = storedCustomColorRange();
+            if (stored !== null) return stored;
+            if (!useAutoRange && customZmin !== null && customZmax !== null) {{
+                const lo = Number(customZmin);
+                const hi = Number(customZmax);
+                if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {{
+                    return {{min: lo, max: hi}};
+                }}
+            }}
+            return null;
+        }}
+
+        function setCustomColorRange(range) {{
+            const key = colorMetricKey();
+            const lo = range ? Number(range.min) : NaN;
+            const hi = range ? Number(range.max) : NaN;
+            if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {{
+                customColorRanges[key] = {{min: lo, max: hi}};
+            }} else {{
+                delete customColorRanges[key];
+            }}
+            window.customColorRange = activeCustomColorRange();
+        }}
+
+        // Re-place a user-applied 3-point mapping on the current scale. Its
+        // named mid value is metric units, but its POSITION is transformed, so
+        // a scale switch must move the middle swatch. Caller-provided ramps
+        // have no triplet and keep their design positions.
+        function rebuildTripletScale() {{
+            const t = customColorTriplets[colorMetricKey()];
+            if (!t || !Array.isArray(customColorScale)) return;
+            const lo = scaleValue(t.min, currentScale);
+            const hi = scaleValue(t.max, currentScale);
+            const mid = scaleValue(t.mid, currentScale);
+            let pos = (hi === lo) ? 0.5 : (mid - lo) / (hi - lo);
+            pos = Math.max(0, Math.min(1, pos));
+            if (pos < 0.001) pos = 0.001;
+            if (pos > 0.999) pos = 0.999;
+            const colors = (Array.isArray(t.colors) && t.colors.length === 3)
+                ? t.colors : null;
+            if (colors) {{
+                // Each metric keeps its own three colours: switching metrics
+                // must not paint this mapping with the other metric's swatches.
+                customColorScale = [
+                    [0, rgbToPlotlyFormat(colors[0])],
+                    [pos, rgbToPlotlyFormat(colors[1])],
+                    [1, rgbToPlotlyFormat(colors[2])]
+                ];
+            }} else if (customColorScale.length === 3) {{
+                customColorScale[1][0] = pos;
+                customColorScale.sort((a, b) => a[0] - b[0]);
+            }}
+        }}
+
+        // Put the new metric's own active mapping back into the panel fields.
+        function syncCustomColorPanel() {{
+            const active = activeCustomColorRange();
+            if (active !== null) {{
+                document.getElementById('valueMin2').value =
+                    formatValueDisplay(active.min);
+                document.getElementById('valueMax2').value =
+                    formatValueDisplay(active.max);
+            }}
+            const t = customColorTriplets[colorMetricKey()];
+            if (t) {{
+                document.getElementById('valueMin3').value =
+                    formatValueDisplay(t.min);
+                document.getElementById('valueMid3').value =
+                    formatValueDisplay(t.mid);
+                document.getElementById('valueMax3').value =
+                    formatValueDisplay(t.max);
+                if (Array.isArray(t.colors) && t.colors.length === 3) {{
+                    document.getElementById('colorMin3').value = t.colors[0];
+                    document.getElementById('colorMid3').value = t.colors[1];
+                    document.getElementById('colorMax3').value = t.colors[2];
+                }}
+                rebuildTripletScale();
             }}
         }}
         
@@ -19989,12 +20087,14 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     if (val > max) max = val;
                 }}
             }}
-            // Constant (or all non-finite) matrices: avoid a zero range
-            if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {{
-                if (!Number.isFinite(min)) {{ min = 0; max = 1; }}
-                else {{ max = min + 1; }}
+            // A constant matrix keeps its TRUE extent (min === max), so the
+            // colorbar can name the constant value instead of inventing a
+            // 0..1 domain. Only a matrix with no finite cell needs a drawable
+            // placeholder.
+            if (!Number.isFinite(min) || !Number.isFinite(max)) {{
+                return {{min: 0, max: 1, constant: false, empty: true}};
             }}
-            return {{min, max}};
+            return {{min, max, constant: min === max, empty: false}};
         }}
         
         function reorderData(data, rowOrder, colOrder) {{
@@ -20384,6 +20484,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // tickvals are transformed, while its ticktext is the inverse, so
             // the top of a log/sqrt bar still names the true maximum (and the
             // panel's Min/Max fields stay in metric units).
+            window.customColorRange = activeCustomColorRange();
             const originalRange = getDataRange(dataOriginal);
             let colorMin = originalRange.min;
             let colorMax = originalRange.max;
@@ -20490,11 +20591,17 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             //           3) Auto range (default)
             if (window.customColorRange ||
                     (!useAutoRange && customZmin !== null && customZmax !== null)) {{
-                trace.zmin = scaleValue(colorMin, currentScale);
-                trace.zmax = scaleValue(colorMax, currentScale);
+                const zlo = scaleValue(colorMin, currentScale);
+                const zhi = scaleValue(colorMax, currentScale);
+                // A constant domain cannot be pinned (Plotly needs a span);
+                // leave it auto so its single tick sits in the middle.
+                if (zhi > zlo) {{
+                    trace.zmin = zlo;
+                    trace.zmax = zhi;
+                }}
                 console.log('Using custom color range (metric units):',
                             {{min: colorMin, max: colorMax}},
-                            'z:', trace.zmin, trace.zmax);
+                            'z:', zlo, zhi);
             }}
             
             // Store current range for slider scaling — METRIC units, so the
@@ -20611,7 +20718,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                         }}
                         
                         // Calculate the background color for this cell using scaled value
-                        const normalized = (scaledValue - actualZmin) / (actualZmax - actualZmin);
+                        const actualSpan = actualZmax - actualZmin;
+                        const normalized = (actualSpan > 0)
+                            ? (scaledValue - actualZmin) / actualSpan : 0.5;
                         
                         // Get color from the colorscale
                         let bgColor = 'rgb(128, 128, 128)';  // default gray
@@ -20822,6 +20931,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             }});
             document.getElementById('btn-' + scale).classList.add('active');
             
+            // A user-applied 3-point value map moves with the scale; a
+            // caller-provided ramp has no triplet and keeps its positions.
+            rebuildTripletScale();
             createHeatmap();
         }}
         
@@ -20836,6 +20948,11 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // Clear cached transforms so they're recomputed for new metric
             cachedDataLog10 = null;
             cachedDataSqrt = null;
+            
+            // Activate this metric's own custom domain (weight 0..900 must not
+            // become ratio 0..900) and put its values back in the panel.
+            window.customColorRange = activeCustomColorRange();
+            syncCustomColorPanel();
             
             // Recreate the heatmap with new metric data (clustering will be applied in createHeatmap)
             createHeatmap();
@@ -20992,6 +21109,17 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     return;
                 }}
                 
+                // A blank field parses to NaN; writing that into the colorscale
+                // would leave a null stop position and a broken ramp.
+                if (![valueMin, valueMid, valueMax].every(Number.isFinite)) {{
+                    alert('Custom Min, Mid and Max values must be numbers.');
+                    return;
+                }}
+                if (!(valueMax > valueMin)) {{
+                    alert('Custom max must be greater than min.');
+                    return;
+                }}
+                
                 // Map custom values to [0, 1] range - allows values beyond actual data range
                 const normalizeValue = (val, rangeMin, rangeMax) => {{
                     if (rangeMax === rangeMin) return 0.5;
@@ -21002,11 +21130,6 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 const customRangeMin = valueMin;
                 const customRangeMax = valueMax;
                 
-                if (customRangeMax === customRangeMin) {{
-                    alert('Custom min and max values cannot be the same.');
-                    return;
-                }}
-                
                 // Map custom value points to [0, 1] colorscale positions in
                 // the CURRENT scale's space: the named values are metric
                 // units, but the ramp is drawn over the transformed domain,
@@ -21016,8 +21139,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     scaleValue(customRangeMin, currentScale),
                     scaleValue(customRangeMax, currentScale));
                 
-                // Clamp mid position to [0, 1]
-                const clampedPosMid = Math.max(0, Math.min(1, posMid));
+                // Keep the mid stop strictly inside (0, 1): a 0/1 stop would
+                // be bumped past the end by the distinct-position pass below.
+                const clampedPosMid = Math.max(0.001, Math.min(0.999, posMid));
                 
                 // Create color scale array spanning 0 to 1
                 // Plotly will map data values to this scale based on customColorRange
@@ -21027,8 +21151,13 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     [1, rgbToPlotlyFormat(colorMax)]
                 ];
                 
-                // Set custom range for Plotly to use
-                window.customColorRange = {{min: valueMin, max: valueMax}};
+                // Set custom range for Plotly to use, scoped to this metric.
+                // Remember the triplet so a Scale switch can re-place the mid
+                // swatch at the transformed position of the named value.
+                customColorTriplets[colorMetricKey()] =
+                    {{min: valueMin, mid: valueMid, max: valueMax,
+                      colors: [colorMin, colorMid, colorMax]}};
+                setCustomColorRange({{min: valueMin, max: valueMax}});
                 
                 // Sort by position (required by Plotly)
                 customColorScale.sort((a, b) => a[0] - b[0]);
@@ -21065,8 +21194,12 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     const valueMin = parseFloat(valueMin2Input);
                     const valueMax = parseFloat(valueMax2Input);
                     
-                    if (valueMax === valueMin) {{
-                        alert('Custom min and max values cannot be the same.');
+                    if (!Number.isFinite(valueMin) || !Number.isFinite(valueMax)) {{
+                        alert('Custom min and max values must be numbers.');
+                        return;
+                    }}
+                    if (!(valueMax > valueMin)) {{
+                        alert('Custom max must be greater than min.');
                         return;
                     }}
                     
@@ -21078,7 +21211,8 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     ];
                     
                     // Override the data normalization by setting colorscale range
-                    window.customColorRange = {{min: valueMin, max: valueMax}};
+                    delete customColorTriplets[colorMetricKey()];
+                    setCustomColorRange({{min: valueMin, max: valueMax}});
                     
                     console.log('Applied 2-point scale with custom values:', {{
                         customRange: {{min: valueMin, max: valueMax}},
@@ -21091,8 +21225,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                         [1, rgbToPlotlyFormat(colorMax)]
                     ];
                     
-                    // Clear custom range
-                    window.customColorRange = null;
+                    // Clear this metric's custom range
+                    delete customColorTriplets[colorMetricKey()];
+                    setCustomColorRange(null);
                     
                     console.log('Applied 2-point scale (auto):', customColorScale);
                 }}
@@ -21118,8 +21253,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         }}
         
         function resetToAutoColors() {{
-            // Clear custom color range
-            window.customColorRange = null;
+            // Clear this metric's custom domain and value mapping
+            delete customColorTriplets[colorMetricKey()];
+            setCustomColorRange(null);
             
             // Update value input boxes to show current data range
             const range = window.currentDataRange;
@@ -22593,6 +22729,13 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     fontSize: currentFontSize,
                     useAutoRange: useAutoRange,
                     customColorRange: window.customColorRange || null,
+                    // Per-metric domains plus the user-applied 3-point maps.
+                    // The units marker distinguishes new saves from old pages
+                    // that wrote panel-applied ranges in transformed units.
+                    customColorRanges: customColorRanges,
+                    customColorTriplets: customColorTriplets,
+                    colorRangeUnits: 'metric',
+                    colorRangeVersion: 2,
                     // Custom colorscale settings
                     customColorScale: customColorScale,
                     use3PointScale: use3PointScale,
@@ -22832,16 +22975,90 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     currentYLabels = settings.currentYLabels.slice();
                 }}{cell_style_settings_load}
                 
-                if (settings.customColorRange
+                // Restore per-metric custom domains. New saves carry the units
+                // marker plus per-metric objects; old saves carry ONE range
+                // whose panel-applied values were in transformed units
+                // (Python-pinned zmin/zmax stayed in metric units).
+                customColorRanges = {{}};
+                customColorTriplets = {{}};
+                if (settings.customColorRanges
+                        && typeof settings.customColorRanges === 'object') {{
+                    Object.keys(settings.customColorRanges).forEach(function (key) {{
+                        const r = settings.customColorRanges[key];
+                        if (r && Number.isFinite(Number(r.min))
+                                && Number.isFinite(Number(r.max))
+                                && Number(r.max) > Number(r.min)) {{
+                            customColorRanges[key] = {{
+                                min: Number(r.min), max: Number(r.max)}};
+                        }}
+                    }});
+                }} else if (settings.customColorRange
                         && Number.isFinite(Number(settings.customColorRange.min))
                         && Number.isFinite(Number(settings.customColorRange.max))) {{
-                    window.customColorRange = {{
-                        min: Number(settings.customColorRange.min),
-                        max: Number(settings.customColorRange.max)
-                    }};
-                }} else {{
-                    window.customColorRange = null;
+                    let lo = Number(settings.customColorRange.min);
+                    let hi = Number(settings.customColorRange.max);
+                    const pinLo = customZmin !== null ? Number(customZmin) : null;
+                    const pinHi = customZmax !== null ? Number(customZmax) : null;
+                    const isCallerPin = pinLo !== null && pinHi !== null
+                        && Math.abs(lo - pinLo) < 1e-9
+                        && Math.abs(hi - pinHi) < 1e-9;
+                    const savedScale = (settings.scale === 'log10'
+                                        || settings.scale === 'sqrt')
+                        ? settings.scale : 'linear';
+                    if (!isCallerPin && savedScale !== 'linear') {{
+                        const mlo = unscaleValue(lo, savedScale);
+                        const mhi = unscaleValue(hi, savedScale);
+                        if (Number.isFinite(mlo) && Number.isFinite(mhi)
+                                && mhi > mlo) {{
+                            lo = mlo;
+                            hi = mhi;
+                        }}
+                    }}
+                    if (hi > lo) {{
+                        customColorRanges[colorMetricKey()] = {{min: lo, max: hi}};
+                    }}
                 }}
+                if (settings.customColorTriplets
+                        && typeof settings.customColorTriplets === 'object') {{
+                    Object.keys(settings.customColorTriplets).forEach(function (key) {{
+                        const t = settings.customColorTriplets[key];
+                        if (t && [t.min, t.mid, t.max].every(function (v) {{
+                                return Number.isFinite(Number(v)); }})
+                                && Number(t.max) > Number(t.min)) {{
+                            const rec = {{
+                                min: Number(t.min),
+                                mid: Number(t.mid),
+                                max: Number(t.max)}};
+                            if (Array.isArray(t.colors) && t.colors.length === 3) {{
+                                rec.colors = t.colors.map(String);
+                            }}
+                            customColorTriplets[key] = rec;
+                        }}
+                    }});
+                }} else if (settings.use3PointScale
+                        && Array.isArray(settings.customColorScale)
+                        && settings.customColorScale.length === 3) {{
+                    // Infer an old user-applied mapping from the saved ramp's
+                    // mid position so it follows later Scale switches too.
+                    const r = storedCustomColorRange();
+                    const pos = Number(settings.customColorScale[1][0]);
+                    const s = (settings.scale === 'log10'
+                               || settings.scale === 'sqrt')
+                        ? settings.scale : 'linear';
+                    if (r !== null && Number.isFinite(pos)) {{
+                        const slo = scaleValue(r.min, s);
+                        const shi = scaleValue(r.max, s);
+                        const mid = unscaleValue(
+                            slo + Math.max(0, Math.min(1, pos)) * (shi - slo), s);
+                        customColorTriplets[colorMetricKey()] = {{
+                            min: r.min, mid: mid, max: r.max,
+                            colors: settings.customColorScale.map(function (c) {{
+                                return colorValueToHex(c[1]); }})}};
+                    }}
+                }}
+                window.customColorRange = activeCustomColorRange();
+                rebuildTripletScale();
+                syncCustomColorPanel();
                 
                     createHeatmap();
                     if (showStatusMsg) {{
@@ -22866,6 +23083,9 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             currentColorscale = '{default_colorscale}';
             currentFontSize = {fontsize};
             customColorScale = null;
+            customColorRanges = {{}};
+            customColorTriplets = {{}};
+            window.customColorRange = null;
             use3PointScale = false;
             currentWidth = 800;
             currentHeight = 800;
@@ -22949,10 +23169,14 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
         
         // Try to load saved settings on page load
         window.addEventListener('load', () => {{
-            // Initialize custom color range if zmin/zmax were provided from Python
-            if (customZmin !== null && customZmax !== null) {{
-                window.customColorRange = {{ min: customZmin, max: customZmax }};
-                console.log('Initialized custom color range from Python parameters:', window.customColorRange);
+            // Python's zmin/zmax are a page-level pin (metric units), not a
+            // per-metric user range. activeCustomColorRange() reads them.
+            customColorRanges = {{}};
+            customColorTriplets = {{}};
+            window.customColorRange = activeCustomColorRange();
+            if (window.customColorRange) {{
+                console.log('Initialized custom color range from Python parameters:',
+                            window.customColorRange);
             }}
             
             seedCustomColorPanel();
