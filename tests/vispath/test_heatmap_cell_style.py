@@ -391,7 +391,11 @@ def test_the_reader_can_recolour_a_category_and_get_the_metric_colour_back(tmp_p
         _rendered(page)
         st = _state(page)
         assert all(cell['color'] is None for cell in st['cells'].values()), st
-        assert st['cbTicks'] is None, st['cbTicks']
+        # Back to ONE metric trace with its own bar. The metric bar now always
+        # carries original-value ticks (the transform moves positions only), so
+        # "no cell-style bar" reads as the metric's own 4..78 labels.
+        assert st['traces'] == 1, st
+        assert st['cbTicks'] == ['4', '20', '40', '60', '78'], st['cbTicks']
 
         # one click back to the caller's default, unpriced category included
         page.js("document.getElementById('cellStyleReset').click(); return 1;")
@@ -477,7 +481,9 @@ def test_the_default_page_still_draws_one_unshaped_trace(tmp_path):
         assert len(st['shapes']) == 0, st['shapes']
         assert not st['panel'], 'the control appeared on a page nobody styled'
         assert st['z'] and st['z'][0][0] is not None
-        assert st['cbTicks'] is None, st['cbTicks']
+        # The one metric trace ticks its own metric values (4..78 here);
+        # the cell-style code contributed no extra traces or shapes.
+        assert st['cbTicks'] == ['4', '20', '40', '60', '78'], st['cbTicks']
         assert not st['errors'], st['errors']
 
 

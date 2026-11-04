@@ -18731,7 +18731,10 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
       clustered heatmap (column tree above, row tree right) via the "🌳 Dendrogram"
       toggle, with adjustable tree line width and band size; coexists with the
       square-cells lock (band edges re-align onto the cell edges automatically)
-    - Scale switcher: Linear / Log10 / Sqrt
+    - Scale switcher: Linear / Log10 / Sqrt. The transform moves colour
+      POSITIONS only: colorbar labels, the color panel's Min/Mid/Max fields,
+      hover and cell values all stay in the metric's original units, and the
+      top colorbar tick always names the true maximum
     - Colorscale selector with presets (Greens, Purples, Oranges, Blues, Reds, Viridis, etc.)
     - Font size slider
     - Label toggle ("🏷️ Show/Hide Labels"): hides the tick labels together with the
@@ -19830,6 +19833,39 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             return result;
         }}
         
+        // The Scale buttons map ORIGINAL metric values into the colour domain.
+        // The matrix, zmin/zmax and tick POSITIONS live in that domain; every
+        // label the reader sees (colorbar ticks, panel inputs, hover, cell
+        // values) stays in the original units. Keep the pair together so a
+        // transform and its inverse cannot drift apart.
+        function scaleValue(value, scale) {{
+            const x = Number(value);
+            if (!Number.isFinite(x)) return x;
+            switch (scale) {{
+                case 'log10':
+                    // sign(v) * log10(|v| + 1): keeps negatives ordered
+                    return x < 0 ? -Math.log10(-x + 1) : Math.log10(x + 1);
+                case 'sqrt':
+                    return x < 0 ? -Math.sqrt(-x) : Math.sqrt(x);
+                default:
+                    return x;
+            }}
+        }}
+
+        function unscaleValue(value, scale) {{
+            const x = Number(value);
+            if (!Number.isFinite(x)) return x;
+            switch (scale) {{
+                case 'log10':
+                    return x < 0 ? -(Math.pow(10, -x) - 1)
+                                 : Math.pow(10, x) - 1;
+                case 'sqrt':
+                    return x < 0 ? -(x * x) : x * x;
+                default:
+                    return x;
+            }}
+        }}
+
         function getDataForScale(scale) {{
             // Always derive from dataLinear: the metric can change under the
             // page, and a transform precomputed for the INITIAL metric would
@@ -19840,28 +19876,54 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 case 'log10':
                     if (cachedDataLog10 === null) {{
                         console.log('Computing log₁₀ transform...');
-                        cachedDataLog10 = dataLinear.map(row => row.map(v => {{
-                            // Handle negative values: sign(v) * log10(|v| + 1)
-                            if (v < 0) return -Math.log10(-v + 1);
-                            return Math.log10(v + 1);
-                        }}));
+                        cachedDataLog10 = dataLinear.map(
+                            row => row.map(v => scaleValue(v, 'log10')));
                     }}
                     return cachedDataLog10;
                 case 'sqrt':
                     if (cachedDataSqrt === null) {{
                         console.log('Computing √ transform...');
-                        cachedDataSqrt = dataLinear.map(row => row.map(v => {{
-                            // Handle negative values: sign(v) * sqrt(|v|)
-                            if (v < 0) return -Math.sqrt(-v);
-                            return Math.sqrt(v);
-                        }}));
+                        cachedDataSqrt = dataLinear.map(
+                            row => row.map(v => scaleValue(v, 'sqrt')));
                     }}
                     return cachedDataSqrt;
                 default:
                     return dataLinear;
             }}
         }}
-        
+
+        // ~count round ticks inside lo..hi, ends included: 0..800 ->
+        // 0,200,...,800; 0..37 -> 0,10,20,30,37. Shared rule with the
+        // cell-style colourbars so every bar on the page ticks alike.
+        function niceTicks(lo, hi, count) {{
+            const span = hi - lo;
+            if (!(span > 0)) return [lo];
+            const raw = span / Math.max(1, count - 1);
+            const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+            const step = [1, 2, 2.5, 5, 10].map(x => x * mag)
+                .filter(x => x >= raw)[0] || 10 * mag;
+            const out = [];
+            for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9;
+                 v += step) {{
+                out.push(Math.abs(v) < 1e-9 ? 0 : v);
+            }}
+            if (!out.length || out[0] > lo + 1e-9) out.unshift(lo);
+            if (out[out.length - 1] < hi - 1e-9) out.push(hi);
+            return out;
+        }}
+
+        // Colorbar labels report ORIGINAL metric values; the Scale transform
+        // only moves their positions. Ratio bars read as percentages; count
+        // metrics as whole numbers; a fractional metric (Jaccard, cosine,
+        // rank correlation) keeps enough decimals to distinguish its ticks.
+        function formatColorbarValue(value, ratioMetric) {{
+            const n = Number(value);
+            if (!Number.isFinite(n)) return String(value);
+            if (ratioMetric) return (n * 100).toFixed(1) + '%';
+            if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+            return String(Number(n.toPrecision(3)));
+        }}
+
         function getScaleLabel(scale) {{
             switch(scale) {{
                 case 'log10': return ' (log₁₀)';
@@ -20316,6 +20378,31 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             }}
 
             const range = getDataRange(data);
+
+            // The reader-facing colour domain is the metric's ORIGINAL values;
+            // the Scale buttons only move positions inside it. The colourbar's
+            // tickvals are transformed, while its ticktext is the inverse, so
+            // the top of a log/sqrt bar still names the true maximum (and the
+            // panel's Min/Max fields stay in metric units).
+            const originalRange = getDataRange(dataOriginal);
+            let colorMin = originalRange.min;
+            let colorMax = originalRange.max;
+            if (window.customColorRange) {{
+                const cmin = Number(window.customColorRange.min);
+                const cmax = Number(window.customColorRange.max);
+                if (Number.isFinite(cmin) && Number.isFinite(cmax) && cmax > cmin) {{
+                    colorMin = cmin;
+                    colorMax = cmax;
+                }}
+            }} else if (!useAutoRange && customZmin !== null && customZmax !== null) {{
+                const cmin = Number(customZmin);
+                const cmax = Number(customZmax);
+                if (Number.isFinite(cmin) && Number.isFinite(cmax) && cmax > cmin) {{
+                    colorMin = cmin;
+                    colorMax = cmax;
+                }}
+            }}
+            const colorTicks = niceTicks(colorMin, colorMax, 5);
             
             // Determine which colorscale to use
             let colorscaleToUse;
@@ -20368,8 +20455,14 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                                    (ratioMetric ? ' (%)' : '') + scaleLabel,
                             side: 'right'}},
                     // Ratio bars read as percentages; synapse bars as whole
-                    // synapses (the metric's own unit).
-                    tickformat: ratioMetric ? '.1%' : '.0f'
+                    // synapses (the metric's own unit). ticktext supersedes
+                    // tickformat in Plotly; the format stays on the trace for
+                    // callers that read it.
+                    tickformat: ratioMetric ? '.1%' : '.0f',
+                    tickmode: 'array',
+                    tickvals: colorTicks.map(v => scaleValue(v, currentScale)),
+                    ticktext: colorTicks.map(
+                        v => formatColorbarValue(v, ratioMetric))
                 }}
             }};
             // Remember the exact title drawn here (selected metric's display name
@@ -20389,27 +20482,30 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             console.log('createHeatmap: showCellValues =', showCellValues,
                         '(annotations only, no texttemplate)');
             
-            // Apply custom colorbar range
+            // Apply custom colorbar range in the CURRENT scale's space: the
+            // stored endpoints are metric values, the trace's z domain is the
+            // transformed one.
             // Priority: 1) Custom color range (for cross-heatmap comparison)
             //           2) Manual slider range (if not auto)
             //           3) Auto range (default)
-            if (window.customColorRange) {{
-                trace.zmin = window.customColorRange.min;
-                trace.zmax = window.customColorRange.max;
-                console.log('Using custom color range:', window.customColorRange);
-            }} else if (!useAutoRange && customZmin !== null && customZmax !== null) {{
-                trace.zmin = customZmin;
-                trace.zmax = customZmax;
+            if (window.customColorRange ||
+                    (!useAutoRange && customZmin !== null && customZmax !== null)) {{
+                trace.zmin = scaleValue(colorMin, currentScale);
+                trace.zmax = scaleValue(colorMax, currentScale);
+                console.log('Using custom color range (metric units):',
+                            {{min: colorMin, max: colorMax}},
+                            'z:', trace.zmin, trace.zmax);
             }}
             
-            // Store current range for slider scaling
+            // Store current range for slider scaling — METRIC units, so the
+            // panel's Auto seed and Min/Max fields never show transformed values.
             let cellStyleParallel = null;{cell_style_trace}
-            window.currentDataRange = range;
+            window.currentDataRange = originalRange;
             
             // Update 2-point color value inputs to show current data range in auto mode
             if (!window.customColorRange) {{
-                document.getElementById('valueMin2').value = formatValueDisplay(range.min);
-                document.getElementById('valueMax2').value = formatValueDisplay(range.max);
+                document.getElementById('valueMin2').value = formatValueDisplay(colorMin);
+                document.getElementById('valueMax2').value = formatValueDisplay(colorMax);
             }}
             
             // Determine axis titles based on transpose state
@@ -20774,10 +20870,15 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 twoPoint.style.display = 'none';
                 threePoint.style.display = 'block';
                 
-                // Set default values based on current data range
+                // Set default values based on current data range. The middle
+                // of the COLOUR domain is inverse((lo+hi)/2) in metric units,
+                // so a log view's middle swatch names its true value.
                 if (window.currentDataRange) {{
                     const range = window.currentDataRange;
-                    const mid = (range.min + range.max) / 2;
+                    const mid = unscaleValue(
+                        (scaleValue(range.min, currentScale) +
+                         scaleValue(range.max, currentScale)) / 2,
+                        currentScale);
                     document.getElementById('valueMin3').value = formatValueDisplay(range.min);
                     document.getElementById('valueMid3').value = formatValueDisplay(mid);
                     document.getElementById('valueMax3').value = formatValueDisplay(range.max);
@@ -20843,9 +20944,14 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                 (window.customColorRange ? window.customColorRange.min : null);
             const zmax = Number.isFinite(customZmax) ? customZmax :
                 (window.customColorRange ? window.customColorRange.max : null);
+            // Stops live in colour-domain positions; their value fields are
+            // metric units, so interpolate in the scaled space and invert.
             const valueAt = function (pos) {{
-                return (zmin !== null && zmax !== null)
-                    ? formatValueDisplay(zmin + pos * (zmax - zmin)) : null;
+                if (zmin === null || zmax === null) return null;
+                const lo = scaleValue(zmin, currentScale);
+                const hi = scaleValue(zmax, currentScale);
+                return formatValueDisplay(
+                    unscaleValue(lo + pos * (hi - lo), currentScale));
             }};
             if (three) {{
                 const mid = stops[Math.floor(stops.length / 2)];
@@ -20901,9 +21007,14 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     return;
                 }}
                 
-                // Map custom value points to [0, 1] colorscale positions
-                // This defines where each color appears on the scale
-                const posMid = normalizeValue(valueMid, customRangeMin, customRangeMax);
+                // Map custom value points to [0, 1] colorscale positions in
+                // the CURRENT scale's space: the named values are metric
+                // units, but the ramp is drawn over the transformed domain,
+                // so a log view puts the mid swatch at its transformed spot.
+                const posMid = normalizeValue(
+                    scaleValue(valueMid, currentScale),
+                    scaleValue(customRangeMin, currentScale),
+                    scaleValue(customRangeMax, currentScale));
                 
                 // Clamp mid position to [0, 1]
                 const clampedPosMid = Math.max(0, Math.min(1, posMid));
