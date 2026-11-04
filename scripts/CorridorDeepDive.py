@@ -300,7 +300,7 @@ def main():
                   length_decay=args.length_decay,
                   per_pair_length_budget=args.pair_length_budget,
                   write_bodyid=not args.no_bodyid,
-                  full_scope=(True if args.full_scope else None),
+                  full_scope=args.full_scope,
                   time_budget_s=(args.time_budget or None),
                   type_pruned=args.type_pruned,
                   type_prune_basis=args.type_prune_basis,
