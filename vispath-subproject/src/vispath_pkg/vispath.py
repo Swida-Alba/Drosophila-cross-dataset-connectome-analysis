@@ -20953,7 +20953,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
             // become ratio 0..900) and put its values back in the panel.
             window.customColorRange = activeCustomColorRange();
             syncCustomColorPanel();
-            
+
             // Recreate the heatmap with new metric data (clustering will be applied in createHeatmap)
             createHeatmap();
         }}
@@ -21119,7 +21119,7 @@ def VisConnMatInteractive(cmat, filename, title='', color_scale=None, showfig=Tr
                     alert('Custom max must be greater than min.');
                     return;
                 }}
-                
+
                 // Map custom values to [0, 1] range - allows values beyond actual data range
                 const normalizeValue = (val, rangeMin, rangeMax) => {{
                     if (rangeMax === rangeMin) return 0.5;
