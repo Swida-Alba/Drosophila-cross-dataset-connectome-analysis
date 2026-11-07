@@ -178,8 +178,8 @@ DROCAT ships one versioned branch per release (`v4.5.0`, `v4.4.5`, …), each mi
 
 | Release | Date | Highlights |
 | --- | --- | --- |
-| **[v4.5.0](https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis/tree/v4.5.0)** — current | August 2026 | Script-first agent analysis, local FAFB + standalone BANC support, Similarity tab reorganization, NT grouping, palette editor, 3D skeleton reorganization (see [What's New](#whats-new-in-v450)) |
-| [v4.4.5](https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis/releases/tag/v4.4.5) — latest published | 2026-08-04 | Agent-assisted direct runs |
+| **[v4.5.0](https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis/releases/tag/v4.5.0)** — current, latest published | 2026-11-04 | Script-first agent analysis, local FAFB + standalone BANC support, Similarity tab reorganization, NT grouping, palette editor, 3D skeleton reorganization (see [What's New](#whats-new-in-v450)) |
+| [v4.4.5](https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis/releases/tag/v4.4.5) | 2026-08-04 | Agent-assisted direct runs |
 | [v4.4.0](https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis/releases/tag/v4.4.0) | 2026-01-10 | Local FAFB + standalone BANC datasets, priority-based neuron search, NT visualization |
 | [v4.3.0](https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis/releases/tag/v4.3.0) | 2025-12-23 | NeuronBridge integration with region filtering, FlyLight |
 | [v4.2.0](https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis/releases/tag/v4.2.0) | 2025-12-14 | FAFB download guidance and fixes |
@@ -192,7 +192,7 @@ Earlier releases (v4.4.1–v4.4.3, v4.3.1–v4.3.3, v4.2.1, [v3.2.1](https://git
 ```bash
 git clone https://github.com/Swida-Alba/Drosophila-cross-dataset-connectome-analysis.git
 cd Drosophila-cross-dataset-connectome-analysis
-git checkout v4.4.5   # a tagged release; omit to stay on the current default branch
+git checkout v4.5.0   # a tagged release; omit to stay on the current default branch
 ```
 
 Consolidated per-release notes live in the [changelog](docs/README.md#v450-changelog).
