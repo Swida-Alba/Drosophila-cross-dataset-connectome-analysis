@@ -1094,7 +1094,7 @@ def create_skeleton_tab():
                 if include_subprimary.value:
                     suffix = " plus sub-primary entries"
                 roi_detail_hint.set_text(
-                    f"Primary list: {primary_count} metadata ROIs{suffix} "
+                    f"Primary list: {primary_count} ROIs{suffix} "
                     f"for {dataset.value}."
                 )
             else:

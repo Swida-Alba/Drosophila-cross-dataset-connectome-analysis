@@ -8,6 +8,14 @@ for some datasets, super-level/container names as well.
 The helpers in this module deliberately read local files only.  The UI should
 not make a network request just to populate a select control; a visualization
 run can still refresh the backend cache when a requested mesh is missing.
+
+A fresh clone has no ``datasets/`` or ``cache/`` sidecars (both are gitignored
+and the installer never downloads them), so the local read would otherwise
+fall back to the hardcoded primary list and the "Include sub-primary ROIs"
+checkbox would add nothing.  ``data/roi_catalogs.json`` ships a tracked
+snapshot of the primary + available inventories (regenerate it with
+``scripts/maintenance/build_roi_catalog.py`` on a machine that has the data).
+It is the LAST fallback: live ``cache/``/``datasets/`` data always wins.
 """
 
 from __future__ import annotations
@@ -27,6 +35,10 @@ ROI_MODE_PRIMARY = "primary"
 ROI_MODE_ALL = "all available"
 
 _HEMISPHERE_SUFFIX = re.compile(r"\((?:L|R)\)$")
+
+#: Tracked ROI snapshot shipped with the UI, resolved relative to this module
+#: so it works from any working directory (and from a fresh clone).
+BUNDLED_ROI_CATALOG = Path(__file__).resolve().parent / "data" / "roi_catalogs.json"
 
 
 def _unique_strings(values: Iterable[Any]) -> list[str]:
@@ -193,25 +205,24 @@ def _roi_count_file_rois(project_root: Path, folders: Iterable[str]) -> list[str
                 continue
             names = _unique_strings(values)
             if names:
-                return sorted(names, key=str.casefold)
+                # Total order (casefold, then exact) so case-equal names like
+                # AL(R)/aL(R) keep a stable order across runs.
+                return sorted(names, key=lambda s: (s.casefold(), s))
     return []
 
 
-def load_roi_catalog(
-    dataset: str,
-    project_root: Path | str = PROJECT_ROOT,
-) -> dict[str, list[str]]:
-    """Return ``primary`` and ``available`` ROI names for *dataset*.
+def _local_roi_catalog(
+    project_root: Path, folders: Iterable[str]
+) -> dict[str, Any]:
+    """Read the primary/available inventories from local sidecars only.
 
-    Primary names come from ``datasets/<dataset>/*metadata*`` first.  The
-    available inventory prefers the backend's ``available_rois.json`` cache,
-    then metadata/hierarchy fields, then local ROI-count tables.
+    ``has_live_inventory`` records whether a backend ``available_rois.json``
+    cache or a ROI-count table supplied the available list; when it did, that
+    live inventory is authoritative and the bundled snapshot must not merge
+    into it.
     """
 
-    root = Path(project_root)
-    folders = _candidate_folders(dataset)
-    metadata = _read_metadata(root, folders)
-
+    metadata = _read_metadata(project_root, folders)
     primary: list[str] = []
     metadata_available: list[str] = []
     for item in metadata:
@@ -222,10 +233,10 @@ def load_roi_catalog(
         if primary and metadata_available:
             break
 
-    cached_available = _cached_available_rois(root, folders)
-    table_available = []
+    cached_available = _cached_available_rois(project_root, folders)
+    table_available: list[str] = []
     if not cached_available:
-        table_available = _roi_count_file_rois(root, folders)
+        table_available = _roi_count_file_rois(project_root, folders)
 
     available = _unique_strings(
         cached_available or table_available or metadata_available or primary
@@ -233,6 +244,70 @@ def load_roi_catalog(
     # A stale/incomplete cache must not hide a primary name loaded from the
     # authoritative sidecar.
     available = _unique_strings([*available, *primary])
+    return {
+        "primary": primary,
+        "available": available,
+        "has_live_inventory": bool(cached_available or table_available),
+    }
+
+
+def _bundled_roi_catalog(folders: Iterable[str]) -> dict[str, list[str]] | None:
+    """Return the first shipped snapshot entry for the candidate folders."""
+
+    try:
+        data = json.loads(BUNDLED_ROI_CATALOG.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for folder in folders:
+        entry = data.get(folder)
+        if not isinstance(entry, dict):
+            continue
+        primary = _unique_strings(entry.get("primary") or [])
+        available = _unique_strings(entry.get("available") or [])
+        if primary or available:
+            return {"primary": primary, "available": available or primary}
+    return None
+
+
+def load_roi_catalog(
+    dataset: str,
+    project_root: Path | str = PROJECT_ROOT,
+) -> dict[str, list[str]]:
+    """Return ``primary`` and ``available`` ROI names for *dataset*.
+
+    Primary names come from ``datasets/<dataset>/*metadata*`` first.  The
+    available inventory prefers the backend's ``available_rois.json`` cache,
+    then metadata/hierarchy fields, then local ROI-count tables.  When no
+    local sidecar exists (a fresh install), the tracked ``roi_catalogs.json``
+    snapshot supplies both lists so sub-primary ROIs are still selectable;
+    a live cache/table always takes precedence over the snapshot.
+    """
+
+    root = Path(project_root)
+    folders = _candidate_folders(dataset)
+    local = _local_roi_catalog(root, folders)
+    primary = local["primary"]
+    available = local["available"]
+
+    bundled = None
+    if not primary or not local["has_live_inventory"]:
+        # Read the shipped snapshot only when local data cannot answer the
+        # request on its own (fresh install, or primary-only sidecars).
+        bundled = _bundled_roi_catalog(folders)
+    if bundled is not None:
+        if not primary:
+            primary = list(bundled["primary"])
+        if not local["has_live_inventory"]:
+            # No authoritative live inventory: restore the snapshot's broader
+            # available list (it carries the sub-primary names) unless the
+            # local metadata already supplies a wider one.
+            bundled_available = bundled["available"]
+            if len(bundled_available) > len(available):
+                available = _unique_strings([*bundled_available, *primary])
+        available = _unique_strings([*available, *primary])
+
     return {"primary": primary, "available": available}
 
 
