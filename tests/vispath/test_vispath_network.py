@@ -3142,9 +3142,10 @@ class TestEdgeStyleControl:
         assert 'id="edgeLineColor"' in html
         assert 'id="edgeLineAlpha"' in html
         assert "function applyEdgeLineStyle(patch) {" in js
-        # pattern rides line-style; color/alpha apply LIVE on input and ride
-        # the base appearance (line + BOTH arrowheads + the
-        # __baseColor/__baseOpacity keys)
+        # The semantic pattern rides the data channel; dotted renders as
+        # dashed internally so its interval can scale with the edge width.
+        # Color/alpha apply LIVE on input and ride the base appearance (line
+        # + BOTH arrowheads + the __baseColor/__baseOpacity keys).
         assert 'onchange="applyEdgeLineStyle({ lineStyle: this.value })"' in html
         assert 'oninput="applyEdgeLineStyle({ alpha: parseFloat(this.value) / 100 })"' in html
         # the color swatch + hex text companion are bound together
@@ -3152,14 +3153,17 @@ class TestEdgeStyleControl:
         assert "v => applyEdgeLineStyle({ color: v })" in js
         # bursts coalesce into one undo entry
         assert "queueStyleHistory('Change edge style');" in js
-        assert "e.style('line-style', patch.lineStyle);" in js
+        assert "e.data('line_style', pattern);" in js
+        assert "syncEdgeLinePattern(e);" in js
         assert "const arrowColor = (patch.color !== undefined)" in js
         assert "e.data(EDGE_BASE_ARROW_KEY)" in js
         assert "setEdgeBaseAppearance(e, color, alpha, true, arrowColor);" in js
         assert "'source-arrow-color': arrowColor," in js
-        # capture/restore carry the pattern override
-        assert "if (hasBypass(e, 'line-style')) item.lineStyle = e.style('line-style');" in js
-        assert "e.removeStyle('line-style');" in js
+        # capture/restore carry the SEMANTIC pattern (dotted stays dotted)
+        assert "item.lineStyle = linePattern;" in js
+        assert "e.data('line_style', item.lineStyle);" in js
+        assert "e.removeData('line_style');" in js
+        assert "e.removeStyle('line-dash-pattern');" in js
 
     def test_edge_line_controls_seed_from_selection(self, merged_html):
         html = merged_html.read_text(encoding="utf-8")

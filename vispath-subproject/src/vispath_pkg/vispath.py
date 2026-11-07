@@ -6944,11 +6944,21 @@ class VisualizePath:
             _declared_styles = {str(v).strip().lower()
                                 for v in self.path_df['line_style'].dropna()}
             for _style in sorted(_declared_styles & {'dashed', 'dotted'}):
+                if _style == 'dotted':
+                    # Cytoscape hardcodes dotted to a 1px/1px dash, which
+                    # disappears on thick edges. Render it as a dashed stroke
+                    # with round caps and a near-zero dash; the JS sync below
+                    # scales the gap with the rendered width.
+                    _rule = ("'line-style': 'dashed', 'line-cap': 'round', "
+                             "'line-dash-pattern': [0.01, 6]")
+                else:
+                    _rule = ("'line-style': 'dashed', "
+                             "'line-dash-pattern': [6, 3]")
                 edge_line_style_styles += f"""
                 {{
                     selector: 'edge[line_style = "{_style}"]',
                     style: {{
-                        'line-style': '{_style}'
+                        {_rule}
                     }}
                 }},"""
 
@@ -9562,6 +9572,9 @@ class VisualizePath:
         setTimeout(applyReciprocalOffsets, 0);
         cy.on('layoutstop', applyReciprocalOffsets);
         cy.on('dragfree', 'node', applyReciprocalOffsets);
+        // Selected/highlighted edges widen through the stylesheet, so their
+        // dash interval must follow the rendered width too.
+        cy.on('select unselect', 'edge', evt => syncEdgeLinePattern(evt.target));
         
         // Add window resize handler to keep canvas in sync
         window.addEventListener('resize', function() {{
@@ -11046,7 +11059,15 @@ class VisualizePath:
             const edgeGeometry = cy.edges().map(e => {{
                 const item = {{ id: e.id() }};
                 if (hasBypass(e, 'width')) item.width = parseFloat(e.style('width'));
-                if (hasBypass(e, 'line-style')) item.lineStyle = e.style('line-style');
+                // Capture the SEMANTIC pattern: dotted renders as dashed
+                // internally so its interval can scale with width.
+                const linePattern = String(e.data('line_style') || '').toLowerCase();
+                if (linePattern === 'solid' || linePattern === 'dashed'
+                        || linePattern === 'dotted') {{
+                    item.lineStyle = linePattern;
+                }} else if (hasBypass(e, 'line-style')) {{
+                    item.lineStyle = e.style('line-style');
+                }}
                 // per-edge route/arrow overrides (absence = follow global)
                 if (e.data('routeStyle')) item.routeStyle = e.data('routeStyle');
                 if (e.data('arrowSize') !== undefined) item.arrowSize = Number(e.data('arrowSize'));
@@ -11469,9 +11490,14 @@ class VisualizePath:
                             e.removeData('customSize');
                         }}
                         if (item && item.lineStyle !== undefined) {{
-                            e.style('line-style', item.lineStyle);
+                            e.data('line_style', item.lineStyle);
+                            syncEdgeLinePattern(e);
                         }} else {{
+                            e.removeData('line_style');
                             e.removeStyle('line-style');
+                            e.removeStyle('line-cap');
+                            e.removeStyle('line-dash-pattern');
+                            e.scratch('__edgeDashKey', '');
                         }}
                         if (item && item.routeStyle !== undefined) e.data('routeStyle', item.routeStyle);
                         else e.removeData('routeStyle');
@@ -12346,6 +12372,46 @@ class VisualizePath:
             return false;
         }}
 
+        // Dashed/dotted stroke intervals scale with the rendered edge width.
+        // Cytoscape hardcodes dotted to [1,1] and dashes to a fixed default,
+        // so a thick dashed edge reads as solid and a thick dotted edge loses
+        // its dots. Render dotted as a round-capped near-zero dash and give
+        // both patterns a width-relative interval.
+        function edgeDashPattern(style, width) {{
+            const w = Math.max(0.5, Number(width) || 1);
+            if (style === 'dashed') {{
+                return [Math.max(1.5, w * 3), Math.max(1.2, w * 2)];
+            }}
+            if (style === 'dotted') {{
+                return [0.01, Math.max(1.5, w * 2)];
+            }}
+            return null;
+        }}
+
+        function syncEdgeLinePattern(edge) {{
+            const style = String(edge.data('line_style') || '').toLowerCase();
+            if (style !== 'dashed' && style !== 'dotted' && style !== 'solid') return;
+            const width = Math.max(0.5, Number(edge.width()) || 1);
+            const key = style + ':' + width.toFixed(2);
+            if (edge.scratch('__edgeDashKey') === key) return;
+            edge.scratch('__edgeDashKey', key);
+            if (style === 'solid') {{
+                // Default solid: drop any pattern this edge carried before.
+                if (hasBypass(edge, 'line-style') || hasBypass(edge, 'line-cap')
+                        || hasBypass(edge, 'line-dash-pattern')) {{
+                    edge.removeStyle('line-style');
+                    edge.removeStyle('line-cap');
+                    edge.removeStyle('line-dash-pattern');
+                }}
+                return;
+            }}
+            edge.style({{
+                'line-style': 'dashed',
+                'line-cap': style === 'dotted' ? 'round' : 'butt',
+                'line-dash-pattern': edgeDashPattern(style, width)
+            }});
+        }}
+
         function refreshEdgeStyles(showStatus) {{
             const shouldShowStatus = (showStatus === undefined) ? true : showStatus;
             const offsetMagnitude = Math.max(0, parseFloat(reciprocalOffset) || 0);  // Keep reciprocal edges parallel but separated
@@ -12369,6 +12435,7 @@ class VisualizePath:
             // This is useful when parallel/reciprocal edges are hidden
             cy.edges().forEach(edge => {{
               try {{
+                syncEdgeLinePattern(edge);
                 const source = edge.source().id();
                 const target = edge.target().id();
                 // Code-unit ordering — must match the canonical source/target
@@ -13514,6 +13581,7 @@ class VisualizePath:
         function removeHighlightFromEdges(edges, skipSelected = false) {{
             edges.forEach(edge => {{
                 edge.removeClass('highlighted');
+                syncEdgeLinePattern(edge);
                 if (skipSelected && edge.selected()) {{
                     return;
                 }}
@@ -13523,7 +13591,10 @@ class VisualizePath:
 
         function addHighlightToEdges(edges) {{
             edges.addClass('highlighted');
-            edges.forEach(edge => applyEdgeHighlightOverride(edge));
+            edges.forEach(edge => {{
+                applyEdgeHighlightOverride(edge);
+                syncEdgeLinePattern(edge);
+            }});
         }}
 
         function initializeEdgeBaseStyles() {{
@@ -14465,7 +14536,12 @@ class VisualizePath:
                 const linePattern = document.getElementById('edgeLinePattern');
                 const lineColor = document.getElementById('edgeLineColor');
                 const lineAlpha = document.getElementById('edgeLineAlpha');
-                if (linePattern) linePattern.value = primary.style('line-style') || 'solid';
+                if (linePattern) {{
+                    const semantic = String(primary.data('line_style') || '').toLowerCase();
+                    linePattern.value = (semantic === 'solid' || semantic === 'dashed'
+                        || semantic === 'dotted')
+                        ? semantic : (primary.style('line-style') || 'solid');
+                }}
                 if (lineColor && lineAlpha) {{
                     lineColor.value = extractColorHex(
                         primary.data(EDGE_BASE_COLOR_KEY) || primary.style('line-color')) || '#64748b';
@@ -14668,6 +14744,8 @@ class VisualizePath:
                         e.data('customSize', true);
                     }});
                 }});
+                // The dash interval follows the manually set width.
+                edges.forEach(e => syncEdgeLinePattern(e));
                 updateHoverInfo('✓ Edge width set to ' + newWidth + 'px');
             }}
             syncSelectedGeometryInputs(primary);
@@ -15760,7 +15838,15 @@ class VisualizePath:
             cy.batch(() => {{
                 edges.forEach(e => {{
                     if (patch.lineStyle !== undefined) {{
-                        e.style('line-style', patch.lineStyle);
+                        const pattern = String(patch.lineStyle).toLowerCase();
+                        if (pattern === 'solid' || pattern === 'dashed'
+                                || pattern === 'dotted') {{
+                            // The semantic pattern rides the data channel
+                            // (dotted renders as dashed internally so its
+                            // interval can scale with width).
+                            e.data('line_style', pattern);
+                            syncEdgeLinePattern(e);
+                        }}
                     }}
                     const color = (patch.color !== undefined) ? patch.color
                         : (e.data(EDGE_BASE_COLOR_KEY) || e.style('line-color'));

@@ -68,6 +68,7 @@ const FUNCTIONS = [
     'reapplyDeadEndHiding', 'reapplyOrphanHiding',
     'updateSelectionChip', 'historyIcon',
     'refreshEdgeStyles', 'clearEdgeEndpointOverrides', 'applyStraightEdgeStyle',
+    'edgeDashPattern', 'syncEdgeLinePattern',
     'vpBowAroundObstructions', 'vpNodeHalfSizes', 'vpRimDistance', 'vpPointInsideNode',
     'hasBypass',
     'isStructuredLabel', 'measureLabelRow', 'fitStructuredLabels',
