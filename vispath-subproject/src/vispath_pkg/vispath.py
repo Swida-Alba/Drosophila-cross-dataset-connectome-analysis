@@ -11429,6 +11429,23 @@ class VisualizePath:
                                           item.baseArrowColor);
                     if (!canApplyBase) applyEdgeHighlightOverride(edge);
                 }});
+                // A saved layout may carry a strength alpha captured under an
+                // older encoding (e.g. synapse-count bands) while this page's
+                // current strength encoding lives in `edge_alpha` (the bins
+                // the legend names). The current encoding must win, or the
+                // rendered opacity silently contradicts the active metric and
+                // its legend. Restore the alpha AND its base record so a
+                // later highlight/unselect pass cannot reintroduce the stale
+                // value.
+                cy.edges().forEach(edge => {{
+                    const alpha = edge.data('edge_alpha');
+                    if (alpha === undefined || alpha === null || alpha === ''
+                            || isNaN(Number(alpha))) return;
+                    const op = Number(alpha);
+                    edge.data('__baseOpacity', op);
+                    edge.style('line-opacity', op);
+                    if (typeof edgeArrowShapes === 'function') edgeArrowShapes(edge, op);
+                }});
 
                 // --- visibility (final pass: manual hides win over the
                 // class-derived passes above) ---
