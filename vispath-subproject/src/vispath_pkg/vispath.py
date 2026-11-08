@@ -25,6 +25,28 @@ import ast
 import re
 
 
+#: Cytoscape 3.28.1 `findEndpoints` projects a straight edge's arrow
+#: back-off point (`arrowEndX/Y`) from `[u.x, u.y]` — the SOURCE NODE
+#: CENTER — and its source-arrow point from `[c.x, c.y]` — the TARGET
+#: node center — even when the endpoints are manual.  vispath's per-end
+#: anchor feature pins both ends to manual rim points, so the arrow is
+#: computed along the center chord while the line runs between the rim
+#: points: the arrowhead rotates and detaches from its own line
+#: (measured up to 9.9 degrees of divergence on diagonal pairs; 0 after
+#: this patch).  Project from the manual endpoint — the point the line
+#: actually starts/ends at — whenever one is present.  Applied to the
+#: vendored bundle at export time; the CDN fallback (only used outside
+#: the DROCAT checkout) stays unpatched.
+_CYTO_ENDPOINT_BUG = (
+    'var B=k?v.segpts.slice(0,2):[c.x,c.y];'
+    'n=k?v.segpts.slice(v.segpts.length-2):[u.x,u.y],r=B')
+_CYTO_ENDPOINT_FIX = (
+    'var B=k?v.segpts.slice(0,2):'
+    '(T.units?o.manualEndptToPx(l,T):[c.x,c.y]);'
+    'n=k?v.segpts.slice(v.segpts.length-2):'
+    '(P.units?o.manualEndptToPx(s,P):[u.x,u.y]),r=B')
+
+
 def _cytoscape_bundle_scripts() -> str:
     """The cytoscape core + layout-extension bundle as inline ``<script>``
     blocks (plan-offline-html-exports Phase A), read from the vendored
@@ -72,6 +94,13 @@ def _cytoscape_bundle_scripts() -> str:
         parts = []
         for name in scripts:
             lib = (bundle_dir / name).read_text(encoding='utf-8')
+            if name == 'cytoscape.min.js':
+                if lib.count(_CYTO_ENDPOINT_BUG) != 1:
+                    raise RuntimeError(
+                        'cytoscape.min.js no longer matches the manual-'
+                        'endpoint arrow patch; re-derive the needle before '
+                        'exporting pages')
+                lib = lib.replace(_CYTO_ENDPOINT_BUG, _CYTO_ENDPOINT_FIX, 1)
             parts.append('<script>' + re.sub(
                 r'</(script)', r'<\\/\1', lib,
                 flags=re.IGNORECASE) + '</script>')
@@ -9879,6 +9908,11 @@ class VisualizePath:
                         }}
                     }});
                 }});
+                // Nudges bypass the dragfree sync; keep the geometry panel
+                // truthful so a later size edit does not reuse an old X/Y.
+                const prim = (selectedElement && selectedElement.selected())
+                    ? selectedElement : cy.$('node:selected')[0];
+                if (prim && prim.isNode()) syncSelectedGeometryInputs(prim);
                 pendingNudge.timer = setTimeout(flushPendingNudge, 700);
                 return;
             }}
@@ -14460,7 +14494,17 @@ class VisualizePath:
                 const f = document.getElementById(id);
                 if (!f) {{ return; }}
                 f.placeholder = '';
-                if (document.activeElement !== f) {{ f.value = v; }}
+                if (document.activeElement !== f) {{
+                    f.value = v;
+                    // Seed: on apply, X/Y count as a deliberate move only
+                    // when they differ from the value the field was
+                    // populated with — NOT from the node's live position
+                    // (a drag, nudge or align may have moved the node after
+                    // the panel was filled; a size edit must never undo it).
+                    if (id === 'selGeomX' || id === 'selGeomY') {{
+                        f.dataset.seed = String(v);
+                    }}
+                }}
             }};
             if (!primary) {{
                 if (nodeGroup) nodeGroup.style.display = 'none';
@@ -14664,8 +14708,23 @@ class VisualizePath:
                     newHeight = Math.max(1, Math.round(newWidth * geomLockRatio));
                     document.getElementById('selGeomHeight').value = newHeight;
                 }}
+                const xField = document.getElementById('selGeomX');
+                const yField = document.getElementById('selGeomY');
                 const pos = primary.position();
-                const wantMove = !isNaN(newX) && !isNaN(newY) && (newX !== pos.x || newY !== pos.y);
+                // X/Y count as a deliberate move only when the field was
+                // edited away from the value it was seeded with. A size
+                // edit must never move the node: the panel's stored X/Y can
+                // be stale after a drag/nudge/align, and comparing them to
+                // the live position snapped the node back on every resize.
+                const seedX = xField ? parseFloat(xField.dataset.seed) : NaN;
+                const seedY = yField ? parseFloat(yField.dataset.seed) : NaN;
+                const moveX = !isNaN(newX) && (isNaN(seedX)
+                    ? newX !== pos.x : Math.abs(newX - seedX) > 1e-9);
+                const moveY = !isNaN(newY) && (isNaN(seedY)
+                    ? newY !== pos.y : Math.abs(newY - seedY) > 1e-9);
+                const wantMove = moveX || moveY;
+                const targetX = moveX ? newX : pos.x;
+                const targetY = moveY ? newY : pos.y;
                 // Bundle semantics: the resize applies to EVERY selected
                 // node, so the change check must scan the whole selection —
                 // a primary that already matches must not suppress the
@@ -14685,14 +14744,14 @@ class VisualizePath:
                     // primary goes to the exact coordinates; every other
                     // selected node shifts by the same delta so their
                     // relative placement survives
-                    const dx = newX - pos.x;
-                    const dy = newY - pos.y;
+                    const dx = targetX - pos.x;
+                    const dy = targetY - pos.y;
                     cy.batch(() => {{
                         const movedIds = new Set();
                         nodes.forEach(n => movedIds.add(n.id()));
                         nodes.forEach(n => {{
                             if (n === primary) {{
-                                n.position({{ x: newX, y: newY }});
+                                n.position({{ x: targetX, y: targetY }});
                             }} else {{
                                 const p = n.position();
                                 n.position({{ x: p.x + dx, y: p.y + dy }});
