@@ -491,6 +491,128 @@ function sanitizeSvgForOffice(svgText) {
     //    width inflates both axes), and each arrowhead stays its own
     //    triangle. Rendering is unchanged, including the shaft/arrow
     //    composite.
+    // 7a. Dashed shafts -> fill geometry. A stroked path carrying
+    //    stroke-dasharray survives Office's editable conversion only as a
+    //    preset dash style, so the exported line density changes (and the
+    //    width-scaled canvas pattern reads sparse once baked). Reproduce the
+    //    canvas edgeDashPattern (dash=max(1.5,3w), gap=max(1.2,2w); dotted =
+    //    round dots at gap=max(1.5,2w)) as real filled geometry: each dash-on
+    //    interval becomes a closed outline polygon of the stroke width, so
+    //    the density is width-scaled AND conversion-invariant.
+    function vpDashSamples(p) {
+        if (p.getAttribute('fill') !== 'none') { return null; }
+        const stroke = p.getAttribute('stroke');
+        if (!stroke || stroke === 'none') { return null; }
+        const d = p.getAttribute('d') || '';
+        const nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+        if (nums.length < 4 || nums.length % 2) { return null; }
+        const cmds = d.match(/[MLQ]/g) || [];
+        if (cmds[0] !== 'M') { return null; }
+        const pts = [{ x: nums[0], y: nums[1] }];
+        let ni = 2, ok = true;
+        for (let c = 1; c < cmds.length && ok; c++) {
+            if (cmds[c] === 'L') {
+                if (ni + 1 >= nums.length + 1) { ok = false; break; }
+                pts.push({ x: nums[ni], y: nums[ni + 1] }); ni += 2;
+            } else if (cmds[c] === 'Q') {
+                if (ni + 3 >= nums.length + 1) { ok = false; break; }
+                const cx = nums[ni], cy2 = nums[ni + 1], ex = nums[ni + 2], ey = nums[ni + 3];
+                ni += 4;
+                const p0 = pts[pts.length - 1];
+                for (let s = 1; s <= 12; s++) {
+                    const u = s / 12, v = 1 - u;
+                    pts.push({ x: v * v * p0.x + 2 * u * v * cx + u * u * ex,
+                               y: v * v * p0.y + 2 * u * v * cy2 + u * u * ey });
+                }
+            } else { ok = false; }
+        }
+        if (!ok || pts.length < 2) { return null; }
+        const w = parseFloat(p.getAttribute('stroke-width'));
+        return { pts: pts, width: isFinite(w) && w > 0 ? w : 1,
+                 color: stroke,
+                 opacity: p.getAttribute('stroke-opacity') === null ? 1 : parseFloat(p.getAttribute('stroke-opacity')),
+                 dasharray: p.getAttribute('stroke-dasharray') || '' };
+    }
+    function vpDashIntervals(pts, dash, gap) {
+        const segs = [];
+        let on = true, remain = dash, cur = null;
+        for (let i = 0; i + 1 < pts.length; i++) {
+            const a = pts[i], b = pts[i + 1];
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const len = Math.hypot(dx, dy);
+            if (!len) { continue; }
+            let t = 0;
+            while (t < len) {
+                const step = Math.min(remain, len - t);
+                const p = { x: a.x + dx * t / len, y: a.y + dy * t / len };
+                const q = { x: a.x + dx * (t + step) / len, y: a.y + dy * (t + step) / len };
+                if (on) { if (!cur) { cur = [p]; } cur.push(q); }
+                remain -= step; t += step;
+                if (remain <= 1e-9) {
+                    if (on && cur) { segs.push(cur); cur = null; }
+                    on = !on; remain = on ? dash : gap;
+                }
+            }
+        }
+        if (on && cur) { segs.push(cur); }
+        return segs;
+    }
+    (function materializeDashedShafts() {
+        const NS = 'http://www.w3.org/2000/svg';
+        const dashed = Array.prototype.slice.call(root.querySelectorAll('path[stroke-dasharray]'));
+        dashed.forEach(function (p) {
+            const info = vpDashSamples(p);
+            if (!info || !p.parentNode) { return; }
+            const w = info.width;
+            const first = parseFloat((info.dasharray || '').split(/[ ,]+/)[0]);
+            const dotted = isFinite(first) && first < 0.1;
+            const fill = toHex(parseColor(info.color) || [0, 0, 0]);
+            const op = isFinite(info.opacity) ? info.opacity : 1;
+            const g = doc.createElementNS(NS, 'g');
+            if (dotted) {
+                const gap = Math.max(1.5, 2 * w);
+                let acc = 0, next = 0;
+                for (let i = 0; i + 1 < info.pts.length; i++) {
+                    const a = info.pts[i], b = info.pts[i + 1];
+                    const dx = b.x - a.x, dy = b.y - a.y;
+                    const len = Math.hypot(dx, dy);
+                    if (!len) { continue; }
+                    let t = 0;
+                    while (t < len) {
+                        const step = Math.min(Math.max(next - acc, 0), len - t);
+                        if (acc + step >= next - 1e-9) {
+                            const u = (t + step) / len;
+                            const c = doc.createElementNS(NS, 'circle');
+                            c.setAttribute('cx', vpR3(a.x + dx * u));
+                            c.setAttribute('cy', vpR3(a.y + dy * u));
+                            c.setAttribute('r', vpR3(w / 2));
+                            c.setAttribute('fill', fill);
+                            c.setAttribute('fill-opacity', String(op));
+                            c.setAttribute('stroke', 'none');
+                            g.appendChild(c);
+                            next += gap + w;
+                        }
+                        acc += step; t += step;
+                    }
+                }
+            } else {
+                const dash = Math.max(1.5, 3 * w), gap = Math.max(1.2, 2 * w);
+                vpDashIntervals(info.pts, dash, gap).forEach(function (seg) {
+                    if (seg.length < 2) { return; }
+                    const el = doc.createElementNS(NS, 'path');
+                    el.setAttribute('d', vpOutlinePoly({ pts: seg, width: w }));
+                    el.setAttribute('fill', fill);
+                    el.setAttribute('fill-opacity', String(op));
+                    el.setAttribute('stroke', 'none');
+                    g.appendChild(el);
+                });
+            }
+            if (g.childNodes.length) {
+                p.parentNode.insertBefore(g, p);
+                p.parentNode.removeChild(p);
+            }
+        });
+    })();
     const allPaths = Array.prototype.slice.call(root.querySelectorAll('path'));
     function vpIsArrowTri(p) {
         const d = p.getAttribute('d') || '';

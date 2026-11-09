@@ -1609,6 +1609,23 @@ class TestSvgTextMergeNode:
         assert "ALL SVG TEXT-MERGE TESTS PASSED" in res.stdout
 
 
+class TestSvgDashMaterializeNode:
+    """The SVG export converts stroke-dasharray shafts into real fill geometry
+    (width-scaled dash=3w/gap=2w outline polygons; dotted -> round dots) so
+    Office's editable-object conversion cannot re-map the dash density. Uses
+    the REAL sanitizeSvgForOffice extracted from the generated HTML under
+    jsdom's DOMParser/XMLSerializer."""
+
+    def test_all_svg_dash_materialize_scenarios(self, network_html, node_cache):
+        node = _ensure_node_with_cytoscape(node_cache)
+        res = _run_node_harness(node, "svg_dash_materialize_harness.js",
+                                network_html, node_cache)
+        assert res.returncode == 0, (
+            f"svg dash-materialize harness failed:\n{res.stdout}\n{res.stderr}"
+        )
+        assert "ALL SVG DASH-MATERIALIZE TESTS PASSED" in res.stdout
+
+
 class TestGlobalStyleHistoryNode:
     """Global style adjustments (size sliders + selects) recorded in the
     operation history, undo/redo restores them, and self-loop curvature
