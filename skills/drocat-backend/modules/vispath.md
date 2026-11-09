@@ -17,7 +17,7 @@ to receive the backend change.
 
 Select nodes and use the right panel's **Font size · px** and **Text color** controls
 in the Geometry, Text and Outline cards to edit their text. Colour accepts a picker or hex value; Reset restores the
-global colour. These per-node overrides survive JSON and portable HTML saves.
+global colour. Bold and Italic toggle across the selected nodes, showing a mixed state when they disagree. The font-family selector offers common sans, serif and monospace fonts; Reset style clears family/weight/slant overrides. These per-node overrides survive JSON and portable HTML saves and support undo/redo.
 
 ## Constructor (key params)
 

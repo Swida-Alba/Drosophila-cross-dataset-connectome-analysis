@@ -118,6 +118,7 @@ function buildScope(cy) {
         function flushPendingNudge() {}
         let pendingStyle = null;
         function queueStyleHistory(label) {}
+        function syncNodeFontStyleControls() {}
         function flushPendingStyle() {}
         let reciprocalOffset = 5;
         let restoringHistoryState = false;

@@ -7719,6 +7719,10 @@ class VisualizePath:
         #colorPalette .vp-color-row {{ display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 6px; align-items: center; margin-bottom: 8px; }}
         #colorPalette .vp-color-row input[type="color"] {{ width: 30px; height: 28px; padding: 2px; border: 1px solid var(--vp-border); border-radius: 4px; background: var(--vp-input-bg); }}
         #colorPalette .vp-color-row input[type="text"] {{ min-width: 0; width: 100%; font-family: monospace; }}
+        #colorPalette .vp-type-toolbar {{ display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }}
+        #colorPalette .vp-type-toolbar button {{ height: 28px; min-width: 30px; border: 1px solid var(--vp-border); border-radius: 4px; background: var(--vp-input-bg); color: var(--vp-text-1); cursor: pointer; }}
+        #colorPalette .vp-type-toolbar button[aria-pressed="true"] {{ background: #dbeafe; color: #174b8a; border-color: #5085c6; }}
+        #colorPalette .vp-type-toolbar button[aria-pressed="mixed"] {{ border-style: dashed; background: var(--vp-panel-bg); }}
         #colorPalette .vp-shape-row {{ display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 6px; }}
         #colorPalette .vp-shape-row select {{ min-width: 0; width: 100%; }}
         #colorPalette .vp-shape-row button, #colorPalette .vp-small-btn {{
@@ -8586,6 +8590,16 @@ class VisualizePath:
                             </fieldset>
                             <fieldset class="vp-editor-card"><legend>Node text</legend>
                                 <label class="vp-field" for="selNodeFontSize"><span>Font size · px</span><input type="number" id="selNodeFontSize" min="1" step="1" oninput="applyNodeFontSize(this.value)" title="Label font size in px for the selected nodes (applies immediately; empty = follow the global Font Size slider)"></label>
+                                <label class="vp-field" for="selNodeFontFamily"><span>Font family</span>
+                                    <select id="selNodeFontFamily" onchange="applyNodeFontStyle('font-family', this.value)" title="Font family of selected nodes; Default removes the override">
+                                        <option value="">Default</option><option value="Arial">Arial</option><option value="Helvetica">Helvetica</option><option value="Verdana">Verdana</option><option value="Georgia">Georgia</option><option value="Times New Roman">Times New Roman</option><option value="Courier New">Courier New</option><option value="monospace">Monospace</option>
+                                    </select>
+                                </label>
+                                <div class="vp-type-toolbar" role="group" aria-label="Selected node text style">
+                                    <button type="button" id="selNodeBold" aria-label="Bold" aria-pressed="false" onclick="toggleNodeFontStyle('font-weight')" title="Toggle bold for selected nodes"><strong>B</strong></button>
+                                    <button type="button" id="selNodeItalic" aria-label="Italic" aria-pressed="false" onclick="toggleNodeFontStyle('font-style')" title="Toggle italic for selected nodes"><em>I</em></button>
+                                    <button type="button" class="vp-small-btn" onclick="resetNodeFontStyle()" title="Restore default font family, weight and style">Reset style</button>
+                                </div>
                                 <label class="vp-field" for="selNodeFontColorText"><span>Text color</span></label>
                                 <div class="vp-color-row"><input type="color" id="selNodeFontColor" value="#000000" oninput="applyNodeFontColor(this.value)" title="Text color of selected nodes"><input type="text" id="selNodeFontColorText" value="#000000" onchange="applyNodeFontColor(this.value)" title="Selected node text color as hex"><button type="button" class="vp-small-btn" onclick="applyNodeFontColor('')" title="Use the global text color">Reset</button></div>
                             </fieldset>
@@ -11099,6 +11113,7 @@ class VisualizePath:
                     item.fontSize = parseFloat(n.style('font-size'));
                 }}
                 if (hasBypass(n, 'color')) item.fontColor = n.style('color');
+                [['font-family','fontFamily'],['font-weight','fontWeight'],['font-style','fontStyle']].forEach(([prop,key]) => {{ if (hasBypass(n,prop)) item[key]=n.style(prop); }});
                 // z-order override: captured only when manual
                 const zc = n.style('z-index-compare');
                 if (zc === 'manual') item.zIndex = n.style('z-index');
@@ -11503,6 +11518,7 @@ class VisualizePath:
                             n.removeStyle('z-index-compare');
                             n.removeStyle('font-size');
                             n.removeStyle('color');
+                            n.removeStyle('font-family font-weight font-style');
                             return;
                         }}
                         if (item.width !== undefined || item.height !== undefined) {{
@@ -11522,6 +11538,7 @@ class VisualizePath:
                         }} else {{
                             n.removeStyle('font-size');
                         }}
+                        [['font-family','fontFamily'],['font-weight','fontWeight'],['font-style','fontStyle']].forEach(([prop,key]) => {{ if (item[key]!==undefined) n.style(prop,item[key]); else n.removeStyle(prop); }});
                         if (item.fontColor !== undefined) n.style('color', item.fontColor);
                         else n.removeStyle('color');
                         if (item.borderStyle !== undefined || item.borderColor !== undefined) {{
@@ -11720,7 +11737,8 @@ class VisualizePath:
             keys.forEach(k => {{
                 const v = st[k];
                 if (!v || v.bypass !== true) return;
-                out[k] = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+                // Font-family's internal value is a regex-match array, not a CSS family list.
+                out[k] = k === 'font-family' ? el.style(k) : (v && typeof v === 'object' && 'value' in v) ? v.value : v;
             }});
             if (Object.keys(out).length === 0) return null;
             return JSON.parse(JSON.stringify(out));
@@ -13047,9 +13065,9 @@ class VisualizePath:
         const NODE_LABEL_FONT_FAMILY = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif";
         const _labelMeasureCanvas = document.createElement('canvas');
         const _labelMeasureCtx = _labelMeasureCanvas.getContext('2d');
-        function measureLabelRow(text, fontPx) {{
+        function measureLabelRow(text, fontPx, node = null) {{
             if (!_labelMeasureCtx) return String(text).length * fontPx * 0.6;
-            _labelMeasureCtx.font = fontPx + 'px ' + NODE_LABEL_FONT_FAMILY;
+            _labelMeasureCtx.font = (node ? node.style('font-style') + ' ' + node.style('font-weight') + ' ' : '') + fontPx + 'px ' + (node ? node.style('font-family') : NODE_LABEL_FONT_FAMILY);
             return _labelMeasureCtx.measureText(String(text)).width;
         }}
         function isStructuredLabel(node) {{
@@ -13070,7 +13088,7 @@ class VisualizePath:
                     const rows = String(node.data('label')).split('\\n');
                     let widest = 0;
                     rows.forEach(function(row) {{
-                        widest = Math.max(widest, measureLabelRow(row, fontPx));
+                        widest = Math.max(widest, measureLabelRow(row, fontPx, node));
                     }});
                     if (NODE_LABEL_FIT === 'shrink') {{
                         node.style('text-max-width', NODE_LABEL_DEFAULT_MAX_WIDTH + 'px');
@@ -14628,6 +14646,7 @@ class VisualizePath:
                 // Shape row: show the primary's effective shape; 'mixed'
                 // when the selection disagrees. The value stays '' (Keep)
                 // — acting happens via applySelectedShape's onchange.
+                syncNodeFontStyleControls();
                 const textColor = extractColorHex(primary.style('color')) || '#000000';
                 ['selNodeFontColor','selNodeFontColorText'].forEach(id => {{
                     const field = document.getElementById(id);
@@ -15119,6 +15138,47 @@ class VisualizePath:
                     }}
                 }});
             }});
+        }}
+
+        function nodeHasFontStyle(node, property) {{
+            const v=node.style(property);
+            return property==='font-weight' ? (v==='bold' || Number(v)>=600) : (v==='italic' || v==='oblique');
+        }}
+        function syncNodeFontStyleControls() {{
+            const nodes=cy.$('node:selected');
+            if (!nodes.length) return;
+            [['selNodeBold','font-weight'],['selNodeItalic','font-style']].forEach(([id,prop]) => {{
+                const el=document.getElementById(id);if(!el)return;
+                const count=nodes.filter(n=>nodeHasFontStyle(n,prop)).length;
+                el.setAttribute('aria-pressed',count===nodes.length?'true':count?'mixed':'false');
+            }});
+            const family=document.getElementById('selNodeFontFamily');
+            if(family && document.activeElement!==family) {{
+                const values=new Set(nodes.map(n=>n.style('font-family')));
+                const value=nodes[0].style('font-family');
+                family.options[0].textContent=values.size>1?'Mixed / default':'Default';
+                family.value=values.size===1 && Array.from(family.options).some(o=>o.value===value)?value:'';
+            }}
+        }}
+        function applyNodeFontStyle(property, value) {{
+            const allowed={{'font-family':['','Arial','Helvetica','Verdana','Georgia','Times New Roman','Courier New','monospace'],'font-weight':['','normal','bold'],'font-style':['','normal','italic']}};
+            if(!allowed[property] || !allowed[property].includes(value))return;
+            const nodes=cy.$('node:selected');if(!nodes.length)return;
+            queueStyleHistory('Change node typography');
+            cy.batch(()=>nodes.forEach(n=>{{
+                if(value) {{ n.style(property,value);mirrorPartnerStyle(n,{{[property]:value}}); }}
+                else {{ n.removeStyle(property);const partner=hemispherePartner(n);if(partner)partner.removeStyle(property); }}
+            }}));
+            fitStructuredLabels();syncNodeFontStyleControls();
+        }}
+        function toggleNodeFontStyle(property) {{
+            if(!['font-weight','font-style'].includes(property))return;
+            const nodes=cy.$('node:selected');if(!nodes.length)return;
+            const all=nodes.every(n=>nodeHasFontStyle(n,property));
+            applyNodeFontStyle(property,all?'normal':property==='font-weight'?'bold':'italic');
+        }}
+        function resetNodeFontStyle() {{
+            ['font-family','font-weight','font-style'].forEach(prop=>applyNodeFontStyle(prop,''));
         }}
 
         function applyNodeFontColor(value) {{

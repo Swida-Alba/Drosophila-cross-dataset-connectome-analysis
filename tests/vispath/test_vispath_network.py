@@ -3777,6 +3777,12 @@ def test_portable_html_and_selected_node_fonts(network_html, tmp_path):
           size.value = '27'; size.dispatchEvent(new Event('input'));
           var color = document.getElementById('selNodeFontColor');
           color.value = '#a123ef'; color.dispatchEvent(new Event('input'));
+          document.getElementById('selNodeBold').click();
+          document.getElementById('selNodeItalic').click();
+          var family=document.getElementById('selNodeFontFamily');family.value='Georgia';family.dispatchEvent(new Event('change'));
+          flushPendingStyle();undo();
+          if(nodeHasFontStyle(cy.getElementById('A'),'font-weight') || cy.getElementById('A').style('font-style')==='italic')return false;
+          redo();
           cy.getElementById('A').position({x:321,y:456});
           cy.add({group:'nodes',data:{id:'portable-added',label:'<tag> & label'}});
           cy.getElementById('Y').remove();
@@ -3803,11 +3809,19 @@ def test_portable_html_and_selected_node_fonts(network_html, tmp_path):
         got = page.js("""
           var n=cy.getElementById('A');
           return {pos:n.position(),size:n.numericStyle('font-size'),color:n.style('color'),
-                  added:cy.getElementById('portable-added').length,deleted:cy.getElementById('Y').length,
+                  weight:n.style('font-weight'),slant:n.style('font-style'),family:n.style('font-family'),added:cy.getElementById('portable-added').length,deleted:cy.getElementById('Y').length,
                   label:cy.getElementById('portable-added').data('label')};
         """)
         assert got == {'pos': {'x':321,'y':456}, 'size':27, 'color':'rgb(161,35,239)',
-                       'added':1,'deleted':0,'label':'<tag> & label'}, got
+                       'weight':'bold','slant':'italic','family':'Georgia','added':1,'deleted':0,'label':'<tag> & label'}, got
+        assert page.js("""
+          cy.nodes().unselect();cy.getElementById('A').select();cy.getElementById('B').select();syncNodeFontStyleControls();
+          var mixed=document.getElementById('selNodeBold').getAttribute('aria-pressed');
+          document.getElementById('selNodeBold').click();
+          var both=cy.$('node:selected').every(n=>nodeHasFontStyle(n,'font-weight'));
+          resetNodeFontStyle();
+          return mixed==='mixed' && both && cy.$('node:selected').every(n=>!hasBypass(n,'font-weight')&&!hasBypass(n,'font-style')&&!hasBypass(n,'font-family'));
+        """) is True
         # Selected-node overrides survive JSON capture/apply and reset cleanly.
         assert page.js("""
           var s=captureNetworkState();
