@@ -137,7 +137,7 @@ function buildScope(cy) {
         const els = {};
         function makeEl(id) {
             const el = {
-                id: id, value: '', textContent: '', style: {},
+                id: id, value: '', textContent: '', style: {}, dataset: {},
                 options: [{ textContent: '' }], selectedIndex: 0,
                 appendChild: function (o) { el.options.push(o); }
             };

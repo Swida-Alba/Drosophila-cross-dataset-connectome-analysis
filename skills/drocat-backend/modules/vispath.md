@@ -5,6 +5,20 @@ not installed into site-packages — add `vispath-subproject/src` to `PATH`).
 `VisualizePath` renders interactive Cytoscape network, Sankey, and heatmap HTML
 from a path/connection table, and can build a blank editable network canvas.
 
+## Portable network saves and selected-node text
+
+The network page's **Save HTML** button downloads an HTML containing the full
+current graph (including added/deleted elements), stylesheet, layout and view
+state. Open that downloaded copy to continue editing or share it. Reopening
+requires no browser storage; embedded state takes precedence over any cached
+layout. Browser storage remains an optional fallback for legacy pages. JSON
+Export/Import Layout remains available. Existing HTML files need regenerating
+to receive the backend change.
+
+Select nodes and use the right panel's **Font size · px** and **Text color** controls
+in the Geometry, Text and Outline cards to edit their text. Colour accepts a picker or hex value; Reset restores the
+global colour. These per-node overrides survive JSON and portable HTML saves.
+
 ## Constructor (key params)
 
 ```python

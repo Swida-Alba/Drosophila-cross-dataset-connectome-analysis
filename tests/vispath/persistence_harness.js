@@ -100,6 +100,10 @@ function buildScope(cy) {
     if (process.env.DUMP_EVAL) fs.writeFileSync('/tmp/persist_eval.js', fnSources);
 
     const prelude = `
+        // File download and embedded DOM are covered by the browser roundtrip.
+        function buildPortableNetworkHTML() { return '<html></html>'; }
+        function downloadPortableNetworkHTML() {}
+        function readPortableNetwork() { return null; }
         // --- storage + history stubs ---
         const store = {};
         const localStorage = {

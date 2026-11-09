@@ -6250,11 +6250,11 @@ class VisualizePath:
         - Hover tooltips showing weight/ratio (both directions
           for merged bidirectional edges)
         - Right-click to hide nodes; keyboard shortcut (H) to hide selected
-        - Selection panel: live position/size (W/H), per-node shape,
+        - Selection panel: live position/size (W/H), per-node text size/color and shape,
           align/distribute (even or fixed gap), match/reset size, z-order
         - Export to PNG/SVG, edge-list CSV (merged pairs export as two
           directional rows sharing a bidirectional_pair id), and
-          Save/Export Layout carrying all per-element overrides
+          portable Save HTML plus JSON Export Layout carrying per-element overrides
 
         Returns
         -------
@@ -7700,6 +7700,31 @@ class VisualizePath:
             color: var(--vp-text-1);
             cursor: pointer;
         }}
+        /* Compact, consistent selected-node editor in the right panel. */
+        #colorPalette input, #colorPalette select, #colorPalette button {{ box-sizing: border-box; }}
+        #colorPalette .vp-editor-card {{
+            min-width: 0; margin: 10px 0; padding: 10px;
+            border: 1px solid var(--vp-border); border-radius: 7px;
+            background: var(--vp-panel-bg);
+        }}
+        #colorPalette .vp-editor-card legend {{
+            padding: 0 5px; font-size: 11px; font-weight: 650; color: var(--vp-text-1);
+        }}
+        #colorPalette .vp-form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }}
+        #colorPalette .vp-field {{ display: flex; flex-direction: column; gap: 5px; margin: 0 0 8px; min-width: 0; font-size: 11px; color: var(--vp-text-2); }}
+        #colorPalette .vp-field input, #colorPalette .vp-field select {{ width: 100%; min-width: 0; }}
+        #colorPalette .vp-editor-card input:not([type="color"]), #colorPalette .vp-editor-card select {{
+            height: 28px; padding: 4px 6px; border-radius: 4px; font-size: 11px;
+        }}
+        #colorPalette .vp-color-row {{ display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 6px; align-items: center; margin-bottom: 8px; }}
+        #colorPalette .vp-color-row input[type="color"] {{ width: 30px; height: 28px; padding: 2px; border: 1px solid var(--vp-border); border-radius: 4px; background: var(--vp-input-bg); }}
+        #colorPalette .vp-color-row input[type="text"] {{ min-width: 0; width: 100%; font-family: monospace; }}
+        #colorPalette .vp-shape-row {{ display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 6px; }}
+        #colorPalette .vp-shape-row select {{ min-width: 0; width: 100%; }}
+        #colorPalette .vp-shape-row button, #colorPalette .vp-small-btn {{
+            height: 28px; padding: 4px 6px; border: 1px solid var(--vp-border); border-radius: 4px;
+            background: var(--vp-input-bg); color: var(--vp-text-1); cursor: pointer; font-size: 10px;
+        }}
         .alpha-value {{
             font-size: 11px;
             color: var(--vp-text-2);
@@ -8410,8 +8435,8 @@ class VisualizePath:
             <div class="vp-ribbon-group">
             <label class="vp-group-title">Layout Persistence</label>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-                <button class="btn" onclick="saveLayout()" style="background: #4caf50; font-size: 12px; padding: 6px; width: 100%;" title="Save the full view state (positions, colors + alpha, groups, filters, toggles, controls) to this browser's storage for this file; auto-restored on reopen">💾 Save</button>
-                <button class="btn" onclick="loadLayout()" style="background: #2196f3; font-size: 12px; padding: 6px; width: 100%;" title="Restore the saved view state from browser storage">📂 Load</button>
+                <button class="btn" onclick="saveLayout()" style="background: #4caf50; font-size: 12px; padding: 6px; width: 100%;" title="Download a portable HTML with the current graph, layout and appearance embedded">💾 Save HTML</button>
+                <button class="btn" onclick="loadLayout()" style="background: #2196f3; font-size: 12px; padding: 6px; width: 100%;" title="Restore the embedded portable network, or a legacy browser save">📂 Load</button>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
                 <button class="btn" onclick="exportLayout()" style="padding: 6px; font-size: 11px; background: #607d8b; width: 100%;" title="Download the full view state as a v2 JSON file (a legacy positions-only map is included for older imports)">📤 Export Layout</button>
@@ -8541,26 +8566,15 @@ class VisualizePath:
                              the Apply button is an explicit commit that
                              also works when live input is unavailable. -->
                         <div class="color-group" id="geomNodeGroup" style="display: none;">
-                            <label>Position / Size (node):</label>
-                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; font-size: 10px; color: #555;">
-                                <span>X</span>
-                                <input type="number" id="selGeomX" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Precise X position of the selected node (applies immediately; the other selected nodes follow by the same delta)">
-                                <span>Y</span>
-                                <input type="number" id="selGeomY" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Precise Y position of the selected node (applies immediately; the other selected nodes follow by the same delta)">
-                            </div>
-                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
-                                <span>W&nbsp;(px)</span>
-                                <input type="number" id="selGeomSize" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Width in pixels of the selected node (independent of height; the 🔗 button locks the aspect ratio)">
-                                <span>H&nbsp;(px)</span>
-                                <input type="number" id="selGeomHeight" min="1" step="1" oninput="applySelectedGeometry()" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Height in pixels of the selected node (independent of width; empty = keep the current height)">
-                            </div>
-                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
-                                <span>Label&nbsp;px</span>
-                                <input type="number" id="selNodeFontSize" min="1" step="1" oninput="applyNodeFontSize(this.value)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;" title="Label font size in px for the selected nodes (applies immediately; empty = follow the global Font Size slider)">
-                            </div>
-                            <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
-                                <span>Shape</span>
-                                <select id="selGeomShape" onchange="applySelectedShape(this.value)" title="Per-node shape: Keep = no change; Ellipse = free W/H; Circle = perfect circle (W locked equal to H); Diamond; Follow Global = drop this node's override so the ribbon Node Shape applies again" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                            <fieldset class="vp-editor-card"><legend>Node geometry</legend>
+                                <div class="vp-form-grid">
+                                    <label class="vp-field" for="selGeomX"><span>X position</span><input type="number" id="selGeomX" step="1" oninput="applySelectedGeometry()" title="Precise X position of the selected node (applies immediately; the other selected nodes follow by the same delta)"></label>
+                                    <label class="vp-field" for="selGeomY"><span>Y position</span><input type="number" id="selGeomY" step="1" oninput="applySelectedGeometry()" title="Precise Y position of the selected node (applies immediately; the other selected nodes follow by the same delta)"></label>
+                                    <label class="vp-field" for="selGeomSize"><span>Width · px</span><input type="number" id="selGeomSize" min="1" step="1" oninput="applySelectedGeometry()" title="Width in pixels of the selected node (independent of height; the 🔗 button locks the aspect ratio)"></label>
+                                    <label class="vp-field" for="selGeomHeight"><span>Height · px</span><input type="number" id="selGeomHeight" min="1" step="1" oninput="applySelectedGeometry()" title="Height in pixels of the selected node (independent of width; empty = keep the current height)"></label>
+                                </div>
+                                <label class="vp-field" for="selGeomShape"><span>Shape / aspect ratio</span></label>
+                                <div class="vp-shape-row"><select id="selGeomShape" onchange="applySelectedShape(this.value)" title="Per-node shape: Keep = no change; Ellipse = free W/H; Circle = perfect circle (W locked equal to H); Diamond; Follow Global = drop this node's override so the ribbon Node Shape applies again">
                                     <option value="">Keep current</option>
                                     <option value="ellipse">Ellipse</option>
                                     <option value="__circle__">Circle</option>
@@ -8568,27 +8582,26 @@ class VisualizePath:
                                     <option value="round-rectangle">Round Square</option>
                                     <option value="rectangle">Sharp Square</option>
                                     <option value="__follow__">Follow Global</option>
-                                </select>
-                                <button type="button" id="geomAspectLockBtn" onclick="toggleGeomAspectLock()" title="Aspect-ratio lock: when on, editing W scales H proportionally from the shape the selection had when the lock went on" style="padding: 2px 5px; font-size: 11px; border: 1px solid var(--vp-border); border-radius: 3px; background: var(--vp-bg, #fff); color: inherit; opacity: 0.45;">🔗</button>
-                            </div>
-                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
-                                <span>Outline</span>
-                                <select id="nodeOutlinePattern" onchange="applyNodeOutline({{ borderStyle: this.value }})" title="Outline pattern for the selected nodes (applies immediately)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
+                                </select><button type="button" id="geomAspectLockBtn" onclick="toggleGeomAspectLock()" title="Aspect-ratio lock: when on, editing W scales H proportionally from the shape the selection had when the lock went on">🔗</button></div>
+                            </fieldset>
+                            <fieldset class="vp-editor-card"><legend>Node text</legend>
+                                <label class="vp-field" for="selNodeFontSize"><span>Font size · px</span><input type="number" id="selNodeFontSize" min="1" step="1" oninput="applyNodeFontSize(this.value)" title="Label font size in px for the selected nodes (applies immediately; empty = follow the global Font Size slider)"></label>
+                                <label class="vp-field" for="selNodeFontColorText"><span>Text color</span></label>
+                                <div class="vp-color-row"><input type="color" id="selNodeFontColor" value="#000000" oninput="applyNodeFontColor(this.value)" title="Text color of selected nodes"><input type="text" id="selNodeFontColorText" value="#000000" onchange="applyNodeFontColor(this.value)" title="Selected node text color as hex"><button type="button" class="vp-small-btn" onclick="applyNodeFontColor('')" title="Use the global text color">Reset</button></div>
+                            </fieldset>
+                            <fieldset class="vp-editor-card"><legend>Node outline</legend>
+                                <label class="vp-field" for="nodeOutlinePattern"><span>Pattern</span><select id="nodeOutlinePattern" onchange="applyNodeOutline({{ borderStyle: this.value }})" title="Outline pattern for the selected nodes (applies immediately)">
                                     <option value="solid">Solid</option>
                                     <option value="dashed">Dashed</option>
                                     <option value="dotted">Dotted</option>
                                     <option value="double">Double</option>
-                                </select>
-                                <span>Color</span>
-                                <input type="color" id="nodeOutlineColor" value="#000000" title="Outline color (applies immediately)" style="width: 100%; height: 22px; padding: 0; border: 1px solid var(--vp-border); border-radius: 3px; background: none; cursor: pointer;">
-                                <input type="text" id="nodeOutlineColorText" value="#000000" title="Outline color as hex — type a value like #ff8800 and it applies immediately" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 10px; font-family: monospace;">
-                            </div>
-                            <div style="display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px; align-items: center; margin-top: 4px; font-size: 10px; color: #555;">
-                                <span>Alpha&nbsp;%</span>
-                                <input type="number" id="nodeOutlineAlpha" min="0" max="100" step="5" value="100" oninput="applyNodeOutline({{ borderOpacity: parseFloat(this.value) / 100 }})" title="Outline opacity in % (applies immediately)" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
-                                <span>Width&nbsp;(px)</span>
-                                <input type="number" id="nodeOutlineWidth" min="0" step="0.5" value="1.5" oninput="applyNodeOutline({{ borderWidth: parseFloat(this.value) }})" title="Outline width in px; 0 hides the outline" style="width: 100%; padding: 3px; border-radius: 3px; font-size: 11px;">
-                            </div>
+                                </select></label>
+                                <label class="vp-field" for="nodeOutlineColorText"><span>Outline color</span></label>
+                                <div class="vp-color-row"><input type="color" id="nodeOutlineColor" value="#000000" title="Outline color (applies immediately)"><input type="text" id="nodeOutlineColorText" value="#000000" title="Outline color as hex — type a value like #ff8800 and it applies immediately"></div>
+                                <div class="vp-form-grid">
+                                    <label class="vp-field" for="nodeOutlineAlpha"><span>Opacity · %</span><input type="number" id="nodeOutlineAlpha" min="0" max="100" step="5" value="100" oninput="applyNodeOutline({{ borderOpacity: parseFloat(this.value) / 100 }})" title="Outline opacity in % (applies immediately)"></label><label class="vp-field" for="nodeOutlineWidth"><span>Width · px</span><input type="number" id="nodeOutlineWidth" min="0" step="0.5" value="1.5" oninput="applyNodeOutline({{ borderWidth: parseFloat(this.value) }})" title="Outline width in px; 0 hides the outline"></label>
+                                </div>
+                            </fieldset>
                         </div>
                         <div class="color-group" id="geomEdgeGroup" style="display: none;">
                             <label>Width (edge):</label>
@@ -10997,7 +11010,7 @@ class VisualizePath:
         // ===== LAYOUT PERSISTENCE (full view state) =====
         //
         // captureNetworkState / applyNetworkState are the single capture /
-        // restore pair shared by the Save/Load buttons (localStorage), the
+        // restore pair shared by portable Save HTML, Load, the
         // Export/Import Layout file buttons (v2 JSON) and the auto-restore-
         // on-open path. Every apply step is guarded so payloads written by
         // older builds (missing keys, flat control values, no per-element
@@ -11085,6 +11098,7 @@ class VisualizePath:
                 if (hasBypass(n, 'font-size') && !isStructuredLabel(n)) {{
                     item.fontSize = parseFloat(n.style('font-size'));
                 }}
+                if (hasBypass(n, 'color')) item.fontColor = n.style('color');
                 // z-order override: captured only when manual
                 const zc = n.style('z-index-compare');
                 if (zc === 'manual') item.zIndex = n.style('z-index');
@@ -11488,6 +11502,7 @@ class VisualizePath:
                             n.removeStyle('z-index');
                             n.removeStyle('z-index-compare');
                             n.removeStyle('font-size');
+                            n.removeStyle('color');
                             return;
                         }}
                         if (item.width !== undefined || item.height !== undefined) {{
@@ -11507,6 +11522,8 @@ class VisualizePath:
                         }} else {{
                             n.removeStyle('font-size');
                         }}
+                        if (item.fontColor !== undefined) n.style('color', item.fontColor);
+                        else n.removeStyle('color');
                         if (item.borderStyle !== undefined || item.borderColor !== undefined) {{
                             n.style({{
                                 'border-style': (item.borderStyle !== undefined ? item.borderStyle : 'solid'),
@@ -11592,18 +11609,60 @@ class VisualizePath:
             }}
         }}
 
-        function saveLayout() {{
+        function readPortableNetwork() {{
+            const script = document.getElementById('vispath-portable-state');
+            if (!script) return null;
             try {{
-                localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(captureNetworkState()));
-                showToast('Layout saved', 'success');
-                console.log('Layout saved successfully');
-            }} catch (error) {{
-                showToast('Save failed', 'error');
-                console.error('Error saving layout:', error);
-            }}
+                const bundle = JSON.parse(script.textContent);
+                return bundle && bundle.version === 1 && bundle.state && Array.isArray(bundle.elements) ? bundle : null;
+            }} catch (err) {{ console.warn('Invalid embedded network state', err); return null; }}
+        }}
+
+        function restorePortableNetwork(bundle) {{
+            cy.elements().remove();
+            cy.add(bundle.elements);
+            applyNetworkState(bundle.state);
+            if (Array.isArray(bundle.stylesheet)) cy.style().fromJson(bundle.stylesheet).update();
+            refreshEdgeStyles(false);
+            applyAllEdgeArrowStyles();
+        }}
+
+        function buildPortableNetworkHTML() {{
+            const bundle = {{version: 1, state: captureNetworkState(), elements: cy.elements().jsons(), stylesheet: cy.style().json()}};
+            const doc = document.implementation.createHTMLDocument(document.title);
+            doc.documentElement.innerHTML = document.documentElement.innerHTML;
+            let script = doc.getElementById('vispath-portable-state');
+            if (!script) {{ script = doc.createElement('script'); script.id = 'vispath-portable-state'; script.type = 'application/json'; }}
+            // The app reads this synchronously: parse it BEFORE the app script.
+            doc.head.appendChild(script);
+            script.textContent = JSON.stringify(bundle).replace(/</g, '\\u003c');
+            const canvas = doc.getElementById('cy');
+            if (canvas) canvas.replaceChildren();
+            // Runtime anchor/waypoint handles are rebuilt by the live viewer.
+            doc.querySelectorAll('[id^="anchor-handle-"], [id^="waypoint-ring-"]').forEach(el => el.remove());
+            return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+        }}
+
+        function downloadPortableNetworkHTML(html) {{
+            const blob = new Blob([html], {{type: 'text/html;charset=utf-8'}});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url; link.download = 'network_saved.html';
+            document.body.appendChild(link); link.click(); link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }}
+
+        function saveLayout() {{
+            // Browser storage is an optional convenience, never the deliverable.
+            try {{ localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(captureNetworkState())); }}
+            catch (err) {{ /* blocked storage must not prevent portable saving */ }}
+            downloadPortableNetworkHTML(buildPortableNetworkHTML());
+            showToast('Saved portable HTML — open the downloaded file to continue editing', 'success');
         }}
 
         function loadLayout() {{
+            const portable = readPortableNetwork();
+            if (portable) {{ restorePortableNetwork(portable); showToast('Restored embedded network', 'success'); return; }}
             try {{
                 const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
                 if (!saved) {{
@@ -14556,20 +14615,24 @@ class VisualizePath:
                 if (outlineSel && outlineColor) {{
                     outlineSel.value = primary.style('border-style') || 'solid';
                     outlineColor.value = extractColorHex(primary.style('border-color')) || '#000000';
+                    const outlineHex = document.getElementById('nodeOutlineColorText');
+                    if (outlineHex && document.activeElement !== outlineHex) outlineHex.value = outlineColor.value;
                     outlineAlpha.value = Math.round(parseFloat(primary.style('border-opacity') || 1) * 100);
                     outlineWidth.value = Math.round(parseFloat(primary.style('border-width') || 0) * 10) / 10;
                 }}
-                // Label font size seeds from the primary node; a font-size
-                // BYPASS shows its px value, otherwise the global slider
+                // Show the effective text size, including data-mapped styles.
                 const labelField = document.getElementById('selNodeFontSize');
                 if (labelField && document.activeElement !== labelField) {{
-                    labelField.value = hasBypass(primary, 'font-size')
-                        ? Math.round(parseFloat(primary.style('font-size')))
-                        : Math.round(parseFloat(document.getElementById('fontSizeSlider')?.value || 12));
+                    labelField.value = Math.round(primary.numericStyle('font-size'));
                 }}
                 // Shape row: show the primary's effective shape; 'mixed'
                 // when the selection disagrees. The value stays '' (Keep)
                 // — acting happens via applySelectedShape's onchange.
+                const textColor = extractColorHex(primary.style('color')) || '#000000';
+                ['selNodeFontColor','selNodeFontColorText'].forEach(id => {{
+                    const field = document.getElementById(id);
+                    if (field && document.activeElement !== field) field.value = textColor;
+                }});
                 const shapeField = document.getElementById('selGeomShape');
                 if (shapeField) {{
                     const shapes = new Set(selNodes.map(n => n.style('shape')));
@@ -15055,6 +15118,22 @@ class VisualizePath:
                         if (partner) partner.removeStyle('font-size');
                     }}
                 }});
+            }});
+        }}
+
+        function applyNodeFontColor(value) {{
+            const color = String(value || '').trim();
+            if (color && !/^#[0-9a-f]{{6}}$/i.test(color)) return;
+            const nodes = cy.$('node:selected');
+            if (!nodes.length) return;
+            queueStyleHistory('Change node text color');
+            nodes.forEach(n => {{
+                if (color) {{ n.style('color', color); mirrorPartnerStyle(n, {{color: color}}); }}
+                else {{ n.removeStyle('color'); const partner = hemispherePartner(n); if (partner) partner.removeStyle('color'); }}
+            }});
+            ['selNodeFontColor','selNodeFontColorText'].forEach(id => {{
+                const field = document.getElementById(id);
+                if (field) field.value = extractColorHex(nodes[0].style('color')) || '#000000';
             }});
         }}
 
@@ -17690,15 +17769,17 @@ class VisualizePath:
         // layout above completed inside .run()). The Reset action drops the
         // saved state and reloads — a reload re-renders the generated
         // defaults (fit included), so no separate reset machinery is needed.
-        let savedLayoutJson = null;
+        const portableNetwork = readPortableNetwork();
+        let savedLayoutJson = portableNetwork ? JSON.stringify(portableNetwork.state) : null;
         try {{
-            savedLayoutJson = localStorage.getItem(LAYOUT_STORAGE_KEY);
+            if (!portableNetwork) savedLayoutJson = localStorage.getItem(LAYOUT_STORAGE_KEY);
         }} catch (e) {{ /* privacy mode: no save, fall through to the fit */ }}
         if (savedLayoutJson) {{
             setTimeout(function() {{
                 try {{
                     const state = JSON.parse(savedLayoutJson);
                     if (!state || typeof state !== 'object' || !state.positions) return;
+                    if (portableNetwork) {{ restorePortableNetwork(portableNetwork); showToast('Restored portable network', 'success'); return; }}
                     applyNetworkState(state);
                     showToast('Restored saved layout', 'success', {{
                         label: 'Reset',

@@ -996,7 +996,7 @@ class TestPanelCollapseAndRegrouping:
         init_at = html.index("initializeEdgeBaseStyles();")
         autorestore_at = html.index("Open view: with a layout saved for THIS generated file")
         assert autorestore_at > init_at, "auto-restore must run after the edge base init"
-        block = html[autorestore_at:autorestore_at + 2000]
+        block = html[autorestore_at:html.index("</script>", autorestore_at)]
         assert "applyNetworkState(state)" in block
         assert "localStorage.removeItem(LAYOUT_STORAGE_KEY)" in block
         assert "window.location.reload()" in block
@@ -1205,7 +1205,7 @@ class TestUiRedesign:
         assert "document.getElementById('hoverInfo').textContent" not in js
         # layoutStatus line is gone; save/load report via toasts
         assert 'id="layoutStatus"' not in network_html.read_text(encoding="utf-8")
-        assert "showToast('Layout saved', 'success')" in js
+        assert "showToast('Saved portable HTML" in js
         assert "function showLayoutStatus" not in js
 
     def test_no_native_modals_left(self, network_html):
@@ -3761,3 +3761,58 @@ def test_display_label_keys_are_reported_as_unknown_node_ids(tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "network_node_labels key 'A(B)' is not a node id" in printed
     assert "node_dataset_info key 'A(B)' is not a node id" in printed
+
+
+@REQUIRES_CDP
+def test_portable_html_and_selected_node_fonts(network_html, tmp_path):
+    """Real Save download roundtrips edits/topology with storage blocked."""
+    with Page(network_html) as page:
+        assert page.wait("return typeof cy !== 'undefined' && cy.nodes().length > 0;", timeout=15)
+        assert page.js("""
+          cy.nodes().unselect(); cy.getElementById('A').select();
+          var panel=document.getElementById('colorPalette').getBoundingClientRect();
+          var overflow=[...document.querySelectorAll('#geomNodeGroup input,#geomNodeGroup select,#geomNodeGroup button')].some(el=>{var r=el.getBoundingClientRect();return r.left<panel.left||r.right>panel.right;});
+          if(overflow || document.getElementById('nodeOutlineColorText').value!==document.getElementById('nodeOutlineColor').value) return false;
+          var size = document.getElementById('selNodeFontSize');
+          size.value = '27'; size.dispatchEvent(new Event('input'));
+          var color = document.getElementById('selNodeFontColor');
+          color.value = '#a123ef'; color.dispatchEvent(new Event('input'));
+          cy.getElementById('A').position({x:321,y:456});
+          cy.add({group:'nodes',data:{id:'portable-added',label:'<tag> & label'}});
+          cy.getElementById('Y').remove();
+          Object.defineProperty(window, 'localStorage', {configurable:true,get:function(){throw Error('blocked');}});
+          var create = URL.createObjectURL;
+          URL.createObjectURL = function(blob) {
+            window.__portableBlob=blob;
+            blob.text().then(text => {window.__portableText=text;});
+            return create(blob);
+          };
+          HTMLAnchorElement.prototype.click=function(){};
+          document.querySelector('button[onclick="saveLayout()"]').click();
+          return cy.getElementById('A').style('color') === 'rgb(161,35,239)';
+        """) is True
+        assert page.wait("return typeof window.__portableText === 'string';", timeout=15)
+        portable = tmp_path / 'portable.html'
+        portable.write_text(page.js("return window.__portableText;"), encoding='utf-8')
+        assert page.errors() == []
+    # Fresh Chrome profile; storage is also explicitly denied before init.
+    with Page(portable) as page:
+        page.send('Page.addScriptToEvaluateOnNewDocument', {'source': "Object.defineProperty(window,'localStorage',{get(){throw Error('blocked');}});"})
+        page.send('Page.reload', {'ignoreCache': True})
+        assert page.wait("return typeof cy !== 'undefined' && cy.getElementById('A').position('x') === 321;", timeout=15)
+        got = page.js("""
+          var n=cy.getElementById('A');
+          return {pos:n.position(),size:n.numericStyle('font-size'),color:n.style('color'),
+                  added:cy.getElementById('portable-added').length,deleted:cy.getElementById('Y').length,
+                  label:cy.getElementById('portable-added').data('label')};
+        """)
+        assert got == {'pos': {'x':321,'y':456}, 'size':27, 'color':'rgb(161,35,239)',
+                       'added':1,'deleted':0,'label':'<tag> & label'}, got
+        # Selected-node overrides survive JSON capture/apply and reset cleanly.
+        assert page.js("""
+          var s=captureNetworkState();
+          cy.getElementById('A').style('color','#000000');applyNetworkState(s);
+          var color=cy.getElementById('A').style('color');
+          cy.nodes().unselect();cy.getElementById('A').select();applyNodeFontColor('');
+          return color==='rgb(161,35,239)' && !hasBypass(cy.getElementById('A'),'color');
+        """) is True
