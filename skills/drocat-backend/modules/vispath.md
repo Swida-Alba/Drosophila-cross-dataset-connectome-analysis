@@ -19,6 +19,20 @@ Select nodes and use the right panel's **Font size · px** and **Text color** co
 in the Geometry, Text and Outline cards to edit their text. Colour accepts a picker or hex value; Reset restores the
 global colour. Bold and Italic toggle across the selected nodes, showing a mixed state when they disagree. The font-family selector offers common sans, serif and monospace fonts; Reset style clears family/weight/slant overrides. These per-node overrides survive JSON and portable HTML saves and support undo/redo.
 
+## Editable multiline PowerPoint labels
+
+The **PPTX** export uses native PowerPoint text frames: each multiline label
+is one editable text box, with font family, weight, slant and line breaks.
+The node/edge geometry stays vector SVG inside the slide; select that image
+and use **Convert to Shape** to edit it. Its SVG contains no duplicate labels.
+The PptxGenJS 4.0.1 browser bundle and MIT license are vendored for offline use.
+
+SVG exports preserve one logical label group containing one text element, but
+PowerPoint's SVG Convert to Shape can still split its positioned `tspan`
+lines. The label merge alone cannot guarantee a single PowerPoint text box;
+use PPTX when paragraph-level editing is required. Plain SVG newlines were
+also tested in PowerPoint and flattened into a single visual line.
+
 ## Constructor (key params)
 
 ```python

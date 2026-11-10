@@ -229,6 +229,7 @@ function textInfo(t) {
     check('I #texts exists', textsG !== null, true);
     const texts = textsG.querySelectorAll('text');
     check('I one text per label', texts.length, 2);
+    check('I labels retain separate logical groups', textsG.querySelectorAll('[data-vp-label]').length, 2);
     const twoLine = Array.prototype.find.call(texts, t => t.querySelectorAll('tspan').length > 0);
     check('I two-line label merged', textInfo(twoLine).tspans, [
         { tag: 'tspan', x: '0', y: '-8', text: 'BANC mapped' },

@@ -309,7 +309,8 @@ function exportPlotlyToImage(gd, format, filename, scale, width, height, onSucce
       PowerPoint converts each <text> into its own text box. Consecutive
       same-style lines (same anchored x, one line height apart in y) are
       re-merged into a single <text> holding one <tspan x= y=> per line,
-      so Office imports one editable, movable text box per label.
+      preserving one logical SVG label. PowerPoint can still split positioned
+      tspans during Convert to Shape; native PPTX export keeps one frame.
    5. Edge fusion + stroke-to-geometry: every edge's shaft and arrowheads
       are wrapped in one group, the shaft's stroke becomes a filled
       outline polygon carrying the stroke's own opacity (never
@@ -402,8 +403,10 @@ function sanitizeSvgForOffice(svgText) {
     //    anchored x, and sit one line height (≈ the font size) apart in
     //    y — exactly the merge criteria below. Each cluster becomes ONE
     //    <text> (first element's style, no x/y on the outer element)
-    //    holding one <tspan x= y=> per line in reading order; Office
-    //    imports that as a single editable text box. Everything else
+    //    holding one <tspan x= y=> per line in reading order. PowerPoint's
+    //    native SVG converter may still split those spans; retain a logical
+    //    label group below, and use editable PPTX export for one text frame.
+    //    Everything else
     //    (single-line labels, other styles, non-consecutive elements) is
     //    left untouched.
     function mergeMultilineLabels() {
@@ -874,6 +877,15 @@ function sanitizeSvgForOffice(svgText) {
             [['shapes', shapeG, bucket.shapes], ['texts', textG, bucket.texts]].forEach(function (pair) {
                 const items = pair[2];
                 if (!items.length) { return; }
+                if (pair[0] === 'texts') {
+                    items.forEach(function (el) {
+                        const label = doc.createElementNS(SVGNS, 'g');
+                        label.setAttribute('data-vp-label', '1');
+                        if (tAttr) label.setAttribute('transform', tAttr);
+                        label.appendChild(el); pair[1].appendChild(label);
+                    });
+                    return;
+                }
                 if (!tAttr) { items.forEach(function (el) { pair[1].appendChild(el); }); return; }
                 const sub = doc.createElementNS(SVGNS, 'g');
                 sub.setAttribute('transform', tAttr);
