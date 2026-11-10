@@ -332,6 +332,7 @@ function exportPlotlyToImage(gd, format, filename, scale, width, height, onSucce
       group, so both sets stay selectable as units).
    Labels stay real <text> (they convert into editable text boxes). */
 function sanitizeSvgForOffice(svgText) {
+    const options = arguments[1] || {};
     let doc;
     try {
         doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
@@ -494,6 +495,9 @@ function sanitizeSvgForOffice(svgText) {
     //    width inflates both axes), and each arrowhead stays its own
     //    triangle. Rendering is unchanged, including the shaft/arrow
     //    composite.
+    // PPTX writes real line arrowheads, not materialized shaft/head polygons.
+    // Keep the original edge strokes and curves for that export lane only.
+    if (!options.nativePptx) {
     // 7a. Dashed shafts -> fill geometry. A stroked path carrying
     //    stroke-dasharray survives Office's editable conversion only as a
     //    preset dash style, so the exported line density changes (and the
@@ -798,6 +802,8 @@ function sanitizeSvgForOffice(svgText) {
             vi++;
         }
     }
+
+    } // SVG-only stroke/arrow materialization
 
     // 8. viewBox from width/height when missing.
     if (!root.getAttribute('viewBox') && root.getAttribute('width') && root.getAttribute('height')) {

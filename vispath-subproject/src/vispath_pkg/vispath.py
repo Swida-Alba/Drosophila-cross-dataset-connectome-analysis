@@ -8429,7 +8429,7 @@ class VisualizePath:
                 <input type="number" id="exportScale" min="1" max="10" value="2" step="0.5" style="width: 56px; padding: 5px; box-sizing: border-box;" title="Image export magnification (1–10; very large values may fail)">
                 <button class="btn" onclick="exportPNG()" style="flex: 1; padding: 6px; font-size: 12px;" title="Export the current view as a PNG image at the chosen scale">PNG</button>
                 <button class="btn" onclick="{edge_legend_svg_onclick}" style="flex: 1; padding: 6px; font-size: 12px;" title="Vector SVG; PowerPoint may split multiline text when converting to shapes. Use PPTX for native editable labels.">SVG</button>{edge_legend_button_html}
-                <button class="btn" onclick="exportEditablePPTX()" style="flex: 1; padding: 6px; font-size: 12px;" title="PowerPoint with one native editable text box per label and convertible SVG geometry">PPTX</button>
+                <button class="btn" onclick="exportEditablePPTX()" style="flex: 1; padding: 6px; font-size: 12px;" title="PowerPoint with separate native editable shapes, arrows and multiline text boxes">PPTX</button>
             </div>
             </div>
             <div class="vp-ribbon-group">

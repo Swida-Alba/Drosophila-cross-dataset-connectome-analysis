@@ -21,17 +21,28 @@ global colour. Bold and Italic toggle across the selected nodes, showing a mixed
 
 ## Editable multiline PowerPoint labels
 
-The **PPTX** export uses native PowerPoint text frames: each multiline label
-is one editable text box, with font family, weight, slant and line breaks.
-The node/edge geometry stays vector SVG inside the slide; select that image
-and use **Convert to Shape** to edit it. Its SVG contains no duplicate labels.
-The PptxGenJS 4.0.1 browser bundle and MIT license are vendored for offline use.
+The **PPTX** export writes separate native PowerPoint objects for all geometry
+and text. Shapes use native presets or DrawingML freeforms; edges use native
+line-end arrowheads (one arrow object, never a line plus a triangle). Curved
+edges keep native quadratic/cubic control points. SVG elliptical arcs become
+cubic segments with at most 90 degrees per segment. Dashed edges retain
+custom dash/gap lengths relative to stroke width, line caps and opacity. Dotted
+edges use the native `sysDot` preset and round caps to stay visibly dotted
+across PowerPoint and LibreOffice; their spacing follows the native preset.
 
-SVG exports preserve one logical label group containing one text element, but
-PowerPoint's SVG Convert to Shape can still split its positioned `tspan`
-lines. The label merge alone cannot guarantee a single PowerPoint text box;
-use PPTX when paragraph-level editing is required. Plain SVG newlines were
-also tested in PowerPoint and flattened into a single visual line.
+The slide contains two native groups: **Graphics** (shapes and arrows) and
+**Labels** (one editable text box per label, including multiline labels).
+Ungroup either to edit individual objects. No network image or fallback image
+is embedded. The PptxGenJS 4.0.1 bundle and MIT license are vendored for offline
+use. Unsupported embedded SVG images/use/foreignObject elements produce a clear
+error rather than quietly inserting a picture.
+
+SVG exports still preserve logical label groups, but PowerPoint's SVG Convert
+to Shape may split positioned `tspan` lines. Use PPTX for native grouped editing.
+PowerPoint's native arrowhead proportions may differ from SVG/canvas heads;
+the arrow tip remains at the exported path endpoint. SVG export retains its
+existing materialized shaft/head and dash geometry; only PPTX bypasses that
+materialization to preserve editable line properties.
 
 ## Constructor (key params)
 
