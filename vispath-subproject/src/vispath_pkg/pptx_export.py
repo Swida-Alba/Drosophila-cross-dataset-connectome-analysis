@@ -260,7 +260,7 @@ async function buildEditableNetworkPptx(svgString) {
                 bold:text.getAttribute('font-weight')==='bold'||Number(text.getAttribute('font-weight'))>=600,
                 italic:['italic','oblique'].includes(text.getAttribute('font-style')),
                 color:(text.getAttribute('fill')||'#000000').replace('#',''),
-                lineSpacing:linePx*sy*scale*72,paraSpaceAfter:0,paraSpaceBefore:0,
+                lineSpacingMultiple:1,paraSpaceAfter:0,paraSpaceBefore:0,
                 rotate:Math.atan2(matrix.b,matrix.a)*180/Math.PI,
                 objectName:'Label '+(index+1)+': '+lines.join(' / ')
             }});

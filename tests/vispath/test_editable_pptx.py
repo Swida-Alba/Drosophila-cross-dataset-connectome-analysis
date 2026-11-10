@@ -56,6 +56,12 @@ def test_multiline_labels_export_as_single_native_frames(tmp_path):
         assert texts.count('Line one\nLine two') == 1, texts
         assert texts.count('B one\nB two\nB three') == 1, texts
         assert len(frames)==7, texts  # one native text frame per visible node
+        for frame in frames:
+            for paragraph in frame.findall('p:txBody/a:p',ns):
+                spacing=paragraph.find('a:pPr/a:lnSpc',ns)
+                assert spacing is not None
+                assert spacing.find('a:spcPct',ns).get('val')=='100000'
+                assert spacing.find('a:spcPts',ns) is None
         frame=frames[texts.index('Line one\nLine two')]
         assert frame.find('.//a:rPr',ns).get('b')=='1'
         assert frame.find('.//a:rPr',ns).get('i')=='1'
