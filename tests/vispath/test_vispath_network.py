@@ -2778,6 +2778,46 @@ class TestEditModeHandlersAndGeometry:
         assert "cy.on('tap.editmode'" not in js
         assert "cy.on('dbltap.editmode'" not in js
 
+    def test_edge_drawing_creates_and_guards_pairs(self, network_html, node_cache):
+        """Run the real handleNodeClickForEdge against headless Cytoscape.
+
+        The duplicate-pair guard once merged its bidirectional queries with
+        `.concat(`; a Cytoscape collection has no concat, so the call fell
+        through to Array.prototype.concat and produced a 2-item array even
+        when both queries matched nothing — every new edge was rejected as
+        "already exists".  Only executing the function catches that."""
+        node = _ensure_node_with_cytoscape(node_cache)
+        res = _run_node_harness(node, "edge_add_harness.js", network_html, node_cache)
+        assert res.returncode == 0, (
+            f"edge-add harness failed:\n{res.stdout}\n{res.stderr}"
+        )
+        assert "ALL EDGE-ADD TESTS PASSED" in res.stdout
+
+    def test_bidirectional_guard_merges_collections(self, network_html):
+        js = _script_text(network_html)
+        # union() merges the two queries as elements; concat() would nest
+        # them as two array items and always report a duplicate
+        assert ".union(cy.edges(" in js
+        assert ".concat(cy.edges(" not in js
+
+    def test_new_edge_ids_skip_restored_ones(self, network_html):
+        js = _script_text(network_html)
+        # a reopened portable page can already own e1000+; a plain
+        # 'e' + nextEdgeId++ makes cy.add throw on the duplicate id
+        assert "do { edgeId = 'e' + nextEdgeId++; } while (cy.getElementById(edgeId).length > 0);" in js
+
+    def test_portable_save_keeps_canvas_overlays(self, network_html):
+        js = _script_text(network_html)
+        html = network_html.read_text(encoding="utf-8")
+        # Save HTML clones the live document; clearing all of #cy dropped
+        # the static overlays that share it (a reopened page then threw in
+        # toggleEditMode on the missing #editBadge). Only renderer layers
+        # may be stripped.
+        assert "canvas.replaceChildren()" not in js
+        assert "el.querySelector('canvas')" in js
+        for overlay in ("editBadge", "boxOverlay", "cyHints"):
+            assert f'id="{overlay}"' in html
+
     def test_geometry_panel_has_independent_width_height(self, network_html):
         js = _script_text(network_html)
         html = network_html.read_text(encoding="utf-8")
@@ -3176,10 +3216,12 @@ class TestEdgeStyleControl:
         assert "e.data(EDGE_BASE_ARROW_KEY)" in js
         assert "setEdgeBaseAppearance(e, color, alpha, true, arrowColor);" in js
         assert "'source-arrow-color': arrowColor," in js
-        # capture/restore carry the SEMANTIC pattern (dotted stays dotted)
+        # capture/restore carry the SEMANTIC pattern (dotted stays dotted);
+        # clearing drops a manual bypass but keeps the declared data style
+        # (older payloads omit lineStyle — the declared pattern must survive)
         assert "item.lineStyle = linePattern;" in js
         assert "e.data('line_style', item.lineStyle);" in js
-        assert "e.removeData('line_style');" in js
+        assert "e.removeData('line_style');" not in js
         assert "e.removeStyle('line-dash-pattern');" in js
 
     def test_edge_line_controls_seed_from_selection(self, merged_html):
@@ -3793,11 +3835,13 @@ def test_portable_html_and_selected_node_fonts(network_html, tmp_path):
             blob.text().then(text => {window.__portableText=text;});
             return create(blob);
           };
-          HTMLAnchorElement.prototype.click=function(){};
+          HTMLAnchorElement.prototype.click=function(){window.__portableFilename=this.download;};
           document.querySelector('button[onclick="saveLayout()"]').click();
           return cy.getElementById('A').style('color') === 'rgb(161,35,239)';
         """) is True
         assert page.wait("return typeof window.__portableText === 'string';", timeout=15)
+        assert re.fullmatch(r'network_test_\d{8}_\d{6}\.html', page.js('return window.__portableFilename;'))
+        assert page.js("return portableNetworkFilename(new Date(2026,10,10,9,8,7), '/tmp/a%20b.HTML');") == 'a b_20261110_090807.html'
         portable = tmp_path / 'portable.html'
         portable.write_text(page.js("return window.__portableText;"), encoding='utf-8')
         assert page.errors() == []
@@ -3814,6 +3858,22 @@ def test_portable_html_and_selected_node_fonts(network_html, tmp_path):
         """)
         assert got == {'pos': {'x':321,'y':456}, 'size':27, 'color':'rgb(161,35,239)',
                        'weight':'bold','slant':'italic','family':'Georgia','added':1,'deleted':0,'label':'<tag> & label'}, got
+        # The portable clone must keep the static overlay children of #cy:
+        # stripping the whole container dropped #editBadge and a reopened
+        # page threw in toggleEditMode.  Drawing must work after the reopen.
+        assert page.js("""
+          toggleEditMode();
+          var ok = !!document.getElementById('editBadge') &&
+                   document.getElementById('editBadge').style.display === 'block' &&
+                   !!document.getElementById('cyHints') && !!document.getElementById('boxOverlay');
+          var before = cy.edges().length;
+          cy.getElementById('S').emit('tap'); cy.getElementById('T').emit('tap');
+          var drawn = cy.edges().length === before + 1 || cy.edges('[source="S"][target="T"]').length === 1;
+          toggleEditMode();
+          return ok && drawn &&
+                 cy.getElementById('portable-added').length === 1;
+        """) is True
+        assert page.errors() == [], page.errors()
         assert page.js("""
           cy.nodes().unselect();cy.getElementById('A').select();cy.getElementById('B').select();syncNodeFontStyleControls();
           var mixed=document.getElementById('selNodeBold').getAttribute('aria-pressed');

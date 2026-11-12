@@ -575,6 +575,68 @@ function hexOf(api, value) {
     check('manual edge width marker restored', e0b.data('customSize'), true);
 }
 
+// ===== Test: strength alpha (`edge_alpha`) vs a manual per-edge alpha =====
+// Restoring a layout must not let a stale band alpha from an older encoding
+// override the current encoding — unless the user explicitly moved that
+// edge's alpha, which is a manual override and must survive.
+{
+    // (1) manual alpha survives a restore (saved baseOpacity != saved dataAlpha)
+    const cy = buildGraph({ A: 'intermediate', B: 'intermediate' }, [['A', 'B', 5]]);
+    const api = buildScope(cy);
+    const e = cy.getElementById('e0');
+    e.data('edge_alpha', 0.4);
+    api.setEdgeBaseAppearance(e, '#00aa00', 0.9);   // user-set opacity
+    const manualState = api.captureNetworkState();
+    check('saved data alpha is recorded', manualState.edgeStyles[0].dataAlpha, 0.4);
+
+    const cy2 = buildGraph({ A: 'intermediate', B: 'intermediate' }, [['A', 'B', 5]]);
+    cy2.getElementById('e0').data('edge_alpha', 0.4);
+    const api2 = buildScope(cy2);
+    api2.applyNetworkState(manualState);
+    check('manual per-edge alpha survives restore',
+        parseFloat(cy2.getElementById('e0').style('line-opacity')), 0.9);
+    check('manual per-edge alpha is the new base record',
+        cy2.getElementById('e0').data('__baseOpacity'), 0.9);
+}
+
+{
+    // (2) an unedited band alpha follows the CURRENT encoding (0.4 -> 0.7)
+    const cy = buildGraph({ A: 'intermediate', B: 'intermediate' }, [['A', 'B', 5]]);
+    const api = buildScope(cy);
+    const e = cy.getElementById('e0');
+    e.data('edge_alpha', 0.4);
+    api.setEdgeBaseAppearance(e, '#00aa00', 0.4);   // page init writes the band alpha
+    const bandState = api.captureNetworkState();
+
+    const cy2 = buildGraph({ A: 'intermediate', B: 'intermediate' }, [['A', 'B', 5]]);
+    cy2.getElementById('e0').data('edge_alpha', 0.7);  // different current encoding
+    const api2 = buildScope(cy2);
+    api2.applyNetworkState(bandState);
+    check('current encoding wins over the stale band alpha',
+        parseFloat(cy2.getElementById('e0').style('line-opacity')), 0.7);
+    check('stale base alpha is rewritten', cy2.getElementById('e0').data('__baseOpacity'), 0.7);
+}
+
+// ===== Test: an old payload without lineStyle keeps the declared pattern =====
+// Older builds only recorded a lineStyle when there was a style bypass, so an
+// edge included for its width alone carries no lineStyle key. Restoring that
+// payload must not delete the page's declared `line_style` data (which turned
+// declared dashed/dotted edges solid until reload).
+{
+    const cy = buildGraph({ A: 'intermediate', B: 'intermediate' }, [['A', 'B', 5]]);
+    const api = buildScope(cy);
+    const e = cy.getElementById('e0');
+    e.data('line_style', 'dashed');
+    e.style('width', '9px');   // makes e0 part of edgeGeometry
+    const state = api.captureNetworkState();
+    (state.edgeGeometry || []).forEach(g => { delete g.lineStyle; });  // old build
+    api.applyNetworkState(state);
+    check('old payload keeps the declared line_style',
+        cy.getElementById('e0').data('line_style'), 'dashed');
+    check('manual edge width still restored',
+        Math.round(parseFloat(cy.getElementById('e0').style('width'))), 9);
+}
+
 console.log(failures === 0 ? 'ALL PERSISTENCE TESTS PASSED' : failures + ' PERSISTENCE TEST(S) FAILED');
 // process.exitCode alone would hang: styleEnabled cytoscape cores keep
 // background timers alive, so exit explicitly with the proper code.

@@ -9,7 +9,8 @@ from a path/connection table, and can build a blank editable network canvas.
 
 The network page's **Save HTML** button downloads an HTML containing the full
 current graph (including added/deleted elements), stylesheet, layout and view
-state. Open that downloaded copy to continue editing or share it. Reopening
+state. The download keeps the current HTML filename and appends a local-time
+`_YYYYMMDD_HHMMSS` timestamp before `.html`. Open that downloaded copy to continue editing or share it. Reopening
 requires no browser storage; embedded state takes precedence over any cached
 layout. Browser storage remains an optional fallback for legacy pages. JSON
 Export/Import Layout remains available. Existing HTML files need regenerating

@@ -11067,15 +11067,24 @@ class VisualizePath:
             // Edge base appearance lives in data (__baseColor/__baseOpacity),
             // not in style() — style() shows the transient highlight
             // override while a highlight is active.
-            const edgeStyles = cy.edges().map(e => ({{
-                id: e.id(),
-                baseColor: e.data(EDGE_BASE_COLOR_KEY) || e.style('line-color'),
-                baseArrowColor: e.data(EDGE_BASE_ARROW_KEY)
-                    || e.style('target-arrow-color'),
-                baseOpacity: (e.data(EDGE_BASE_OPACITY_KEY) !== undefined)
-                    ? parseFloat(e.data(EDGE_BASE_OPACITY_KEY))
-                    : (parseFloat(e.style('line-opacity')) || 1)
-            }}));
+            const edgeStyles = cy.edges().map(e => {{
+                const item = {{
+                    id: e.id(),
+                    baseColor: e.data(EDGE_BASE_COLOR_KEY) || e.style('line-color'),
+                    baseArrowColor: e.data(EDGE_BASE_ARROW_KEY)
+                        || e.style('target-arrow-color'),
+                    baseOpacity: (e.data(EDGE_BASE_OPACITY_KEY) !== undefined)
+                        ? parseFloat(e.data(EDGE_BASE_OPACITY_KEY))
+                        : (parseFloat(e.style('line-opacity')) || 1)
+                }};
+                // The page's own strength alpha, so a restore can tell a
+                // manual per-edge opacity (baseOpacity differs) from the
+                // data-driven default (which the current encoding owns).
+                const alpha = e.data('edge_alpha');
+                if (alpha !== undefined && alpha !== null && alpha !== ''
+                        && !isNaN(Number(alpha))) item.dataAlpha = Number(alpha);
+                return item;
+            }});
             // Custom-group memberships (non-empty only; '' = Unassigned).
             const assignedGroups = {{}};
             cy.nodes().forEach(n => {{
@@ -11468,11 +11477,16 @@ class VisualizePath:
                 // rendered opacity silently contradicts the active metric and
                 // its legend. Restore the alpha AND its base record so a
                 // later highlight/unselect pass cannot reintroduce the stale
-                // value.
+                // value. A manual per-edge opacity (saved baseOpacity differs
+                // from the saved dataAlpha) is an explicit override and stays.
+                const savedEdgeStyle = new Map((state.edgeStyles || []).map(item => [item.id, item]));
                 cy.edges().forEach(edge => {{
                     const alpha = edge.data('edge_alpha');
                     if (alpha === undefined || alpha === null || alpha === ''
                             || isNaN(Number(alpha))) return;
+                    const saved = savedEdgeStyle.get(edge.id());
+                    if (saved && saved.dataAlpha !== undefined
+                            && Math.abs(Number(saved.baseOpacity) - Number(saved.dataAlpha)) > 1e-6) return;
                     const op = Number(alpha);
                     edge.data('__baseOpacity', op);
                     edge.style('line-opacity', op);
@@ -11581,7 +11595,11 @@ class VisualizePath:
                             e.data('line_style', item.lineStyle);
                             syncEdgeLinePattern(e);
                         }} else {{
-                            e.removeData('line_style');
+                            // No recorded pattern: drop a manual bypass but
+                            // KEEP the page's declared data style — older
+                            // payloads omit lineStyle even when the page
+                            // declared one, and removing the data turned
+                            // those edges solid on restore.
                             e.removeStyle('line-style');
                             e.removeStyle('line-cap');
                             e.removeStyle('line-dash-pattern');
@@ -11657,17 +11675,35 @@ class VisualizePath:
             doc.head.appendChild(script);
             script.textContent = JSON.stringify(bundle).replace(/</g, '\\u003c');
             const canvas = doc.getElementById('cy');
-            if (canvas) canvas.replaceChildren();
+            if (canvas) {{
+                // Strip cytoscape's renderer layers (the canvas wrapper)
+                // only — the static overlays (#editBadge, #boxOverlay,
+                // #cyHints, the legend host) share this container and must
+                // survive, or the saved page loses them and Edit Mode
+                // throws on the missing #editBadge.
+                Array.prototype.slice.call(canvas.children).forEach(el => {{
+                    if (el.tagName === 'CANVAS' || el.querySelector('canvas')) el.remove();
+                }});
+            }}
             // Runtime anchor/waypoint handles are rebuilt by the live viewer.
             doc.querySelectorAll('[id^="anchor-handle-"], [id^="waypoint-ring-"]').forEach(el => el.remove());
             return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+        }}
+
+        function portableNetworkFilename(now = new Date(), pathname = window.location.pathname) {{
+            let filename = '';
+            try {{ filename = decodeURIComponent(pathname.split('/').pop() || ''); }} catch (err) {{ /* use generated name */ }}
+            const stem = /[.]html?$/i.test(filename) ? filename.replace(/[.]html?$/i, '') : '{js_escape(output_name)}';
+            const pad = n => String(n).padStart(2, '0');
+            const stamp = String(now.getFullYear()) + pad(now.getMonth()+1) + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+            return stem + '_' + stamp + '.html';
         }}
 
         function downloadPortableNetworkHTML(html) {{
             const blob = new Blob([html], {{type: 'text/html;charset=utf-8'}});
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
-            link.href = url; link.download = 'network_saved.html';
+            link.href = url; link.download = portableNetworkFilename();
             document.body.appendChild(link); link.click(); link.remove();
             setTimeout(() => URL.revokeObjectURL(url), 1000);
         }}
@@ -16529,8 +16565,12 @@ class VisualizePath:
                     // a duplicate connection.
                     const fwdExists = cy.edges(`[source = "${{sourceId}}"][target = "${{targetId}}"]`);
                     const revExists = cy.edges(`[source = "${{targetId}}"][target = "${{sourceId}}"]`);
+                    // union(), not concat(): a Cytoscape collection has no
+                    // concat, so it falls through to Array.prototype.concat,
+                    // which nests both collections as two items — length 2
+                    // even when both are empty, blocking every new edge.
                     const bidirCovers = cy.edges(`[source = "${{sourceId}}"][target = "${{targetId}}"][bidirectional = 1]`)
-                        .concat(cy.edges(`[source = "${{targetId}}"][target = "${{sourceId}}"][bidirectional = 1]`));
+                        .union(cy.edges(`[source = "${{targetId}}"][target = "${{sourceId}}"][bidirectional = 1]`));
                     if (fwdExists.length > 0 || bidirCovers.length > 0) {{
                         updateHoverInfo('⚠️ Edge already exists: ' + sourceId + ' → ' + targetId);
                         // Reset edge draw mode
@@ -16548,7 +16588,11 @@ class VisualizePath:
                         return;
                     }}
                     
-                    const edgeId = 'e' + nextEdgeId++;
+                    // A restored portable page can already own e1000+ (the
+                    // user-created ids from the page it was saved on), and
+                    // cy.add throws on a duplicate id — skip every taken id.
+                    let edgeId;
+                    do {{ edgeId = 'e' + nextEdgeId++; }} while (cy.getElementById(edgeId).length > 0);
                     pushHistory('Add edge');
                     const newEdge = cy.add({{
                         group: 'edges',
