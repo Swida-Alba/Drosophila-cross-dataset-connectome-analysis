@@ -77,6 +77,36 @@ def test_api_call_with_retry_timeout_retries_then_raises(monkeypatch):
     assert sleeps == [0.01]  # exponential backoff delay before the retry
 
 
+def test_api_call_with_retry_abandoned_call_runs_on_daemon_thread():
+    """An abandoned (timed-out) API call must not block interpreter exit.
+
+    ThreadPoolExecutor workers are non-daemon and joined by
+    concurrent.futures at shutdown, so one request stuck on a half-open
+    socket kept the generated DROCAT script alive after its final
+    "[DROCAT] Done." line: the UI waited for the process forever, showing
+    no FINISHED line, run guide, or pair report.
+    """
+    import threading
+
+    before = set(threading.enumerate())
+    release = threading.Event()
+    with pytest.raises(APITimeoutError):
+        api_call_with_retry(
+            lambda: release.wait(30),
+            timeout=0.05,
+            max_retries=1,
+            retry_delay=0.0,
+            verbose=False,
+        )
+    abandoned = [
+        thread for thread in threading.enumerate()
+        if thread not in before and thread.name.startswith("drocat-api-call")
+    ]
+    assert abandoned, "the timed-out call should still be running"
+    assert all(thread.daemon for thread in abandoned)
+    release.set()
+
+
 def test_api_call_with_retry_generic_error_then_success(monkeypatch):
     monkeypatch.setattr(api_utils.time, "sleep", lambda *_a, **_k: None)
     attempts = {"count": 0}

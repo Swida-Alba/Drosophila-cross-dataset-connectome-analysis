@@ -16,9 +16,9 @@ Usage:
     )
 """
 
+import threading
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable, Optional, TypeVar
 
 T = TypeVar('T')
@@ -42,6 +42,58 @@ class APICancelError(Exception):
     instead of waiting out the current attempt's timeout or a backoff sleep.
     """
     pass
+
+
+def _call_with_timeout(
+    func: Callable[[], T],
+    timeout: float,
+    cancel_event: Optional[Any],
+    description: str,
+    attempt: int,
+    max_retries: int,
+) -> T:
+    """Run *func* on a daemon thread and stop waiting after *timeout*.
+
+    The worker must be a plain daemon thread, not a ThreadPoolExecutor
+    worker: since Python 3.9 concurrent.futures joins every pool worker at
+    interpreter exit.  A request that never returns (a half-open socket with
+    no server-side timeout) would then keep a DROCAT backend alive after its
+    final "[DROCAT] Done." line — the UI runner waits for the process to
+    exit, so the run would sit in "Running" forever and never write its run
+    guide or pair report.  A daemon thread is abandoned at shutdown instead.
+    """
+    finished = threading.Event()
+    outcome: dict = {}
+
+    def worker() -> None:
+        try:
+            outcome["result"] = func()
+        except BaseException as exc:  # re-raised in the calling thread
+            outcome["error"] = exc
+        finally:
+            finished.set()
+
+    threading.Thread(
+        target=worker, name="drocat-api-call", daemon=True
+    ).start()
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise APICancelError(
+                f"{description} cancelled while waiting for the API"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise APITimeoutError(
+                f"{description} timed out after {timeout}s "
+                f"(attempt {attempt}/{max_retries})"
+            )
+        # Wake immediately on completion; poll cancel_event every <=0.5 s.
+        if finished.wait(min(0.5, remaining)):
+            break
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["result"]
 
 
 def api_call_with_retry(
@@ -121,36 +173,11 @@ def api_call_with_retry(
         if cancel_event is not None and cancel_event.is_set():
             raise APICancelError(f"{description} cancelled")
         try:
-            # Use ThreadPoolExecutor to enforce timeout. The executor must be
-            # shut down with wait=False: a hung API call would otherwise make
-            # the with-block's shutdown(wait=True) hang forever, defeating the
-            # whole point of the timeout.
-            executor = ThreadPoolExecutor(max_workers=1)
-            try:
-                future = executor.submit(func)
-                # Poll in small slices: a set cancel_event aborts the wait
-                # within ~0.5 s instead of waiting out the full timeout.
-                deadline = time.monotonic() + timeout
-                while True:
-                    if cancel_event is not None and cancel_event.is_set():
-                        future.cancel()
-                        raise APICancelError(
-                            f"{description} cancelled while waiting for the API"
-                        )
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        future.cancel()
-                        raise APITimeoutError(
-                            f"{description} timed out after {timeout}s "
-                            f"(attempt {attempt}/{max_retries})"
-                        )
-                    try:
-                        result = future.result(timeout=min(0.5, remaining))
-                        return result
-                    except FuturesTimeoutError:
-                        continue
-            finally:
-                executor.shutdown(wait=False)
+            # The call is bounded by a daemon worker (see _call_with_timeout):
+            # a hung API call must not block the retry loop, and abandoning it
+            # must never block interpreter shutdown.
+            return _call_with_timeout(
+                func, timeout, cancel_event, description, attempt, max_retries)
         except APICancelError:
             raise
         except APITimeoutError as e:

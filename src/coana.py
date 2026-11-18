@@ -221,8 +221,6 @@ def _get_api_retry_utils():
         return (api_call_with_retry, APITimeoutError,
                 APIRetryExhaustedError, APICancelError)
     except ImportError:
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-
         class APITimeoutError(Exception):
             pass
 
@@ -237,6 +235,41 @@ def _get_api_retry_utils():
                                 cancel_event=None):
             import time
             last_exc = None
+
+            def _call_with_timeout(attempt):
+                # A daemon worker, NOT a ThreadPoolExecutor worker: pool
+                # workers are joined at interpreter exit, so a half-open
+                # request would keep the backend alive after "[DROCAT] Done."
+                # and the UI would never see the run finish.
+                finished = threading.Event()
+                outcome = {}
+
+                def worker():
+                    try:
+                        outcome["result"] = func()
+                    except BaseException as exc:
+                        outcome["error"] = exc
+                    finally:
+                        finished.set()
+
+                threading.Thread(
+                    target=worker, name="drocat-api-call", daemon=True
+                ).start()
+                deadline = time.monotonic() + timeout
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise APICancelError(
+                            f"{description} cancelled while waiting for the API")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise APITimeoutError(
+                            f"{description} timed out after {timeout}s "
+                            f"(attempt {attempt}/{max_retries})")
+                    if finished.wait(min(0.5, remaining)):
+                        break
+                if "error" in outcome:
+                    raise outcome["error"]
+                return outcome["result"]
 
             def _interruptible_sleep(delay):
                 if cancel_event is None:
@@ -255,32 +288,11 @@ def _get_api_retry_utils():
                 if cancel_event is not None and cancel_event.is_set():
                     raise APICancelError(f"{description} cancelled")
                 try:
-                    # shutdown(wait=False): a hung API call must not block the
-                    # retry loop (with-block would wait forever).
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    try:
-                        future = executor.submit(func)
-                        deadline = time.monotonic() + timeout
-                        while True:
-                            if cancel_event is not None and cancel_event.is_set():
-                                future.cancel()
-                                raise APICancelError(f"{description} cancelled")
-                            remaining = deadline - time.monotonic()
-                            if remaining <= 0:
-                                future.cancel()
-                                raise APITimeoutError(
-                                    f"{description} timed out after {timeout}s "
-                                    f"(attempt {attempt}/{max_retries})")
-                            try:
-                                return future.result(timeout=min(0.5, remaining))
-                            except FuturesTimeoutError:
-                                continue
-                    finally:
-                        executor.shutdown(wait=False)
+                    return _call_with_timeout(attempt)
                 except APICancelError:
                     raise
-                except FuturesTimeoutError:
-                    last_exc = APITimeoutError(f"{description} timed out after {timeout}s (attempt {attempt}/{max_retries})")
+                except APITimeoutError as e:
+                    last_exc = e
                     if on_retry is not None:
                         on_retry(attempt, last_exc)
                     if attempt < max_retries:

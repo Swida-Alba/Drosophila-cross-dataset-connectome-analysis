@@ -1726,7 +1726,6 @@ def pull_dataset(dataset, save_path=None, omitNoneType=False, client=None, batch
     except ImportError:
         # Inline fallback when src is not on sys.path (scripts launched
         # without the src prefix).
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
         class APITimeoutError(Exception):
             pass
@@ -1737,19 +1736,45 @@ def pull_dataset(dataset, save_path=None, omitNoneType=False, client=None, batch
         def api_call_with_retry(func, timeout=60, max_retries=5, retry_delay=2.0,
                                 description="API call", on_retry=None, verbose=True):
             import time
+
+            def _call_with_timeout(attempt):
+                # A daemon worker, NOT a ThreadPoolExecutor worker: pool
+                # workers are joined at interpreter exit, so a half-open
+                # request would keep the backend alive after "[DROCAT] Done."
+                # and the UI would never see the run finish.
+                finished = threading.Event()
+                outcome = {}
+
+                def worker():
+                    try:
+                        outcome["result"] = func()
+                    except BaseException as exc:
+                        outcome["error"] = exc
+                    finally:
+                        finished.set()
+
+                threading.Thread(
+                    target=worker, name="drocat-api-call", daemon=True
+                ).start()
+                deadline = time.monotonic() + timeout
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise APITimeoutError(
+                            f"{description} timed out after {timeout}s "
+                            f"(attempt {attempt}/{max_retries})")
+                    if finished.wait(min(0.5, remaining)):
+                        break
+                if "error" in outcome:
+                    raise outcome["error"]
+                return outcome["result"]
+
             last_exc = None
             for attempt in range(1, max_retries + 1):
                 try:
-                    # shutdown(wait=False): a hung API call must not block the
-                    # retry loop (with-block would wait forever).
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    try:
-                        future = executor.submit(func)
-                        return future.result(timeout=timeout)
-                    finally:
-                        executor.shutdown(wait=False)
-                except FuturesTimeoutError:
-                    last_exc = APITimeoutError(f"{description} timed out after {timeout}s (attempt {attempt}/{max_retries})")
+                    return _call_with_timeout(attempt)
+                except APITimeoutError as e:
+                    last_exc = e
                     if on_retry is not None:
                         on_retry(attempt, last_exc)
                     if attempt < max_retries:
