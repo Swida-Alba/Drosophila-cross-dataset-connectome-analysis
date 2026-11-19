@@ -51,9 +51,10 @@ def create_inter_dataset_tab():
                 group_recommended=True,
             )
             # Round 2 entrance: the standalone type-mapping preview. The
-            # button stays disabled until >= 2 selected datasets have
-            # cached neuron indexes; the popup composes the mapping across
-            # every ordered pair of the selection (informational only).
+            # button stays disabled until >= 2 selected datasets have a
+            # cached neuron index or downloaded metadata table; the popup
+            # composes the mapping across every ordered pair of the
+            # selection (informational only).
             from ..components.type_mapping_panel import create_type_mapping_entry
 
             with ui.row().classes("items-center gap-4 flex-wrap"):

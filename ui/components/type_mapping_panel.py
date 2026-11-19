@@ -1146,10 +1146,10 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
 
     Returns the button element; the tab wires ``refresh_state()`` into
     the dataset selector so the disabled state follows the selection
-    (disabled with a tooltip until >= 2 selected datasets have cached
-    neuron indexes).
+    (disabled with a tooltip until >= 2 selected datasets have a cached
+    neuron index or downloaded metadata table).
     """
-    from ..neuron_index import neuron_index_path
+    from ..neuron_index import neuron_index_available
 
     state: Dict[str, Any] = {"pair_flows": {}, "pools": {}, "meta": {},
                              "composed": None, "datasets": [],
@@ -1162,7 +1162,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
     def _ready() -> bool:
         datasets = list(get_datasets() or [])
         return len(datasets) >= 2 and all(
-            neuron_index_path(ds).is_file() for ds in datasets)
+            neuron_index_available(ds) for ds in datasets)
 
     # Same fixed window as the 'See available neurons' viewer: the backdrop
     # never dismisses it, the card is viewport-bounded with internal scroll,
@@ -2340,7 +2340,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
             return
         if len(datasets) < 2:
             ui.notify("Select at least 2 datasets with cached neuron "
-                      "indexes.", type="warning")
+                      "indexes or downloaded metadata.", type="warning")
             return
         _set_loading(True)
         try:
@@ -2400,7 +2400,7 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
         mode, chips = search.get_value()
         queries = [str(q).strip() for q in chips if str(q).strip()]
         datasets = [d for d in (get_datasets() or [])
-                    if neuron_index_path(d).is_file()]
+                    if neuron_index_available(d)]
         return queries, datasets, mode
 
     def _compute(queries, datasets, mode) -> Dict[str, Any]:
@@ -2429,7 +2429,8 @@ def create_type_mapping_entry(get_datasets: Callable[[], list]):
         else:
             button.disable()
             button.tooltip("Select at least 2 datasets with cached neuron "
-                           "indexes to preview the type mapping")
+                           "indexes or downloaded metadata to preview the "
+                           "type mapping")
 
     button.search_container = search  # type: ignore[attr-defined]
     button.refresh_state = refresh_state  # type: ignore[attr-defined]

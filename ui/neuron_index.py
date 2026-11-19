@@ -48,11 +48,13 @@ from .search_logic import (
 
 try:
     from src.neuron_index_builder import (
+        body_id_column,
         build_search_cache_frame,
         dataset_identifier_from_folder,
         is_search_cache_compatible,
         metadata_candidates as builder_metadata_candidates,
         metadata_columns,
+        metadata_path,
         ordered_projection_columns,
         read_metadata_projection,
         search_cache_path,
@@ -60,11 +62,13 @@ try:
     )
 except ImportError:
     from neuron_index_builder import (
+        body_id_column,
         build_search_cache_frame,
         dataset_identifier_from_folder,
         is_search_cache_compatible,
         metadata_candidates as builder_metadata_candidates,
         metadata_columns,
+        metadata_path,
         ordered_projection_columns,
         read_metadata_projection,
         search_cache_path,
@@ -265,6 +269,56 @@ def neuron_index_state_path(dataset: str, cache_dir: Optional[Path] = None) -> P
     """Return the optional progress sidecar for a cached index."""
     root = Path(cache_dir) if cache_dir is not None else PROJECT_ROOT / "cache"
     return root / dataset_to_folder(str(dataset).strip()) / "neuron_index_state.parquet"
+
+
+def neuron_index_source_path(
+    dataset: str,
+    cache_dir: Optional[Path] = None,
+    datasets_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """Local file that can answer a type-index read for *dataset*.
+
+    The materialized ``neuron_index.parquet`` wins.  A fresh install that has
+    only pulled the dataset metadata (``datasets/<ds>/*_neuron_df.*``) serves
+    the same type/taxonomy reads from that table, so the cross-dataset type
+    mapping keeps working before an index is built.  An explicit
+    ``cache_dir`` is a hermetic index root (tests and alternate workspaces)
+    and never reaches into the repository ``datasets/`` tree.
+    """
+    dataset = str(dataset or "").strip()
+    if not dataset:
+        return None
+    path = neuron_index_path(dataset, cache_dir)
+    if path.is_file():
+        return path
+    if cache_dir is not None:
+        return None
+    root = Path(datasets_dir) if datasets_dir is not None \
+        else PROJECT_ROOT / "datasets"
+    return metadata_path(dataset, root)
+
+
+def neuron_index_available(
+    dataset: str,
+    cache_dir: Optional[Path] = None,
+    datasets_dir: Optional[Path] = None,
+) -> bool:
+    """Whether *dataset* can serve a type-mapping index read.
+
+    True for a pulled/materialized index or, on a fresh install, for the
+    downloaded neuron metadata table that stands in for it.  A metadata table
+    without a ``type`` column cannot serve a type-mapping read and stays
+    unavailable.
+    """
+    source = neuron_index_source_path(dataset, cache_dir, datasets_dir)
+    if source is None:
+        return False
+    if source == neuron_index_path(dataset, cache_dir):
+        return True
+    try:
+        return "type" in metadata_columns(source)
+    except Exception:
+        return False
 
 
 def _metadata_candidates(dataset: str, datasets_dir: Optional[Path]) -> List[Path]:
@@ -2553,11 +2607,14 @@ _ALIAS_INDEX_CACHE: Dict[Tuple[str, int], "CachedNeuronIndex"] = {}
 
 
 def datasets_with_cached_indexes(cache_dir: Optional[Path] = None) -> List[str]:
-    """Return every known or locally indexed dataset.
+    """Return every dataset that can serve a local type-index read.
 
     Keep the configured list first for stable UI ordering, then discover
     additional index folders so a newly pulled release participates in
-    cross-dataset search without requiring a code/config update.
+    cross-dataset search without requiring a code/config update.  On a fresh
+    install the downloaded neuron metadata table is a valid read source too
+    (``neuron_index_source_path``), so those datasets join the same list
+    before an index build has run.
     """
     from .config import DATASETS
 
@@ -2565,16 +2622,16 @@ def datasets_with_cached_indexes(cache_dir: Optional[Path] = None) -> List[str]:
     datasets = [
         dataset
         for dataset in DATASETS
-        if neuron_index_path(dataset, cache_dir).is_file()
+        if neuron_index_available(dataset, cache_dir)
     ]
-    if not root.is_dir():
-        return datasets
-    for folder in sorted(root.iterdir(), key=lambda path: path.name):
-        if not folder.is_dir() or not (folder / "neuron_index.parquet").is_file():
-            continue
-        dataset = dataset_identifier_from_folder(folder.name)
-        if dataset and dataset not in datasets:
-            datasets.append(dataset)
+    if root.is_dir():
+        for folder in sorted(root.iterdir(), key=lambda path: path.name):
+            if not folder.is_dir() \
+                    or not (folder / "neuron_index.parquet").is_file():
+                continue
+            dataset = dataset_identifier_from_folder(folder.name)
+            if dataset and dataset not in datasets:
+                datasets.append(dataset)
     return datasets
 
 
@@ -3620,17 +3677,167 @@ def build_reverse_type_contexts(
     return contexts
 
 
-def _load_alias_index(dataset: str) -> Optional["CachedNeuronIndex"]:
-    """Load the cached index used for alias counting.
+def _metadata_table_columns(path: Path) -> List[str]:
+    """Actual column names in a downloaded neuron metadata table."""
+    import polars as pl
 
-    Delegates to ``load_cached_neuron_index`` so the alias lane shares its
-    metadata/state/search-cache invalidation signature; the former outer
-    cache keyed only on the index parquet mtime and could serve stale types
-    after a metadata-sidecar update.
+    path = Path(path)
+    if path.suffix.lower() == ".parquet":
+        return list(pl.read_parquet_schema(path))
+    return list(
+        pl.scan_csv(
+            path,
+            infer_schema_length=1000,
+            ignore_errors=True,
+            try_parse_dates=False,
+        ).collect_schema().names()
+    )
+
+
+def _read_metadata_columns(path: Path, wanted: Sequence[str]):
+    """Read a narrow projection from a downloaded neuron metadata table.
+
+    Body IDs are canonicalised to ``bodyId`` and kept as text (FlyWire IDs
+    exceed the safe integer range); every other requested column is cast to
+    text too.  Returns ``None`` when the table has no body-ID column or none
+    of *wanted* exists.
     """
-    path = neuron_index_path(dataset)
-    if not path.is_file():
+    import polars as pl
+
+    path = Path(path)
+    actual = _metadata_table_columns(path)
+    body_source = body_id_column(actual)
+    selected: List[str] = []
+    for column in wanted:
+        if column == "bodyId":
+            if body_source is not None:
+                selected.append(body_source)
+        elif column in actual:
+            selected.append(column)
+    selected = list(dict.fromkeys(selected))
+    if not selected:
         return None
+    if path.suffix.lower() == ".parquet":
+        frame = pl.read_parquet(path, columns=selected)
+    else:
+        overrides = {body_source: pl.Utf8} if body_source in selected else {}
+        frame = pl.read_csv(
+            path,
+            columns=selected,
+            schema_overrides=overrides,
+            infer_schema_length=1000,
+            ignore_errors=True,
+            try_parse_dates=False,
+        )
+    if body_source and body_source != "bodyId" \
+            and body_source in frame.columns:
+        frame = frame.rename({body_source: "bodyId"})
+    return frame.with_columns(
+        [
+            pl.col(column).cast(pl.Utf8, strict=False).fill_null("")
+            .alias(column)
+            for column in frame.columns
+        ]
+    )
+
+
+def _metadata_alias_index(
+    dataset: str, path: Path
+) -> Optional["CachedNeuronIndex"]:
+    """Index-shaped projection from downloaded metadata (alias lane)."""
+    actual = _metadata_table_columns(path)
+    wanted = ["bodyId", "type", "instance"]
+    wanted.extend(
+        column for column in actual
+        if re.sub(r"[^a-z0-9]", "", str(column).casefold())
+        in _NATIVE_LABEL_COLUMNS
+    )
+    frame = _read_metadata_columns(path, wanted)
+    if frame is None or "type" not in frame.columns:
+        return None
+    return CachedNeuronIndex(
+        dataset=str(dataset),
+        path=Path(path),
+        frame=frame,
+        columns=tuple(frame.columns),
+        enriched=False,
+        search_frame=None,
+    )
+
+
+def _metadata_cross_match_index(
+    dataset: str, path: Path
+) -> Optional["CachedNeuronIndex"]:
+    """Index-shaped type/taxonomy projection from downloaded metadata."""
+    actual = _metadata_table_columns(path)
+    wanted = [
+        column for column in actual
+        if column == "type"
+        or re.sub(r"[^a-z0-9]", "", str(column).casefold())
+        in _NATIVE_LABEL_COLUMNS
+    ]
+    if "type" not in wanted:
+        return None
+    frame = _read_metadata_columns(path, wanted)
+    if frame is None or "type" not in frame.columns:
+        return None
+    return CachedNeuronIndex(
+        dataset=str(dataset),
+        path=Path(path),
+        frame=frame,
+        columns=tuple(frame.columns),
+        enriched=False,
+        search_frame=None,
+    )
+
+
+def _metadata_coverage_index(
+    dataset: str, path: Path
+) -> Optional["CachedNeuronIndex"]:
+    """Index-shaped bodyId/linker projection from downloaded metadata."""
+    actual = _metadata_table_columns(path)
+    coverage_columns = {
+        "bodyId", "type",
+        "flywireType", "additional_type(s)", "Alternative Cell Type(s)",
+        "hemibrainType", "mancType",
+        "fafb_cell_type", "fafb_alignment_cell_type",
+        "malecns_cell_type", "manc_cell_type",
+        "hemibrain_cell_type",
+    }
+    wanted = [
+        column for column in coverage_columns
+        if column == "bodyId" or column in actual
+    ]
+    frame = _read_metadata_columns(path, sorted(wanted))
+    if frame is None or not {"bodyId", "type"}.issubset(frame.columns):
+        return None
+    return CachedNeuronIndex(
+        dataset=str(dataset),
+        path=Path(path),
+        frame=frame,
+        columns=tuple(frame.columns),
+        enriched=False,
+        search_frame=None,
+    )
+
+
+def _load_alias_index(dataset: str) -> Optional["CachedNeuronIndex"]:
+    """Load the alias-counting index, falling back to pulled metadata.
+
+    The materialized ``neuron_index.parquet`` is the primary source and
+    shares ``load_cached_neuron_index``'s metadata/state/search-cache
+    invalidation signature.  A fresh install that has only downloaded the
+    dataset table reads a narrow projection from it instead, so the
+    type-mapping preview does not depend on a build step that has not run.
+    """
+    source_path = neuron_index_source_path(dataset)
+    if source_path is None:
+        return None
+    if source_path != neuron_index_path(dataset):
+        try:
+            return _metadata_alias_index(dataset, source_path)
+        except Exception:
+            return None
     try:
         return load_cached_neuron_index(dataset)
     except Exception:
@@ -3735,9 +3942,18 @@ def _load_cross_match_index(dataset: str) -> Optional["CachedNeuronIndex"]:
     """
     import polars as pl
 
-    path = neuron_index_path(dataset)
-    if not path.is_file():
+    source_path = neuron_index_source_path(dataset)
+    if source_path is None:
         return None
+    index_path = neuron_index_path(dataset)
+    if source_path != index_path:
+        # Fresh install: answer the same type/taxonomy read from the
+        # downloaded neuron metadata before an index has been built.
+        try:
+            return _metadata_cross_match_index(dataset, source_path)
+        except Exception:
+            return None
+    path = source_path
     try:
         schema = pl.read_parquet_schema(path)
         columns = list(schema)
@@ -3843,9 +4059,16 @@ def _load_coverage_index(dataset: str) -> Optional["CachedNeuronIndex"]:
     """
     import polars as pl
 
-    path = neuron_index_path(dataset)
-    if not path.is_file():
+    source_path = neuron_index_source_path(dataset)
+    if source_path is None:
         return None
+    index_path = neuron_index_path(dataset)
+    if source_path != index_path:
+        try:
+            return _metadata_coverage_index(dataset, source_path)
+        except Exception:
+            return None
+    path = source_path
     coverage_columns = {
         "bodyId", "type",
         # MCNS crosswalks and endpoint-side annotation columns.
@@ -4415,7 +4638,7 @@ def collect_native_type_matches(
         datasets = datasets_with_cached_indexes()
     datasets = [
         ds for ds in datasets
-        if ds != dataset and neuron_index_path(ds).is_file()
+        if ds != dataset and neuron_index_available(ds)
     ]
 
     matches = []
@@ -4752,7 +4975,7 @@ def collect_alias_matches(
 
     if datasets is None:
         datasets = datasets_with_cached_indexes()
-    datasets = [ds for ds in datasets if neuron_index_path(ds).is_file()]
+    datasets = [ds for ds in datasets if neuron_index_available(ds)]
     if not datasets:
         return []
     try:
@@ -5176,7 +5399,7 @@ def collect_value_mapped_matches(
         mapped_datasets.append(ds)
 
     guidance = [
-        {"dataset": ds, "cached": neuron_index_path(ds).is_file()}
+        {"dataset": ds, "cached": neuron_index_available(ds)}
         for ds in datasets
         if ds != dataset and ds not in mapped_datasets
     ]
